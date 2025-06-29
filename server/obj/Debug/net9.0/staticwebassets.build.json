@@ -1,0 +1,12 @@
+{
+  "Version": 1,
+  "Hash": "ZwMsopRGFAsnBPd71u9GZ5oNFNIy8gpGW+RhVsQvK/g=",
+  "Source": "ws-game",
+  "BasePath": "_content/ws-game",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [],
+  "Assets": [],
+  "Endpoints": []
+}

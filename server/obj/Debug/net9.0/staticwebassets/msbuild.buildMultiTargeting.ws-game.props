@@ -1,0 +1,3 @@
+﻿<Project>
+  <Import Project="../build/ws-game.props" />
+</Project>

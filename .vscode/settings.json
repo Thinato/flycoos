@@ -1,0 +1,9 @@
+{
+    "cSpell.words": [
+        "Flycoos",
+        "krol",
+        "pixi"
+    ],
+    "jestRunIt.jestPath": "./client/node_modules/.bin/jest",
+    "jestRunIt.jestConfigPath": "./client/jest.config.js"
+}
