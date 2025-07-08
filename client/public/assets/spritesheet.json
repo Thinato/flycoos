@@ -1211,5 +1211,82 @@
       "h": 864
     },
     "scale": "1"
+  },
+  "animations": {
+    "idle_n": [
+      "idle_n-0"
+    ],
+    "idle_ne": [
+      "idle_ne-0"
+    ],
+    "idle_e": [
+      "idle_e-0"
+    ],
+    "idle_se": [
+      "idle_se-0"
+    ],
+    "idle_s": [
+      "idle_s-0"
+    ],
+    "run_n": [
+      "run_n-0",
+      "run_n-1",
+      "run_n-2",
+      "run_n-3"
+    ],
+    "run_ne": [
+      "run_ne-0",
+      "run_ne-1",
+      "run_ne-2",
+      "run_ne-3"
+    ],
+    "run_e": [
+      "run_e-0",
+      "run_e-1",
+      "run_e-2",
+      "run_e-3"
+    ],
+    "run_se": [
+      "run_se-0",
+      "run_se-1",
+      "run_se-2",
+      "run_se-3"
+    ],
+    "run_s": [
+      "run_s-0",
+      "run_s-1",
+      "run_s-2",
+      "run_s-3"
+    ],
+    "attack_n": [
+      "attack_n-0",
+      "attack_n-1",
+      "attack_n-2",
+      "attack_n-3"
+    ],
+    "attack_ne": [
+      "attack_ne-0",
+      "attack_ne-1",
+      "attack_ne-2",
+      "attack_ne-3"
+    ],
+    "attack_e": [
+      "attack_e-0",
+      "attack_e-1",
+      "attack_e-2",
+      "attack_e-3"
+    ],
+    "attack_se": [
+      "attack_se-0",
+      "attack_se-1",
+      "attack_se-2",
+      "attack_se-3"
+    ],
+    "attack_s": [
+      "attack_s-0",
+      "attack_s-1",
+      "attack_s-2",
+      "attack_s-3"
+    ]
   }
 }

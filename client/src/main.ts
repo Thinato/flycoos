@@ -1,35 +1,37 @@
 import * as PIXI from "pixi.js"
 import { Vector2 } from "./krol"
+import { PartyMember } from "./entities/PartyMember"
 
 function update(time: PIXI.Ticker) {
   // Check if we have a target position
-  if (targetPosition) {
-    const distanceToTarget = Vector2.fromPoint(player.position)
-      .sub(targetPosition)
-      .magnitude()
+  player.update(time)
+  // if (targetPosition) {
+  //   const distanceToTarget = Vector2.fromPoint(player.position)
+  //     .sub(targetPosition)
+  //     .magnitude()
 
-    // If we're close enough to the target, stop moving
-    if (distanceToTarget < 4) {
-      playerDirection.x = 0
-      playerDirection.y = 0
-      player.position.set(targetPosition.x, targetPosition.y)
-      targetPosition = null
-      return
-    }
-  }
+  //   // If we're close enough to the target, stop moving
+  //   if (distanceToTarget < 4) {
+  //     playerDirection.x = 0
+  //     playerDirection.y = 0
+  //     player.position.set(targetPosition.x, targetPosition.y)
+  //     targetPosition = null
+  //     return
+  //   }
+  // }
 
-  playerDirection.normalize()
-  player.position.x += playerSpeed * playerDirection.x * time.deltaTime
-  player.position.y += playerSpeed * playerDirection.y * time.deltaTime
+  // playerDirection.normalize()
+  // player.position.x += playerSpeed * playerDirection.x * time.deltaTime
+  // player.position.y += playerSpeed * playerDirection.y * time.deltaTime
 }
 
-const playerSpeed = 2
-const playerDirection: Vector2 = new Vector2(0, 0)
-let targetPosition: Vector2 | null = null
+// const playerDirection: Vector2 = new Vector2(0, 0)
+// let targetPosition: Vector2 | null = null
 
 const app = new PIXI.Application()
 
-;(globalThis as unknown as { __PIXI_APP__: PIXI.Application }).__PIXI_APP__ = app
+;(globalThis as unknown as { __PIXI_APP__: PIXI.Application }).__PIXI_APP__ =
+  app
 
 await app.init({ background: "#8158a3", resizeTo: window })
 
@@ -43,12 +45,15 @@ app.canvas.onclick = (e) => {
       .sub(Vector2.fromPoint({ x: cube.position.x, y: cube.position.y + 8 }))
       .invert()
     direction.normalize()
-    playerDirection.x = direction.x
-    playerDirection.y = direction.y
-    targetPosition = Vector2.fromPoint({
-      x: cube.position.x,
-      y: cube.position.y + 8,
-    })
+    player.goTo(
+      Vector2.fromPoint({ x: cube.position.x, y: cube.position.y + 8 }),
+    )
+    // playerDirection.x = direction.x
+    // playerDirection.y = direction.y
+    // targetPosition = Vector2.fromPoint({
+    //   x: cube.position.x,
+    //   y: cube.position.y + 8,
+    // })
   }
 }
 
@@ -111,26 +116,52 @@ function generateMap() {
   }
 }
 
-Assets.add({
+PIXI.Assets.add({
   alias: "dwarf",
   src: "/assets/dwarven_scout.png",
   data: {
     scaleMode: "nearest",
   },
 })
-Assets.add({
+PIXI.Assets.add({
   alias: "iso-cube",
   src: "/assets/iso-cube.png",
   data: {
     scaleMode: "nearest",
   },
 })
-const loader = new PIXI.Loader() 
+const dwarfTexture = await PIXI.Assets.load("dwarf")
+const cubeTexture = await PIXI.Assets.load("iso-cube")
+const spritesheetFile = await PIXI.Assets.load("public/assets/spritesheet.json")
 
-loader.load()
+const spritesheet = new PIXI.Spritesheet(dwarfTexture, spritesheetFile.data)
+spritesheet.parse()
 
-const dwarfTexture = await Assets.load("dwarf")
-const cubeTexture = await Assets.load("iso-cube")
+// const player = new PIXI.AnimatedSprite(spritesheet.animations["idle_e"])
+
+const player = new PartyMember({
+  sprites: {
+    idle_e: new PIXI.AnimatedSprite(spritesheet.animations["idle_e"]),
+    idle_n: new PIXI.AnimatedSprite(spritesheet.animations["idle_n"]),
+    idle_ne: new PIXI.AnimatedSprite(spritesheet.animations["idle_ne"]),
+    idle_s: new PIXI.AnimatedSprite(spritesheet.animations["idle_s"]),
+    idle_se: new PIXI.AnimatedSprite(spritesheet.animations["idle_se"]),
+    idle_w: new PIXI.AnimatedSprite({
+      textures: spritesheet.animations["idle_e"],
+      scale: { x: -1, y: 1 },
+    }),
+    run_e: new PIXI.AnimatedSprite(spritesheet.animations["run_e"]),
+    run_n: new PIXI.AnimatedSprite(spritesheet.animations["run_n"]),
+    run_ne: new PIXI.AnimatedSprite(spritesheet.animations["run_ne"]),
+    run_s: new PIXI.AnimatedSprite(spritesheet.animations["run_s"]),
+    run_se: new PIXI.AnimatedSprite(spritesheet.animations["run_se"]),
+    run_w: new PIXI.AnimatedSprite({
+      textures: spritesheet.animations["run_e"],
+      scale: { x: -1, y: 1 },
+      anchor: { x: 0.5, y: 0.5 },
+    }),
+  },
+})
 
 app.renderer.events.cursorStyles.default =
   "url('/assets/dwarven_gauntlet.png'),auto"
@@ -141,18 +172,20 @@ app.renderer.events.setCursor("default")
 
 generateMap()
 
-const player = new Sprite({ texture: dwarfTexture, anchor: { x: 0.5, y: 0.7 } })
+// const player = new PIXI.Sprite({
+//   texture: dwarfTexture,
+//   anchor: { x: 0.5, y: 0.7 },
+// })
 
 player.position.set(app.screen.width / 2, app.screen.height / 2)
-player.cursor = "crosshair"
-player.scale.set(1)
+player.scale.set(2)
 player.zIndex = 10
 
 app.stage.addChild(player)
 
 app.ticker.add(update)
 
-const graphics = new Graphics()
+const graphics = new PIXI.Graphics()
   // .rect(0, 0, 64, 64)
   .regularPoly(0, 0, 32, 4, Math.PI / 2)
   .fill(0xffffff)
@@ -161,7 +194,7 @@ const graphics = new Graphics()
 graphics.height = 32
 graphics.zIndex = 5
 
-const text = new Text({
+const text = new PIXI.Text({
   text: "x: " + 0 + " y: " + 0,
   style: {
     fontFamily: "monospace",

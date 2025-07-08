@@ -1,6 +1,6 @@
-import { PartyMember } from "./PartyMember";
+import { PartyMember } from "./PartyMember"
 
 export class Party {
-  public inventory: string[] = [];
-  public members: PartyMember[] = [];
+  public inventory: string[] = []
+  public members: PartyMember[] = []
 }

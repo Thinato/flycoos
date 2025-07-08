@@ -2,7 +2,8 @@
     "cSpell.words": [
         "Flycoos",
         "krol",
-        "pixi"
+        "pixi",
+        "spritesheet"
     ],
     "jestRunIt.jestPath": "./client/node_modules/.bin/jest",
     "jestRunIt.jestConfigPath": "./client/jest.config.js"
