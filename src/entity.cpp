@@ -13,8 +13,17 @@ constexpr float kBodyRadius = 0.8f;  // player-to-entity distance kept by separa
 
 constexpr EntityType kTypes[] = {
     // name             lvl  sta str agi int spi   attackable wanders talks model
-    {"Training Dummy",  1,   {10,  0,  0,  0, 10}, true,      false,  false, ModelDummy},
-    {nullptr,           5,   {25,  5,  5,  5,  5}, false,     true,   true,  ModelVillager},
+    //                  temper              aggro wander chase weapon  loot      chance respawn
+    {"Training Dummy",  1,   {10,  0,  0,  0, 10}, true,      false,  false, ModelDummy,
+                        Temper::Harmless,   0,    0,     0,    NoItem, NoItem,   0,     5},
+    {nullptr,           5,   {25,  5,  5,  5,  5}, false,     true,   true,  ModelVillager,
+                        Temper::Harmless,   0,    12,    0,    NoItem, NoItem,   0,     30},
+    // The player's level and attributes, and so the same health and unarmed damage.
+    {"Boar",            1,   {10,  2,  2,  2,  2}, true,      true,   false, ModelBoar,
+                        Temper::Passive,    0,    10,    6,    NoItem, BoarSkin, 0.75f, 30},
+    // A bit tougher than a new player: more health and strength, and a quick knife.
+    {"Bandit",          2,   {12,  3,  2,  2,  2}, true,      true,   false, ModelBandit,
+                        Temper::Aggressive, 10,   5,     5.5f, Knife,  Knife,    0.4f,  30},
 };
 
 constexpr const char* kNames[] = {
@@ -71,8 +80,8 @@ void wander(Entity& e, const Grid& g, glm::vec3 player, float dt) {
         }
     }
     glm::vec2 toHome = xz(e.home - e.body.pos);
-    if (e.wanderDir != glm::vec2(0) && glm::length(toHome) > kWanderRadius && glm::dot(e.wanderDir, toHome) < 0)
-        e.wanderDir = glm::normalize(toHome);
+    if (glm::length(toHome) > e.type().wanderRadius && glm::dot(e.wanderDir, toHome) <= 0)
+        e.wanderDir = glm::normalize(toHome);  // strayed (or was chasing someone): head back
     if (e.wanderDir != glm::vec2(0) && !walkable(g, e.body.pos, e.wanderDir, player)) {
         e.wanderDir = {};  // stop and think again soon
         e.wanderTimer = std::min(e.wanderTimer, 1.0f);
@@ -97,6 +106,8 @@ std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t se
         e.body.stats = t.stats;
         e.body.health = float(maxHealth(t.stats));
         e.body.tuning.walkSpeed = 2;  // a stroll
+        e.body.tuning.runSpeed = t.chaseSpeed;
+        e.body.inv.equipped[SlotMainHand] = t.weapon;
         e.body.breathPhase = kTau * rand01(e.rng);
         // Nearest grass to the offset, but not on top of the player or an earlier entity.
         auto crowded = [&](glm::vec3 p) {
@@ -113,23 +124,45 @@ std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t se
         e.home = e.body.pos;
         out.push_back(e);
     };
-    // In front of the starting camera, which looks toward +Z.
+    // In front of the starting camera, which looks toward +Z. The bandit's camp is over 20 blocks
+    // out: beyond its leash from the spawn, and even wandering it stays out of aggro range.
     add(EntityKind::TrainingDummy, {3, 6});
     add(EntityKind::Villager, {-4, 7});
+    add(EntityKind::Boar, {9, 11});
+    add(EntityKind::Bandit, {-5, 22});
     return out;
 }
 
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt) {
     for (Entity& e : entities) {
         e.speechTimer = std::max(0.0f, e.speechTimer - dt);
-        if (!e.type().wanders) continue;
-        bool listening = e.speechTimer > 0;  // stands still and faces the player while talking
-        if (!listening) wander(e, world, player.pos, dt);
+        const EntityType& t = e.type();
+        if (!t.wanders) continue;
         Input in;
-        if (!listening) in.move = e.wanderDir;
-        updatePlayer(e.body, world, in, dt);
         glm::vec2 toPlayer = xz(player.pos - e.body.pos);
-        if (listening && glm::length(toPlayer) > 0.01f) turnToward(e.body, toPlayer, dt);
+        float dist = glm::length(toPlayer);
+        glm::vec2 dir = dist > 1e-3f ? toPlayer / dist : glm::vec2(0, 1);
+        // Fighters only care about a living player inside their territory.
+        bool inTerritory = player.alive() && glm::distance(xz(player.pos), xz(e.home)) < kLeashRadius;
+        if (t.temper == Temper::Aggressive && inTerritory && dist < t.aggroRange) e.angry = true;
+        if (!inTerritory || !e.body.alive()) e.angry = false;
+        if (!e.body.alive()) {
+            // lies where it fell
+        } else if (e.angry) {  // run at the player until in reach, then swing
+            if (walkable(world, e.body.pos, dir, player.pos)) {
+                in.move = dir;
+                in.run = true;
+            } else if (!e.body.punching()) {  // ponytail: no pathfinding; it waits until the player comes back or leaves
+                turnToward(e.body, dir, dt);
+            }
+            if (dist < kPunchReach - 0.2f) startPunch(e.body, dir);
+        } else if (e.speechTimer > 0) {  // stands still and faces the player while talking
+            if (dist > 0.01f) turnToward(e.body, toPlayer, dt);
+        } else {
+            wander(e, world, player.pos, dt);
+            in.move = e.wanderDir;
+        }
+        updatePlayer(e.body, world, in, dt);
     }
 }
 
@@ -167,12 +200,40 @@ void talk(Entity& e) {
     e.speechTimer = kSpeechSeconds;
 }
 
+Entity* lootTarget(std::vector<Entity>& entities, const Player& player) {
+    if (!player.alive() || freeSlots(player.inv) == 0) return nullptr;  // E talks instead
+    Entity* best = nullptr;
+    float bestDist = kTalkRange;
+    for (Entity& e : entities) {
+        float d = glm::distance(e.body.pos, player.pos);
+        if (!e.body.alive() && e.loot != NoItem && d < bestDist) {
+            best = &e;
+            bestDist = d;
+        }
+    }
+    return best;
+}
+
+bool takeLoot(Entity& e, Inventory& inv) {
+    if (!giveItem(inv, e.loot)) return false;
+    e.loot = NoItem;
+    return true;
+}
+
+bool hurt(Player& b, int amount) {
+    if (amount <= 0 || !b.alive()) return false;
+    b.health = std::max(0.0f, b.health - float(amount));
+    b.lastDamage = amount;
+    b.hitTime = 0;
+    b.combatTimer = kCombatSeconds;
+    return true;
+}
+
 bool damage(Entity& e, int amount) {
-    if (!e.type().attackable || amount <= 0 || !e.body.alive()) return false;
-    e.body.health = std::max(0.0f, e.body.health - float(amount));
-    e.body.lastDamage = amount;
-    e.body.hitTime = 0;
-    e.body.combatTimer = kCombatSeconds;
+    const EntityType& t = e.type();
+    if (!t.attackable || !hurt(e.body, amount)) return false;
+    if (t.temper != Temper::Harmless) e.angry = true;
+    if (!e.body.alive() && rand01(e.rng) < t.lootChance) e.loot = t.loot;
     return true;
 }
 
@@ -188,16 +249,20 @@ bool startPunch(Player& b, glm::vec2 aim) {
     return true;
 }
 
-Entity* punchTarget(std::vector<Entity>& entities, const Player& a) {
+bool inReach(const Player& a, glm::vec3 target) {
     glm::vec2 forward{std::sin(a.yaw), std::cos(a.yaw)};
+    glm::vec2 d = xz(target - a.pos);
+    float dist = glm::length(d);
+    bool inFront = dist < 1e-3f || glm::dot(d / dist, forward) > 0.5f;  // within 60 degrees
+    return inFront && dist < kPunchReach && std::abs(target.y - a.pos.y) < kHeight;
+}
+
+Entity* punchTarget(std::vector<Entity>& entities, const Player& a) {
     Entity* best = nullptr;
     float bestDist = kPunchReach;
     for (Entity& e : entities) {
-        glm::vec2 d = xz(e.body.pos - a.pos);
-        float dist = glm::length(d);
-        bool inFront = dist < 1e-3f || glm::dot(d / dist, forward) > 0.5f;  // within 60 degrees
-        bool level = std::abs(e.body.pos.y - a.pos.y) < kHeight;
-        if (e.type().attackable && e.body.alive() && inFront && level && dist < bestDist) {
+        float dist = glm::distance(xz(e.body.pos), xz(a.pos));
+        if (e.type().attackable && e.body.alive() && inReach(a, e.body.pos) && dist < bestDist) {
             best = &e;
             bestDist = dist;
         }
@@ -216,19 +281,34 @@ static void tick(Player& b, float dt) {
     b.health = std::min(b.health, float(maxHealth(b.stats)));
 }
 
+// True once per swing, at its impact frame. A swing dies with its swinger.
+static bool lands(Player& b) {
+    if (!b.alive()) b.hitPending = false;
+    if (!b.hitPending || b.punchTime < kPunchImpact * b.punchLength) return false;
+    b.hitPending = false;
+    return true;
+}
+
+static int roll(const Player& b, std::mt19937& rng) { return rollDamage(b.stats, weaponAttack(b.swingWeapon), rng); }
+
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng) {
     tick(player, dt);
-    if (player.hitPending && player.punchTime >= kPunchImpact * player.punchLength) {
-        player.hitPending = false;
+    if (lands(player)) {
         Entity* target = punchTarget(entities, player);
-        if (target && damage(*target, rollDamage(player.stats, weaponAttack(player.swingWeapon), rng))) player.combatTimer = kCombatSeconds;
+        if (target && damage(*target, roll(player, rng))) player.combatTimer = kCombatSeconds;
     }
     for (Entity& e : entities) {
         tick(e.body, dt);
-        if (!e.body.alive() && e.body.deadTime >= kRespawnSeconds) {  // back up, fully healed
+        if (lands(e.body) && inReach(e.body, player.pos) && hurt(player, roll(e.body, rng)))
+            e.body.combatTimer = kCombatSeconds;
+        if (!e.body.alive() && e.body.deadTime >= e.type().respawnSeconds) {  // back home, fully healed
+            e.body.pos = e.home;
+            e.body.vel = {};
             e.body.health = float(maxHealth(e.body.stats));
             e.body.deadTime = 0;
             e.body.combatTimer = 0;
+            e.loot = NoItem;
+            e.wanderDir = {};
         }
     }
 }

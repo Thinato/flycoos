@@ -85,6 +85,7 @@ static void attributes(Player& b, bool fights) {
         ImGui::Text("%s %d-%d every %.2f s (%.1f damage/s)", weapon ? itemType(weapon).name : "Punch", lo, hi, swing,
                     float(lo + hi) / 2 / swing);
     }
+    if (b.hitTime < 5) ImGui::Text("Took %d damage %.1f s ago", b.lastDamage, b.hitTime);
     if (!b.alive()) ImGui::Text("Knocked down for %.1f s", b.deadTime);
     else if (b.combatTimer > 0) ImGui::Text("In combat, %.1f s left", b.combatTimer);
     else ImGui::TextDisabled("Out of combat");
@@ -125,14 +126,29 @@ static void entitiesTab(std::vector<Entity>& entities, const Player& player, Deb
         if (!ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) continue;
         ImGui::PushID(int(i));
         attributes(e.body, false);
-        ImGui::Text("Attackable %s   Wanders %s   Talks %s", t.attackable ? "yes" : "no", t.wanders ? "yes" : "no",
-                    t.talks ? "yes" : "no");
+        static const char* tempers[] = {"harmless", "passive", "aggressive"};
+        ImGui::Text("Attackable %s   Wanders %s   Talks %s   Temper %s", t.attackable ? "yes" : "no",
+                    t.wanders ? "yes" : "no", t.talks ? "yes" : "no", tempers[int(t.temper)]);
+        if (t.temper != Temper::Harmless) {
+            ImGui::Text("%s   aggro %.0f   leash %.0f from home   chase %.1f b/s", e.angry ? "ANGRY" : "calm",
+                        t.aggroRange, kLeashRadius, t.chaseSpeed);
+            ImGui::SameLine();
+            if (ImGui::SmallButton(e.angry ? "Calm" : "Anger")) e.angry = !e.angry;
+        }
+        if (t.lootChance > 0)
+            ImGui::Text("Drops %s %.0f%%%s%s", itemType(t.loot).name, t.lootChance * 100, e.loot ? ", corpse holds " : "",
+                        e.loot ? itemType(e.loot).name : "");
+        if (t.weapon) ImGui::Text("Wields %s", itemType(t.weapon).name);
         ImGui::Text("At %.1f %.1f %.1f, %.1f from you", e.body.pos.x, e.body.pos.y, e.body.pos.z,
                     glm::distance(e.body.pos, player.pos));
         if (t.wanders)
             ImGui::Text("%s %.1f s more, %.1f from home", e.wanderDir == glm::vec2(0) ? "Standing" : "Walking",
                         e.wanderTimer, glm::distance(e.body.pos, e.home));
-        if (t.attackable && ImGui::Button("Hit for 10")) damage(e, 10);
+        if (t.attackable) {
+            if (ImGui::Button("Hit for 10")) damage(e, 10);
+            ImGui::SameLine();
+            if (ImGui::Button("Kill")) damage(e, int(std::ceil(e.body.health)));
+        }
         if (t.talks && ImGui::Button("Talk")) talk(e);
         if (const char* s = e.speech()) ImGui::TextWrapped("Says: \"%s\"", s);
         ImGui::PopID();

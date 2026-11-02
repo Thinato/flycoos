@@ -9,6 +9,8 @@ constexpr ItemType kItems[ItemCount] = {
     {"",                 SlotNone,     {0, 0, 0},     0},
     {"Iron Shortsword",  SlotMainHand, {6, 10, 1.0f}, 0},
     {"Canvas Satchel",   SlotBag,      {0, 0, 0},     6},
+    {"Rusty Knife",      SlotMainHand, {3, 6, 0.75f}, 0},
+    {"Boar Skin",        SlotNone,     {0, 0, 0},     0},
 };
 
 bool bagEmpty(const Inventory& inv, int bar) {

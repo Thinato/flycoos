@@ -42,16 +42,33 @@ void balloon(ImDrawList* dl, ImVec2 anchor, const char* text, float alpha) {
     dl->AddText(font, size, ImVec2(lo.x + kPad, lo.y + kPad), ink, text, nullptr, kWrap);
 }
 
-void hint(ImDrawList* dl, ImVec2 p, float alpha) {
-    const char* text = "[E] Talk";
+void hint(ImDrawList* dl, ImVec2 p, float alpha, const Entity& e) {
+    char text[64];
+    if (e.body.alive()) std::snprintf(text, sizeof text, "[E] Talk");
+    else std::snprintf(text, sizeof text, "[E] Loot %s", itemType(e.loot).name);
     ImVec2 size = ImGui::CalcTextSize(text);
     shadowText(dl, ImVec2(p.x - size.x / 2, p.y + 8), uiColor(1, 1, 1, alpha), alpha, text);
+}
+
+// Damage number over `head`: pops big, rises and fades over a second.
+void damageNumber(ImDrawList* dl, const glm::mat4& viewProj, ImVec2 screen, glm::vec3 head, const Player& b, glm::vec3 rgb) {
+    float t = b.hitTime;
+    if (t >= 1) return;
+    glm::vec4 c = viewProj * glm::vec4(head + glm::vec3(0, 0.4f + 1.2f * t, 0), 1);
+    if (c.w < 0.1f) return;  // behind the camera
+    char num[16];
+    std::snprintf(num, sizeof num, "%d", b.lastDamage);
+    float size = ImGui::GetFontSize() * (2.2f - 0.8f * std::min(t * 4, 1.0f)), alpha = 1 - t * t;
+    ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, num);
+    ImVec2 q((c.x / c.w * 0.5f + 0.5f) * screen.x - ts.x / 2, (0.5f - c.y / c.w * 0.5f) * screen.y - ts.y / 2);
+    dl->AddText(ImGui::GetFont(), size, ImVec2(q.x + 2, q.y + 2), uiColor(0, 0, 0, 0.8f * alpha), num);
+    dl->AddText(ImGui::GetFont(), size, q, uiColor(rgb.r, rgb.g, rgb.b, alpha), num);
 }
 
 }  // namespace
 
 void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world, const Player& player,
-             const std::vector<Entity>& entities, const Entity* talkTarget) {
+             const std::vector<Entity>& entities, const Entity* target) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ImVec2 screen = ImGui::GetIO().DisplaySize;
     if (screen.x <= 0 || screen.y <= 0) return;
@@ -59,30 +76,19 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     float line = ImGui::GetFontSize();
 
     for (const Entity& e : entities) {
-        glm::vec3 head = e.body.pos + glm::vec3(0, 2.5f, 0);
+        glm::vec3 head = e.body.pos + glm::vec3(0, e.type().model == ModelBoar ? 1.6f : 2.5f, 0);  // above the model
         glm::vec3 toHead = head - eye;
         float dist = glm::length(toHead);
         glm::vec4 clip = viewProj * glm::vec4(head, 1);
         if (clip.w < 0.1f) continue;  // behind the camera
         ImVec2 p((clip.x / clip.w * 0.5f + 0.5f) * screen.x, (0.5f - clip.y / clip.w * 0.5f) * screen.y);
-        if (e.body.hitTime < 1) {  // floating damage number: pops big, rises and fades over a second
-            float t = e.body.hitTime;
-            glm::vec4 c = viewProj * glm::vec4(head + glm::vec3(0, 0.4f + 1.2f * t, 0), 1);
-            if (c.w < 0.1f) c = clip;  // its rising point is behind the camera
-            char num[16];
-            std::snprintf(num, sizeof num, "%d", e.body.lastDamage);
-            float size = line * (2.2f - 0.8f * std::min(t * 4, 1.0f)), alpha = 1 - t * t;
-            ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, num);
-            ImVec2 q((c.x / c.w * 0.5f + 0.5f) * screen.x - ts.x / 2, (0.5f - c.y / c.w * 0.5f) * screen.y - ts.y / 2);
-            dl->AddText(ImGui::GetFont(), size, ImVec2(q.x + 2, q.y + 2), uiColor(0, 0, 0, 0.8f * alpha), num);
-            dl->AddText(ImGui::GetFont(), size, q, uiColor(1, 0.85f, 0.3f, alpha), num);
-        }
+        damageNumber(dl, viewProj, screen, head, e.body, {1, 0.85f, 0.3f});
         // Speech and the talk hint always show; nameplates only nearby and in line of sight (same
         // box march the camera uses, with a thin box).
         const char* speech = e.speech();
         if (speech) balloon(dl, ImVec2(p.x, p.y - line - 10), speech, std::min(1.0f, e.speechTimer / 0.4f));
         if (dist > kNameplateRange || cameraClearance(world, eye, toHead / dist, dist, 0.05f) < dist - 0.5f) {
-            if (!speech && &e == talkTarget) hint(dl, p, 1);
+            if (!speech && &e == target) hint(dl, p, 1, e);
             continue;
         }
         float alpha = std::clamp((kNameplateRange - dist) / 8, 0.0f, 1.0f);  // fade out at range
@@ -91,12 +97,26 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         char label[96];
         std::snprintf(label, sizeof label, "Lv %d  %s", e.level, e.name.c_str());
         ImVec2 size = ImGui::CalcTextSize(label);
-        // Attackable entities get an amber name and red health, friendly ones green.
-        ImU32 nameColor = t.attackable ? uiColor(1, 0.78f, 0.35f, alpha) : uiColor(0.6f, 1, 0.6f, alpha);
+        // Names: red attacks on sight, amber can be attacked, green friendly. Attackable ones have red health.
+        ImU32 nameColor = t.temper == Temper::Aggressive ? uiColor(1, 0.35f, 0.3f, alpha)
+                        : t.attackable                   ? uiColor(1, 0.78f, 0.35f, alpha)
+                                                         : uiColor(0.6f, 1, 0.6f, alpha);
         ImU32 healthColor = t.attackable ? uiColor(0.85f, 0.2f, 0.15f, alpha) : uiColor(0.3f, 0.8f, 0.3f, alpha);
         shadowText(dl, ImVec2(p.x - size.x / 2, p.y - line - 6), nameColor, alpha, label);
         bar(dl, p, ImVec2(90, 7), e.body.health / float(std::max(1, maxHealth(e.body.stats))), healthColor, alpha);
-        if (!speech && &e == talkTarget) hint(dl, p, alpha);
+        if (!speech && &e == target) hint(dl, p, alpha, e);
+    }
+
+    damageNumber(dl, viewProj, screen, player.pos + glm::vec3(0, 2.2f, 0), player, {1, 0.3f, 0.25f});
+    if (!player.alive()) {
+        char msg[64];
+        std::snprintf(msg, sizeof msg, "Knocked out - back on your feet in %.0f s",
+                      std::ceil(std::max(0.0f, kPlayerRespawnSeconds - player.deadTime)));
+        float size = line * 1.6f;
+        ImVec2 ms = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, msg);
+        ImVec2 at(screen.x / 2 - ms.x / 2, screen.y * 0.35f);
+        dl->AddText(ImGui::GetFont(), size, ImVec2(at.x + 2, at.y + 2), uiColor(0, 0, 0, 0.8f), msg);
+        dl->AddText(ImGui::GetFont(), size, at, uiColor(1, 0.4f, 0.35f), msg);
     }
 
     // Player health, bottom center.

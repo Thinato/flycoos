@@ -1,4 +1,5 @@
 // Assert-style checks for the engine core. Not using <cassert>: release builds define NDEBUG.
+#include <algorithm>
 #include <numbers>
 #include <print>
 
@@ -260,7 +261,7 @@ static void entities() {
     CHECK(player.health == 100 && maxHealth(player.stats) == 100);
     player.pos = {28.5f, 4, 20.5f};
     std::vector<Entity> es = spawnEntities(g, player.pos, 1);
-    CHECK(es.size() == 2);
+    CHECK(es.size() == 4);
     Entity &dummy = es[0], &villager = es[1];
 
     CHECK(dummy.kind == EntityKind::TrainingDummy && dummy.name == "Training Dummy" && dummy.level == 1);
@@ -270,7 +271,8 @@ static void entities() {
     CHECK(villager.body.health == 250 && maxHealth(villager.body.stats) == 250);
     CHECK(!villager.type().attackable && villager.type().wanders && villager.type().talks);
     CHECK(spawnEntities(g, player.pos, 1)[1].name == villager.name);  // names are seeded
-    CHECK(glm::distance(dummy.body.pos, villager.body.pos) >= 1.5f);  // nobody spawns inside anybody
+    for (size_t i = 0; i < es.size(); ++i)  // nobody spawns inside anybody
+        for (size_t j = 0; j < i; ++j) CHECK(glm::distance(es[i].body.pos, es[j].body.pos) >= 1.5f);
     for (const Entity& e : es) CHECK(glm::distance(e.body.pos, player.pos) >= 1.5f);
     for (const Entity& e : es) CHECK(g.get(glm::ivec3(glm::floor(e.body.pos)) - glm::ivec3(0, 1, 0)) == Grass);
 
@@ -316,7 +318,7 @@ static void entities() {
         stuck |= overlapsSolid(g, villager.body.pos);
     }
     CHECK(farthest > 3);
-    CHECK(maxFromHome < kWanderRadius + 2);
+    CHECK(maxFromHome < villager.type().wanderRadius + 2);
     CHECK(!wet);
     CHECK(!stuck);
     CHECK(dummy.body.pos == dummyPos);
@@ -434,10 +436,161 @@ static void combat() {
     CHECK(punchTarget(es, player) == nullptr);
     run(1);
     CHECK(poseModel(dummy.body, ModelDummy)[Head][3].y < standing[Head][3].y - 0.8f);
-    run(kRespawnSeconds - 1.2f);
+    run(dummy.type().respawnSeconds - 1.2f);
     CHECK(!dummy.body.alive());
     run(0.3f);
     CHECK(dummy.body.alive() && dummy.body.health == 100);
+}
+
+// Boar and bandit: who they are, who they fight, when they give up, what they drop.
+static void fighters() {
+    auto flat = [](glm::vec3 v) { return glm::vec2(v.x, v.z); };
+    Grid g = meadow();
+    Player player;
+    player.pos = {28.5f, 4, 20.5f};
+    std::vector<Entity> es = spawnEntities(g, player.pos, 1);
+    Entity &boar = es[2], &bandit = es[3];
+    std::mt19937 rng(11);
+    auto sim = [&](float seconds) {
+        for (int i = 0; i < int(seconds * 60); ++i) {
+            updateEntities(es, g, player, 1 / 60.0f);
+            separate(player, g, es);
+            updateCombat(player, es, 1 / 60.0f, rng);
+        }
+    };
+
+    // The boar is the player's match: level, health and unarmed damage. The bandit is a level
+    // above, tougher, and fights with a knife: quicker than the sword but weaker per hit.
+    CHECK(boar.kind == EntityKind::Boar && boar.level == 1 && boar.type().temper == Temper::Passive);
+    CHECK(boar.body.health == player.health && maxHealth(boar.body.stats) == maxHealth(player.stats));
+    CHECK(strengthBonus(boar.body.stats, kPunch) == strengthBonus(player.stats, kPunch));
+    CHECK(mainAttack(boar.body.inv).minDamage == kPunch.minDamage && mainAttack(boar.body.inv).maxDamage == kPunch.maxDamage);
+    CHECK(bandit.kind == EntityKind::Bandit && bandit.level == 2 && bandit.type().temper == Temper::Aggressive);
+    CHECK(maxHealth(bandit.body.stats) > maxHealth(player.stats) && bandit.body.stats.strength > player.stats.strength);
+    CHECK(bandit.body.inv.equipped[SlotMainHand] == Knife);
+    const Attack &knife = itemType(Knife).attack, &sword = itemType(Shortsword).attack;
+    CHECK(knife.speed < sword.speed && knife.maxDamage < sword.maxDamage && knife.minDamage < sword.minDamage);
+    // Its camp is out of sight of the spawn: even at the edge of its wandering it can't see it,
+    // and the spawn is outside its territory.
+    float campDist = glm::distance(flat(bandit.home), flat(player.pos));
+    CHECK(campDist - bandit.type().wanderRadius > bandit.type().aggroRange && campDist > kLeashRadius);
+
+    // A minute at the spawn: nobody starts a fight.
+    sim(60);
+    CHECK(player.health == 100 && !boar.angry && !bandit.angry);
+
+    // Passive: standing right next to the boar is fine, until it gets hit. Then it gores back.
+    player.pos = boar.body.pos + glm::vec3(1.5f, 0, 0);
+    sim(5);
+    CHECK(player.health == 100 && !boar.angry);
+    CHECK(damage(boar, 1) && boar.angry);
+    sim(5);
+    CHECK(player.health < 100 && player.lastDamage >= 3 && player.lastDamage <= 6);  // a punch, like the player's
+    CHECK(!bandit.angry);
+    boar.angry = false;
+
+    // Aggressive: the bandit charges a player inside its aggro range and hits with the knife.
+    player.health = 100;
+    player.pos = bandit.body.pos + glm::vec3(-8, 0, 0);
+    sim(0.1f);
+    CHECK(bandit.angry);
+    sim(6);
+    CHECK(player.health < 100 && player.lastDamage >= 5 && player.lastDamage <= 8);  // 3-6 + strength 3 x speed 0.75
+    CHECK(glm::distance(flat(bandit.body.pos), flat(player.pos)) < kPunchReach);
+
+    // Leash: once the player is out of its territory it gives up and walks home.
+    player.pos = bandit.home + glm::vec3(-kLeashRadius - 1, 0, 0);
+    sim(0.1f);
+    CHECK(!bandit.angry);
+    sim(30);
+    CHECK(!bandit.angry && glm::distance(flat(bandit.body.pos), flat(bandit.home)) < bandit.type().wanderRadius + 1);
+
+    // Knocked out: fighters stop, and the player can't swing until back up.
+    player.health = 1;
+    player.pos = bandit.body.pos + glm::vec3(-3, 0, 0);
+    sim(6);
+    CHECK(!player.alive() && player.deadTime > 0 && !bandit.angry && !startPunch(player, {1, 0}));
+    player.health = 100;
+    player.deadTime = 0;
+    player.pos = {5.5f, 4, 5.5f};  // out of everyone's way
+
+    // Loot: most boars leave a skin, and a kill is the only way to get one.
+    int drops = 0;
+    for (int i = 0; i < 400; ++i) {
+        boar.body.health = 100;
+        boar.loot = NoItem;
+        CHECK(damage(boar, 1000) && (boar.loot == NoItem || boar.loot == BoarSkin));
+        drops += boar.loot == BoarSkin;
+    }
+    CHECK(drops > 400 * 0.65f && drops < 400 * 0.85f);  // 75%
+    for (int i = 0; i < 50; ++i) CHECK(damage(bandit, 1) && bandit.loot == NoItem);  // still alive, nothing yet
+    bandit.angry = false;
+    bandit.body.health = float(maxHealth(bandit.body.stats));
+    // The corpse is looted with E from close by; full bags leave the loot on it.
+    boar.loot = BoarSkin;
+    player.pos = boar.body.pos + glm::vec3(2, 0, 0);
+    CHECK(lootTarget(es, player) == &boar);
+    Inventory full;
+    while (giveItem(full, Satchel)) {}
+    CHECK(!takeLoot(boar, full) && boar.loot == BoarSkin);
+    std::swap(full, player.inv);
+    CHECK(lootTarget(es, player) == nullptr);  // nothing to loot into: E talks instead
+    std::swap(full, player.inv);
+    CHECK(takeLoot(boar, player.inv) && boar.loot == NoItem && player.inv.containers[0][0] == BoarSkin);
+    CHECK(lootTarget(es, player) == nullptr);
+    // It lies still where it fell, then comes back at home, healed and calm.
+    glm::vec3 fell = boar.body.pos;
+    boar.body.deadTime = 0;
+    boar.angry = true;
+    sim(boar.type().respawnSeconds - 1);
+    CHECK(!boar.body.alive() && !boar.angry && flat(boar.body.pos) == flat(fell));
+    sim(1.2f);
+    CHECK(boar.body.alive() && boar.body.health == 100 && boar.loot == NoItem);
+    CHECK(glm::distance(flat(boar.body.pos), flat(boar.home)) < 1);
+
+    // A swing dies with its swinger: neither a corpse nor a knocked-out player lands a hit.
+    player.pos = bandit.body.pos + glm::vec3(-1.5f, 0, 0);
+    player.yaw = std::numbers::pi_v<float> / 2;  // facing +x, toward the bandit
+    bandit.body.yaw = -std::numbers::pi_v<float> / 2;
+    bandit.body.swingTimer = 0;
+    CHECK(startPunch(bandit.body, {-1, 0}));
+    CHECK(damage(bandit, 1000));
+    for (int i = 0; i < 60; ++i) updateCombat(player, es, 1 / 60.0f, rng);
+    CHECK(player.health == 100 && !bandit.body.hitPending);
+    boar.body.pos = player.pos + glm::vec3(1.2f, 0, 0);
+    float boarHealth = boar.body.health;
+    player.swingTimer = 0;
+    CHECK(startPunch(player, {1, 0}));
+    player.health = 0;
+    for (int i = 0; i < 60; ++i) updateCombat(player, es, 1 / 60.0f, rng);
+    CHECK(boar.body.health == boarHealth && !player.hitPending);
+    player.health = 100;
+
+    // Models: every part has voxels, the bandit holds its knife, the boar's head lunges when it
+    // gores, and the dead fall over.
+    for (Model m : {ModelBoar, ModelBandit, ModelKnife}) {
+        Grid part = buildPart(m, Head);
+        CHECK(std::ranges::count(part.cells, Air) < std::ssize(part.cells));
+    }
+    CHECK(heldModel(Knife) == ModelKnife && heldModel(Shortsword) == ModelSword);
+    glm::mat4 held(0);
+    poseModel(bandit.body, ModelBandit, &held);
+    CHECK(held != glm::mat4(0));
+    held = glm::mat4(0);
+    poseModel(boar.body, ModelBoar, &held);
+    CHECK(held == glm::mat4(0));  // no hands
+    Player b = boar.body;
+    auto idle = poseModel(b, ModelBoar);
+    CHECK(startPunch(b, {0, 1}));
+    b.punchTime = kPunchImpact * b.punchLength;
+    CHECK(poseModel(b, ModelBoar)[Head][3].z > idle[Head][3].z + 0.2f);
+    b.health = 0;
+    b.deadTime = 1;
+    CHECK(poseModel(b, ModelBoar)[Torso][3].y < idle[Torso][3].y - 0.1f);
+    Player knocked;
+    knocked.health = 0;
+    knocked.deadTime = 1;
+    CHECK(poseModel(knocked, ModelPlayer)[Head][3].y < poseModel(Player{}, ModelPlayer)[Head][3].y - 0.8f);
 }
 
 static void items() {
@@ -510,7 +663,7 @@ static void items() {
                 CHECK(v.equipped[size_t(s)] == NoItem || itemType(v.equipped[size_t(s)]).slot == s);
         }
     }
-    CHECK(moved > 1000);  // most random pairs are two empty slots; this seed makes ~1400 real moves
+    CHECK(moved > 700);  // most random pairs are two empty slots; this seed makes ~870 real moves
 
     // The sword is held only when equipped, and it points forward at the slash's impact frame.
     Player p;
@@ -539,6 +692,7 @@ int main() {
     physics();
     entities();
     combat();
+    fighters();
     items();
     generation();
     regions();

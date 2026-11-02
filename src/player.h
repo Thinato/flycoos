@@ -52,6 +52,8 @@ struct Player {
 
     bool alive() const { return health > 0; }
     bool punching() const { return punchTime < punchLength; }  // any attack swing, armed or not
+    // What's in hand: the main hand, or what the current swing started with (swapping mid-swing waits).
+    ItemId weapon() const { return punching() ? swingWeapon : inv.equipped[SlotMainHand]; }
 };
 
 constexpr float kPunchSeconds = 0.35f;  // punch animation length (shorter if swings are faster)
@@ -67,10 +69,13 @@ float cameraClearance(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDis
 // Character models: 6 floating voxel parts, each its own tiny grid meshed by meshRegion.
 // The training dummy reuses the slots: FootL is its post, FootR its base, hands its arms.
 enum Part { Head, Torso, HandL, HandR, FootL, FootR, PartCount };
-// ModelSword is a held item: only its Head slot has voxels, posed by poseModel's `held` output.
-enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelSword, ModelCount };
+// The boar reuses them as a quadruped: hands are its front legs, feet its hind legs.
+// Weapons are held items: only their Head slot has voxels, posed by poseModel's `held` output.
+enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelBoar, ModelBandit, ModelSword, ModelKnife, ModelCount };
 Grid buildPart(Model model, Part part);
+Model heldModel(ItemId weapon);
 // Part-grid space -> world space for the body's current animation pose (the dummy only wobbles
-// when hit and topples when out of health). With a main-hand weapon equipped, `held` gets its
-// pose (gripped in the right hand) and attacks are slashes instead of punches.
+// when hit and topples when out of health; everyone else falls over). With a main-hand weapon
+// equipped, a humanoid's `held` gets its pose (gripped in the right hand) and attacks are slashes
+// instead of punches; the boar gores with its head.
 std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model, glm::mat4* held = nullptr);

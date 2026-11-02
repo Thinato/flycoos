@@ -129,3 +129,22 @@
   - Gear doesn't add attributes yet. When it does, health, regen and swing time must read
     base + gear stats instead of `Player::stats` directly.
   - Each held item needs its own model slot (`ModelSword` today).
+
+## ADR-009: NPC temper, territory and corpse loot
+
+- **Status:** accepted (2026-11-02)
+- **Context:** the first hostile NPCs: a passive boar and an aggressive bandit, both with loot.
+- **Decision:**
+  - One `Temper` per kind (harmless, passive, aggressive) and an `angry` flag per entity, instead
+    of a state machine. Anger comes from being damaged, or for aggressive kinds from a player in
+    aggro range.
+  - Fighters own a territory: the leash is measured from their home to the player, not from home
+    to the NPC. Aggro and calm-down use the same test, so an NPC can't flap at the boundary.
+  - NPC attacks reuse the player's swing (`startPunch`, impact frame, `inReach`) and damage formulas.
+  - Loot is rolled at the kill and kept on the corpse until it respawns; E takes it.
+  - A knocked-out player respawns at the world spawn after 5 s, with no penalty yet.
+- **Consequences:**
+  - New fighters are table rows. A creature with a different shape needs its own part layout and
+    animation in player.cpp, as the boar has.
+  - Chasing walks straight at the player: water, cliffs and walls stop it (no pathfinding).
+  - Only the player can be a target; NPCs don't fight each other.

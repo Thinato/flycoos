@@ -23,10 +23,10 @@ main.cpp ──► generateTerrain() ──► Grid (1024×192×1024 bytes)
 | `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, trees and rocks, `findSpawn` |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO, `Quad` packing/unpacking |
 | `src/player.h/.cpp` | Walking-body physics and collision (player and NPCs), character models (`buildPart`), procedural animation (`poseModel`) |
-| `src/entity.h/.cpp` | NPC entities: per-kind traits, spawning, villager wander AI, talking, damage |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits and temper, spawning, wander and chase AI, talking, damage both ways, loot |
 | `src/item.h/.cpp` | Item table, `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
-| `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, talk hint, player health |
+| `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, buffer uploads, render targets, frustum culling, day/night lighting, screenshots |
 | `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/main.cpp` | CLI options, window, input routing (game vs. debug UI), orbit camera, main loop, benchmark stats |
@@ -140,7 +140,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   - In water, gravity is weak and Space swims up.
 - **Character models:** six floating parts (head, torso, 2 hands, 2 feet), each a tiny `Grid` built by
   `buildPart` and meshed by the same mesher. One character voxel is 0.1 blocks. Three models share
-  the rig: player, villager (recolored) and training dummy (post, base, straw body and arms, sack
+  the rig: player, villager and bandit (recolored; the bandit has a red hood and mask), the boar
+  (a quadruped: hands are its front legs, feet its hind legs) and training dummy (post, base, straw body and arms, sack
   head; never animated). All parts of all models live in one GPU buffer; each frame draws a list of
   `ModelInstance`s. Held items are models too: `ModelSword` has voxels only in its first slot, and
   `poseModel` returns its pose (gripped in the right hand) through the `held` output. Empty parts
@@ -189,6 +190,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   |---|---|---|---|
   | Punch (unarmed) | 1–4 | 1.0 s | 3–6 |
   | Iron Shortsword | 6–10 | 1.0 s | 8–12 |
+  | Rusty Knife | 3–6 | 0.75 s | 5–8 |
 
   Base player: stamina 10, everything else 2, so 100 health and a swing every 0.98 s.
   The weapon is fixed when a swing starts (`swingWeapon`): changing gear mid-swing affects the
@@ -196,11 +198,16 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
 - Left mouse starts an attack toward where the camera looks, once the swing timer allows. Holding
   keeps swinging; a click during the cooldown is queued. Damage lands at the fist's impact frame
   (40% into a 0.35 s animation) on the nearest living, attackable entity within 2 blocks and
-  60° of the facing direction.
+  60° of the facing direction (`inReach`). NPC swings land the same way, on the player.
+- `hurt()` damages any body; `damage()` is hurt() for attackable entities and also angers fighters
+  and rolls loot on a kill.
 - Dealing or taking damage puts a body in combat for 5 s; spirit regeneration only runs out of
   combat.
-- At 0 health the dummy topples, can't be hit, and stands back up fully healed after 5 s. No reward.
-- HUD: a damage number pops above the target and rises for a second (the latest hit only).
+- At 0 health a body falls over (the dummy topples off its base) and can't be hit. NPCs come back
+  at home, fully healed, after their kind's respawn time (dummy 5 s, others 30 s). The player is
+  knocked out: no movement or attacks, then back at the world spawn with full health after 5 s.
+- HUD: a damage number pops above whoever was hit and rises for a second (the latest hit only):
+  gold over NPCs, red over the player.
 
 ## Items and inventory
 
@@ -210,6 +217,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   |---|---|---|
   | Iron Shortsword | Main Hand | one-handed, 6–10 damage, speed 1.0 |
   | Canvas Satchel | Bag | +6 item slots |
+  | Rusty Knife | Main Hand | one-handed, 3–6 damage, speed 0.75; dropped by bandits |
+  | Boar Skin | – | crafting material later; dropped by boars |
 
 - `Inventory` lives on the body (`Player::inv`): 7 equip slots (head, chest, hands, legs, feet,
   main hand, off hand), a bar of 4 bag slots, and the item slots: the 12-slot backpack plus one
@@ -232,20 +241,34 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
 - An `Entity` is a kind, a name, a level and a `Player` body (position, animation, health). Fixed
   traits per kind live in one table (`kTypes` in entity.cpp):
 
-  | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Attackable | Moves | Talks |
-  |---|---|---|---|---|---|---|---|
-  | Training Dummy | "Training Dummy" | 1 | 10/0/0/0/10 | 100 | yes | no | no |
-  | Villager | random from a name list (seeded) | 5 | 25/5/5/5/5 | 250 | no | wanders | yes (E) |
+  | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Temper | Weapon | Drops | Talks |
+  |---|---|---|---|---|---|---|---|---|
+  | Training Dummy | "Training Dummy" | 1 | 10/0/0/0/10 | 100 | harmless (attackable, static) | – | – | no |
+  | Villager | random from a name list (seeded) | 5 | 25/5/5/5/5 | 250 | harmless (not attackable) | – | – | yes (E) |
+  | Boar | "Boar" | 1 | 10/2/2/2/2 (the player's) | 100 | passive | tusks (= punch, 3–6) | Boar Skin 75% | no |
+  | Bandit | "Bandit" | 2 | 12/3/2/2/2 | 120 | aggressive, aggro 10 | Rusty Knife (5–8) | Rusty Knife 40% | no |
 
-- `damage()` only applies to living, attackable kinds and stops at 0 (see Stats and combat).
-- **Villager AI:** alternates standing (2–6 s) and strolling at 2 b/s (2–5 s) in a random direction.
+  Per kind there's also a wander radius (villager 12, boar 10, bandit 5), a chase speed (boar 6,
+  bandit 5.5 b/s; the player walks 5 and runs 9) and a respawn time.
+- **Wandering:** alternates standing (2–6 s) and strolling at 2 b/s (2–5 s) in a random direction.
   Before each step it checks the block ahead: no walls it can't step up, no water, no drops of 2+.
-  It turns back once more than 12 blocks from home. NPC bodies use the same `updatePlayer` physics as
-  the player, driven by AI input.
+  Beyond its wander radius it heads home. NPC bodies use the same `updatePlayer` physics as the
+  player, driven by AI input.
+- **Temper:** harmless kinds never fight. Passive ones get angry when damaged; aggressive ones
+  also when a living player comes within their aggro range. An angry NPC runs at the player and
+  swings once within reach (same `startPunch` as the player; the boar's swing is a head-down gore).
+  Territory: they only fight a player within 20 blocks of their home (`kLeashRadius`). Once the
+  player leaves it, or is knocked out, they calm down and walk back. No line-of-sight check yet.
+- **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell until it
+  respawns; E within 3.5 blocks moves the loot into the bags (it stays on the corpse if they're full).
+- **Spawning:** dummy and villager just in front of the spawn, the boar about 14 blocks out, the
+  bandit's camp about 22 blocks out: outside its leash from the spawn, and even at the edge of its
+  wander radius more than its aggro range away.
 - **Talking:** E picks the nearest talker within 3.5 blocks. It shows a random phrase (never the same
   twice in a row) for 5 s, while the villager stops and turns to face the player.
 - **Separation:** the player is pushed out of an entity's 0.8-block radius (never into terrain).
-- **HUD:** nameplates (level, name, health bar; amber/red for attackable, green for friendly) within
+- **HUD:** nameplates (level, name, health bar; red name for aggressive, amber for other attackable,
+  green for friendly; red health bar if attackable) within
   40 blocks. They're hidden when terrain blocks the line of sight, using the camera's box march. The
   HUD always runs an ImGui frame; the UI render pass is skipped when there is nothing to draw.
 - NPCs are respawned beside the player on world regeneration or from the Entities tab.

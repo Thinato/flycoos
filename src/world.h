@@ -10,7 +10,8 @@
 enum Block : uint8_t { Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water,
                        Skin, Tunic, Belt, Boots, Hair, Eye, Rock,
                        Robe, DarkHair, Straw, Burlap,  // NPC models
-                       Steel, Iron, BlockCount };      // items
+                       Steel, Iron,                    // items
+                       Hide, Tusk, Snout, Hood, Leather, BlockCount };  // boar, bandit
 
 inline bool isOpaque(Block b) { return b != Air && b != Water; }
 

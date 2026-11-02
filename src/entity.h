@@ -6,7 +6,10 @@
 
 #include "player.h"
 
-enum class EntityKind { TrainingDummy, Villager };
+enum class EntityKind { TrainingDummy, Villager, Boar, Bandit };
+
+// How an NPC treats the player. Harmless ones never fight back.
+enum class Temper { Harmless, Passive, Aggressive };  // passive: fights back once hit; aggressive: attacks on sight
 
 // Fixed traits per kind.
 struct EntityType {
@@ -17,6 +20,14 @@ struct EntityType {
     bool wanders;      // walks around its home spot
     bool talks;        // E shows a speech balloon
     Model model;
+    Temper temper;
+    float aggroRange;     // aggressive: attacks a player this close (blocks)
+    float wanderRadius;   // stays this close to home while not fighting
+    float chaseSpeed;     // blocks/s while chasing
+    ItemId weapon;        // held in the main hand
+    ItemId loot;          // can drop when killed
+    float lootChance;
+    float respawnSeconds; // dead this long, then back at home fully healed
 };
 const EntityType& typeOf(EntityKind kind);
 
@@ -30,20 +41,24 @@ struct Entity {
     float wanderTimer = 0; // seconds until the next wander decision
     int phrase = -1;       // index into the phrase list, -1 = silent
     float speechTimer = 0; // seconds the balloon stays up
+    bool angry = false;    // chasing and attacking the player
+    ItemId loot = NoItem;  // what its corpse holds
     std::mt19937 rng;
 
     const EntityType& type() const { return typeOf(kind); }
     const char* speech() const;  // current balloon text, null when silent
 };
 
-constexpr float kTalkRange = 3.5f;  // blocks between feet
-constexpr float kWanderRadius = 12;
-constexpr float kPunchReach = 2.0f;      // blocks between feet
-constexpr float kRespawnSeconds = 5;     // a knocked-down dummy stands back up after this
+constexpr float kTalkRange = 3.5f;   // blocks between feet; also how close you loot from
+constexpr float kPunchReach = 2.0f;  // blocks between feet
+constexpr float kLeashRadius = 20;   // fighters give up once the player is this far from their home
+constexpr float kPlayerRespawnSeconds = 5;
 
-// The training dummy and a villager on grass beside `near` (usually the player spawn).
+// The training dummy, a villager, a boar and a bandit on grass beside `near` (usually the player
+// spawn). The bandit's camp is far enough away that it can't see `near`.
 std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t seed);
-// AI and physics for every entity; talking villagers stop and face the player.
+// AI and physics for every entity: wandering, talking villagers stop and face the player, angry
+// fighters chase the player and swing at them.
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt);
 // Keeps the player from walking through entities (never pushes into terrain).
 void separate(Player& player, const Grid& world, const std::vector<Entity>& entities);
@@ -51,14 +66,23 @@ void separate(Player& player, const Grid& world, const std::vector<Entity>& enti
 Entity* talkTarget(std::vector<Entity>& entities, const Player& player);
 // Starts a new random phrase (different from the last one).
 void talk(Entity& e);
-// Applies damage if the entity can be attacked and is alive; health stops at 0 (knocked down,
-// no reward). Puts it in combat. Returns whether it applied.
+// Nearest corpse within talk range that still holds loot, or null (also when the player is
+// knocked out or their bags are full).
+Entity* lootTarget(std::vector<Entity>& entities, const Player& player);
+// Moves the corpse's loot into the player's bags; false if they're full.
+bool takeLoot(Entity& e, Inventory& inv);
+
+// Takes damage if alive; health stops at 0. Puts the body in combat. Returns whether it applied.
+bool hurt(Player& body, int amount);
+// hurt() for attackable entities only. Angers fighters; a kill rolls the loot.
 bool damage(Entity& e, int amount);
 
 // Starts an attack (main-hand weapon, or a punch) toward `aim` (XZ direction) if the body is alive and its swing is ready.
 bool startPunch(Player& attacker, glm::vec2 aim);
-// What a punch from `attacker` hits: the nearest living, attackable entity in reach and in front.
+// Whether a swing from `attacker` reaches feet position `target`: in reach, within 60 degrees of facing, about level.
+bool inReach(const Player& attacker, glm::vec3 target);
+// What a punch from `attacker` hits: the nearest living, attackable entity in reach.
 Entity* punchTarget(std::vector<Entity>& entities, const Player& attacker);
-// Combat timers and out-of-combat regeneration for everyone; lands the player's punch at its
-// impact frame; stands knocked-down dummies back up.
+// Combat timers and out-of-combat regeneration for everyone; lands every swing at its impact frame
+// (the player's on entities, entities' on the player); brings the dead back home.
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng);

@@ -40,6 +40,11 @@ constexpr float kPalette[BlockCount][3] = {
     {0.66f, 0.55f, 0.38f},  // Burlap
     {0.78f, 0.80f, 0.84f},  // Steel
     {0.30f, 0.30f, 0.33f},  // Iron
+    {0.36f, 0.25f, 0.18f},  // Hide
+    {0.92f, 0.88f, 0.76f},  // Tusk
+    {0.78f, 0.52f, 0.50f},  // Snout
+    {0.42f, 0.12f, 0.10f},  // Hood
+    {0.45f, 0.32f, 0.20f},  // Leather
 };
 
 // Must match struct Frame / Draw in shaders/world.metal.

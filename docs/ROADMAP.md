@@ -21,6 +21,9 @@ reach them.
   speed and regeneration; punching (left mouse) with damage numbers; the dummy topples and recovers
 - Inventory and equipment: Character (C) and Bags (B) windows, a 12-slot backpack plus 4 bag slots,
   drag and drop; the first weapon, a one-handed sword with its own slash animation
+- Passive and aggressive NPCs: a boar that fights back once hit and a knife-wielding bandit that
+  attacks on sight (aggro, chase, leash); the player can be knocked out and respawns; corpses drop
+  loot (boar skin, knife) looted with E
 
 ## M1: A living world
 
@@ -33,8 +36,8 @@ reach them.
 ## M2: Action combat
 
 - Weapon attacks and ranged attacks, dodge roll, an action resource for dodging; knockback
-- First enemies with simple AI (wander, aggro, chase, attack)
-- Health/mana/stamina HUD; death and respawn
+- More enemies and smarter AI (pathfinding around obstacles, groups, ranged attackers)
+- Mana/stamina HUD; a proper death penalty and graveyard-style respawn
 - Animation layer: blend procedural locomotion with authored attack poses
 
 ## M3: Character and progression

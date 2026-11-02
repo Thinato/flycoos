@@ -10,7 +10,7 @@ enum EquipSlot : uint8_t { SlotHead, SlotChest, SlotHands, SlotLegs, SlotFeet, S
                            EquipCount, SlotBag = EquipCount, SlotNone };
 extern const char* const kSlotNames[EquipCount];
 
-enum ItemId : uint8_t { NoItem, Shortsword, Satchel, ItemCount };
+enum ItemId : uint8_t { NoItem, Shortsword, Satchel, Knife, BoarSkin, ItemCount };
 
 struct ItemType {
     const char* name;

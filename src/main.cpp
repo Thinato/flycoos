@@ -150,8 +150,9 @@ static int run(SDL_Window* window, const Options& opt) {
                 } else if (e.key.key == SDLK_B) {
                     bagsOpen = !bagsOpen;
                     updateMouseMode();
-                } else if (e.key.key == SDLK_E) {
-                    if (Entity* npc = talkTarget(entities, player)) talk(*npc);
+                } else if (e.key.key == SDLK_E && player.alive()) {  // loot a corpse, else talk
+                    if (Entity* corpse = lootTarget(entities, player)) takeLoot(*corpse, player.inv);
+                    else if (Entity* npc = talkTarget(entities, player)) talk(*npc);
                 } else if (e.key.key == SDLK_ESCAPE) {
                     if (!menus()) return 0;  // Esc closes the debug window, then the others, then quits
                     if (ui.open) ui.open = false;
@@ -181,6 +182,8 @@ static int run(SDL_Window* window, const Options& opt) {
         in.run = key(SDL_SCANCODE_LSHIFT);
         in.descend = key(SDL_SCANCODE_LCTRL);
         if (benchmark) in.move = {std::sin(elapsed * 0.4), std::cos(elapsed * 0.4)};  // walk a circle
+        if (!player.alive()) in = {};  // knocked out
+        if (benchmark) player.health = float(maxHealth(player.stats));  // a passing fight mustn't change the benchmark's path
         // Left mouse attacks toward where the camera looks; holding it keeps swinging.
         // A press that began in a window (e.g. a drag) doesn't attack once the window closes.
         if (menus()) punchQueued = pressInGame = false;
@@ -209,18 +212,23 @@ static int run(SDL_Window* window, const Options& opt) {
         fp.view = glm::lookAtRH(fp.eye, camTarget, glm::vec3(0, 1, 0));
         fp.fovY = glm::radians(game.fovDegrees);
         fp.timeOfDay = game.timeOfDay;
-        glm::mat4 held(0);
-        fp.models.push_back({ModelPlayer, poseModel(player, ModelPlayer, &held)});
-        if (held != glm::mat4(0)) {  // ponytail: the shortsword is the only weapon, so it's the only held model
-            ModelInstance sword{ModelSword, {}};
-            sword.pose.fill(held);
-            fp.models.push_back(sword);
-        }
-        for (const Entity& npc : entities) fp.models.push_back({npc.type().model, poseModel(npc.body, npc.type().model)});
+        auto pushModel = [&](const Player& body, Model model) {  // with whatever it holds
+            glm::mat4 held(0);
+            fp.models.push_back({model, poseModel(body, model, &held)});
+            if (held == glm::mat4(0)) return;
+            ModelInstance weapon{heldModel(body.weapon()), {}};
+            weapon.pose.fill(held);
+            fp.models.push_back(weapon);
+        };
+        pushModel(player, ModelPlayer);
+        for (const Entity& npc : entities) pushModel(npc.body, npc.type().model);
 
         bool wasOpen = menus();
         ui.begin(dt, wasOpen);
-        if (game.hud) drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, talkTarget(entities, player));
+        if (game.hud) {
+            const Entity* target = lootTarget(entities, player);
+            drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player));
+        }
         characterWindow(characterOpen, player);
         bagsWindow(bagsOpen, player);
         ImDrawData* uiDraw = ui.end(game, render, player, entities, s, actions);
@@ -229,11 +237,12 @@ static int run(SDL_Window* window, const Options& opt) {
         if (!renderer.render(fp, render, uiDraw, lastFrame ? opt.screenshot : nullptr)) return 1;
 
         if (actions.regenerate) buildWorld();
-        if (actions.regenerate || actions.respawn) {
+        if (actions.regenerate || actions.respawn || player.deadTime >= kPlayerRespawnSeconds) {
             player.pos = findSpawn(world);
             player.vel = {};
             player.health = float(maxHealth(player.stats));
             player.deadTime = 0;
+            player.combatTimer = 0;
             camTarget = player.pos + glm::vec3(0, 1.4f, 0);
         }
         if (actions.regenerate || actions.respawnEntities) entities = spawnEntities(world, player.pos, game.seed);
@@ -244,7 +253,7 @@ static int run(SDL_Window* window, const Options& opt) {
             titleTimer = 0;
             int minutes = int(game.timeOfDay * 24 * 60);
             char title[224];
-            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack | E = talk | C = character | B = bags | . = debug",
+            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack | E = talk/loot | C = character | B = bags | . = debug",
                           dt * 1000.0, 1.0 / std::max(dt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);
             SDL_SetWindowTitle(window, title);
         }

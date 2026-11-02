@@ -145,7 +145,28 @@ static const PartSpec kDummy[PartCount] = {
     {{2, 8, 2}, {0, 6, 0}},      // FootL: post
     {{9, 2, 9}, {0, 1, 0}},      // FootR: cross-shaped base
 };
-static const PartSpec* specs(Model m) { return m == ModelDummy ? kDummy : kHumanoid; }
+static const PartSpec kBoar[PartCount] = {
+    {{7, 6, 6}, {0, 7.5f, 8.5f}},    // Head, out front
+    {{8, 7, 12}, {0, 6.5f, 0}},      // Torso: the body, lengthwise along z
+    {{3, 4, 3}, {2.5f, 2, 4}},       // HandL: front left leg
+    {{3, 4, 3}, {-2.5f, 2, 4}},      // HandR: front right leg
+    {{3, 4, 3}, {2.5f, 2, -4}},      // FootL: hind left leg
+    {{3, 4, 3}, {-2.5f, 2, -4}},     // FootR: hind right leg
+};
+static const PartSpec* specs(Model m) { return m == ModelDummy ? kDummy : m == ModelBoar ? kBoar : kHumanoid; }
+
+static Block boarVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
+    bool front = v.z == s.z - 1;
+    switch (part) {
+    case Head:  // snout with nostrils, tusks either side of it, small eyes above
+        if (front && v.x >= 2 && v.x <= 4 && v.y <= 2) return v.y == 1 && v.x != 3 ? Eye : Snout;
+        if (front && (v.x == 1 || v.x == 5) && v.y <= 1) return Tusk;
+        if (front && (v.x == 1 || v.x == 5) && v.y == 4) return Eye;
+        return v.y == s.y - 1 && v.x == 3 ? DarkHair : Hide;
+    case Torso: return v.y == s.y - 1 && (v.x == 3 || v.x == 4) ? DarkHair : Hide;  // bristly ridge
+    default: return v.y == 0 ? DarkHair : Hide;  // legs with dark hooves
+    }
+}
 
 static Block dummyVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
     switch (part) {
@@ -159,7 +180,7 @@ static Block dummyVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
     }
 }
 
-// A one-handed sword, blade up along +y, edges along x; gripped at kGrip.
+// One-handed blades, up along +y, edges along x, all gripped at kGrip.
 constexpr glm::vec3 kGrip{2.5f, 2.5f, 0.5f};
 static Grid buildSword() {
     Grid g({5, 15, 1});
@@ -171,21 +192,39 @@ static Grid buildSword() {
     g.set({2, 14, 0}, Steel);                                  // tip
     return g;
 }
+static Grid buildKnife() {  // shorter and narrower, single-edged
+    Grid g({5, 11, 1});
+    g.set({2, 0, 0}, Iron);
+    for (int y = 1; y <= 3; ++y) g.set({2, y, 0}, Belt);
+    for (int x = 1; x <= 3; ++x) g.set({x, 4, 0}, Iron);
+    for (int y = 5; y <= 9; ++y) g.set({2, y, 0}, Steel);
+    for (int y = 5; y <= 8; ++y) g.set({3, y, 0}, Steel);
+    g.set({2, 10, 0}, Steel);
+    return g;
+}
+
+Model heldModel(ItemId weapon) { return weapon == Knife ? ModelKnife : ModelSword; }
 
 Grid buildPart(Model model, Part part) {
-    if (model == ModelSword) return part == Head ? buildSword() : Grid({1, 1, 1});
+    if (model == ModelSword || model == ModelKnife)
+        return part != Head ? Grid({1, 1, 1}) : model == ModelSword ? buildSword() : buildKnife();
     glm::ivec3 s = specs(model)[part].size;
     Grid g(s);
-    Block tunic = model == ModelVillager ? Robe : Tunic, hair = model == ModelVillager ? DarkHair : Hair;
+    Block tunic = model == ModelVillager ? Robe : model == ModelBandit ? Leather : Tunic;
+    Block hair = model == ModelVillager ? DarkHair : model == ModelBandit ? Hood : Hair;
     for (int z = 0; z < s.z; ++z)
         for (int y = 0; y < s.y; ++y)
             for (int x = 0; x < s.x; ++x) {
                 Block b = Skin;
                 if (model == ModelDummy) {
                     b = dummyVoxel(part, {x, y, z}, s);
+                } else if (model == ModelBoar) {
+                    b = boarVoxel(Part(part), {x, y, z}, s);
                 } else if (part == Head) {
-                    // Hair cap and back, sideburns; two tall eyes on the +Z (front) face.
+                    // Hair cap and back, sideburns; two tall eyes on the +Z (front) face. The
+                    // bandit's hood is its hair, and a mask covers the lower face.
                     if (y >= 6 || z <= 2 || ((x == 0 || x == s.x - 1) && y >= 3)) b = hair;
+                    if (model == ModelBandit && y <= 2 && z >= s.z - 2) b = Hood;
                     if (z == s.z - 1 && (y == 3 || y == 4) && (x == 2 || x == s.x - 3)) b = Eye;
                 } else if (part == Torso) {
                     b = y == 2 ? Belt : tunic;
@@ -215,6 +254,13 @@ static glm::vec2 slash(const Player& p) {
     return {kSweep * back, back};
 }
 
+// 0 -> 1 up to the impact frame, then back to 0.
+static float thrust(const Player& p) {
+    if (!p.punching()) return 0;
+    float u = p.punchTime / p.punchLength;
+    return smooth(u < kPunchImpact ? u / kPunchImpact : 1 - (u - kPunchImpact) / (1 - kPunchImpact));
+}
+
 // Procedural walk/breathe/airborne/attack animation as per-part offsets (voxels) and rotations.
 static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], glm::vec3 (&rot)[PartCount]) {
     float s = std::sin(p.gaitPhase), c = std::cos(p.gaitPhase);
@@ -240,9 +286,7 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
         off[HandR] += (arc - kHumanoid[HandR].center) * sl.y;
         rot[Torso].y += 0.4f * sl.x * sl.y;
     } else if (p.punching()) {  // jab: the fist shoots forward to shoulder height, the torso twists into it
-        float u = p.punchTime / p.punchLength;
-        float ext = u < kPunchImpact ? u / kPunchImpact : 1 - (u - kPunchImpact) / (1 - kPunchImpact);
-        ext = ext * ext * (3 - 2 * ext);
+        float ext = thrust(p);
         float side = p.punchRight ? 1.0f : -1.0f;  // the right hand is on -x, so it moves toward +x
         off[p.punchRight ? HandR : HandL] += glm::vec3(side * 2.5f, 2.5f, 8.0f) * ext;
         rot[Torso].y += side * 0.35f * ext;
@@ -250,9 +294,25 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
     }
 }
 
+// Trot (diagonal legs together), breathing, and a goring head thrust.
+static void animateBoar(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 (&rot)[PartCount]) {
+    float s = std::sin(p.gaitPhase * 1.5f), c = std::cos(p.gaitPhase * 1.5f);  // shorter legs, quicker steps
+    float a = std::min(p.gaitAmount, 1.4f), breathe = std::sin(p.breathPhase) * (1 - std::min(a, 1.0f));
+    float bob = std::abs(s) * 0.4f * a + breathe * 0.2f;
+    off[Torso] = {0, bob, 0};
+    off[Head] = {0, bob + std::sin(p.gaitPhase) * 0.3f * a, 0};
+    for (auto [leg, sign] : {std::pair{HandL, 1.0f}, std::pair{FootR, 1.0f}, std::pair{HandR, -1.0f}, std::pair{FootL, -1.0f}}) {
+        off[leg] = {0, std::max(0.0f, sign * c) * 1.2f * a, sign * s * 2.2f * a};
+        rot[leg].x = -sign * s * 0.4f * a;
+    }
+    float g = thrust(p);  // head down and forward, then tusks up at impact
+    off[Head] += glm::vec3(0, -0.8f, 3.0f) * g;
+    rot[Head].x = -0.35f * g;
+    off[Torso].z += 1.0f * g;
+}
+
 std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held) {
-    ItemId weapon = p.punching() ? p.swingWeapon : p.inv.equipped[SlotMainHand];  // swapping mid-swing waits
-    bool armed = model != ModelDummy && weapon != NoItem;
+    bool armed = model != ModelDummy && model != ModelBoar && p.weapon() != NoItem;
     const PartSpec* parts = specs(model);
     glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
     glm::mat4 tilt(1);  // the dummy above its base: wobbles back when hit, topples when out of health
@@ -264,7 +324,15 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         tilt = glm::rotate(tilt, -(fall * fall * 1.45f + wobble), {1, 0, 0});
         tilt = glm::translate(tilt, -pivot);
     } else {
-        animate(p, armed, off, rot);
+        if (model == ModelBoar) animateBoar(p, off, rot);
+        else animate(p, armed, off, rot);
+        if (!p.alive()) {  // falls over onto its side
+            float fall = std::min(p.deadTime / 0.5f, 1.0f);
+            glm::vec3 pivot(0, 4, 0);  // about half a body's thickness up, so it lies on the ground
+            tilt = glm::translate(glm::mat4(1), pivot);
+            tilt = glm::rotate(tilt, fall * fall * 1.5f, {0, 0, 1});
+            tilt = glm::translate(tilt, -pivot);
+        }
     }
 
     glm::mat4 base = glm::translate(glm::mat4(1), p.pos);
@@ -280,7 +348,7 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
     }
     if (held && armed) {  // blade tilted forward from the fist; flatter and swept around while slashing
         glm::vec2 sl = slash(p);
-        glm::mat4 m = glm::translate(base, parts[HandR].center + off[HandR]);
+        glm::mat4 m = glm::translate(base * tilt, parts[HandR].center + off[HandR]);
         m = glm::rotate(m, sl.x, {0, 1, 0});
         m = glm::rotate(m, 1.0f + 0.5f * sl.y, {1, 0, 0});
         *held = glm::translate(m, -kGrip);

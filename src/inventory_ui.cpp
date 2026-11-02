@@ -31,6 +31,20 @@ void icon(ImDrawList* dl, ItemId id, ImVec2 lo, float s) {
                           ImDrawFlags_RoundCornersTop);  // flap
         dl->AddRectFilled(at(0.45f, 0.52f), at(0.55f, 0.64f), iron);  // buckle
         break;
+    case Knife:
+        dl->AddLine(at(0.40f, 0.60f), at(0.74f, 0.26f), steel, s * 0.09f);   // blade
+        dl->AddLine(at(0.30f, 0.52f), at(0.48f, 0.70f), iron, s * 0.07f);    // guard
+        dl->AddLine(at(0.40f, 0.60f), at(0.24f, 0.76f), leather, s * 0.08f); // grip
+        dl->AddCircleFilled(at(0.22f, 0.78f), s * 0.05f, iron);
+        break;
+    case BoarSkin: {  // a stretched hide: body with four leg flaps, darker ridge down the middle
+        ImU32 hide = uiColor(0.36f, 0.25f, 0.18f), ridge = uiColor(0.25f, 0.17f, 0.12f);
+        for (auto [x, y] : {std::pair{0.22f, 0.24f}, std::pair{0.78f, 0.24f}, std::pair{0.22f, 0.76f}, std::pair{0.78f, 0.76f}})
+            dl->AddCircleFilled(at(x, y), s * 0.1f, hide);
+        dl->AddRectFilled(at(0.26f, 0.18f), at(0.74f, 0.82f), hide, s * 0.14f);
+        dl->AddLine(at(0.5f, 0.2f), at(0.5f, 0.8f), ridge, s * 0.07f);
+        break;
+    }
     default: break;
     }
 }
