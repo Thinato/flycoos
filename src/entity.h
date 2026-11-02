@@ -55,7 +55,7 @@ void talk(Entity& e);
 // no reward). Puts it in combat. Returns whether it applied.
 bool damage(Entity& e, int amount);
 
-// Starts a punch toward `aim` (XZ direction) if the body is alive and its swing is ready.
+// Starts an attack (main-hand weapon, or a punch) toward `aim` (XZ direction) if the body is alive and its swing is ready.
 bool startPunch(Player& attacker, glm::vec2 aim);
 // What a punch from `attacker` hits: the nearest living, attackable entity in reach and in front.
 Entity* punchTarget(std::vector<Entity>& entities, const Player& attacker);

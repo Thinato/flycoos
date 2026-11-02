@@ -178,7 +178,8 @@ bool damage(Entity& e, int amount) {
 
 bool startPunch(Player& b, glm::vec2 aim) {
     if (!b.alive() || b.swingTimer > 0) return false;
-    b.swingTimer += swingTime(b.stats, kPunch);  // keeps the overshoot of the last frame
+    b.swingWeapon = b.inv.equipped[SlotMainHand];
+    b.swingTimer += swingTime(b.stats, weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
     b.punchLength = std::min(kPunchSeconds, b.swingTimer);
     b.punchTime = 0;
     b.punchRight = !b.punchRight;
@@ -220,7 +221,7 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
     if (player.hitPending && player.punchTime >= kPunchImpact * player.punchLength) {
         player.hitPending = false;
         Entity* target = punchTarget(entities, player);
-        if (target && damage(*target, rollDamage(player.stats, kPunch, rng))) player.combatTimer = kCombatSeconds;
+        if (target && damage(*target, rollDamage(player.stats, weaponAttack(player.swingWeapon), rng))) player.combatTimer = kCombatSeconds;
     }
     for (Entity& e : entities) {
         tick(e.body, dt);

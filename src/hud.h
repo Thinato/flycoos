@@ -5,6 +5,9 @@
 
 #include "entity.h"
 
+// An sRGB color as ImGui's packed ImU32, for the linear (sRGB-format) swapchain.
+unsigned uiColor(float r, float g, float b, float a = 1);
+
 // In-game overlay on ImGui's background draw list: NPC nameplates (level, name, health bar),
 // speech balloons, the "[E] Talk" hint and the player's health bar.
 // Call between DebugUI::begin and DebugUI::end.

@@ -111,3 +111,21 @@
   - All formulas and tuning constants live in `src/stats.h`.
   - Equipment can later add attributes and replace the punch's `Attack` without changing the
     formulas.
+
+## ADR-008: Inventory as bags of fixed slots
+
+- **Status:** accepted (2026-11-02)
+- **Context:** the player needs an inventory that can grow, and equipment that changes combat.
+- **Decision:**
+  - A 12-slot backpack that is always there, plus 4 bag slots; each equipped bag adds its own
+    slots (WoW-style). Items are plain ids into one table; no stacks yet.
+  - Equipment and bags live on the body (`Player::inv`), so NPCs can carry gear later.
+  - One move rule (`moveItem`) serves drag and drop, right-click and tests: both ends must accept
+    what they'd receive, and a bag must be empty to leave the bar.
+  - The game windows use Dear ImGui like the debug UI, with icons drawn from shapes rather than
+    textures.
+- **Consequences:**
+  - The main-hand item's `Attack` replaces the punch; the damage formulas didn't change.
+  - Gear doesn't add attributes yet. When it does, health, regen and swing time must read
+    base + gear stats instead of `Player::stats` directly.
+  - Each held item needs its own model slot (`ModelSword` today).

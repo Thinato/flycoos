@@ -19,6 +19,8 @@ reach them.
   with nameplates, health bars and speech balloons
 - Five attributes (stamina, strength, agility, intellect, spirit) with derived health, damage, attack
   speed and regeneration; punching (left mouse) with damage numbers; the dummy topples and recovers
+- Inventory and equipment: Character (C) and Bags (B) windows, a 12-slot backpack plus 4 bag slots,
+  drag and drop; the first weapon, a one-handed sword with its own slash animation
 
 ## M1: A living world
 
@@ -39,7 +41,7 @@ reach them.
 
 - No classes: roles (protector, healer, damage) come from attributes, gear and talents
 - Talent choices; skills that level with use; intellect-based magic and spells
-- Loot, inventory, equipment that changes the voxel model, crafting basics
+- Loot, armor and gear attributes, armor that changes the voxel model, crafting basics
 
 ## M4: World with memory
 

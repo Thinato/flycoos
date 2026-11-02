@@ -19,7 +19,7 @@ constexpr float kCombatSeconds = 5;        // dealing or taking damage keeps you
 
 // A physical attack: damage range, and base swing time in seconds (WoW's "weapon speed").
 struct Attack { int minDamage, maxDamage; float speed; };
-constexpr Attack kPunch{6, 10, 1.0f};
+constexpr Attack kPunch{1, 4, 1.0f};  // unarmed
 
 constexpr int maxHealth(const Stats& s) { return s.stamina * kHealthPerStamina; }
 inline float healthRegen(const Stats& s) { return float(s.spirit) * kRegenPerSpirit; }

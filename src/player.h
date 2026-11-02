@@ -3,6 +3,7 @@
 
 #include <glm/glm.hpp>
 
+#include "item.h"
 #include "stats.h"
 #include "world.h"
 
@@ -43,12 +44,14 @@ struct Player {
     float punchTime = 0, punchLength = 0;  // seconds into the punch animation, and its length
     bool punchRight = false;               // which hand the current punch uses
     bool hitPending = false;               // the current punch hasn't reached its impact frame
+    ItemId swingWeapon = NoItem;           // main hand when the swing started; it lands and animates with that
     float hitTime = 99;                    // seconds since this body last took damage
     int lastDamage = 0;
     float deadTime = 0;                    // seconds spent at 0 health
+    Inventory inv;                         // equipment and bags
 
     bool alive() const { return health > 0; }
-    bool punching() const { return punchTime < punchLength; }
+    bool punching() const { return punchTime < punchLength; }  // any attack swing, armed or not
 };
 
 constexpr float kPunchSeconds = 0.35f;  // punch animation length (shorter if swings are faster)
@@ -64,8 +67,10 @@ float cameraClearance(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDis
 // Character models: 6 floating voxel parts, each its own tiny grid meshed by meshRegion.
 // The training dummy reuses the slots: FootL is its post, FootR its base, hands its arms.
 enum Part { Head, Torso, HandL, HandR, FootL, FootR, PartCount };
-enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelCount };
+// ModelSword is a held item: only its Head slot has voxels, posed by poseModel's `held` output.
+enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelSword, ModelCount };
 Grid buildPart(Model model, Part part);
 // Part-grid space -> world space for the body's current animation pose (the dummy only wobbles
-// when hit and topples when out of health).
-std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model);
+// when hit and topples when out of health). With a main-hand weapon equipped, `held` gets its
+// pose (gripped in the right hand) and attacks are slashes instead of punches.
+std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model, glm::mat4* held = nullptr);

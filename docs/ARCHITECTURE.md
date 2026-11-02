@@ -24,9 +24,11 @@ main.cpp ──► generateTerrain() ──► Grid (1024×192×1024 bytes)
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO, `Quad` packing/unpacking |
 | `src/player.h/.cpp` | Walking-body physics and collision (player and NPCs), character models (`buildPart`), procedural animation (`poseModel`) |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits, spawning, villager wander AI, talking, damage |
+| `src/item.h/.cpp` | Item table, `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
+| `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, talk hint, player health |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, buffer uploads, render targets, frustum culling, day/night lighting, screenshots |
-| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Entities, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
+| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/main.cpp` | CLI options, window, input routing (game vs. debug UI), orbit camera, main loop, benchmark stats |
 | `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs` |
 
@@ -140,7 +142,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   `buildPart` and meshed by the same mesher. One character voxel is 0.1 blocks. Three models share
   the rig: player, villager (recolored) and training dummy (post, base, straw body and arms, sack
   head; never animated). All parts of all models live in one GPU buffer; each frame draws a list of
-  `ModelInstance`s.
+  `ModelInstance`s. Held items are models too: `ModelSword` has voxels only in its first slot, and
+  `poseModel` returns its pose (gripped in the right hand) through the `held` output. Empty parts
+  are skipped at draw time.
 - **Tuning and flight:** walk/run/jump speed, gravity, fly and noclip live in `Player::tuning`, so
   the debug UI edits them live. Flight ignores gravity (Space rises, Ctrl sinks, Shift is 2.5×) and
   still collides; noclip moves straight through terrain.
@@ -159,6 +163,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
     was aimed.
   - Punch: the fist shoots forward to shoulder height and the torso twists into it, alternating
     hands. The dummy wobbles back when hit and topples over when out of health.
+  - Sword slash (main-hand weapon equipped): the right hand winds up to the right side, sweeps an arc
+    at chest height through the front (blade pointing ahead at the impact frame), follows through to
+    the left and settles back. The torso turns with the sweep. At rest the blade tilts forward.
 
 ## Stats and combat
 
@@ -175,9 +182,18 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
 
 - `speed` in the damage formula is the attack's *base* speed (WoW's weapon speed), not the hasted
   swing time. Slow attacks hit harder per swing, and agility only adds damage per second.
-- Punch (the only attack until equipment): 6–10 damage, speed 1.0 s. Base player: stamina 10,
-  everything else 2, so 100 health and 8–12 damage every 0.98 s.
-- Left mouse starts a punch toward where the camera looks, once the swing timer allows. Holding
+- The attack is the main-hand weapon's `Attack`, or the punch when the hand is empty
+  (`mainAttack`):
+
+  | Attack | Damage | Speed | Base player hits for |
+  |---|---|---|---|
+  | Punch (unarmed) | 1–4 | 1.0 s | 3–6 |
+  | Iron Shortsword | 6–10 | 1.0 s | 8–12 |
+
+  Base player: stamina 10, everything else 2, so 100 health and a swing every 0.98 s.
+  The weapon is fixed when a swing starts (`swingWeapon`): changing gear mid-swing affects the
+  next swing, not this one.
+- Left mouse starts an attack toward where the camera looks, once the swing timer allows. Holding
   keeps swinging; a click during the cooldown is queued. Damage lands at the fist's impact frame
   (40% into a 0.35 s animation) on the nearest living, attackable entity within 2 blocks and
   60° of the facing direction.
@@ -185,6 +201,31 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   combat.
 - At 0 health the dummy topples, can't be hit, and stands back up fully healed after 5 s. No reward.
 - HUD: a damage number pops above the target and rises for a second (the latest hit only).
+
+## Items and inventory
+
+- Items are ids into one table (`kItems` in item.cpp): name, equip slot, weapon `Attack`, bag size.
+
+  | Item | Slot | Notes |
+  |---|---|---|
+  | Iron Shortsword | Main Hand | one-handed, 6–10 damage, speed 1.0 |
+  | Canvas Satchel | Bag | +6 item slots |
+
+- `Inventory` lives on the body (`Player::inv`): 7 equip slots (head, chest, hands, legs, feet,
+  main hand, off hand), a bar of 4 bag slots, and the item slots: the 12-slot backpack plus one
+  container per equipped bag. The player starts with a shortsword and a satchel in the backpack.
+- `moveItem` moves or swaps between any two slots when both ends accept what they'd receive: equip
+  slots take their own slot's items, bag slots take bags, item slots take anything. A bag leaves the
+  bar only when empty, and never into its own slots, so items are never lost. `quickMove`
+  (right-click) equips from the item slots or unequips into the first free one.
+- No stacks, no item attributes, no dropping or destroying yet.
+- **UI:** C opens Character (equipment around an attribute sheet with damage, speed, damage per
+  second and regen); B opens Bags (backpack, each bag, the bag bar, free slots). Drag to move, right-click
+  to equip/unequip, hover for a tooltip. Icons are drawn with ImGui shapes. Any open window frees
+  the cursor and pauses mouse look and attacks (a click queued before it opened is dropped, and a
+  press that began in a window doesn't attack after it closes); the keyboard still moves the
+  player. Esc closes the
+  debug window first, then these.
 
 ## Entities
 

@@ -159,7 +159,21 @@ static Block dummyVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
     }
 }
 
+// A one-handed sword, blade up along +y, edges along x; gripped at kGrip.
+constexpr glm::vec3 kGrip{2.5f, 2.5f, 0.5f};
+static Grid buildSword() {
+    Grid g({5, 15, 1});
+    g.set({2, 0, 0}, Iron);                                    // pommel
+    for (int y = 1; y <= 3; ++y) g.set({2, y, 0}, Belt);       // leather grip
+    for (int x = 0; x < 5; ++x) g.set({x, 4, 0}, Iron);        // crossguard
+    for (int y = 5; y <= 13; ++y)
+        for (int x = 1; x <= 3; ++x) g.set({x, y, 0}, Steel);  // blade
+    g.set({2, 14, 0}, Steel);                                  // tip
+    return g;
+}
+
 Grid buildPart(Model model, Part part) {
+    if (model == ModelSword) return part == Head ? buildSword() : Grid({1, 1, 1});
     glm::ivec3 s = specs(model)[part].size;
     Grid g(s);
     Block tunic = model == ModelVillager ? Robe : Tunic, hair = model == ModelVillager ? DarkHair : Hair;
@@ -183,8 +197,26 @@ Grid buildPart(Model model, Part part) {
     return g;
 }
 
-// Procedural walk/breathe/airborne animation as per-part offsets (voxels) and rotations.
-static void animate(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 (&rot)[PartCount]) {
+static float smooth(float a) {
+    a = std::clamp(a, 0.0f, 1.0f);
+    return a * a * (3 - 2 * a);
+}
+
+// Sword slash over the swing: wind up to the right side, sweep through the front at the impact
+// frame, follow through to the left, settle back. x: sweep angle in radians (+ = toward the
+// left hand), y: blend from the idle grip (0) into the slash pose (1).
+static glm::vec2 slash(const Player& p) {
+    if (!p.punching()) return {0, 0};
+    constexpr float kWind = 0.15f, kFollow = 2 * kPunchImpact - kWind, kSweep = 1.4f;
+    float u = p.punchTime / p.punchLength;
+    if (u < kWind) return {-kSweep * smooth(u / kWind), smooth(u / kWind)};
+    if (u < kFollow) return {kSweep * (2 * smooth((u - kWind) / (kFollow - kWind)) - 1), 1};
+    float back = 1 - smooth((u - kFollow) / (1 - kFollow));
+    return {kSweep * back, back};
+}
+
+// Procedural walk/breathe/airborne/attack animation as per-part offsets (voxels) and rotations.
+static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], glm::vec3 (&rot)[PartCount]) {
     float s = std::sin(p.gaitPhase), c = std::cos(p.gaitPhase);
     float a = p.gaitAmount, air = p.airAmount, a1 = std::min(a, 1.0f);
     float breathe = std::sin(p.breathPhase) * (1 - a1);
@@ -202,7 +234,12 @@ static void animate(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 (&ro
     rot[FootL].x = -s * 0.35f * a;
     rot[FootR].x = s * 0.35f * a;
 
-    if (p.punching()) {  // jab: the fist shoots forward to shoulder height, the torso twists into it
+    if (armed) {  // the sword hand sweeps an arc at chest height around the body; the torso turns with it
+        glm::vec2 sl = slash(p);
+        glm::vec3 arc(-1.5f + 6.5f * std::sin(sl.x), 9, 1.5f + 6.5f * std::cos(sl.x));
+        off[HandR] += (arc - kHumanoid[HandR].center) * sl.y;
+        rot[Torso].y += 0.4f * sl.x * sl.y;
+    } else if (p.punching()) {  // jab: the fist shoots forward to shoulder height, the torso twists into it
         float u = p.punchTime / p.punchLength;
         float ext = u < kPunchImpact ? u / kPunchImpact : 1 - (u - kPunchImpact) / (1 - kPunchImpact);
         ext = ext * ext * (3 - 2 * ext);
@@ -213,7 +250,9 @@ static void animate(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 (&ro
     }
 }
 
-std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model) {
+std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held) {
+    ItemId weapon = p.punching() ? p.swingWeapon : p.inv.equipped[SlotMainHand];  // swapping mid-swing waits
+    bool armed = model != ModelDummy && weapon != NoItem;
     const PartSpec* parts = specs(model);
     glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
     glm::mat4 tilt(1);  // the dummy above its base: wobbles back when hit, topples when out of health
@@ -225,7 +264,7 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model) {
         tilt = glm::rotate(tilt, -(fall * fall * 1.45f + wobble), {1, 0, 0});
         tilt = glm::translate(tilt, -pivot);
     } else {
-        animate(p, off, rot);
+        animate(p, armed, off, rot);
     }
 
     glm::mat4 base = glm::translate(glm::mat4(1), p.pos);
@@ -238,6 +277,13 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model) {
         m = glm::rotate(m, rot[i].y, {0, 1, 0});
         m = glm::rotate(m, rot[i].x, {1, 0, 0});
         out[i] = glm::translate(m, -glm::vec3(parts[i].size) * 0.5f);
+    }
+    if (held && armed) {  // blade tilted forward from the fist; flatter and swept around while slashing
+        glm::vec2 sl = slash(p);
+        glm::mat4 m = glm::translate(base, parts[HandR].center + off[HandR]);
+        m = glm::rotate(m, sl.x, {0, 1, 0});
+        m = glm::rotate(m, 1.0f + 0.5f * sl.y, {1, 0, 0});
+        *held = glm::translate(m, -kGrip);
     }
     return out;
 }

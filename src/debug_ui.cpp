@@ -34,7 +34,7 @@ DebugUI::~DebugUI() {
 
 void DebugUI::processEvent(const SDL_Event& e) { ImGui_ImplSDL3_ProcessEvent(&e); }
 bool DebugUI::wantsKeyboard() const { return open && ImGui::GetIO().WantCaptureKeyboard; }
-bool DebugUI::wantsMouse() const { return open && ImGui::GetIO().WantCaptureMouse; }
+bool DebugUI::wantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }
 
 static void renderTab(RenderSettings& r, const RenderStats& s) {
     static const char* modes[ViewModeCount] = {"Shaded", "Greedy quads", "Chunks", "Ambient occlusion", "Normals"};
@@ -78,9 +78,12 @@ static void attributes(Player& b, bool fights) {
     ImGui::SetItemTooltip("+%.1f health per second out of combat per point", kRegenPerSpirit);
     ImGui::Text("Max health %d, regen %.1f/s out of combat", maxHealth(s), healthRegen(s));
     if (fights) {
-        float swing = swingTime(s, kPunch);
-        int lo = kPunch.minDamage + strengthBonus(s, kPunch), hi = kPunch.maxDamage + strengthBonus(s, kPunch);
-        ImGui::Text("Punch %d-%d every %.2f s (%.1f damage/s)", lo, hi, swing, float(lo + hi) / 2 / swing);
+        const Attack& a = mainAttack(b.inv);
+        float swing = swingTime(s, a);
+        int lo = a.minDamage + strengthBonus(s, a), hi = a.maxDamage + strengthBonus(s, a);
+        ItemId weapon = b.inv.equipped[SlotMainHand];
+        ImGui::Text("%s %d-%d every %.2f s (%.1f damage/s)", weapon ? itemType(weapon).name : "Punch", lo, hi, swing,
+                    float(lo + hi) / 2 / swing);
     }
     if (!b.alive()) ImGui::Text("Knocked down for %.1f s", b.deadTime);
     else if (b.combatTimer > 0) ImGui::Text("In combat, %.1f s left", b.combatTimer);
@@ -136,6 +139,27 @@ static void entitiesTab(std::vector<Entity>& entities, const Player& player, Deb
     }
 }
 
+static void itemsTab(Player& p) {
+    Inventory& inv = p.inv;
+    ImGui::Text("%d / %d item slots free (C: character, B: bags)", freeSlots(inv), itemSlots(inv));
+    ImGui::BeginDisabled(freeSlots(inv) == 0);
+    for (int id = 1; id < ItemCount; ++id) {
+        ImGui::PushID(id);
+        if (ImGui::Button("Give")) giveItem(inv, ItemId(id));
+        ImGui::PopID();
+        ImGui::SameLine();
+        ImGui::TextUnformatted(itemType(ItemId(id)).name);
+    }
+    ImGui::EndDisabled();
+    ImGui::SeparatorText("Equipped");
+    for (int s = 0; s < EquipCount; ++s)
+        ImGui::Text("%-10s %s", kSlotNames[s], inv.equipped[size_t(s)] ? itemType(inv.equipped[size_t(s)]).name : "-");
+    for (int b = 0; b < kBagBarSlots; ++b)
+        ImGui::Text("Bag %d      %s", b + 1, inv.bags[size_t(b)] ? itemType(inv.bags[size_t(b)]).name : "-");
+    if (ImGui::Button("Empty inventory")) inv = Inventory{};
+    ImGui::SetItemTooltip("Removes every item, equipped ones and bags included.");
+}
+
 static void cameraTab(GameSettings& g) {
     ImGui::SliderFloat("Field of view", &g.fovDegrees, 30, 120, "%.0f deg");
     ImGui::SliderFloat("Distance", &g.cameraDistance, 2, 80, "%.1f blocks");
@@ -184,6 +208,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Player& player,
     if (ImGui::Begin("Debug   ( . to toggle )", &open) && ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Render")) { renderTab(render, stats); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Player")) { playerTab(player, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Items")) { itemsTab(player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Entities")) { entitiesTab(entities, player, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("World")) { worldTab(game, stats, actions); ImGui::EndTabItem(); }
@@ -193,11 +218,11 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Player& player,
     ImGui::End();
 }
 
-void DebugUI::begin(float dt) {
+void DebugUI::begin(float dt, bool cursor) {
     frameMs_[frameIndex_++ % frameMs_.size()] = dt * 1000;
-    // While closed the game owns the (hidden, relative-mode) cursor.
+    // Without a free cursor the game owns the (hidden, relative-mode) mouse.
     ImGuiIO& io = ImGui::GetIO();
-    if (open) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+    if (cursor) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
     else io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     ImGui_ImplSDLGPU3_NewFrame();
     ImGui_ImplSDL3_NewFrame();

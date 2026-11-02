@@ -38,6 +38,8 @@ constexpr float kPalette[BlockCount][3] = {
     {0.25f, 0.17f, 0.12f},  // DarkHair
     {0.86f, 0.74f, 0.40f},  // Straw
     {0.66f, 0.55f, 0.38f},  // Burlap
+    {0.78f, 0.80f, 0.84f},  // Steel
+    {0.30f, 0.30f, 0.33f},  // Iron
 };
 
 // Must match struct Frame / Draw in shaders/world.metal.
@@ -425,7 +427,7 @@ bool Renderer::render(const FrameParams& frame, const RenderSettings& settings, 
         for (const ModelInstance& inst : frame.models)
             for (size_t p = 0; p < PartCount; ++p) {
                 auto [first, count] = parts_[size_t(inst.model)][p];
-                draw({inst.pose[p], glm::vec4(float(p) * 37), glm::uvec4(first, 0, 0, 0)}, count);
+                if (count) draw({inst.pose[p], glm::vec4(float(p) * 37), glm::uvec4(first, 0, 0, 0)}, count);
             }
     };
 

@@ -324,7 +324,7 @@ static void entities() {
 }
 
 static void combat() {
-    // Attributes: 10 health per stamina; a punch does 6-10 + strength x speed.
+    // Attributes: 10 health per stamina; a punch does 1-4 + strength x speed, the sword 6-10 + it.
     Stats base;  // the player's
     CHECK(maxHealth(base) == 100 && Player{}.health == 100);
     std::mt19937 rng(7);
@@ -334,7 +334,14 @@ static void combat() {
         lo = std::min(lo, d);
         hi = std::max(hi, d);
     }
-    CHECK(lo == 8 && hi == 12);  // strength 2, speed 1: [8, 12]
+    CHECK(lo == 3 && hi == 6);  // strength 2, speed 1: [3, 6]
+    lo = 1000, hi = 0;
+    for (int i = 0; i < 2000; ++i) {
+        int d = rollDamage(base, itemType(Shortsword).attack, rng);
+        lo = std::min(lo, d);
+        hi = std::max(hi, d);
+    }
+    CHECK(lo == 8 && hi == 12);
     CHECK(strengthBonus(base, Attack{6, 10, 2.5f}) == 5);  // slow attacks get more per hit
     Stats quick = base;
     quick.agility = 50;
@@ -364,8 +371,17 @@ static void combat() {
     CHECK(dummy.body.health == 100);  // the fist is still on its way
     run(0.3f);
     float dealt = 100 - dummy.body.health;
-    CHECK(dealt >= 8 && dealt <= 12 && dummy.body.lastDamage == int(dealt));
+    CHECK(dealt >= 3 && dealt <= 6 && dummy.body.lastDamage == int(dealt));
     CHECK(player.combatTimer > 0 && dummy.body.combatTimer > 0);
+    run(1);
+    // With the sword in the main hand the same swing hits for the sword's damage.
+    giveItem(player.inv, Shortsword);
+    CHECK(quickMove(player.inv, {SlotRef::Item, 0, 0}));
+    float before = dummy.body.health;
+    CHECK(startPunch(player, {-1, 0}));
+    run(0.3f);
+    CHECK(before - dummy.body.health >= 8 && before - dummy.body.health <= 12);
+    player.inv = Inventory{};
     run(1);
     CHECK(startPunch(player, {-1, 0}));
 
@@ -424,12 +440,106 @@ static void combat() {
     CHECK(dummy.body.alive() && dummy.body.health == 100);
 }
 
+static void items() {
+    using enum SlotRef::Kind;
+    Inventory inv;
+    CHECK(itemSlots(inv) == kBackpackSlots && freeSlots(inv) == 12);
+    CHECK(mainAttack(inv).maxDamage == kPunch.maxDamage);
+    CHECK(giveItem(inv, Shortsword) && giveItem(inv, Satchel) && freeSlots(inv) == 10);
+
+    // Right-click equips: the sword goes to the main hand, the satchel to the bag bar and adds slots.
+    CHECK(quickMove(inv, {Item, 0, 0}) && inv.equipped[SlotMainHand] == Shortsword);
+    CHECK(mainAttack(inv).minDamage == 6 && mainAttack(inv).maxDamage == 10);
+    CHECK(quickMove(inv, {Item, 1, 0}) && inv.bags[0] == Satchel);
+    CHECK(itemSlots(inv) == 12 + itemType(Satchel).bagSlots && freeSlots(inv) == itemSlots(inv));
+    // ...and unequips into the first free slot.
+    CHECK(quickMove(inv, {Equip, SlotMainHand}) && inv.containers[0][0] == Shortsword);
+    CHECK(mainAttack(inv).maxDamage == kPunch.maxDamage);
+
+    // Slots only take what fits.
+    CHECK(!moveItem(inv, {Item, 0, 0}, {Equip, SlotHead}));
+    CHECK(!moveItem(inv, {Item, 0, 0}, {Bag, 1}));
+    CHECK(!moveItem(inv, {Bag, 0}, {Equip, SlotMainHand}));
+    CHECK(!moveItem(inv, {Item, 0, 0}, {Item, 99, 0}) && !moveItem(inv, {Item, 5, 0}, {Item, 6, 0}));  // bad slot, empty
+
+    // A bag holding items stays on the bar; an empty one can't go into its own slots.
+    CHECK(moveItem(inv, {Item, 0, 0}, {Item, 2, 1}) && inv.containers[1][2] == Shortsword);
+    CHECK(!quickMove(inv, {Bag, 0}) && !moveItem(inv, {Bag, 0}, {Item, 4, 0}));
+    CHECK(moveItem(inv, {Item, 2, 1}, {Item, 0, 0}));
+    CHECK(!moveItem(inv, {Bag, 0}, {Item, 1, 1}));
+    CHECK(moveItem(inv, {Bag, 0}, {Item, 4, 0}) && inv.containers[0][4] == Satchel && inv.bags[0] == NoItem);
+    CHECK(itemSlots(inv) == 12 && inv.containers[1].empty());
+
+    // Dropping gear on an occupied slot swaps the two.
+    CHECK(moveItem(inv, {Item, 0, 0}, {Equip, SlotMainHand}) && giveItem(inv, Shortsword));
+    CHECK(moveItem(inv, {Item, 0, 0}, {Item, 4, 0}) && inv.containers[0][0] == Satchel && inv.containers[0][4] == Shortsword);
+
+    // Full bags take nothing more, and right-click can't unequip into them.
+    while (giveItem(inv, Shortsword)) {}
+    CHECK(freeSlots(inv) == 0 && !giveItem(inv, Satchel));
+    CHECK(!quickMove(inv, {Equip, SlotMainHand}) && inv.equipped[SlotMainHand] == Shortsword);
+
+    // Random drags and right-clicks never lose or duplicate an item, and every container matches its bag.
+    std::mt19937 rng(3);
+    auto count = [](const Inventory& v) {
+        std::array<int, ItemCount> n{};
+        for (ItemId id : v.equipped) ++n[id];
+        for (ItemId id : v.bags) ++n[id];
+        for (const auto& c : v.containers)
+            for (ItemId id : c) ++n[id];
+        n[NoItem] = 0;  // empty slots come and go with bags
+        return n;
+    };
+    auto any = [&](Inventory& v) {
+        auto k = SlotRef::Kind(rng() % 3);
+        int c = int(rng() % (1 + kBagBarSlots));
+        int n = k == Equip ? EquipCount : k == Bag ? kBagBarSlots : std::max(1, int(v.containers[size_t(c)].size()));
+        return SlotRef{k, int(rng() % unsigned(n)), c};
+    };
+    int moved = 0;
+    for (int trial = 0; trial < 200; ++trial) {
+        Inventory v;
+        for (int i = 0; i < 8; ++i) giveItem(v, ItemId(1 + rng() % (ItemCount - 1)));
+        auto before = count(v);
+        for (int step = 0; step < 200; ++step) {
+            moved += rng() % 4 ? moveItem(v, any(v), any(v)) : quickMove(v, any(v));
+            CHECK(count(v) == before);
+            for (int b = 0; b < kBagBarSlots; ++b)
+                CHECK(int(v.containers[size_t(b) + 1].size()) == itemType(v.bags[size_t(b)]).bagSlots);
+            for (int s = 0; s < EquipCount; ++s)
+                CHECK(v.equipped[size_t(s)] == NoItem || itemType(v.equipped[size_t(s)]).slot == s);
+        }
+    }
+    CHECK(moved > 1000);  // most random pairs are two empty slots; this seed makes ~1400 real moves
+
+    // The sword is held only when equipped, and it points forward at the slash's impact frame.
+    Player p;
+    glm::mat4 held(0);
+    poseModel(p, ModelPlayer, &held);
+    CHECK(held == glm::mat4(0));
+    giveItem(p.inv, Shortsword);
+    quickMove(p.inv, {Item, 0, 0});
+    CHECK(startPunch(p, {0, 1}));
+    p.punchTime = kPunchImpact * p.punchLength;
+    auto pose = poseModel(p, ModelPlayer, &held);
+    glm::vec3 blade = glm::normalize(glm::vec3(held * glm::vec4(0, 1, 0, 0)));
+    CHECK(blade.z > 0.95f);
+    glm::vec3 grip(held * glm::vec4(2.5f, 2.5f, 0.5f, 1)), fist(pose[HandR] * glm::vec4(1.5f, 1.5f, 1.5f, 1));
+    CHECK(glm::distance(grip, fist) < 1e-3f);  // gripped at the center of the right hand
+    // Unequipping mid-swing doesn't change the swing: it still slashes and lands as a sword hit.
+    p.inv = Inventory{};
+    held = glm::mat4(0);
+    poseModel(p, ModelPlayer, &held);
+    CHECK(held != glm::mat4(0) && weaponAttack(p.swingWeapon).maxDamage == 10);
+}
+
 int main() {
     meshing();
     packing();
     physics();
     entities();
     combat();
+    items();
     generation();
     regions();
     if (failures) std::println(stderr, "{} check(s) failed", failures);

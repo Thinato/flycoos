@@ -49,10 +49,15 @@ GPU debug layer.
 | Mouse | Orbit the camera |
 | Wheel | Zoom |
 | T (hold) | Fast-forward time (60×) |
-| Left mouse | Punch (hold to keep swinging) |
+| Left mouse | Attack: sword slash with one equipped, otherwise punch (hold to keep swinging) |
 | E | Talk to a nearby villager |
+| C | Character: equipment and attributes |
+| B | Bags: backpack, bags and bag slots |
 | `.` | Open/close the debug window |
-| Esc | Close the debug window, otherwise quit |
+| Esc | Close the open windows, otherwise quit |
+
+In the Character and Bags windows, drag items between slots and right-click to equip or unequip.
+The mouse cursor is free while any window is open.
 
 ## Debug window
 
@@ -62,7 +67,8 @@ unless a text field has focus.
 | Tab | What's there |
 |---|---|
 | Render | View mode (shaded, greedy quads, chunks, ambient occlusion, normals), wireframe quad edges, sky/fog/water/character toggles, frustum culling on/off or frozen, per-frame chunk/quad/draw-call counts |
-| Player | Health, the five attributes and what derives from them (max health, regen, punch damage and speed, combat state), position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
+| Player | Health, the five attributes and what derives from them (max health, regen, attack damage and speed, combat state), position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
+| Items | Give any item, see what's equipped and in the bag slots, empty the inventory |
 | Entities | Every NPC: health and attributes, traits, position, wander state; hit (attackable only), make talk, respawn NPCs near the player |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
@@ -93,11 +99,13 @@ src/world.*      voxel grid, region-based terrain (forest / rocky / plains), tre
 src/mesher.*     greedy mesher with ambient occlusion -> 8-byte packed quads
 src/player.*     movement physics (+ fly/noclip tuning), camera collision, character models, procedural animation
 src/stats.h      the five attributes and the stats derived from them
-src/entity.*     NPCs: training dummy and villager (traits, wandering, talking), punching and damage
+src/entity.*     NPCs: training dummy and villager (traits, wandering, talking), attacks and damage
+src/item.*       items, inventory (equipment, backpack, bags), move/equip rules
+src/inventory_ui.*  Character (C) and Bags (B) windows
 src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, player health
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
 src/debug_ui.*   Dear ImGui debug window (toggle with .)
 src/main.cpp     window, input, camera, main loop, benchmark mode
 shaders/         world.metal (voxel, water, sky), compiled at runtime
-tests/           core_test.cpp: mesher, packing, physics, flight, camera, generation checks
+tests/           core_test.cpp: mesher, packing, physics, flight, camera, combat, inventory, generation checks
 ```

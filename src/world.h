@@ -9,7 +9,8 @@
 // Water's id is also hard-coded as kWater in shaders/world.metal.
 enum Block : uint8_t { Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water,
                        Skin, Tunic, Belt, Boots, Hair, Eye, Rock,
-                       Robe, DarkHair, Straw, Burlap, BlockCount };  // Robe..Burlap: NPC models
+                       Robe, DarkHair, Straw, Burlap,  // NPC models
+                       Steel, Iron, BlockCount };      // items
 
 inline bool isOpaque(Block b) { return b != Air && b != Water; }
 

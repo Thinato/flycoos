@@ -34,13 +34,13 @@ target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURC
 target_link_libraries(imgui PUBLIC SDL3::SDL3)
 
 # Engine core: no GPU code, so it is unit-testable.
-add_library(flycoos_core STATIC src/world.cpp src/mesher.cpp src/player.cpp src/entity.cpp)
+add_library(flycoos_core STATIC src/world.cpp src/mesher.cpp src/player.cpp src/entity.cpp src/item.cpp)
 target_include_directories(flycoos_core PUBLIC src)
 target_include_directories(flycoos_core SYSTEM PUBLIC ${glm_SOURCE_DIR})
 target_include_directories(flycoos_core SYSTEM PRIVATE ${fastnoiselite_SOURCE_DIR}/Cpp)
 target_compile_options(flycoos_core PUBLIC $<IF:$<CXX_COMPILER_ID:MSVC>,/W4,-Wall -Wextra>)
 
-add_executable(flycoos src/main.cpp src/renderer.cpp src/debug_ui.cpp src/hud.cpp)
+add_executable(flycoos src/main.cpp src/renderer.cpp src/debug_ui.cpp src/hud.cpp src/inventory_ui.cpp)
 target_link_libraries(flycoos PRIVATE flycoos_core imgui SDL3::SDL3)
 
 # MSL shaders are compiled at runtime by Metal; ship them next to the binary.

@@ -15,6 +15,7 @@
 #include "debug_ui.h"
 #include "entity.h"
 #include "hud.h"
+#include "inventory_ui.h"
 #include "renderer.h"
 
 constexpr float kDayLength = 600;     // seconds per full day/night cycle
@@ -99,9 +100,12 @@ static int run(SDL_Window* window, const Options& opt) {
 
     Player player;
     player.pos = findSpawn(world);
+    giveItem(player.inv, Shortsword);
+    giveItem(player.inv, Satchel);
     std::vector<Entity> entities = spawnEntities(world, player.pos, game.seed);
     std::mt19937 rng(std::random_device{}());  // damage rolls
     bool punchQueued = false;  // clicked before the swing was ready
+    bool pressInGame = false;  // the left button went down while no window was open
     float camYaw = std::numbers::pi_v<float>, camPitch = 0.45f;  // behind the player
     if (opt.fixedLook) {  // degrees on the CLI; yaw 0 looks toward -Z, 90 toward -X
         camYaw = opt.lookYaw;
@@ -109,7 +113,10 @@ static int run(SDL_Window* window, const Options& opt) {
     }
     glm::vec3 camTarget = player.pos + glm::vec3(0, 1.4f, 0);
     float camDist = game.cameraDistance;  // actual distance after terrain collision
-    auto updateMouseMode = [&] { SDL_SetWindowRelativeMouseMode(window, !benchmark && !ui.open); };
+    bool characterOpen = false, bagsOpen = false;
+    // Any open window frees the cursor and stops mouse look and attacks; the keyboard still plays.
+    auto menus = [&] { return ui.open || characterOpen || bagsOpen; };
+    auto updateMouseMode = [&] { SDL_SetWindowRelativeMouseMode(window, !benchmark && !menus()); };
     updateMouseMode();
 
     std::vector<double> frameMs;
@@ -137,20 +144,27 @@ static int run(SDL_Window* window, const Options& opt) {
                 if (e.key.key == SDLK_PERIOD) {
                     ui.open = !ui.open;
                     updateMouseMode();
+                } else if (e.key.key == SDLK_C) {
+                    characterOpen = !characterOpen;
+                    updateMouseMode();
+                } else if (e.key.key == SDLK_B) {
+                    bagsOpen = !bagsOpen;
+                    updateMouseMode();
                 } else if (e.key.key == SDLK_E) {
                     if (Entity* npc = talkTarget(entities, player)) talk(*npc);
                 } else if (e.key.key == SDLK_ESCAPE) {
-                    if (!ui.open) return 0;  // Esc closes the debug window first, then quits
-                    ui.open = false;
+                    if (!menus()) return 0;  // Esc closes the debug window, then the others, then quits
+                    if (ui.open) ui.open = false;
+                    else characterOpen = bagsOpen = false;
                     updateMouseMode();
                 }
             }
-            if (e.type == SDL_EVENT_MOUSE_MOTION && !benchmark && !ui.open) {
+            if (e.type == SDL_EVENT_MOUSE_MOTION && !benchmark && !menus()) {
                 camYaw -= e.motion.xrel * game.mouseSensitivity;
                 camPitch = std::clamp(camPitch + e.motion.yrel * game.mouseSensitivity, -0.5f, 1.45f);
             }
-            if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT && !benchmark && !ui.open)
-                punchQueued = true;
+            if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT && !benchmark)
+                punchQueued = pressInGame = !menus();
             if (e.type == SDL_EVENT_MOUSE_WHEEL && !ui.wantsMouse())
                 game.cameraDistance = std::clamp(game.cameraDistance * std::pow(0.9f, e.wheel.y), 2.0f, 80.0f);
         }
@@ -167,8 +181,10 @@ static int run(SDL_Window* window, const Options& opt) {
         in.run = key(SDL_SCANCODE_LSHIFT);
         in.descend = key(SDL_SCANCODE_LCTRL);
         if (benchmark) in.move = {std::sin(elapsed * 0.4), std::cos(elapsed * 0.4)};  // walk a circle
-        // Left mouse punches toward where the camera looks; holding it keeps swinging.
-        bool punchHeld = !benchmark && !ui.open && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK);
+        // Left mouse attacks toward where the camera looks; holding it keeps swinging.
+        // A press that began in a window (e.g. a drag) doesn't attack once the window closes.
+        if (menus()) punchQueued = pressInGame = false;
+        bool punchHeld = pressInGame && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK);
         if ((punchHeld || punchQueued) && (startPunch(player, forward) || !player.alive())) punchQueued = false;
         updatePlayer(player, world, in, dt);
         updateEntities(entities, world, player, dt);
@@ -193,14 +209,22 @@ static int run(SDL_Window* window, const Options& opt) {
         fp.view = glm::lookAtRH(fp.eye, camTarget, glm::vec3(0, 1, 0));
         fp.fovY = glm::radians(game.fovDegrees);
         fp.timeOfDay = game.timeOfDay;
-        fp.models.push_back({ModelPlayer, poseModel(player, ModelPlayer)});
+        glm::mat4 held(0);
+        fp.models.push_back({ModelPlayer, poseModel(player, ModelPlayer, &held)});
+        if (held != glm::mat4(0)) {  // ponytail: the shortsword is the only weapon, so it's the only held model
+            ModelInstance sword{ModelSword, {}};
+            sword.pose.fill(held);
+            fp.models.push_back(sword);
+        }
         for (const Entity& npc : entities) fp.models.push_back({npc.type().model, poseModel(npc.body, npc.type().model)});
 
-        bool wasOpen = ui.open;
-        ui.begin(dt);
+        bool wasOpen = menus();
+        ui.begin(dt, wasOpen);
         if (game.hud) drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, talkTarget(entities, player));
+        characterWindow(characterOpen, player);
+        bagsWindow(bagsOpen, player);
         ImDrawData* uiDraw = ui.end(game, render, player, entities, s, actions);
-        if (ui.open != wasOpen) updateMouseMode();  // closed with the window's X button
+        if (menus() != wasOpen) updateMouseMode();  // closed with a window's X button
         bool lastFrame = benchmark && frame + 1 >= opt.frames;
         if (!renderer.render(fp, render, uiDraw, lastFrame ? opt.screenshot : nullptr)) return 1;
 
@@ -219,8 +243,8 @@ static int run(SDL_Window* window, const Options& opt) {
         if (titleTimer > 0.5) {
             titleTimer = 0;
             int minutes = int(game.timeOfDay * 24 * 60);
-            char title[192];
-            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = punch | E = talk | . = debug",
+            char title[224];
+            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack | E = talk | C = character | B = bags | . = debug",
                           dt * 1000.0, 1.0 / std::max(dt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);
             SDL_SetWindowTitle(window, title);
         }

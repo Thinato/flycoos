@@ -23,7 +23,7 @@ struct DebugActions {
     bool regenerate = false, respawn = false, respawnEntities = false;
 };
 
-// Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Entities, Camera, World, Stats.
+// Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Items, Entities, Camera, World, Stats.
 // Also owns the ImGui frame the in-game HUD draws into.
 class DebugUI {
 public:
@@ -34,10 +34,11 @@ public:
 
     void processEvent(const SDL_Event& e);
     bool wantsKeyboard() const;  // a widget has keyboard focus: keys aren't game input
-    bool wantsMouse() const;     // the cursor is over the window
+    bool wantsMouse() const;     // the cursor is over an ImGui window
 
-    // Records frame time and starts the ImGui frame (the HUD draws between begin and end).
-    void begin(float dt);
+    // Records frame time and starts the ImGui frame (the HUD and game windows draw between begin
+    // and end). `cursor`: the mouse is free (some window is open), so ImGui may change its shape.
+    void begin(float dt, bool cursor);
     // Builds the debug window when open and finishes the frame.
     ImDrawData* end(GameSettings& game, RenderSettings& render, Player& player, std::vector<Entity>& entities,
                     const RenderStats& stats, DebugActions& actions);
