@@ -1,0 +1,163 @@
+#include "player.h"
+
+#include <algorithm>
+#include <cmath>
+#include <numbers>
+
+#include <glm/gtc/matrix_transform.hpp>
+
+constexpr float kWalkSpeed = 5, kRunSpeed = 9, kGravity = 28, kJumpSpeed = 9.5f;
+constexpr float kStride = 1.7f;  // blocks travelled per full gait cycle
+constexpr float kEps = 1e-3f;
+
+bool overlapsSolid(const Grid& g, glm::vec3 p) {
+    glm::ivec3 lo(glm::floor(p - glm::vec3(kHalfWidth, 0, kHalfWidth)));
+    glm::ivec3 hi(glm::floor(p + glm::vec3(kHalfWidth, kHeight, kHalfWidth)));
+    for (int y = lo.y; y <= hi.y; ++y)
+        for (int z = lo.z; z <= hi.z; ++z)
+            for (int x = lo.x; x <= hi.x; ++x)
+                if (isOpaque(g.get({x, y, z}))) return true;
+    return false;
+}
+
+// Moves along one axis; on contact snaps flush to the block face. Horizontal moves
+// on the ground may step up one block. |delta| must stay below one block.
+static void moveAxis(Player& p, const Grid& g, int axis, float delta, bool canStep) {
+    if (delta == 0) return;
+    glm::vec3 next = p.pos;
+    next[axis] += delta;
+    if (!overlapsSolid(g, next)) { p.pos = next; return; }
+    if (axis != 1 && canStep) {
+        glm::vec3 up = next;
+        up.y = std::floor(p.pos.y) + 1 + kEps;
+        if (!overlapsSolid(g, up)) { p.pos = up; return; }
+    }
+    float below = axis == 1 ? 0 : kHalfWidth, above = axis == 1 ? kHeight : kHalfWidth;
+    next[axis] = delta > 0 ? std::floor(next[axis] + above) - above - kEps
+                           : std::floor(next[axis] - below) + 1 + below + kEps;
+    if (!overlapsSolid(g, next)) p.pos = next;
+    p.vel[axis] = 0;
+    if (axis == 1 && delta < 0) p.onGround = true;
+}
+
+static float approach(float from, float to, float rate, float dt) {
+    return from + (to - from) * (1 - std::exp(-rate * dt));
+}
+
+void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
+    dt = std::min(dt, 1 / 30.0f);
+    constexpr float kTau = 2 * std::numbers::pi_v<float>;
+    p.breathPhase = std::fmod(p.breathPhase + dt * 2.2f, kTau);
+
+    p.inWater = g.get(glm::ivec3(glm::floor(p.pos + glm::vec3(0, 0.9f, 0)))) == Water;
+    glm::vec2 target = in.move * (in.run ? kRunSpeed : kWalkSpeed) * (p.inWater ? 0.6f : 1.0f);
+    float control = p.onGround || p.inWater ? 12.0f : 3.0f;
+    p.vel.x = approach(p.vel.x, target.x, control, dt);
+    p.vel.z = approach(p.vel.z, target.y, control, dt);
+    if (p.inWater) {
+        p.vel.y = in.jump ? 4.0f : std::max(p.vel.y - 6 * dt, -3.0f);
+    } else {
+        p.vel.y = std::max(p.vel.y - kGravity * dt, -50.0f);
+        if (in.jump && p.onGround) p.vel.y = kJumpSpeed;
+    }
+
+    glm::vec3 delta = p.vel * dt;
+    int steps = 1 + int(glm::max(glm::abs(delta.x), glm::max(glm::abs(delta.y), glm::abs(delta.z))) / 0.4f);
+    // Swimming counts as grounded for step-up, so the player can climb out onto a shore.
+    bool canStep = p.onGround || p.inWater;
+    glm::vec3 before = p.pos;
+    p.onGround = false;
+    for (int i = 0; i < steps; ++i) {
+        moveAxis(p, g, 0, delta.x / steps, canStep || p.onGround);
+        moveAxis(p, g, 2, delta.z / steps, canStep || p.onGround);
+        moveAxis(p, g, 1, delta.y / steps, false);
+    }
+    // Probe for ground instead of relying on this frame's fall reaching it: at high frame
+    // rates one frame of gravity is smaller than the kEps rest gap.
+    if (p.vel.y <= 0 && overlapsSolid(g, p.pos - glm::vec3(0, 2 * kEps, 0))) {
+        p.onGround = true;
+        p.vel.y = 0;
+    }
+    p.pos.x = std::clamp(p.pos.x, kHalfWidth, g.size.x - kHalfWidth);
+    p.pos.z = std::clamp(p.pos.z, kHalfWidth, g.size.z - kHalfWidth);
+    if (p.pos.y < 0) { p.pos.y = 0; p.vel.y = 0; p.onGround = true; }
+
+    // Animation state: gait follows the distance actually covered, so feet neither slide
+    // nor keep walking in place against a wall.
+    float moved = glm::length(glm::vec2(p.pos.x - before.x, p.pos.z - before.z));
+    float speed = moved / dt;
+    p.gaitPhase = std::fmod(p.gaitPhase + moved * kTau / kStride, kTau);
+    p.gaitAmount = approach(p.gaitAmount, speed > 0.3f ? std::min(speed / kWalkSpeed, 1.4f) : 0, 10, dt);
+    p.airAmount = approach(p.airAmount, p.onGround || p.inWater ? 0.0f : 1.0f, 12, dt);
+    if (glm::length(glm::vec2(p.vel.x, p.vel.z)) > 0.3f) {  // face where we're trying to go
+        float diff = std::remainder(std::atan2(p.vel.x, p.vel.z) - p.yaw, kTau);
+        p.yaw = std::remainder(p.yaw + diff * (1 - std::exp(-12 * dt)), kTau);
+    }
+}
+
+// ---- Character model --------------------------------------------------------
+
+constexpr float kVoxel = 0.1f;  // character voxels are 1/10 of a world block
+
+struct PartSpec { glm::ivec3 size; glm::vec3 center; };  // center in voxels, origin = feet
+static const PartSpec kParts[PartCount] = {
+    {{10, 9, 9}, {0, 13.5f, 0.3f}},   // Head
+    {{8, 7, 6}, {0, 5.5f, 0}},        // Torso
+    {{3, 3, 3}, {5.8f, 5.5f, 0.4f}},  // HandL
+    {{3, 3, 3}, {-5.8f, 5.5f, 0.4f}}, // HandR
+    {{3, 2, 4}, {2.2f, 1, 0}},        // FootL
+    {{3, 2, 4}, {-2.2f, 1, 0}},       // FootR
+};
+
+Grid buildPart(Part part) {
+    glm::ivec3 s = kParts[part].size;
+    Grid g(s);
+    for (int z = 0; z < s.z; ++z)
+        for (int y = 0; y < s.y; ++y)
+            for (int x = 0; x < s.x; ++x) {
+                Block b = Skin;
+                if (part == Head) {
+                    // Hair cap and back, sideburns; two tall eyes on the +Z (front) face.
+                    if (y >= 6 || z <= 2 || ((x == 0 || x == s.x - 1) && y >= 3)) b = Hair;
+                    if (z == s.z - 1 && (y == 3 || y == 4) && (x == 2 || x == s.x - 3)) b = Eye;
+                } else if (part == Torso) {
+                    b = y == 2 ? Belt : Tunic;
+                } else if (part == FootL || part == FootR) {
+                    b = Boots;
+                }
+                g.set({x, y, z}, b);
+            }
+    return g;
+}
+
+std::array<glm::mat4, PartCount> posePlayer(const Player& p) {
+    float s = std::sin(p.gaitPhase), c = std::cos(p.gaitPhase);
+    float a = p.gaitAmount, air = p.airAmount, a1 = std::min(a, 1.0f);
+    float breathe = std::sin(p.breathPhase) * (1 - a1);
+    float bob = std::abs(s) * 0.8f * a;
+
+    glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
+    off[Torso] = {0, bob + breathe * 0.25f, 0};
+    rot[Torso] = {0.12f * a1, s * 0.12f * a, 0};
+    off[Head] = {0, bob + breathe * 0.35f, 0.6f * a1};
+    // Hands counter-swing against the feet; arms go up while airborne.
+    off[HandL] = {0, bob + breathe * 0.3f + air * 2.5f, -s * 2.6f * a};
+    off[HandR] = {0, bob + breathe * 0.3f + air * 2.5f, s * 2.6f * a};
+    // Feet swing forward/back and lift on the forward half of their swing.
+    off[FootL] = {0, std::max(0.0f, c) * 1.6f * a + air * 0.8f, s * 3.0f * a + air * 1.2f};
+    off[FootR] = {0, std::max(0.0f, -c) * 1.6f * a + air * 0.8f, -s * 3.0f * a - air * 1.2f};
+    rot[FootL].x = -s * 0.35f * a;
+    rot[FootR].x = s * 0.35f * a;
+
+    glm::mat4 base = glm::translate(glm::mat4(1), p.pos);
+    base = glm::rotate(base, p.yaw, {0, 1, 0});
+    base = glm::scale(base, glm::vec3(kVoxel));
+    std::array<glm::mat4, PartCount> out;
+    for (int i = 0; i < PartCount; ++i) {
+        glm::mat4 m = glm::translate(base, kParts[i].center + off[i]);
+        m = glm::rotate(m, rot[i].y, {0, 1, 0});
+        m = glm::rotate(m, rot[i].x, {1, 0, 0});
+        out[i] = glm::translate(m, -glm::vec3(kParts[i].size) * 0.5f);
+    }
+    return out;
+}

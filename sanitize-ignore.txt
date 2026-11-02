@@ -1,0 +1,3 @@
+# UBSan: FastNoiseLite hashes rely on wrapping signed int math by design (third-party header).
+[undefined]
+src:*/FastNoiseLite.h
