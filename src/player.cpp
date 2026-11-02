@@ -128,7 +128,7 @@ float cameraClearance(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDis
 constexpr float kVoxel = 0.1f;  // character voxels are 1/10 of a world block
 
 struct PartSpec { glm::ivec3 size; glm::vec3 center; };  // center in voxels, origin = feet
-static const PartSpec kParts[PartCount] = {
+static const PartSpec kHumanoid[PartCount] = {
     {{10, 9, 9}, {0, 13.5f, 0.3f}},   // Head
     {{8, 7, 6}, {0, 5.5f, 0}},        // Torso
     {{3, 3, 3}, {5.8f, 5.5f, 0.4f}},  // HandL
@@ -136,20 +136,44 @@ static const PartSpec kParts[PartCount] = {
     {{3, 2, 4}, {2.2f, 1, 0}},        // FootL
     {{3, 2, 4}, {-2.2f, 1, 0}},       // FootR
 };
+static const PartSpec kDummy[PartCount] = {
+    {{7, 6, 7}, {0, 18, 0}},     // Head: burlap sack
+    {{8, 7, 6}, {0, 11.5f, 0}},  // Torso: straw
+    {{4, 2, 2}, {6, 13, 0}},     // HandL: straw arm
+    {{4, 2, 2}, {-6, 13, 0}},    // HandR
+    {{2, 8, 2}, {0, 6, 0}},      // FootL: post
+    {{9, 2, 9}, {0, 1, 0}},      // FootR: cross-shaped base
+};
+static const PartSpec* specs(Model m) { return m == ModelDummy ? kDummy : kHumanoid; }
 
-Grid buildPart(Part part) {
-    glm::ivec3 s = kParts[part].size;
+static Block dummyVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
+    switch (part) {
+    case Head:  // sack tied at the neck, two stitched eyes on the front
+        if (v.y == 0) return Belt;
+        return v.z == s.z - 1 && v.y == 3 && (v.x == 2 || v.x == 4) ? Eye : Burlap;
+    case Torso: return v.y == 1 || v.y == 5 ? Belt : Straw;  // rope bindings
+    case HandL: case HandR: return Straw;
+    case FootL: return Wood;
+    default: return std::abs(v.x - 4) <= 1 || std::abs(v.z - 4) <= 1 ? Wood : Air;  // base
+    }
+}
+
+Grid buildPart(Model model, Part part) {
+    glm::ivec3 s = specs(model)[part].size;
     Grid g(s);
+    Block tunic = model == ModelVillager ? Robe : Tunic, hair = model == ModelVillager ? DarkHair : Hair;
     for (int z = 0; z < s.z; ++z)
         for (int y = 0; y < s.y; ++y)
             for (int x = 0; x < s.x; ++x) {
                 Block b = Skin;
-                if (part == Head) {
+                if (model == ModelDummy) {
+                    b = dummyVoxel(part, {x, y, z}, s);
+                } else if (part == Head) {
                     // Hair cap and back, sideburns; two tall eyes on the +Z (front) face.
-                    if (y >= 6 || z <= 2 || ((x == 0 || x == s.x - 1) && y >= 3)) b = Hair;
+                    if (y >= 6 || z <= 2 || ((x == 0 || x == s.x - 1) && y >= 3)) b = hair;
                     if (z == s.z - 1 && (y == 3 || y == 4) && (x == 2 || x == s.x - 3)) b = Eye;
                 } else if (part == Torso) {
-                    b = y == 2 ? Belt : Tunic;
+                    b = y == 2 ? Belt : tunic;
                 } else if (part == FootL || part == FootR) {
                     b = Boots;
                 }
@@ -158,13 +182,13 @@ Grid buildPart(Part part) {
     return g;
 }
 
-std::array<glm::mat4, PartCount> posePlayer(const Player& p) {
+// Procedural walk/breathe/airborne animation as per-part offsets (voxels) and rotations.
+static void animate(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 (&rot)[PartCount]) {
     float s = std::sin(p.gaitPhase), c = std::cos(p.gaitPhase);
     float a = p.gaitAmount, air = p.airAmount, a1 = std::min(a, 1.0f);
     float breathe = std::sin(p.breathPhase) * (1 - a1);
     float bob = std::abs(s) * 0.8f * a;
 
-    glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
     off[Torso] = {0, bob + breathe * 0.25f, 0};
     rot[Torso] = {0.12f * a1, s * 0.12f * a, 0};
     off[Head] = {0, bob + breathe * 0.35f, 0.6f * a1};
@@ -176,16 +200,22 @@ std::array<glm::mat4, PartCount> posePlayer(const Player& p) {
     off[FootR] = {0, std::max(0.0f, -c) * 1.6f * a + air * 0.8f, -s * 3.0f * a - air * 1.2f};
     rot[FootL].x = -s * 0.35f * a;
     rot[FootR].x = s * 0.35f * a;
+}
+
+std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model) {
+    const PartSpec* parts = specs(model);
+    glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
+    if (model != ModelDummy) animate(p, off, rot);
 
     glm::mat4 base = glm::translate(glm::mat4(1), p.pos);
     base = glm::rotate(base, p.yaw, {0, 1, 0});
     base = glm::scale(base, glm::vec3(kVoxel));
     std::array<glm::mat4, PartCount> out;
     for (int i = 0; i < PartCount; ++i) {
-        glm::mat4 m = glm::translate(base, kParts[i].center + off[i]);
+        glm::mat4 m = glm::translate(base, parts[i].center + off[i]);
         m = glm::rotate(m, rot[i].y, {0, 1, 0});
         m = glm::rotate(m, rot[i].x, {1, 0, 0});
-        out[i] = glm::translate(m, -glm::vec3(kParts[i].size) * 0.5f);
+        out[i] = glm::translate(m, -glm::vec3(parts[i].size) * 0.5f);
     }
     return out;
 }

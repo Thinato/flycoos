@@ -22,9 +22,11 @@ main.cpp ──► generateTerrain() ──► Grid (1024×192×1024 bytes)
 |---|---|
 | `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, trees and rocks, `findSpawn` |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO, `Quad` packing/unpacking |
-| `src/player.h/.cpp` | Player physics and collision, character model (`buildPart`), procedural animation (`posePlayer`) |
+| `src/player.h/.cpp` | Walking-body physics and collision (player and NPCs), character models (`buildPart`), procedural animation (`poseModel`) |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits, spawning, villager wander AI, talking, damage |
+| `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, talk hint, player health |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, buffer uploads, render targets, frustum culling, day/night lighting, screenshots |
-| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Camera, World, Stats tabs. Owns `GameSettings` and `DebugActions` |
+| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Entities, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/main.cpp` | CLI options, window, input routing (game vs. debug UI), orbit camera, main loop, benchmark stats |
 | `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs` |
 
@@ -134,8 +136,11 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
     (tested at 1000 Hz).
   - Defaults: gravity 28, jump speed 9.5, walk 5 b/s, run 9 b/s, with exponential velocity smoothing.
   - In water, gravity is weak and Space swims up.
-- **Character:** six floating parts (head, torso, 2 hands, 2 feet), each a tiny `Grid` built by
-  `buildPart` and meshed by the same mesher. One character voxel is 0.1 blocks.
+- **Character models:** six floating parts (head, torso, 2 hands, 2 feet), each a tiny `Grid` built by
+  `buildPart` and meshed by the same mesher. One character voxel is 0.1 blocks. Three models share
+  the rig: player, villager (recolored) and training dummy (post, base, straw body and arms, sack
+  head; never animated). All parts of all models live in one GPU buffer; each frame draws a list of
+  `ModelInstance`s.
 - **Tuning and flight:** walk/run/jump speed, gravity, fly and noclip live in `Player::tuning`, so
   the debug UI edits them live. Flight ignores gravity (Space rises, Ctrl sinks, Shift is 2.5×) and
   still collides; noclip moves straight through terrain.
@@ -143,7 +148,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   a cube of half-size 0.3 (larger than the near plane's half-diagonal) out from the target in 0.1
   steps. The camera snaps in to the first blocked distance and eases back out, so terrain never
   cuts into the view and the camera doesn't pop.
-- **Animation:** procedural, in `posePlayer`.
+- **Animation:** procedural, in `poseModel`.
   - The gait phase advances with the *distance actually travelled* (stride 1.7 blocks), so the feet
     don't slide or keep walking against walls.
   - Feet swing ±3 voxels and lift on the forward half of the swing. Hands counter-swing. The torso
@@ -151,6 +156,31 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   - `gaitAmount` blends between idle breathing and walking/running, and `airAmount` raises the arms
     and tucks the feet in the air.
   - Body yaw eases toward the movement direction.
+
+## Entities
+
+- An `Entity` is a kind, a name, a level and a `Player` body (position, animation, health). Fixed
+  traits per kind live in one table (`kTypes` in entity.cpp):
+
+  | Kind | Name | Lv | HP | Attackable | Moves | Talks |
+  |---|---|---|---|---|---|---|
+  | Training Dummy | "Training Dummy" | 1 | 100 | yes | no | no |
+  | Villager | random from a name list (seeded) | 5 | 250 | no | wanders | yes (E) |
+
+  The player starts with 100/100 health.
+- `damage()` only applies to attackable kinds and stops at 0. Nothing calls it in play yet (no
+  combat); the debug UI's "Hit for 10" does. Death has no effect and gives no reward.
+- **Villager AI:** alternates standing (2–6 s) and strolling at 2 b/s (2–5 s) in a random direction.
+  Before each step it checks the block ahead: no walls it can't step up, no water, no drops of 2+.
+  It turns back once more than 12 blocks from home. NPC bodies use the same `updatePlayer` physics as
+  the player, driven by AI input.
+- **Talking:** E picks the nearest talker within 3.5 blocks. It shows a random phrase (never the same
+  twice in a row) for 5 s, while the villager stops and turns to face the player.
+- **Separation:** the player is pushed out of an entity's 0.8-block radius (never into terrain).
+- **HUD:** nameplates (level, name, health bar; amber/red for attackable, green for friendly) within
+  40 blocks. They're hidden when terrain blocks the line of sight, using the camera's box march. The
+  HUD always runs an ImGui frame; the UI render pass is skipped when there is nothing to draw.
+- NPCs are respawned beside the player on world regeneration or from the Entities tab.
 
 ## Day/night
 

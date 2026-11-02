@@ -34,6 +34,10 @@ constexpr float kPalette[BlockCount][3] = {
     {0.80f, 0.45f, 0.20f},  // Hair
     {0.08f, 0.08f, 0.10f},  // Eye
     {0.52f, 0.50f, 0.47f},  // Rock
+    {0.42f, 0.52f, 0.30f},  // Robe
+    {0.25f, 0.17f, 0.12f},  // DarkHair
+    {0.86f, 0.74f, 0.40f},  // Straw
+    {0.66f, 0.55f, 0.38f},  // Burlap
 };
 
 // Must match struct Frame / Draw in shaders/world.metal.
@@ -103,7 +107,7 @@ Renderer::~Renderer() {
     if (!device_) return;
     SDL_WaitForGPUIdle(device_);
     for (auto* p : {sky_, opaque_, water_, wire_}) if (p) SDL_ReleaseGPUGraphicsPipeline(device_, p);
-    for (auto* b : {worldOpaque_, worldWater_, character_}) if (b) SDL_ReleaseGPUBuffer(device_, b);
+    for (auto* b : {worldOpaque_, worldWater_, models_}) if (b) SDL_ReleaseGPUBuffer(device_, b);
     for (auto* t : {msaaColor_, depth_, resolved_}) if (t) SDL_ReleaseGPUTexture(device_, t);
     SDL_ReleaseWindowFromGPUDevice(device_, window_);
     SDL_DestroyGPUDevice(device_);
@@ -284,16 +288,17 @@ void Renderer::uploadWorld(const Grid& world) {
     stats.meshSeconds = double(SDL_GetTicksNS() - start) * 1e-9;
 }
 
-void Renderer::uploadCharacter() {
+void Renderer::uploadModels() {
     std::vector<Quad> quads;
-    for (int p = 0; p < PartCount; ++p) {
-        Grid part = buildPart(Part(p));
-        Mesh m = meshRegion(part, {0, 0, 0}, part.size);
-        parts_[size_t(p)] = {uint32_t(quads.size()), uint32_t(m.opaque.size())};
-        quads.insert(quads.end(), m.opaque.begin(), m.opaque.end());
-    }
-    if (character_) SDL_ReleaseGPUBuffer(device_, character_);
-    character_ = upload(quads.data(), uint32_t(quads.size() * sizeof(Quad)));
+    for (int model = 0; model < ModelCount; ++model)
+        for (int p = 0; p < PartCount; ++p) {
+            Grid part = buildPart(Model(model), Part(p));
+            Mesh m = meshRegion(part, {0, 0, 0}, part.size);
+            parts_[size_t(model)][size_t(p)] = {uint32_t(quads.size()), uint32_t(m.opaque.size())};
+            quads.insert(quads.end(), m.opaque.begin(), m.opaque.end());
+        }
+    if (models_) SDL_ReleaseGPUBuffer(device_, models_);
+    models_ = upload(quads.data(), uint32_t(quads.size() * sizeof(Quad)));
 }
 
 bool Renderer::ensureTargets(uint32_t w, uint32_t h) {
@@ -415,20 +420,22 @@ bool Renderer::render(const FrameParams& frame, const RenderSettings& settings, 
                       glm::uvec4(first, 0, 0, 0)}, count);
         }
     };
-    auto drawCharacter = [&] {
-        SDL_BindGPUVertexStorageBuffers(pass, 0, &character_, 1);
-        for (int p = 0; p < PartCount; ++p)
-            draw({frame.pose[size_t(p)], glm::vec4(float(p) * 37), glm::uvec4(parts_[size_t(p)].first, 0, 0, 0)},
-                 parts_[size_t(p)].second);
+    auto drawModels = [&] {
+        SDL_BindGPUVertexStorageBuffers(pass, 0, &models_, 1);
+        for (const ModelInstance& inst : frame.models)
+            for (size_t p = 0; p < PartCount; ++p) {
+                auto [first, count] = parts_[size_t(inst.model)][p];
+                draw({inst.pose[p], glm::vec4(float(p) * 37), glm::uvec4(first, 0, 0, 0)}, count);
+            }
     };
 
     SDL_BindGPUGraphicsPipeline(pass, opaque_);
     drawChunks(worldOpaque_, false);
-    if (settings.character) drawCharacter();
+    if (settings.character) drawModels();
     if (settings.wireframe) {  // quad edges on top: shows how the greedy mesher merged faces
         SDL_BindGPUGraphicsPipeline(pass, wire_);
         drawChunks(worldOpaque_, false);
-        if (settings.character) drawCharacter();
+        if (settings.character) drawModels();
     }
     if (settings.water) {
         SDL_BindGPUGraphicsPipeline(pass, water_);
@@ -436,7 +443,7 @@ bool Renderer::render(const FrameParams& frame, const RenderSettings& settings, 
     }
     SDL_EndGPURenderPass(pass);
 
-    if (ui) {  // debug UI goes into `resolved_` too, so screenshots include it
+    if (ui && ui->TotalVtxCount > 0) {  // HUD and debug UI go into `resolved_` too, so screenshots include them
         ImGui_ImplSDLGPU3_PrepareDrawData(ui, cmd);  // uploads; must happen outside a render pass
         SDL_GPUColorTargetInfo uiTarget{};
         uiTarget.texture = resolved_;

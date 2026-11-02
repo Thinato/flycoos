@@ -154,8 +154,10 @@ void generateTerrain(Grid& g, uint32_t seed) {
         }
 }
 
-glm::vec3 findSpawn(const Grid& g) {
-    int cx = g.size.x / 2, cz = g.size.z / 2;
+glm::vec3 findSpawn(const Grid& g) { return findSpawn(g, {g.size.x / 2, g.size.z / 2}); }
+
+glm::vec3 findSpawn(const Grid& g, glm::ivec2 near) {
+    int cx = near.x, cz = near.y;
     for (int r = 0; r < std::max(g.size.x, g.size.z) / 2; ++r)
         for (int dz = -r; dz <= r; ++dz)
             for (int dx = -r; dx <= r; ++dx) {

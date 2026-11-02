@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -48,7 +49,7 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
     ImGui::SameLine();
     ImGui::Checkbox("Water", &r.water);
     ImGui::SameLine();
-    ImGui::Checkbox("Character", &r.character);
+    ImGui::Checkbox("Characters", &r.character);
 
     ImGui::SeparatorText("Culling");
     ImGui::Checkbox("Frustum culling", &r.frustumCulling);
@@ -62,6 +63,7 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
 }
 
 static void playerTab(Player& p, DebugActions& actions) {
+    ImGui::SliderInt("Health", &p.health, 0, p.maxHealth);
     ImGui::DragFloat3("Position", &p.pos.x, 0.25f);
     ImGui::Text("Velocity  %.2f  %.2f  %.2f  (%.2f b/s)", p.vel.x, p.vel.y, p.vel.z, glm::length(p.vel));
     ImGui::Text("On ground %s   In water %s", p.onGround ? "yes" : "no", p.inWater ? "yes" : "no");
@@ -84,11 +86,37 @@ static void playerTab(Player& p, DebugActions& actions) {
     if (ImGui::Button("Reset movement")) t = PlayerTuning{};
 }
 
+static void entitiesTab(std::vector<Entity>& entities, const Player& player, DebugActions& actions) {
+    if (ImGui::Button("Respawn NPCs near player")) actions.respawnEntities = true;
+    for (size_t i = 0; i < entities.size(); ++i) {
+        Entity& e = entities[i];
+        const EntityType& t = e.type();
+        char title[96];
+        std::snprintf(title, sizeof title, "%s  (Lv %d)###entity%zu", e.name.c_str(), e.level, i);
+        if (!ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) continue;
+        ImGui::PushID(int(i));
+        ImGui::SliderInt("Health", &e.body.health, 0, e.body.maxHealth);
+        ImGui::Text("Attackable %s   Wanders %s   Talks %s", t.attackable ? "yes" : "no", t.wanders ? "yes" : "no",
+                    t.talks ? "yes" : "no");
+        ImGui::Text("At %.1f %.1f %.1f, %.1f from you", e.body.pos.x, e.body.pos.y, e.body.pos.z,
+                    glm::distance(e.body.pos, player.pos));
+        if (t.wanders)
+            ImGui::Text("%s %.1f s more, %.1f from home", e.wanderDir == glm::vec2(0) ? "Standing" : "Walking",
+                        e.wanderTimer, glm::distance(e.body.pos, e.home));
+        if (t.attackable && ImGui::Button("Hit for 10")) damage(e, 10);
+        if (t.talks && ImGui::Button("Talk")) talk(e);
+        if (const char* s = e.speech()) ImGui::TextWrapped("Says: \"%s\"", s);
+        ImGui::PopID();
+    }
+}
+
 static void cameraTab(GameSettings& g) {
     ImGui::SliderFloat("Field of view", &g.fovDegrees, 30, 120, "%.0f deg");
     ImGui::SliderFloat("Distance", &g.cameraDistance, 2, 80, "%.1f blocks");
     ImGui::SetItemTooltip("Also the mouse wheel. Pull far back for an overview.");
     ImGui::Checkbox("Terrain collision", &g.cameraCollision);
+    ImGui::Checkbox("HUD", &g.hud);
+    ImGui::SetItemTooltip("Nameplates, speech balloons and the health bar.");
     ImGui::SliderFloat("Mouse sensitivity", &g.mouseSensitivity, 0.001f, 0.02f, "%.4f");
 }
 
@@ -123,25 +151,36 @@ static void statsTab(const std::array<float, 240>& frameMs, size_t frameIndex) {
     ImGui::Text("World grid  %.0f MB", double(kWorldSize.x) * kWorldSize.y * kWorldSize.z / (1 << 20));
 }
 
-ImDrawData* DebugUI::frame(float dt, GameSettings& game, RenderSettings& render, Player& player,
-                           const RenderStats& stats, DebugActions& actions) {
-    frameMs_[frameIndex_++ % frameMs_.size()] = dt * 1000;
-    if (!open) return nullptr;
-
-    ImGui_ImplSDLGPU3_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
+void DebugUI::window(GameSettings& game, RenderSettings& render, Player& player, std::vector<Entity>& entities,
+                     const RenderStats& stats, DebugActions& actions) {
     ImGui::SetNextWindowPos({12, 12}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize({440, 470}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Debug   ( . to toggle )", &open) && ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Render")) { renderTab(render, stats); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Player")) { playerTab(player, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Entities")) { entitiesTab(entities, player, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("World")) { worldTab(game, stats, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Stats")) { statsTab(frameMs_, frameIndex_); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
     ImGui::End();
+}
+
+void DebugUI::begin(float dt) {
+    frameMs_[frameIndex_++ % frameMs_.size()] = dt * 1000;
+    // While closed the game owns the (hidden, relative-mode) cursor.
+    ImGuiIO& io = ImGui::GetIO();
+    if (open) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+    else io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    ImGui_ImplSDLGPU3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+}
+
+ImDrawData* DebugUI::end(GameSettings& game, RenderSettings& render, Player& player, std::vector<Entity>& entities,
+                         const RenderStats& stats, DebugActions& actions) {
+    if (open) window(game, render, player, entities, stats, actions);
     ImGui::Render();
     return ImGui::GetDrawData();
 }

@@ -2,8 +2,8 @@
 #include <numbers>
 #include <print>
 
+#include "entity.h"
 #include "mesher.h"
-#include "player.h"
 
 static int failures = 0;
 #define CHECK(cond)                                                              \
@@ -243,10 +243,91 @@ static void regions() {
     CHECK(openPlain);
 }
 
+// A grass meadow (top at y = 3) with a pond covering x >= 32.
+static Grid meadow() {
+    Grid g({64, 16, 64});
+    for (int z = 0; z < 64; ++z)
+        for (int x = 0; x < 64; ++x) {
+            for (int y = 0; y < 3; ++y) g.set({x, y, z}, Dirt);
+            g.set({x, 3, z}, x >= 32 ? Water : Grass);
+        }
+    return g;
+}
+
+static void entities() {
+    Grid g = meadow();
+    Player player;
+    CHECK(player.health == 100 && player.maxHealth == 100);
+    player.pos = {28.5f, 4, 20.5f};
+    std::vector<Entity> es = spawnEntities(g, player.pos, 1);
+    CHECK(es.size() == 2);
+    Entity &dummy = es[0], &villager = es[1];
+
+    CHECK(dummy.kind == EntityKind::TrainingDummy && dummy.name == "Training Dummy" && dummy.level == 1);
+    CHECK(dummy.body.health == 100 && dummy.body.maxHealth == 100);
+    CHECK(dummy.type().attackable && !dummy.type().wanders && !dummy.type().talks);
+    CHECK(villager.kind == EntityKind::Villager && villager.level == 5 && !villager.name.empty());
+    CHECK(villager.body.health == 250 && villager.body.maxHealth == 250);
+    CHECK(!villager.type().attackable && villager.type().wanders && villager.type().talks);
+    CHECK(spawnEntities(g, player.pos, 1)[1].name == villager.name);  // names are seeded
+    CHECK(glm::distance(dummy.body.pos, villager.body.pos) >= 1.5f);  // nobody spawns inside anybody
+    for (const Entity& e : es) CHECK(glm::distance(e.body.pos, player.pos) >= 1.5f);
+    for (const Entity& e : es) CHECK(g.get(glm::ivec3(glm::floor(e.body.pos)) - glm::ivec3(0, 1, 0)) == Grass);
+
+    // Damage: only attackable entities take it, and health stops at 0.
+    CHECK(damage(dummy, 30) && dummy.body.health == 70);
+    CHECK(damage(dummy, 500) && dummy.body.health == 0);
+    CHECK(!damage(dummy, 10));  // nothing left to hit
+    CHECK(!damage(villager, 10) && villager.body.health == 250);
+
+    // Talking: only the villager, only in range; a new phrase each time.
+    player.pos = dummy.body.pos + glm::vec3(1, 0, 0);
+    CHECK(talkTarget(es, player) == nullptr || glm::distance(villager.body.pos, player.pos) < kTalkRange);
+    player.pos = villager.body.pos + glm::vec3(1.5f, 0, 0);
+    CHECK(talkTarget(es, player) == &villager);
+    CHECK(villager.speech() == nullptr);
+    talk(villager);
+    const char* first = villager.speech();
+    CHECK(first != nullptr);
+    talk(villager);
+    CHECK(villager.speech() != nullptr && villager.speech() != first);
+    for (int i = 0; i < 60; ++i) updateEntities(es, g, player, 1 / 60.0f);
+    CHECK(glm::length(glm::vec2(villager.body.vel.x, villager.body.vel.z)) < 0.1f);  // stops to talk
+    player.pos = {5.5f, 4, 60.5f};
+    CHECK(talkTarget(es, player) == nullptr);
+
+    // Separation: the player can't stand inside an entity.
+    Player p2;
+    p2.pos = dummy.body.pos + glm::vec3(0.1f, 0, 0);
+    separate(p2, g, es);
+    CHECK(glm::distance(p2.pos, dummy.body.pos) > 0.79f);
+
+    // Wandering: two minutes of AI. The villager strolls, stays near home and out of the pond;
+    // the dummy never moves.
+    glm::vec3 dummyPos = dummy.body.pos;
+    float farthest = 0, maxFromHome = 0;
+    bool wet = false, stuck = false;
+    for (int i = 0; i < 120 * 60; ++i) {
+        updateEntities(es, g, player, 1 / 60.0f);
+        farthest = std::max(farthest, glm::distance(villager.body.pos, villager.home));
+        maxFromHome = std::max(maxFromHome, glm::distance(glm::vec2(villager.body.pos.x, villager.body.pos.z),
+                                                          glm::vec2(villager.home.x, villager.home.z)));
+        wet |= villager.body.inWater || villager.body.pos.x > 32;
+        stuck |= overlapsSolid(g, villager.body.pos);
+    }
+    CHECK(farthest > 3);
+    CHECK(maxFromHome < kWanderRadius + 2);
+    CHECK(!wet);
+    CHECK(!stuck);
+    CHECK(dummy.body.pos == dummyPos);
+    CHECK(villager.speech() == nullptr);  // the balloon timed out
+}
+
 int main() {
     meshing();
     packing();
     physics();
+    entities();
     generation();
     regions();
     if (failures) std::println(stderr, "{} check(s) failed", failures);

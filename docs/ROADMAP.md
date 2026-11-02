@@ -15,6 +15,8 @@ reach them.
 - Debug window (`.`): mesh views, wireframe, culling tools, movement tuning, fly/noclip, time and
   world controls, frame-time graph
 - Benchmark/screenshot mode and engine-core tests
+- First NPCs: a training dummy (attackable, static) and a wandering villager you can talk to (E),
+  with nameplates, health bars and speech balloons
 
 ## M1: A living world
 

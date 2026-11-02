@@ -11,12 +11,17 @@
 
 struct ImDrawData;
 
+struct ModelInstance {
+    Model model;
+    std::array<glm::mat4, PartCount> pose;
+};
+
 struct FrameParams {
     glm::mat4 view{1};
     float fovY = 1.2f;       // radians; aspect comes from the swapchain
     glm::vec3 eye{};
     float timeOfDay = 0.3f;  // 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset
-    std::array<glm::mat4, PartCount> pose{};
+    std::vector<ModelInstance> models;  // player and NPCs
 };
 
 // Debug-view switches (debug UI "Render" tab).
@@ -44,7 +49,7 @@ public:
 
     bool init(SDL_Window* window, bool vsync);
     void uploadWorld(const Grid& world);  // meshes every chunk (in parallel) and uploads
-    void uploadCharacter();
+    void uploadModels();  // character and NPC models
     // Draws one frame, then the debug UI (if any) on top. With screenshotPath set, also writes
     // the frame to a BMP.
     bool render(const FrameParams& frame, const RenderSettings& settings, ImDrawData* ui = nullptr,
@@ -72,9 +77,9 @@ private:
     SDL_GPUSampleCount samples_ = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUGraphicsPipeline *sky_ = nullptr, *opaque_ = nullptr, *water_ = nullptr, *wire_ = nullptr;
     glm::mat4 cullViewProj_{1};
-    SDL_GPUBuffer *worldOpaque_ = nullptr, *worldWater_ = nullptr, *character_ = nullptr;
+    SDL_GPUBuffer *worldOpaque_ = nullptr, *worldWater_ = nullptr, *models_ = nullptr;
     SDL_GPUTexture *msaaColor_ = nullptr, *depth_ = nullptr, *resolved_ = nullptr;
     uint32_t targetW_ = 0, targetH_ = 0;
     std::vector<ChunkDraw> chunks_;
-    std::array<std::pair<uint32_t, uint32_t>, PartCount> parts_{};  // first quad, quad count
+    std::array<std::array<std::pair<uint32_t, uint32_t>, PartCount>, ModelCount> parts_{};  // first quad, quad count
 };

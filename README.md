@@ -49,6 +49,7 @@ GPU debug layer.
 | Mouse | Orbit the camera |
 | Wheel | Zoom |
 | T (hold) | Fast-forward time (60×) |
+| E | Talk to a nearby villager |
 | `.` | Open/close the debug window |
 | Esc | Close the debug window, otherwise quit |
 
@@ -60,8 +61,9 @@ unless a text field has focus.
 | Tab | What's there |
 |---|---|
 | Render | View mode (shaded, greedy quads, chunks, ambient occlusion, normals), wireframe quad edges, sky/fog/water/character toggles, frustum culling on/off or frozen, per-frame chunk/quad/draw-call counts |
-| Player | Position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
-| Camera | Field of view, distance (up to 80 for overviews), terrain collision, mouse sensitivity |
+| Player | Health, position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
+| Entities | Every NPC: health, traits, position, wander state; hit (attackable only), make talk, respawn NPCs near the player |
+| Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
 | Stats | Frame-time graph of the last 240 frames, average and worst frame |
 
@@ -88,7 +90,9 @@ Example benchmark at night:
 ```
 src/world.*      voxel grid, region-based terrain (forest / rocky / plains), trees + rocks, parallelFor
 src/mesher.*     greedy mesher with ambient occlusion -> 8-byte packed quads
-src/player.*     movement physics (+ fly/noclip tuning), camera collision, character model, procedural animation
+src/player.*     movement physics (+ fly/noclip tuning), camera collision, character models, procedural animation
+src/entity.*     NPCs: training dummy and villager (traits, wandering, talking, damage)
+src/hud.*        in-game overlay: nameplates, speech balloons, player health
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
 src/debug_ui.*   Dear ImGui debug window (toggle with .)
 src/main.cpp     window, input, camera, main loop, benchmark mode

@@ -12,7 +12,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "debug_ui.h"
-#include "player.h"
+#include "entity.h"
+#include "hud.h"
 #include "renderer.h"
 
 constexpr float kDayLength = 600;     // seconds per full day/night cycle
@@ -92,11 +93,12 @@ static int run(SDL_Window* window, const Options& opt) {
                      double(s.opaqueQuads + s.waterQuads) * 8 / (1 << 20), s.chunksTotal);
     };
     buildWorld();
-    renderer.uploadCharacter();
+    renderer.uploadModels();
     const RenderStats& s = renderer.stats;
 
     Player player;
     player.pos = findSpawn(world);
+    std::vector<Entity> entities = spawnEntities(world, player.pos, game.seed);
     float camYaw = std::numbers::pi_v<float>, camPitch = 0.45f;  // behind the player
     if (opt.fixedLook) {  // degrees on the CLI; yaw 0 looks toward -Z, 90 toward -X
         camYaw = opt.lookYaw;
@@ -132,6 +134,8 @@ static int run(SDL_Window* window, const Options& opt) {
                 if (e.key.key == SDLK_PERIOD) {
                     ui.open = !ui.open;
                     updateMouseMode();
+                } else if (e.key.key == SDLK_E) {
+                    if (Entity* npc = talkTarget(entities, player)) talk(*npc);
                 } else if (e.key.key == SDLK_ESCAPE) {
                     if (!ui.open) return 0;  // Esc closes the debug window first, then quits
                     ui.open = false;
@@ -159,6 +163,8 @@ static int run(SDL_Window* window, const Options& opt) {
         in.descend = key(SDL_SCANCODE_LCTRL);
         if (benchmark) in.move = {std::sin(elapsed * 0.4), std::cos(elapsed * 0.4)};  // walk a circle
         updatePlayer(player, world, in, dt);
+        updateEntities(entities, world, player, dt);
+        separate(player, world, entities);
 
         if (benchmark && !opt.fixedLook) camYaw -= dt * 0.5f;  // counter-orbit so the benchmark sees the player from all sides
         else if (!benchmark)
@@ -178,10 +184,13 @@ static int run(SDL_Window* window, const Options& opt) {
         fp.view = glm::lookAtRH(fp.eye, camTarget, glm::vec3(0, 1, 0));
         fp.fovY = glm::radians(game.fovDegrees);
         fp.timeOfDay = game.timeOfDay;
-        fp.pose = posePlayer(player);
+        fp.models.push_back({ModelPlayer, poseModel(player, ModelPlayer)});
+        for (const Entity& npc : entities) fp.models.push_back({npc.type().model, poseModel(npc.body, npc.type().model)});
 
         bool wasOpen = ui.open;
-        ImDrawData* uiDraw = ui.frame(dt, game, render, player, s, actions);
+        ui.begin(dt);
+        if (game.hud) drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, talkTarget(entities, player));
+        ImDrawData* uiDraw = ui.end(game, render, player, entities, s, actions);
         if (ui.open != wasOpen) updateMouseMode();  // closed with the window's X button
         bool lastFrame = benchmark && frame + 1 >= opt.frames;
         if (!renderer.render(fp, render, uiDraw, lastFrame ? opt.screenshot : nullptr)) return 1;
@@ -190,8 +199,10 @@ static int run(SDL_Window* window, const Options& opt) {
         if (actions.regenerate || actions.respawn) {
             player.pos = findSpawn(world);
             player.vel = {};
+            player.health = player.maxHealth;
             camTarget = player.pos + glm::vec3(0, 1.4f, 0);
         }
+        if (actions.regenerate || actions.respawnEntities) entities = spawnEntities(world, player.pos, game.seed);
         actions = {};
 
         titleTimer += dt;
@@ -199,7 +210,7 @@ static int run(SDL_Window* window, const Options& opt) {
             titleTimer = 0;
             int minutes = int(game.timeOfDay * 24 * 60);
             char title[160];
-            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | . = debug",
+            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | E = talk | . = debug",
                           dt * 1000.0, 1.0 / std::max(dt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);
             SDL_SetWindowTitle(window, title);
         }

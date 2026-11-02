@@ -8,7 +8,8 @@
 // Block ids double as palette indices (see kPalette in renderer.cpp).
 // Water's id is also hard-coded as kWater in shaders/world.metal.
 enum Block : uint8_t { Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water,
-                       Skin, Tunic, Belt, Boots, Hair, Eye, Rock, BlockCount };
+                       Skin, Tunic, Belt, Boots, Hair, Eye, Rock,
+                       Robe, DarkHair, Straw, Burlap, BlockCount };  // Robe..Burlap: NPC models
 
 inline bool isOpaque(Block b) { return b != Air && b != Water; }
 
@@ -37,5 +38,6 @@ void parallelFor(int count, const std::function<void(int)>& fn);
 
 void generateTerrain(Grid& world, uint32_t seed);
 
-// Feet position on the grass column nearest the world center.
+// Feet position on the grass column nearest `near` (default: the world center).
 glm::vec3 findSpawn(const Grid& world);
+glm::vec3 findSpawn(const Grid& world, glm::ivec2 near);

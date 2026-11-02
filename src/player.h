@@ -23,6 +23,7 @@ struct PlayerTuning {
     float flySpeed = 15;
 };
 
+// A walking body: the player, and the body of every NPC (driven by AI input instead of keys).
 struct Player {
     glm::vec3 pos{}, vel{};  // pos = feet center
     float yaw = 0;           // radians; 0 faces +Z
@@ -32,6 +33,7 @@ struct Player {
     float airAmount = 0;     // 0 grounded .. 1 airborne
     float breathPhase = 0;  // idle breathing cycle, radians
     PlayerTuning tuning;
+    int health = 100, maxHealth = 100;
 };
 
 bool overlapsSolid(const Grid& g, glm::vec3 feet);
@@ -41,8 +43,10 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt);
 // along unit `dir` before touching an opaque voxel, up to maxDist.
 float cameraClearance(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDist, float radius);
 
-// Character model: 6 floating voxel parts, each its own tiny grid meshed by meshRegion.
+// Character models: 6 floating voxel parts, each its own tiny grid meshed by meshRegion.
+// The training dummy reuses the slots: FootL is its post, FootR its base, hands its arms.
 enum Part { Head, Torso, HandL, HandR, FootL, FootR, PartCount };
-Grid buildPart(Part part);
-// Part-grid space -> world space for the current animation pose.
-std::array<glm::mat4, PartCount> posePlayer(const Player& p);
+enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelCount };
+Grid buildPart(Model model, Part part);
+// Part-grid space -> world space for the body's current animation pose (the dummy is static).
+std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model);
