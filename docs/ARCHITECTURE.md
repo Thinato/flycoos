@@ -8,7 +8,7 @@ Milestone 0 is about 1,200 lines of C++ (including tests) and 160 lines of MSL. 
   and GPU.
 
 ```
-main.cpp ──► generateTerrain() ──► Grid (512×128×512 bytes)
+main.cpp ──► generateTerrain() ──► Grid (1024×192×1024 bytes)
    │                                  │
    │                       Renderer::uploadWorld()
    │                          └─ parallelFor(chunks) ─► meshRegion() ─► packed quads ─► GPU storage buffers
@@ -20,26 +20,38 @@ main.cpp ──► generateTerrain() ──► Grid (512×128×512 bytes)
 
 | File | Responsibility |
 |---|---|
-| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, terrain/tree generation, `findSpawn` |
+| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, trees and rocks, `findSpawn` |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO, `Quad` packing/unpacking |
 | `src/player.h/.cpp` | Player physics and collision, character model (`buildPart`), procedural animation (`posePlayer`) |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, buffer uploads, render targets, frustum culling, day/night lighting, screenshots |
-| `src/main.cpp` | CLI options, window, input, orbit camera, main loop, benchmark stats |
+| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Camera, World, Stats tabs. Owns `GameSettings` and `DebugActions` |
+| `src/main.cpp` | CLI options, window, input routing (game vs. debug UI), orbit camera, main loop, benchmark stats |
 | `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs` |
 
 ## World
 
-- `Grid` stores one `Block` byte per voxel: 512×128×512 = 32 MiB. There is no per-chunk storage.
+- `Grid` stores one `Block` byte per voxel: 1024×192×1024 = 192 MiB. There is no per-chunk storage.
   Chunks (32³) exist only as meshing and draw units.
-- **Generation** (`generateTerrain`), parallel over z-rows:
-  - Height comes from two FastNoiseLite OpenSimplex2 fBm fields: rolling hills (freq 0.0045) plus a
-    cubed mountain mask (freq 0.0018).
-  - The surface block depends on height: sand at the shore, grass, stone above 78, snow above 92.
-    Below the surface come 3 blocks of subsoil, then stone.
-  - Water fills up to `kSeaLevel` (34).
-  - Trees are placed afterwards on a single thread: at most one per 6×6 cell, density driven by a
-    third noise field. Each has a trunk of 4–6 blocks and an ellipsoid leaf blob.
-- The world is deterministic per seed (tested). Generation takes ~0.02 s on an M4.
+- **Regions.** Two very low-frequency noise fields (freq 0.002, domain-warped by up to 100 blocks for
+  organic borders) give each column a *forest* and a *rocky* strength from 0 to 1. Rocky land
+  suppresses forest, so the two stay mostly separate. Where both are near 0 the land is **open
+  plains**. Regions are a few hundred blocks across; that size is what makes the world feel vast.
+- **Terrain** (`generateTerrain`, parallel over z-rows):
+  - Hill height scales with region: about 8 blocks on plains, 18 in forests, up to 58 on rocky land.
+    The hill noise is squared, so hills rise out of flat ground instead of rippling.
+  - Rare mountain ranges add up to 80 blocks, and lake basins dip below sea level.
+  - Surface block: sand at the shore, grass, broad bare-stone patches on rocky land, stone above 110,
+    snow above 130. Below the surface come 3 blocks of subsoil, then stone.
+  - Water fills up to `kSeaLevel` (34). Heights are capped at `size.y - 30` to leave headroom.
+- **Decoration**, run sequentially (the shapes cross column boundaries), seeded per cell so it is
+  deterministic:
+  - **Trees:** one candidate per 7×7 cell, with probability 75% × forest strength plus 0.4%, so the
+    plains get a lone tree now and then. Trunks are 8–14 blocks (2×2 from 12 up), with a flattened,
+    ragged canopy of radius ~4–5.
+  - **Rocks** (`Rock` block): one candidate per 14×14 cell, with probability 40% × rocky strength plus
+    0.6%. On rocky land most are tapering spires 10–23 blocks tall; the rest are half-buried boulders.
+- The world is deterministic per seed (tested). `core_test` also checks that forests and rocks exist
+  and that a 96×96-column plain with no trees or rocks exists. Generation takes ~0.15 s on an M4.
 
 ## Meshing (`meshRegion`)
 
@@ -56,7 +68,7 @@ Per region (a 32³ chunk, or a whole character part):
 5. Opaque and water quads go to separate lists, so water can be drawn in its own blended pass.
 
 Neighbours are read from the full `Grid`, so chunk borders produce no internal faces and AO is
-seamless across chunks. The full world (~560 non-empty chunks, ~480k quads) meshes in ~0.12 s using
+seamless across chunks. The full world (~2,500 non-empty chunks, ~1.8M quads) meshes in ~1.1 s using
 all cores.
 
 ### Packed quad layout (8 bytes)
@@ -94,8 +106,15 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
      1. Sky: fullscreen triangle, no depth.
      2. Opaque chunks, back-face culled, after CPU frustum culling.
      3. Character: 6 parts, same pipeline, one model matrix each.
-     4. Water: alpha-blended, depth test on, depth write off.
-  3. Blit `resolved_` to the swapchain. Owning the final image is what makes `--screenshot` possible.
+     4. Wireframe (debug only): the same quads again through a line-fill pipeline, depth-tested.
+     5. Water: alpha-blended, depth test on, depth write off.
+  3. Debug UI (when open): a second pass draws ImGui into `resolved_`.
+  4. Blit `resolved_` to the swapchain. Owning the final image is what makes `--screenshot` possible.
+- **Debug views:** `Frame.debug.x` selects shaded, greedy quads (color per merged quad), chunks
+  (color per 32³ cell), AO only, or normals. The branch is on a uniform, so it's coherent. The quad
+  index rides in the high 24 bits of the existing flat `blockAndQuad` output rather than a new
+  one: on Apple's tile-based GPUs every extra vertex output costs bandwidth, and two extra outputs
+  measured ~15% slower frames.
 - **Color:** the swapchain is `SDR_LINEAR` (sRGB format), so all lighting is in linear space. The
   palette is sRGB in `kPalette` and converted at upload. Output goes through an ACES filmic tonemap.
 - **Shading:** a directional light (sun by day, moon by night) plus a hemispheric sky/ground
@@ -113,10 +132,17 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   - A blocked horizontal move while grounded or swimming tries a 1-block step-up first.
   - `onGround` comes from a 2 mm probe below the feet after moving, so it holds at any frame rate
     (tested at 1000 Hz).
-  - Gravity is 28, jump speed 9.5. Walk is 5 b/s, run 9 b/s, with exponential velocity smoothing.
+  - Defaults: gravity 28, jump speed 9.5, walk 5 b/s, run 9 b/s, with exponential velocity smoothing.
   - In water, gravity is weak and Space swims up.
 - **Character:** six floating parts (head, torso, 2 hands, 2 feet), each a tiny `Grid` built by
   `buildPart` and meshed by the same mesher. One character voxel is 0.1 blocks.
+- **Tuning and flight:** walk/run/jump speed, gravity, fly and noclip live in `Player::tuning`, so
+  the debug UI edits them live. Flight ignores gravity (Space rises, Ctrl sinks, Shift is 2.5×) and
+  still collides; noclip moves straight through terrain.
+- **Camera:** an orbit around a smoothed target 1.4 blocks above the feet. `cameraClearance` marches
+  a cube of half-size 0.3 (larger than the near plane's half-diagonal) out from the target in 0.1
+  steps. The camera snaps in to the first blocked distance and eases back out, so terrain never
+  cuts into the view and the camera doesn't pop.
 - **Animation:** procedural, in `posePlayer`.
   - The gait phase advances with the *distance actually travelled* (stride 1.7 blocks), so the feet
     don't slide or keep walking against walls.
@@ -142,16 +168,16 @@ derives the following from the sun height:
 
 | Metric | Value |
 |---|---|
-| World generation | ~0.02 s |
-| Meshing + upload | ~0.11–0.22 s |
-| GPU memory for world quads | ~3.7 MB |
-| Mean frame time (benchmark, vsync off) | ~0.5–1.3 ms |
+| World generation | ~0.15–0.2 s |
+| Meshing + upload | ~1.1 s |
+| GPU memory for world quads | ~14 MB |
+| Mean frame time (benchmark, vsync off) | ~2–3 ms |
 
 ## Known ceilings
 
 | Ceiling | Upgrade path |
 |---|---|
-| Fixed-size world, meshed once at startup | Chunk streaming + per-chunk remesh jobs (M1) |
+| Fixed-size world (192 MiB dense grid), meshed once at startup | Chunk streaming + per-chunk remesh jobs (M1) |
 | Opaque meshes rebuilt as a whole; no block editing | Per-chunk buffer sub-allocation |
 | One draw call per chunk | `SDL_DrawGPUPrimitivesIndirect` with a GPU-culled draw list |
 | MSL-only shaders (macOS) | HLSL/Slang + SDL_shadercross for SPIR-V/DXIL (M1) |

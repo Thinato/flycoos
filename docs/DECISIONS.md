@@ -51,7 +51,7 @@
   - Mesh shaders: unavailable through SDL GPU, and they would need a compute pipeline.
   - Binary greedy meshing (bitmask): faster meshing, but more complex. We'll revisit when streaming
     needs remeshing budgets.
-- **Consequences:** about 16× less vertex data than float vertices, ~480k quads = 3.7 MB for the
+- **Consequences:** about 16× less vertex data than float vertices, ~1.8M quads = 14 MB for the
   whole world, and frame times around 1 ms. Region size is capped at 64 per axis (6-bit fields);
   chunks use 32.
 
@@ -74,3 +74,21 @@
     projects, tests and install rules never run.
   - Both are marked `SYSTEM`, so their warnings don't mix with ours.
 - **Consequences:** the first configure needs network access. There are no extra system packages.
+
+## ADR-006: Dear ImGui for the debug UI
+
+- **Status:** accepted (2026-11-02)
+- **Context:** we need an in-game debug window with tabs, sliders, checkboxes, text input and
+  graphs for tuning movement, inspecting meshes and controlling time and world generation.
+- **Decision:** Dear ImGui v1.93.0, using its SDL3 platform backend and SDL_GPU renderer backend.
+  It's compiled from a pinned, hash-checked tarball as a separate static library, so our warning
+  flags don't apply to it. The UI is drawn in a second render pass into the resolve target, before
+  the blit.
+- **Alternatives considered:**
+  - Hand-written UI on our renderer: weeks of work for widgets ImGui already has.
+  - Separate tool windows or a web inspector: more moving parts, and no in-world context.
+- **Consequences:**
+  - ImGui's colors are authored in sRGB. Our swapchain is sRGB with linear-light output, so the
+    style colors are converted to linear at startup.
+  - Screenshots include the UI when it's open.
+  - The debug UI costs nothing when closed: no ImGui frame is built and no extra pass runs.

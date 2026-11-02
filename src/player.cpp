@@ -6,7 +6,6 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-constexpr float kWalkSpeed = 5, kRunSpeed = 9, kGravity = 28, kJumpSpeed = 9.5f;
 constexpr float kStride = 1.7f;  // blocks travelled per full gait cycle
 constexpr float kEps = 1e-3f;
 
@@ -49,16 +48,25 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     constexpr float kTau = 2 * std::numbers::pi_v<float>;
     p.breathPhase = std::fmod(p.breathPhase + dt * 2.2f, kTau);
 
+    const PlayerTuning& t = p.tuning;
+    bool flying = t.fly || t.noclip;
     p.inWater = g.get(glm::ivec3(glm::floor(p.pos + glm::vec3(0, 0.9f, 0)))) == Water;
-    glm::vec2 target = in.move * (in.run ? kRunSpeed : kWalkSpeed) * (p.inWater ? 0.6f : 1.0f);
-    float control = p.onGround || p.inWater ? 12.0f : 3.0f;
-    p.vel.x = approach(p.vel.x, target.x, control, dt);
-    p.vel.z = approach(p.vel.z, target.y, control, dt);
-    if (p.inWater) {
-        p.vel.y = in.jump ? 4.0f : std::max(p.vel.y - 6 * dt, -3.0f);
+    if (flying) {
+        float speed = t.flySpeed * (in.run ? 2.5f : 1.0f);
+        p.vel = {approach(p.vel.x, in.move.x * speed, 10, dt),
+                 approach(p.vel.y, float(in.jump - in.descend) * speed, 10, dt),
+                 approach(p.vel.z, in.move.y * speed, 10, dt)};
     } else {
-        p.vel.y = std::max(p.vel.y - kGravity * dt, -50.0f);
-        if (in.jump && p.onGround) p.vel.y = kJumpSpeed;
+        glm::vec2 target = in.move * (in.run ? t.runSpeed : t.walkSpeed) * (p.inWater ? 0.6f : 1.0f);
+        float control = p.onGround || p.inWater ? 12.0f : 3.0f;
+        p.vel.x = approach(p.vel.x, target.x, control, dt);
+        p.vel.z = approach(p.vel.z, target.y, control, dt);
+        if (p.inWater) {
+            p.vel.y = in.jump ? 4.0f : std::max(p.vel.y - 6 * dt, -3.0f);
+        } else {
+            p.vel.y = std::max(p.vel.y - t.gravity * dt, -50.0f);
+            if (in.jump && p.onGround) p.vel.y = t.jumpSpeed;
+        }
     }
 
     glm::vec3 delta = p.vel * dt;
@@ -67,6 +75,10 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     bool canStep = p.onGround || p.inWater;
     glm::vec3 before = p.pos;
     p.onGround = false;
+    if (t.noclip) {  // pass straight through terrain
+        p.pos += delta;
+        steps = 0;
+    }
     for (int i = 0; i < steps; ++i) {
         moveAxis(p, g, 0, delta.x / steps, canStep || p.onGround);
         moveAxis(p, g, 2, delta.z / steps, canStep || p.onGround);
@@ -74,7 +86,7 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     }
     // Probe for ground instead of relying on this frame's fall reaching it: at high frame
     // rates one frame of gravity is smaller than the kEps rest gap.
-    if (p.vel.y <= 0 && overlapsSolid(g, p.pos - glm::vec3(0, 2 * kEps, 0))) {
+    if (!t.noclip && p.vel.y <= 0 && overlapsSolid(g, p.pos - glm::vec3(0, 2 * kEps, 0))) {
         p.onGround = true;
         p.vel.y = 0;
     }
@@ -87,12 +99,28 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     float moved = glm::length(glm::vec2(p.pos.x - before.x, p.pos.z - before.z));
     float speed = moved / dt;
     p.gaitPhase = std::fmod(p.gaitPhase + moved * kTau / kStride, kTau);
-    p.gaitAmount = approach(p.gaitAmount, speed > 0.3f ? std::min(speed / kWalkSpeed, 1.4f) : 0, 10, dt);
-    p.airAmount = approach(p.airAmount, p.onGround || p.inWater ? 0.0f : 1.0f, 12, dt);
+    bool walking = speed > 0.3f && !flying;
+    p.gaitAmount = approach(p.gaitAmount, walking ? std::min(speed / t.walkSpeed, 1.4f) : 0, 10, dt);
+    p.airAmount = approach(p.airAmount, (p.onGround || p.inWater) && !flying ? 0.0f : 1.0f, 12, dt);
     if (glm::length(glm::vec2(p.vel.x, p.vel.z)) > 0.3f) {  // face where we're trying to go
         float diff = std::remainder(std::atan2(p.vel.x, p.vel.z) - p.yaw, kTau);
         p.yaw = std::remainder(p.yaw + diff * (1 - std::exp(-12 * dt)), kTau);
     }
+}
+
+float cameraClearance(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDist, float radius) {
+    auto blocked = [&](glm::vec3 c) {
+        glm::ivec3 lo(glm::floor(c - radius)), hi(glm::floor(c + radius));
+        for (int y = lo.y; y <= hi.y; ++y)
+            for (int z = lo.z; z <= hi.z; ++z)
+                for (int x = lo.x; x <= hi.x; ++x)
+                    if (isOpaque(g.get({x, y, z}))) return true;
+        return false;
+    };
+    constexpr float kStep = 0.1f;
+    for (float t = kStep; t < maxDist; t += kStep)
+        if (blocked(from + dir * t)) return std::max(0.0f, t - kStep);
+    return blocked(from + dir * maxDist) ? std::max(0.0f, maxDist - kStep) : maxDist;
 }
 
 // ---- Character model --------------------------------------------------------

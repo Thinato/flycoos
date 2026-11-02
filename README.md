@@ -5,7 +5,7 @@ action. Over time it grows open-world RPG systems (quests, factions, skills you 
 and MMO-style systems (classes, talents, group dungeons).
 
 This repository is **milestone 0**: a playable prototype with a voxel character, a small procedural
-world with a day/night cycle, and procedural walk/idle animation. It runs at roughly 1000 FPS on an
+world with a day/night cycle, and procedural walk/idle animation. It runs at roughly 300+ FPS on an
 Apple M4.
 
 - [docs/VISION.md](docs/VISION.md): what the game is, and what it is not
@@ -44,11 +44,26 @@ GPU debug layer.
 |---|---|
 | W A S D | Move (relative to the camera) |
 | Shift | Run |
-| Space | Jump / swim up |
+| Space | Jump / swim up (fly: rise) |
+| Ctrl | Fly: sink |
 | Mouse | Orbit the camera |
 | Wheel | Zoom |
 | T (hold) | Fast-forward time (60×) |
-| Esc | Quit |
+| `.` | Open/close the debug window |
+| Esc | Close the debug window, otherwise quit |
+
+## Debug window
+
+Press `.` to open it. The mouse cursor is freed while it's open; the keyboard still moves the player
+unless a text field has focus.
+
+| Tab | What's there |
+|---|---|
+| Render | View mode (shaded, greedy quads, chunks, ambient occlusion, normals), wireframe quad edges, sky/fog/water/character toggles, frustum culling on/off or frozen, per-frame chunk/quad/draw-call counts |
+| Player | Position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
+| Camera | Field of view, distance (up to 80 for overviews), terrain collision, mouse sensitivity |
+| World | Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
+| Stats | Frame-time graph of the last 240 frames, average and worst frame |
 
 ## Command-line options
 
@@ -59,6 +74,8 @@ GPU debug layer.
 | `--frames N` | Benchmark: the player walks a circle and the camera orbits; exits after N frames and prints frame-time stats. Vsync is off. |
 | `--screenshot out.bmp` | With `--frames`: save the last frame as a BMP |
 | `--look YAW PITCH` | With `--frames`: fixed camera angles in degrees instead of the orbit (yaw 0 looks toward −Z, −90 toward +X; negative pitch looks up) |
+| `--debug` | Start with the debug window open (it's also captured by `--screenshot`) |
+| `--view MODE` | Start in a debug view: `shaded`, `quads`, `chunks`, `ao`, `normals`, or `wire` (wireframe) |
 
 Example benchmark at night:
 
@@ -69,11 +86,12 @@ Example benchmark at night:
 ## Layout
 
 ```
-src/world.*      voxel grid, terrain + tree generation, parallelFor
+src/world.*      voxel grid, region-based terrain (forest / rocky / plains), trees + rocks, parallelFor
 src/mesher.*     greedy mesher with ambient occlusion -> 8-byte packed quads
-src/player.*     movement physics, collision, character model, procedural animation
+src/player.*     movement physics (+ fly/noclip tuning), camera collision, character model, procedural animation
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
+src/debug_ui.*   Dear ImGui debug window (toggle with .)
 src/main.cpp     window, input, camera, main loop, benchmark mode
 shaders/         world.metal (voxel, water, sky), compiled at runtime
-tests/           core_test.cpp: mesher, packing, physics, generation checks
+tests/           core_test.cpp: mesher, packing, physics, flight, camera, generation checks
 ```

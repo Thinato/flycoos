@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <thread>
 
 #include <FastNoiseLite.h>
@@ -23,59 +24,133 @@ static uint32_t hash(int x, int z, uint32_t seed) {
     return h ^ (h >> 16);
 }
 
+// Per-voxel jitter in [-0.45, 0.45] to roughen rock and canopy surfaces.
+static float jitter(glm::ivec3 p, uint32_t seed) {
+    return float(hash(p.x, p.z, seed ^ uint32_t(p.y) * 0x9e3779b9u) & 255) / 255.0f * 0.9f - 0.45f;
+}
+
 static int topY(const Grid& g, int x, int z) {
     for (int y = g.size.y - 1; y >= 0; --y)
         if (g.get({x, y, z}) != Air) return y;
     return -1;
 }
 
+static FastNoiseLite makeNoise(uint32_t seed, float frequency, int octaves) {
+    FastNoiseLite n{int(seed)};
+    n.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
+    n.SetFrequency(frequency);
+    if (octaves > 1) {
+        n.SetFractalType(FastNoiseLite::FractalType_FBm);
+        n.SetFractalOctaves(octaves);
+    }
+    return n;
+}
+
+static bool nearEdge(const Grid& g, int x, int z, int margin) {
+    return x < margin || z < margin || x >= g.size.x - margin || z >= g.size.z - margin;
+}
+
+// Tall tree: 8-14 block trunk (2x2 when 12+), flattened ragged canopy of radius ~4-5.
+static void placeTree(Grid& g, int x, int z, uint32_t rnd, uint32_t seed) {
+    int y = topY(g, x, z);
+    int trunk = 8 + int((rnd >> 3) % 7), thick = trunk >= 12 ? 2 : 1;
+    float radius = 2.5f + trunk * 0.2f;
+    int r = int(std::ceil(radius));
+    if (y < 0 || g.get({x, y, z}) != Grass || nearEdge(g, x, z, r + 2) || y + trunk + r + 1 >= g.size.y) return;
+
+    for (int dz = 0; dz < thick; ++dz)
+        for (int dx = 0; dx < thick; ++dx)
+            for (int ty = y + trunk; ty > y - 3 && !isOpaque(g.get({x + dx, ty, z + dz})); --ty)
+                g.set({x + dx, ty, z + dz}, Wood);  // grows down to the ground on slopes
+
+    glm::vec3 center{x + thick * 0.5f, y + trunk + 0.5f, z + thick * 0.5f};
+    for (int dy = -r; dy <= r; ++dy)
+        for (int dz = -r - 1; dz <= r + 1; ++dz)
+            for (int dx = -r - 1; dx <= r + 1; ++dx) {
+                glm::ivec3 p = glm::ivec3(glm::floor(center)) + glm::ivec3(dx, dy, dz);
+                glm::vec3 d = (glm::vec3(p) + 0.5f - center) / glm::vec3(radius, radius * 0.7f, radius);
+                if (glm::dot(d, d) + jitter(p, seed) * 0.4f <= 1 && g.get(p) == Air) g.set(p, Leaves);
+            }
+}
+
+// Rock spire (10-23 tall, tapering) or a half-buried boulder.
+static void placeRock(Grid& g, int x, int z, uint32_t rnd, bool spire, uint32_t seed) {
+    int y = topY(g, x, z);
+    float radius = spire ? 2.5f + float((rnd >> 8) % 3) * 0.75f : 2.0f + float((rnd >> 8) % 3);
+    int height = spire ? 10 + int((rnd >> 12) % 14) : int(radius * 1.5f);
+    int r = int(std::ceil(radius)) + 1;
+    if (y < 0 || g.get({x, y, z}) == Water || nearEdge(g, x, z, r + 1) || y + height + 1 >= g.size.y) return;
+
+    for (int dy = -3; dy <= height; ++dy)
+        for (int dz = -r; dz <= r; ++dz)
+            for (int dx = -r; dx <= r; ++dx) {
+                glm::ivec3 p{x + dx, y + dy, z + dz};
+                float t = std::max(0.0f, float(dy)) / float(height);
+                float d = spire ? std::sqrt(float(dx * dx + dz * dz)) / (radius * (1 - 0.65f * std::pow(t, 1.3f)))
+                                : glm::length(glm::vec3(dx, (dy - radius * 0.3f) / 0.75f, dz)) / radius;
+                if (d + jitter(p, seed) * 0.25f <= 1) g.set(p, Rock);
+            }
+}
+
 void generateTerrain(Grid& g, uint32_t seed) {
-    FastNoiseLite hills{int(seed)};
-    hills.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
-    hills.SetFractalType(FastNoiseLite::FractalType_FBm);
-    hills.SetFractalOctaves(5);
-    hills.SetFrequency(0.0045f);
-    FastNoiseLite mountains{int(seed + 1u)};
-    mountains.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
-    mountains.SetFractalType(FastNoiseLite::FractalType_FBm);
-    mountains.SetFractalOctaves(3);
-    mountains.SetFrequency(0.0018f);
-    FastNoiseLite forest{int(seed + 2u)};
-    forest.SetFrequency(0.012f);
+    // Region noises are low-frequency (features ~250-500 blocks) so each kind of land is vast.
+    FastNoiseLite warp = makeNoise(seed + 10u, 0.003f, 1);
+    warp.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
+    warp.SetDomainWarpAmp(100);
+    FastNoiseLite forestNoise = makeNoise(seed + 1u, 0.002f, 2);
+    FastNoiseLite rockNoise = makeNoise(seed + 2u, 0.002f, 2);
+    FastNoiseLite hills = makeNoise(seed, 0.006f, 4);
+    FastNoiseLite mountains = makeNoise(seed + 3u, 0.0015f, 3);
+    FastNoiseLite lakes = makeNoise(seed + 4u, 0.004f, 2);
+    FastNoiseLite patches = makeNoise(seed + 5u, 0.02f, 1);
+
+    // Region strengths (0..1) at a column: x = forest, y = rocky land. Neither = open plains.
+    // Rocky land pushes forest out so the two stay mostly separate instead of cluttering together.
+    auto regions = [&](int x, int z) {
+        float wx = float(x), wz = float(z);
+        warp.DomainWarp(wx, wz);  // organic region borders
+        float rocky = glm::smoothstep(0.20f, 0.40f, rockNoise.GetNoise(wx, wz));
+        float forest = glm::smoothstep(0.10f, 0.30f, forestNoise.GetNoise(wx, wz)) * (1 - 0.85f * rocky);
+        return glm::vec2(forest, rocky);
+    };
 
     // Columns are independent: fill terrain and water in parallel, one z-row per task.
     parallelFor(g.size.z, [&](int z) {
         for (int x = 0; x < g.size.x; ++x) {
-            float n = hills.GetNoise(float(x), float(z));                    // [-1,1] rolling hills
-            float m = mountains.GetNoise(float(x), float(z)) * 0.5f + 0.5f;  // [0,1] mountain mask
-            int h = int(kSeaLevel + 3 + n * 16 + m * m * m * 70 * (0.6f + 0.4f * n));
-            h = std::clamp(h, 2, std::max(2, g.size.y - 12));
-            Block top = h <= kSeaLevel + 1 ? Sand : h > 92 ? Snow : h > 78 ? Stone : Grass;
+            float fx = float(x), fz = float(z);
+            glm::vec2 region = regions(x, z);
+            float hillHeight = 8 + 10 * region.x + 50 * region.y;  // plains gentle, rocky land tall
+            float hill = hills.GetNoise(fx, fz) * 0.5f + 0.5f;
+            float mountain = std::max(0.0f, mountains.GetNoise(fx, fz) * 0.5f + 0.5f - 0.6f) / 0.4f;
+            float lake = std::max(0.0f, -lakes.GetNoise(fx, fz) - 0.5f) * 50;
+            int h = int(kSeaLevel + 5 + hill * hill * hillHeight + mountain * mountain * 80 - lake);
+            h = std::clamp(h, 2, std::max(2, g.size.y - 30));  // headroom for tall trees and spires
+
+            bool bareRock = region.y > 0.5f && patches.GetNoise(fx, fz) > 0.3f;
+            Block top = h <= kSeaLevel + 1 ? Sand : h > 130 ? Snow : h > 110 || bareRock ? Stone : Grass;
             Block sub = top == Sand ? Sand : top == Grass ? Dirt : Stone;
             for (int y = 0; y <= h; ++y) g.set({x, y, z}, y == h ? top : y > h - 4 ? sub : Stone);
             for (int y = h + 1; y <= kSeaLevel; ++y) g.set({x, y, z}, Water);
         }
     });
 
-    // Trees: at most one per 6x6 cell, denser where the forest noise is high.
-    // Sequential because leaf blobs cross column boundaries.
-    for (int cz = 0; cz < g.size.z / 6; ++cz)
-        for (int cx = 0; cx < g.size.x / 6; ++cx) {
-            uint32_t r = hash(cx, cz, seed);
-            int x = cx * 6 + 1 + int(r % 4), z = cz * 6 + 1 + int((r >> 8) % 4);
-            float chance = float((r >> 16) & 0xFFFF) / 65536.0f;
-            float density = std::clamp((forest.GetNoise(float(x), float(z)) * 0.5f + 0.5f) * 1.2f - 0.3f, 0.03f, 0.85f);
-            if (chance >= density || x < 3 || z < 3 || x > g.size.x - 4 || z > g.size.z - 4) continue;
-            int y = topY(g, x, z), trunk = 4 + int((r >> 4) % 3);
-            if (y < 0 || g.get({x, y, z}) != Grass || y + trunk + 3 >= g.size.y) continue;
-            for (int i = 1; i <= trunk; ++i) g.set({x, y + i, z}, Wood);
-            for (int dy = -2; dy <= 2; ++dy)
-                for (int dz = -2; dz <= 2; ++dz)
-                    for (int dx = -2; dx <= 2; ++dx) {
-                        glm::ivec3 p{x + dx, y + trunk + dy, z + dz};
-                        if (dx * dx + dz * dz + dy * dy * 1.3f <= 5.5f && g.get(p) == Air) g.set(p, Leaves);
-                    }
-            g.set({x, y + trunk + 3, z}, Leaves);
+    // Decoration is sequential (shapes cross column boundaries) and seeded per cell, so it's
+    // deterministic. Trees: one candidate per 7x7 cell; dense in forests, a rare lone tree elsewhere.
+    for (int cz = 0; cz < g.size.z / 7; ++cz)
+        for (int cx = 0; cx < g.size.x / 7; ++cx) {
+            uint32_t rnd = hash(cx, cz, seed);
+            int x = cx * 7 + 1 + int(rnd % 5), z = cz * 7 + 1 + int((rnd >> 8) % 5);
+            float chance = float((rnd >> 16) & 0xFFFF) / 65536.0f;
+            if (chance < 0.75f * regions(x, z).x + 0.004f) placeTree(g, x, z, rnd, seed);
+        }
+    // Rocks: one candidate per 14x14 cell; spires and boulders on rocky land, a rare boulder elsewhere.
+    for (int cz = 0; cz < g.size.z / 14; ++cz)
+        for (int cx = 0; cx < g.size.x / 14; ++cx) {
+            uint32_t rnd = hash(cx, cz, seed ^ 0x5bd1e995u);
+            int x = cx * 14 + 2 + int(rnd % 10), z = cz * 14 + 2 + int((rnd >> 8) % 10);
+            float chance = float((rnd >> 16) & 0xFFFF) / 65536.0f;
+            float rocky = regions(x, z).y;
+            if (chance < 0.4f * rocky + 0.006f) placeRock(g, x, z, rnd, rocky > 0.5f && (rnd >> 4) % 4 != 0, seed);
         }
 }
 

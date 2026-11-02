@@ -8,12 +8,12 @@
 // Block ids double as palette indices (see kPalette in renderer.cpp).
 // Water's id is also hard-coded as kWater in shaders/world.metal.
 enum Block : uint8_t { Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water,
-                       Skin, Tunic, Belt, Boots, Hair, Eye, BlockCount };
+                       Skin, Tunic, Belt, Boots, Hair, Eye, Rock, BlockCount };
 
 inline bool isOpaque(Block b) { return b != Air && b != Water; }
 
 constexpr int kChunk = 32;
-constexpr glm::ivec3 kWorldSize{512, 128, 512};
+constexpr glm::ivec3 kWorldSize{1024, 192, 1024};  // ponytail: dense grid (192 MiB); chunk streaming in M1
 constexpr int kSeaLevel = 34;
 static_assert(kChunk <= 32, "quad positions are 6-bit; see mesher.h");
 static_assert(kWorldSize.x % kChunk == 0 && kWorldSize.y % kChunk == 0 && kWorldSize.z % kChunk == 0);

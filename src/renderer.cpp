@@ -10,6 +10,8 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <imgui_impl_sdlgpu3.h>
+
 #include "mesher.h"
 
 namespace {
@@ -31,12 +33,14 @@ constexpr float kPalette[BlockCount][3] = {
     {0.28f, 0.18f, 0.12f},  // Boots
     {0.80f, 0.45f, 0.20f},  // Hair
     {0.08f, 0.08f, 0.10f},  // Eye
+    {0.52f, 0.50f, 0.47f},  // Rock
 };
 
 // Must match struct Frame / Draw in shaders/world.metal.
 struct FrameUniforms {
     glm::mat4 viewProj, invViewProj;
     glm::vec4 eye, sunDir, lightDir, lightColor, skyZenith, skyHorizon, ambientSky, ambientGround, fog;
+    glm::vec4 debug;  // x: ViewMode
     glm::vec4 palette[32];
 };
 struct DrawUniforms {
@@ -44,7 +48,7 @@ struct DrawUniforms {
     glm::vec4 hashOffset;
     glm::uvec4 firstQuad;  // x used
 };
-static_assert(sizeof(FrameUniforms) == 2 * 64 + 9 * 16 + 32 * 16);
+static_assert(sizeof(FrameUniforms) == 2 * 64 + 10 * 16 + 32 * 16);
 static_assert(sizeof(DrawUniforms) == 64 + 16 + 16);
 static_assert(BlockCount <= 32);
 
@@ -78,7 +82,7 @@ void ambience(float t, FrameUniforms& u) {
     u.skyHorizon = glm::vec4(horizon, 0);
     u.ambientSky = glm::vec4(ambient, 0);
     u.ambientGround = glm::vec4(ambient * glm::vec3(0.45f, 0.40f, 0.32f), 0);
-    u.fog = {0.0055f, night, glm::smoothstep(-0.05f, 0.05f, h), float(kSeaLevel + 1)};
+    u.fog = {0.0035f, night, glm::smoothstep(-0.05f, 0.05f, h), float(kSeaLevel + 1)};
 }
 
 // True if the AABB is at least partly inside the frustum of viewProj (depth 0..1).
@@ -98,7 +102,7 @@ bool inFrustum(const glm::mat4& m, glm::vec3 lo, glm::vec3 hi) {
 Renderer::~Renderer() {
     if (!device_) return;
     SDL_WaitForGPUIdle(device_);
-    for (auto* p : {sky_, opaque_, water_}) if (p) SDL_ReleaseGPUGraphicsPipeline(device_, p);
+    for (auto* p : {sky_, opaque_, water_, wire_}) if (p) SDL_ReleaseGPUGraphicsPipeline(device_, p);
     for (auto* b : {worldOpaque_, worldWater_, character_}) if (b) SDL_ReleaseGPUBuffer(device_, b);
     for (auto* t : {msaaColor_, depth_, resolved_}) if (t) SDL_ReleaseGPUTexture(device_, t);
     SDL_ReleaseWindowFromGPUDevice(device_, window_);
@@ -151,13 +155,15 @@ bool Renderer::init(SDL_Window* window, bool vsync) {
     SDL_GPUShader* waterFs = shader(src, "water_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
     SDL_GPUShader* skyVs = shader(src, "sky_vs", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader* skyFs = shader(src, "sky_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
-    if (voxelVs && voxelFs && waterFs && skyVs && skyFs) {
+    SDL_GPUShader* wireFs = shader(src, "wire_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
+    if (voxelVs && voxelFs && waterFs && skyVs && skyFs && wireFs) {
         sky_ = pipeline(skyVs, skyFs, false, false, false, SDL_GPU_CULLMODE_NONE);
         opaque_ = pipeline(voxelVs, voxelFs, true, true, false, SDL_GPU_CULLMODE_BACK);
         water_ = pipeline(voxelVs, waterFs, true, false, true, SDL_GPU_CULLMODE_NONE);
+        wire_ = pipeline(voxelVs, wireFs, true, false, false, SDL_GPU_CULLMODE_BACK, SDL_GPU_FILLMODE_LINE);
     }
-    for (auto* s : {voxelVs, voxelFs, waterFs, skyVs, skyFs}) if (s) SDL_ReleaseGPUShader(device_, s);
-    if (!sky_ || !opaque_ || !water_) {
+    for (auto* s : {voxelVs, voxelFs, waterFs, skyVs, skyFs, wireFs}) if (s) SDL_ReleaseGPUShader(device_, s);
+    if (!sky_ || !opaque_ || !water_ || !wire_) {
         std::println(stderr, "pipeline creation failed: {}", SDL_GetError());
         return false;
     }
@@ -180,7 +186,7 @@ SDL_GPUShader* Renderer::shader(const std::vector<char>& source, const char* ent
 }
 
 SDL_GPUGraphicsPipeline* Renderer::pipeline(SDL_GPUShader* vs, SDL_GPUShader* fs, bool depthTest, bool depthWrite, bool blend,
-                                            SDL_GPUCullMode cull) {
+                                            SDL_GPUCullMode cull, SDL_GPUFillMode fill) {
     SDL_GPUColorTargetDescription target{};
     target.format = colorFormat_;
     if (blend) {
@@ -197,7 +203,7 @@ SDL_GPUGraphicsPipeline* Renderer::pipeline(SDL_GPUShader* vs, SDL_GPUShader* fs
     info.vertex_shader = vs;
     info.fragment_shader = fs;
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    info.rasterizer_state.fill_mode = fill;
     info.rasterizer_state.cull_mode = cull;
     info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
@@ -250,6 +256,7 @@ SDL_GPUBuffer* Renderer::upload(const void* data, uint32_t dataBytes) {
 }
 
 void Renderer::uploadWorld(const Grid& world) {
+    uint64_t start = SDL_GetTicksNS();
     glm::ivec3 counts = world.size / kChunk;
     int n = counts.x * counts.y * counts.z;
     std::vector<Mesh> meshes(static_cast<size_t>(n));
@@ -274,6 +281,7 @@ void Renderer::uploadWorld(const Grid& world) {
     stats.opaqueQuads = opaque.size();
     stats.waterQuads = water.size();
     stats.chunksTotal = int(chunks_.size());
+    stats.meshSeconds = double(SDL_GetTicksNS() - start) * 1e-9;
 }
 
 void Renderer::uploadCharacter() {
@@ -319,7 +327,8 @@ bool Renderer::ensureTargets(uint32_t w, uint32_t h) {
     return true;
 }
 
-bool Renderer::render(const FrameParams& frame, const char* screenshotPath) {
+bool Renderer::render(const FrameParams& frame, const RenderSettings& settings, ImDrawData* ui,
+                      const char* screenshotPath) {
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
     if (!cmd) {
         std::println(stderr, "command buffer acquire failed: {}", SDL_GetError());
@@ -347,13 +356,15 @@ bool Renderer::render(const FrameParams& frame, const char* screenshotPath) {
     u.invViewProj = glm::inverse(u.viewProj);
     u.eye = glm::vec4(frame.eye, 0);
     ambience(frame.timeOfDay, u);
+    if (!settings.fog) u.fog.x = 0;
+    u.debug = {float(settings.viewMode), 0, 0, 0};
     for (int b = 0; b < BlockCount; ++b)
         u.palette[b] = glm::vec4(lin({kPalette[b][0], kPalette[b][1], kPalette[b][2]}), 1);
     SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
     SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);
 
     SDL_GPUColorTargetInfo color{};
-    color.clear_color = {0, 0, 0, 1};
+    color.clear_color = {0.03f, 0.03f, 0.04f, 1};  // visible only with the sky off
     color.load_op = SDL_GPU_LOADOP_CLEAR;
     if (msaaColor_) {
         color.texture = msaaColor_;
@@ -372,39 +383,69 @@ bool Renderer::render(const FrameParams& frame, const char* screenshotPath) {
     depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
     SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &depth);
 
-    SDL_BindGPUGraphicsPipeline(pass, sky_);
-    SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    if (settings.sky) {
+        SDL_BindGPUGraphicsPipeline(pass, sky_);
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    }
 
-    // Cull chunks once; the same visible list serves the opaque and water passes.
+    // Cull chunks once; the same visible list serves every pass. A frozen cull keeps using the
+    // view from when it was frozen.
+    if (!settings.freezeCulling) cullViewProj_ = u.viewProj;
     std::vector<const ChunkDraw*> visible;
     for (const ChunkDraw& c : chunks_)
-        if (inFrustum(u.viewProj, glm::vec3(c.origin), glm::vec3(c.origin + kChunk))) visible.push_back(&c);
+        if (!settings.frustumCulling || inFrustum(cullViewProj_, glm::vec3(c.origin), glm::vec3(c.origin + kChunk)))
+            visible.push_back(&c);
     stats.chunksDrawn = int(visible.size());
+    stats.quadsDrawn = 0;
+    stats.drawCalls = 0;
 
+    auto draw = [&](const DrawUniforms& d, uint32_t count) {
+        SDL_PushGPUVertexUniformData(cmd, 1, &d, sizeof d);
+        SDL_DrawGPUPrimitives(pass, count * 6, 1, 0, 0);
+        stats.quadsDrawn += count;
+        ++stats.drawCalls;
+    };
     auto drawChunks = [&](SDL_GPUBuffer* buffer, bool waterPass) {
         SDL_BindGPUVertexStorageBuffers(pass, 0, &buffer, 1);
         for (const ChunkDraw* c : visible) {
             uint32_t first = waterPass ? c->waterFirst : c->opaqueFirst;
             uint32_t count = waterPass ? c->waterCount : c->opaqueCount;
-            if (!count) continue;
-            DrawUniforms d{glm::translate(glm::mat4(1), glm::vec3(c->origin)), glm::vec4(glm::vec3(c->origin), 0),
-                           glm::uvec4(first, 0, 0, 0)};
-            SDL_PushGPUVertexUniformData(cmd, 1, &d, sizeof d);
-            SDL_DrawGPUPrimitives(pass, count * 6, 1, 0, 0);
+            if (count)
+                draw({glm::translate(glm::mat4(1), glm::vec3(c->origin)), glm::vec4(glm::vec3(c->origin), 0),
+                      glm::uvec4(first, 0, 0, 0)}, count);
         }
+    };
+    auto drawCharacter = [&] {
+        SDL_BindGPUVertexStorageBuffers(pass, 0, &character_, 1);
+        for (int p = 0; p < PartCount; ++p)
+            draw({frame.pose[size_t(p)], glm::vec4(float(p) * 37), glm::uvec4(parts_[size_t(p)].first, 0, 0, 0)},
+                 parts_[size_t(p)].second);
     };
 
     SDL_BindGPUGraphicsPipeline(pass, opaque_);
     drawChunks(worldOpaque_, false);
-    SDL_BindGPUVertexStorageBuffers(pass, 0, &character_, 1);
-    for (int p = 0; p < PartCount; ++p) {
-        DrawUniforms d{frame.pose[size_t(p)], glm::vec4(float(p) * 37), glm::uvec4(parts_[size_t(p)].first, 0, 0, 0)};
-        SDL_PushGPUVertexUniformData(cmd, 1, &d, sizeof d);
-        SDL_DrawGPUPrimitives(pass, parts_[size_t(p)].second * 6, 1, 0, 0);
+    if (settings.character) drawCharacter();
+    if (settings.wireframe) {  // quad edges on top: shows how the greedy mesher merged faces
+        SDL_BindGPUGraphicsPipeline(pass, wire_);
+        drawChunks(worldOpaque_, false);
+        if (settings.character) drawCharacter();
     }
-    SDL_BindGPUGraphicsPipeline(pass, water_);
-    drawChunks(worldWater_, true);
+    if (settings.water) {
+        SDL_BindGPUGraphicsPipeline(pass, water_);
+        drawChunks(worldWater_, true);
+    }
     SDL_EndGPURenderPass(pass);
+
+    if (ui) {  // debug UI goes into `resolved_` too, so screenshots include it
+        ImGui_ImplSDLGPU3_PrepareDrawData(ui, cmd);  // uploads; must happen outside a render pass
+        SDL_GPUColorTargetInfo uiTarget{};
+        uiTarget.texture = resolved_;
+        uiTarget.load_op = SDL_GPU_LOADOP_LOAD;
+        uiTarget.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* uiPass = SDL_BeginGPURenderPass(cmd, &uiTarget, 1, nullptr);
+        ImGui_ImplSDLGPU3_RenderDrawData(ui, cmd, uiPass);
+        SDL_EndGPURenderPass(uiPass);
+    }
 
     SDL_GPUBlitInfo blit{};
     blit.source.texture = resolved_;

@@ -20,6 +20,7 @@ struct Frame {
     float4 ambientSky;
     float4 ambientGround;
     float4 fog;           // x density, y night factor (0..1), z sun disk visibility, w sea surface y
+    float4 debug;         // x view mode: 0 shaded, 1 greedy quads, 2 chunks, 3 AO, 4 normals
     float4 palette[32];
 };
 struct Draw {
@@ -34,7 +35,9 @@ struct VOut {
     float3 voxelPos;
     float3 normal;
     float ao;
-    uint block [[flat]];
+    // block id in bits 0-7, quad index in bits 8-31 (for the greedy-quads debug view). Packed into
+    // one output because every extra vertex output costs bandwidth on tile-based GPUs (~15% here).
+    uint blockAndQuad [[flat]];
 };
 
 constant float3 kNormals[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
@@ -74,7 +77,7 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     out.voxelPos = local - kNormals[face] * 0.5 + d.hashOffset.xyz;
     out.normal = normalize((d.model * float4(kNormals[face], 0.0)).xyz);
     out.ao = ao[c] / 3.0;
-    out.block = block;
+    out.blockAndQuad = block | (d.firstQuad.x + vid / 6) << 8;  // ponytail: quad index wraps past 16.7M quads (debug color only)
     return out;
 }
 
@@ -112,16 +115,40 @@ static float3 light(constant Frame& f, VOut in, float3 albedo) {
     return albedo * (hemi * ao + f.lightColor.rgb * diffuse * mix(0.5, 1.0, in.ao));
 }
 
+// Distinct, fairly bright color per id (PCG hash).
+static float3 idColor(uint n) {
+    n = n * 747796405u + 2891336453u;
+    n = ((n >> ((n >> 28u) + 4u)) ^ n) * 277803737u;
+    n = (n >> 22u) ^ n;
+    return float3(n & 255u, (n >> 8) & 255u, (n >> 16) & 255u) / 255.0 * 0.75 + 0.25;
+}
+
 fragment float4 voxel_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
-    float3 albedo = f.palette[in.block].rgb * (0.9 + 0.2 * hash3(floor(in.voxelPos)));
+    uint mode = uint(f.debug.x);
+    // Unlit debug views are written as display values: the sRGB target would otherwise brighten them.
+    if (mode == 3) return float4(float3(pow(mix(0.05, 1.0, in.ao), 2.2)), 1.0);      // ambient occlusion only
+    if (mode == 4) return float4(pow(normalize(in.normal) * 0.5 + 0.5, 2.2), 1.0);  // normals as color
+    float3 albedo;
+    if (mode == 0) {  // normal path; `mode` is uniform, so this branch is coherent and cheap
+        albedo = f.palette[in.blockAndQuad & 255u].rgb * (0.9 + 0.2 * hash3(floor(in.voxelPos)));
+    } else if (mode == 1) {  // greedy quads
+        albedo = idColor(in.blockAndQuad >> 8);
+    } else {  // chunks: 32^3 cell containing the surface (nudged inside along the normal)
+        uint3 cell = uint3(int3(floor((in.worldPos - in.normal * 0.01) / 32.0)));
+        albedo = idColor(cell.x * 73856093u ^ cell.y * 19349663u ^ cell.z * 83492791u);
+    }
     return float4(tonemap(applyFog(f, light(f, in, albedo), in.worldPos)), 1.0);
+}
+
+fragment float4 wire_fs(VOut in [[stage_in]]) {
+    return float4(0.01, 0.01, 0.015, 1.0);
 }
 
 fragment float4 water_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
     float3 n = normalize(in.normal);
     float3 v = normalize(in.worldPos - f.eye.xyz);
     float fresnel = pow(1.0 - saturate(dot(-v, n)), 4.0);
-    float3 color = mix(light(f, in, f.palette[in.block].rgb), skyColor(f, reflect(v, n)), fresnel * 0.7);
+    float3 color = mix(light(f, in, f.palette[in.blockAndQuad & 255u].rgb), skyColor(f, reflect(v, n)), fresnel * 0.7);
     float spec = pow(saturate(dot(reflect(v, n), f.lightDir.xyz)), 120.0);
     color += f.lightColor.rgb * spec * 0.6;
     return float4(tonemap(applyFog(f, color, in.worldPos)), mix(0.78, 0.95, fresnel));

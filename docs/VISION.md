@@ -36,7 +36,7 @@ it as ours.
 
 ## Milestone 0 (this repository)
 
-A walking voxel adventurer (original design) in a 512×128×512-block procedural world, with forests,
+A walking voxel adventurer (original design) in a 1024×192×1024-block procedural world, with forests,
 lakes, beaches, mountains, a day/night cycle and distance fog. See [ROADMAP.md](ROADMAP.md) for what
 comes next.
 

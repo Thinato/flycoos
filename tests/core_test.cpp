@@ -152,6 +152,38 @@ static void physics() {
         CHECK(p.pos.x > 10.5f);
         CHECK(p.pos.y >= 10.0f);
     }
+    {  // flight: jump rises without gravity; collision still applies unless noclip
+        Grid g = flatWorld(2);
+        Player p;
+        p.pos = {5.5f, 4.001f, 8.5f};
+        p.tuning.fly = true;
+        Input in;
+        in.jump = true;
+        for (int i = 0; i < 120; ++i) updatePlayer(p, g, in, 1 / 120.0f);
+        CHECK(p.pos.y > 10);
+        float flyHeight = p.pos.y;
+        in = {};
+        for (int i = 0; i < 120; ++i) updatePlayer(p, g, in, 1 / 120.0f);
+        CHECK(std::abs(p.pos.y - flyHeight) < 1.5f);  // hovers (only coasting), no falling
+        p.pos = {5.5f, 4.001f, 8.5f};
+        in.move = {1, 0};
+        for (int i = 0; i < 240; ++i) updatePlayer(p, g, in, 1 / 120.0f);
+        CHECK(p.pos.x + kHalfWidth <= 10.0f);  // the 2-high wall still blocks flying
+        p.tuning.noclip = true;
+        for (int i = 0; i < 240; ++i) updatePlayer(p, g, in, 1 / 120.0f);
+        CHECK(p.pos.x > 12);  // noclip passes through
+    }
+    {  // camera clearance stops a camera-sized box short of terrain
+        Grid g = flatWorld(8);  // wall at x = 10, y 4..11
+        float d = cameraClearance(g, {5.5f, 6, 8.5f}, {1, 0, 0}, 9, 0.3f);
+        CHECK(d <= 10 - 5.5f - 0.3f + 1e-3f);
+        CHECK(d >= 10 - 5.5f - 0.3f - 0.11f);
+        CHECK(cameraClearance(g, {5.5f, 6, 8.5f}, {-1, 0, 0}, 3, 0.3f) == 3);  // open
+        // Low camera over the ground: the box must not dip into the floor (top at y = 4).
+        float low = cameraClearance(g, {5.5f, 5.4f, 8.5f}, glm::normalize(glm::vec3(-1, -0.3f, 0)), 9, 0.3f);
+        glm::vec3 eye = glm::vec3(5.5f, 5.4f, 8.5f) + glm::normalize(glm::vec3(-1, -0.3f, 0)) * low;
+        CHECK(eye.y - 0.3f >= 4.0f);
+    }
     {  // walking advances the gait and turns the body toward the motion
         Grid g = flatWorld(0);
         Player p;
@@ -179,11 +211,44 @@ static void generation() {
     CHECK(a.get(glm::ivec3(glm::floor(spawn)) - glm::ivec3(0, 1, 0)) == Grass);
 }
 
+// Large-scale layout: forests and rocky land exist, and somewhere there is an open plain of at
+// least 96x96 columns with no trees or rocks (the "vast plains" requirement).
+static void regions() {
+    Grid g({512, 192, 512});
+    generateTerrain(g, 42);
+    int n = g.size.x, forest = 0, rocky = 0;
+    std::vector<int> sum(size_t(n + 1) * (n + 1), 0);  // 2D prefix sum of decorated columns
+    for (int z = 0; z < n; ++z)
+        for (int x = 0; x < n; ++x) {
+            bool tree = false, rock = false;
+            for (int y = kSeaLevel; y < g.size.y; ++y) {
+                Block b = g.get({x, y, z});
+                tree |= b == Wood || b == Leaves;
+                rock |= b == Rock;
+            }
+            forest += tree;
+            rocky += rock;
+            sum[size_t(z + 1) * (n + 1) + x + 1] = (tree || rock) + sum[size_t(z) * (n + 1) + x + 1] +
+                                                   sum[size_t(z + 1) * (n + 1) + x] - sum[size_t(z) * (n + 1) + x];
+        }
+    CHECK(forest > n * n / 20);   // > 5% of columns under trees
+    CHECK(rocky > n * n / 200);   // > 0.5% of columns with rocks
+    constexpr int kOpen = 96;
+    bool openPlain = false;
+    for (int z = 0; z + kOpen <= n && !openPlain; z += 8)
+        for (int x = 0; x + kOpen <= n && !openPlain; x += 8) {
+            auto at = [&](int xx, int zz) { return sum[size_t(zz) * (n + 1) + xx]; };
+            openPlain = at(x + kOpen, z + kOpen) - at(x, z + kOpen) - at(x + kOpen, z) + at(x, z) == 0;
+        }
+    CHECK(openPlain);
+}
+
 int main() {
     meshing();
     packing();
     physics();
     generation();
+    regions();
     if (failures) std::println(stderr, "{} check(s) failed", failures);
     else std::println("all checks passed");
     return failures ? 1 : 0;

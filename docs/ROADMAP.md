@@ -6,11 +6,14 @@ reach them.
 ## M0: Foundation ✅ (this repository)
 
 - C++23 / CMake / SDL3 GPU (Metal) project that builds with one command on macOS
-- 512×128×512 procedural world: hills, mountains, snow, beaches, lakes, forests
+- 1024×192×1024 procedural world made of large regions: tall forests, rocky highlands with spires,
+  vast open plains, plus lakes, beaches, mountains and snow
 - Greedy-meshed voxel chunks with ambient occlusion, vertex pulling, 4× MSAA, frustum culling
 - Original voxel character with procedural walk, run, idle and jump animation
 - Third-person orbit camera, collision with 1-block step-up, swimming
 - Day/night cycle with sky gradient, sun, moon, stars and distance fog
+- Debug window (`.`): mesh views, wireframe, culling tools, movement tuning, fly/noclip, time and
+  world controls, frame-time graph
 - Benchmark/screenshot mode and engine-core tests
 
 ## M1: A living world
