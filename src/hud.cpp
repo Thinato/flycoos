@@ -65,6 +65,18 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         glm::vec4 clip = viewProj * glm::vec4(head, 1);
         if (clip.w < 0.1f) continue;  // behind the camera
         ImVec2 p((clip.x / clip.w * 0.5f + 0.5f) * screen.x, (0.5f - clip.y / clip.w * 0.5f) * screen.y);
+        if (e.body.hitTime < 1) {  // floating damage number: pops big, rises and fades over a second
+            float t = e.body.hitTime;
+            glm::vec4 c = viewProj * glm::vec4(head + glm::vec3(0, 0.4f + 1.2f * t, 0), 1);
+            if (c.w < 0.1f) c = clip;  // its rising point is behind the camera
+            char num[16];
+            std::snprintf(num, sizeof num, "%d", e.body.lastDamage);
+            float size = line * (2.2f - 0.8f * std::min(t * 4, 1.0f)), alpha = 1 - t * t;
+            ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, num);
+            ImVec2 q((c.x / c.w * 0.5f + 0.5f) * screen.x - ts.x / 2, (0.5f - c.y / c.w * 0.5f) * screen.y - ts.y / 2);
+            dl->AddText(ImGui::GetFont(), size, ImVec2(q.x + 2, q.y + 2), col(0, 0, 0, 0.8f * alpha), num);
+            dl->AddText(ImGui::GetFont(), size, q, col(1, 0.85f, 0.3f, alpha), num);
+        }
         // Speech and the talk hint always show; nameplates only nearby and in line of sight (same
         // box march the camera uses, with a thin box).
         const char* speech = e.speech();
@@ -83,16 +95,16 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         ImU32 nameColor = t.attackable ? col(1, 0.78f, 0.35f, alpha) : col(0.6f, 1, 0.6f, alpha);
         ImU32 healthColor = t.attackable ? col(0.85f, 0.2f, 0.15f, alpha) : col(0.3f, 0.8f, 0.3f, alpha);
         shadowText(dl, ImVec2(p.x - size.x / 2, p.y - line - 6), nameColor, alpha, label);
-        bar(dl, p, ImVec2(90, 7), float(e.body.health) / float(std::max(1, e.body.maxHealth)), healthColor, alpha);
+        bar(dl, p, ImVec2(90, 7), e.body.health / float(std::max(1, maxHealth(e.body.stats))), healthColor, alpha);
         if (!speech && &e == talkTarget) hint(dl, p, alpha);
     }
 
     // Player health, bottom center.
     ImVec2 center(screen.x / 2, screen.y - 40);
-    bar(dl, center, ImVec2(280, 16), float(player.health) / float(std::max(1, player.maxHealth)),
+    bar(dl, center, ImVec2(280, 16), player.health / float(std::max(1, maxHealth(player.stats))),
         col(0.8f, 0.15f, 0.12f), 1);
     char hp[32];
-    std::snprintf(hp, sizeof hp, "%d / %d", player.health, player.maxHealth);
+    std::snprintf(hp, sizeof hp, "%d / %d", int(std::ceil(player.health)), maxHealth(player.stats));
     ImVec2 hs = ImGui::CalcTextSize(hp);
     shadowText(dl, ImVec2(center.x - hs.x / 2, center.y - hs.y / 2), col(1, 1, 1), 1, hp);
 }

@@ -3,6 +3,7 @@
 
 #include <glm/glm.hpp>
 
+#include "stats.h"
 #include "world.h"
 
 // Player AABB: feet-centered, kHalfWidth on x/z, kHeight tall.
@@ -33,8 +34,25 @@ struct Player {
     float airAmount = 0;     // 0 grounded .. 1 airborne
     float breathPhase = 0;  // idle breathing cycle, radians
     PlayerTuning tuning;
-    int health = 100, maxHealth = 100;
+
+    // Combat
+    Stats stats;
+    float health = float(maxHealth(Stats{}));
+    float combatTimer = 0;                 // > 0: in combat, no regeneration
+    float swingTimer = 0;                  // > 0: the next swing isn't ready
+    float punchTime = 0, punchLength = 0;  // seconds into the punch animation, and its length
+    bool punchRight = false;               // which hand the current punch uses
+    bool hitPending = false;               // the current punch hasn't reached its impact frame
+    float hitTime = 99;                    // seconds since this body last took damage
+    int lastDamage = 0;
+    float deadTime = 0;                    // seconds spent at 0 health
+
+    bool alive() const { return health > 0; }
+    bool punching() const { return punchTime < punchLength; }
 };
+
+constexpr float kPunchSeconds = 0.35f;  // punch animation length (shorter if swings are faster)
+constexpr float kPunchImpact = 0.4f;    // fraction of the animation where the fist lands
 
 bool overlapsSolid(const Grid& g, glm::vec3 feet);
 void updatePlayer(Player& p, const Grid& g, const Input& in, float dt);
@@ -48,5 +66,6 @@ float cameraClearance(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDis
 enum Part { Head, Torso, HandL, HandR, FootL, FootR, PartCount };
 enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelCount };
 Grid buildPart(Model model, Part part);
-// Part-grid space -> world space for the body's current animation pose (the dummy is static).
+// Part-grid space -> world space for the body's current animation pose (the dummy only wobbles
+// when hit and topples when out of health).
 std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model);

@@ -102,7 +102,8 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     bool walking = speed > 0.3f && !flying;
     p.gaitAmount = approach(p.gaitAmount, walking ? std::min(speed / t.walkSpeed, 1.4f) : 0, 10, dt);
     p.airAmount = approach(p.airAmount, (p.onGround || p.inWater) && !flying ? 0.0f : 1.0f, 12, dt);
-    if (glm::length(glm::vec2(p.vel.x, p.vel.z)) > 0.3f) {  // face where we're trying to go
+    // Face where we're trying to go; a punch keeps facing where it was aimed.
+    if (!p.punching() && glm::length(glm::vec2(p.vel.x, p.vel.z)) > 0.3f) {
         float diff = std::remainder(std::atan2(p.vel.x, p.vel.z) - p.yaw, kTau);
         p.yaw = std::remainder(p.yaw + diff * (1 - std::exp(-12 * dt)), kTau);
     }
@@ -200,19 +201,40 @@ static void animate(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 (&ro
     off[FootR] = {0, std::max(0.0f, -c) * 1.6f * a + air * 0.8f, -s * 3.0f * a - air * 1.2f};
     rot[FootL].x = -s * 0.35f * a;
     rot[FootR].x = s * 0.35f * a;
+
+    if (p.punching()) {  // jab: the fist shoots forward to shoulder height, the torso twists into it
+        float u = p.punchTime / p.punchLength;
+        float ext = u < kPunchImpact ? u / kPunchImpact : 1 - (u - kPunchImpact) / (1 - kPunchImpact);
+        ext = ext * ext * (3 - 2 * ext);
+        float side = p.punchRight ? 1.0f : -1.0f;  // the right hand is on -x, so it moves toward +x
+        off[p.punchRight ? HandR : HandL] += glm::vec3(side * 2.5f, 2.5f, 8.0f) * ext;
+        rot[Torso].y += side * 0.35f * ext;
+        off[Head].z += 0.5f * ext;
+    }
 }
 
 std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model) {
     const PartSpec* parts = specs(model);
     glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
-    if (model != ModelDummy) animate(p, off, rot);
+    glm::mat4 tilt(1);  // the dummy above its base: wobbles back when hit, topples when out of health
+    if (model == ModelDummy) {
+        float fall = std::min(p.deadTime / 0.6f, 1.0f);
+        float wobble = 0.3f * std::sin(p.hitTime * 18) * std::exp(-p.hitTime * 5);
+        glm::vec3 pivot(0, 2, 0);  // top of the base, in voxels
+        tilt = glm::translate(glm::mat4(1), pivot);
+        tilt = glm::rotate(tilt, -(fall * fall * 1.45f + wobble), {1, 0, 0});
+        tilt = glm::translate(tilt, -pivot);
+    } else {
+        animate(p, off, rot);
+    }
 
     glm::mat4 base = glm::translate(glm::mat4(1), p.pos);
     base = glm::rotate(base, p.yaw, {0, 1, 0});
     base = glm::scale(base, glm::vec3(kVoxel));
     std::array<glm::mat4, PartCount> out;
     for (int i = 0; i < PartCount; ++i) {
-        glm::mat4 m = glm::translate(base, parts[i].center + off[i]);
+        bool tilted = !(model == ModelDummy && i == FootR);
+        glm::mat4 m = glm::translate(tilted ? base * tilt : base, parts[i].center + off[i]);
         m = glm::rotate(m, rot[i].y, {0, 1, 0});
         m = glm::rotate(m, rot[i].x, {1, 0, 0});
         out[i] = glm::translate(m, -glm::vec3(parts[i].size) * 0.5f);

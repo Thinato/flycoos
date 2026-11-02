@@ -62,8 +62,34 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
     ImGui::Text("Draw calls     %d", s.drawCalls);
 }
 
+// Health, the five attributes and what derives from them; shared by the Player and Entities tabs.
+static void attributes(Player& b, bool fights) {
+    Stats& s = b.stats;
+    ImGui::SliderFloat("Health", &b.health, 0, float(maxHealth(s)), "%.0f");
+    ImGui::SliderInt("Stamina", &s.stamina, 1, 100);
+    ImGui::SetItemTooltip("+%d max health per point", kHealthPerStamina);
+    ImGui::SliderInt("Strength", &s.strength, 0, 100);
+    ImGui::SetItemTooltip("Physical damage + strength x attack speed");
+    ImGui::SliderInt("Agility", &s.agility, 0, 100);
+    ImGui::SetItemTooltip("+%.0f%% physical attack speed per point", kHastePerAgility * 100);
+    ImGui::SliderInt("Intellect", &s.intellect, 0, 100);
+    ImGui::SetItemTooltip("Unused until magic");
+    ImGui::SliderInt("Spirit", &s.spirit, 0, 100);
+    ImGui::SetItemTooltip("+%.1f health per second out of combat per point", kRegenPerSpirit);
+    ImGui::Text("Max health %d, regen %.1f/s out of combat", maxHealth(s), healthRegen(s));
+    if (fights) {
+        float swing = swingTime(s, kPunch);
+        int lo = kPunch.minDamage + strengthBonus(s, kPunch), hi = kPunch.maxDamage + strengthBonus(s, kPunch);
+        ImGui::Text("Punch %d-%d every %.2f s (%.1f damage/s)", lo, hi, swing, float(lo + hi) / 2 / swing);
+    }
+    if (!b.alive()) ImGui::Text("Knocked down for %.1f s", b.deadTime);
+    else if (b.combatTimer > 0) ImGui::Text("In combat, %.1f s left", b.combatTimer);
+    else ImGui::TextDisabled("Out of combat");
+}
+
 static void playerTab(Player& p, DebugActions& actions) {
-    ImGui::SliderInt("Health", &p.health, 0, p.maxHealth);
+    attributes(p, true);
+    ImGui::SeparatorText("Body");
     ImGui::DragFloat3("Position", &p.pos.x, 0.25f);
     ImGui::Text("Velocity  %.2f  %.2f  %.2f  (%.2f b/s)", p.vel.x, p.vel.y, p.vel.z, glm::length(p.vel));
     ImGui::Text("On ground %s   In water %s", p.onGround ? "yes" : "no", p.inWater ? "yes" : "no");
@@ -95,7 +121,7 @@ static void entitiesTab(std::vector<Entity>& entities, const Player& player, Deb
         std::snprintf(title, sizeof title, "%s  (Lv %d)###entity%zu", e.name.c_str(), e.level, i);
         if (!ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) continue;
         ImGui::PushID(int(i));
-        ImGui::SliderInt("Health", &e.body.health, 0, e.body.maxHealth);
+        attributes(e.body, false);
         ImGui::Text("Attackable %s   Wanders %s   Talks %s", t.attackable ? "yes" : "no", t.wanders ? "yes" : "no",
                     t.talks ? "yes" : "no");
         ImGui::Text("At %.1f %.1f %.1f, %.1f from you", e.body.pos.x, e.body.pos.y, e.body.pos.z,

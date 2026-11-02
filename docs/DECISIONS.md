@@ -91,4 +91,23 @@
   - ImGui's colors are authored in sRGB. Our swapchain is sRGB with linear-light output, so the
     style colors are converted to linear at startup.
   - Screenshots include the UI when it's open.
-  - The debug UI costs nothing when closed: no ImGui frame is built and no extra pass runs.
+  - An ImGui frame runs every frame because the in-game HUD draws into it. The UI render pass is
+    skipped when there's nothing to draw.
+
+## ADR-007: Classless WoW-style attributes
+
+- **Status:** accepted (2026-11-02)
+- **Context:** combat needs stats, and the game has no classes.
+- **Decision:**
+  - Five attributes (stamina, strength, agility, intellect, spirit); everything else derives from
+    them directly, with no attack power or other in-between step.
+  - Stamina gives 10 health per point.
+  - Physical damage is `baseDamage + strength * speed`, using the attack's base speed, as WoW
+    uses weapon speed.
+  - Agility is haste.
+  - Spirit regenerates health out of combat.
+  - Intellect waits for magic.
+- **Consequences:**
+  - All formulas and tuning constants live in `src/stats.h`.
+  - Equipment can later add attributes and replace the punch's `Attack` without changing the
+    formulas.

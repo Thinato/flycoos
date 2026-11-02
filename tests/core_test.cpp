@@ -257,17 +257,17 @@ static Grid meadow() {
 static void entities() {
     Grid g = meadow();
     Player player;
-    CHECK(player.health == 100 && player.maxHealth == 100);
+    CHECK(player.health == 100 && maxHealth(player.stats) == 100);
     player.pos = {28.5f, 4, 20.5f};
     std::vector<Entity> es = spawnEntities(g, player.pos, 1);
     CHECK(es.size() == 2);
     Entity &dummy = es[0], &villager = es[1];
 
     CHECK(dummy.kind == EntityKind::TrainingDummy && dummy.name == "Training Dummy" && dummy.level == 1);
-    CHECK(dummy.body.health == 100 && dummy.body.maxHealth == 100);
+    CHECK(dummy.body.health == 100 && maxHealth(dummy.body.stats) == 100);
     CHECK(dummy.type().attackable && !dummy.type().wanders && !dummy.type().talks);
     CHECK(villager.kind == EntityKind::Villager && villager.level == 5 && !villager.name.empty());
-    CHECK(villager.body.health == 250 && villager.body.maxHealth == 250);
+    CHECK(villager.body.health == 250 && maxHealth(villager.body.stats) == 250);
     CHECK(!villager.type().attackable && villager.type().wanders && villager.type().talks);
     CHECK(spawnEntities(g, player.pos, 1)[1].name == villager.name);  // names are seeded
     CHECK(glm::distance(dummy.body.pos, villager.body.pos) >= 1.5f);  // nobody spawns inside anybody
@@ -323,11 +323,113 @@ static void entities() {
     CHECK(villager.speech() == nullptr);  // the balloon timed out
 }
 
+static void combat() {
+    // Attributes: 10 health per stamina; a punch does 6-10 + strength x speed.
+    Stats base;  // the player's
+    CHECK(maxHealth(base) == 100 && Player{}.health == 100);
+    std::mt19937 rng(7);
+    int lo = 1000, hi = 0;
+    for (int i = 0; i < 2000; ++i) {
+        int d = rollDamage(base, kPunch, rng);
+        lo = std::min(lo, d);
+        hi = std::max(hi, d);
+    }
+    CHECK(lo == 8 && hi == 12);  // strength 2, speed 1: [8, 12]
+    CHECK(strengthBonus(base, Attack{6, 10, 2.5f}) == 5);  // slow attacks get more per hit
+    Stats quick = base;
+    quick.agility = 50;
+    CHECK(swingTime(quick, kPunch) < swingTime(base, kPunch));  // agility is attack speed...
+    CHECK(strengthBonus(quick, kPunch) == strengthBonus(base, kPunch));  // ...not damage per hit
+    CHECK(swingTime(Stats{10, 0, 0, 0, 0}, kPunch) == kPunch.speed);
+
+    Grid g = meadow();
+    Player player;
+    player.pos = {28.5f, 4, 20.5f};
+    std::vector<Entity> es = spawnEntities(g, player.pos, 1);
+    Entity &dummy = es[0], &villager = es[1];
+    auto run = [&](float seconds) {
+        for (int i = 0; i < int(seconds * 60); ++i) updateCombat(player, es, 1 / 60.0f, rng);
+    };
+    auto standBeside = [&](const Entity& e, float dist) {
+        player.pos = e.body.pos + glm::vec3(dist, 0, 0);
+        player.yaw = -std::numbers::pi_v<float> / 2;  // facing -x, toward it
+    };
+
+    // A punch lands at its impact frame; the swing timer gates the next one.
+    standBeside(dummy, 1.2f);
+    CHECK(punchTarget(es, player) == &dummy);
+    CHECK(startPunch(player, {-1, 0}));
+    CHECK(!startPunch(player, {-1, 0}));
+    updateCombat(player, es, 0.01f, rng);
+    CHECK(dummy.body.health == 100);  // the fist is still on its way
+    run(0.3f);
+    float dealt = 100 - dummy.body.health;
+    CHECK(dealt >= 8 && dealt <= 12 && dummy.body.lastDamage == int(dealt));
+    CHECK(player.combatTimer > 0 && dummy.body.combatTimer > 0);
+    run(1);
+    CHECK(startPunch(player, {-1, 0}));
+
+    // Misses: facing away, out of reach, and the villager can't be attacked.
+    player.yaw = std::numbers::pi_v<float> / 2;
+    CHECK(punchTarget(es, player) == nullptr);
+    standBeside(dummy, kPunchReach + 0.5f);
+    CHECK(punchTarget(es, player) == nullptr);
+    standBeside(villager, 1.2f);
+    CHECK(punchTarget(es, player) == nullptr);
+    {  // The nearest of two targets in front gets hit, but only within 60 degrees of facing.
+        std::vector<Entity> two{dummy, dummy};
+        two[1].body.pos = two[0].body.pos - glm::vec3(1, 0, 0);
+        Player p;
+        p.pos = two[0].body.pos + glm::vec3(1.2f, 0, 0);
+        p.yaw = -std::numbers::pi_v<float> / 2;
+        CHECK(punchTarget(two, p) == &two[0]);
+        p.pos = two[1].body.pos + glm::vec3(0.3f, 0, 1.2f);  // the second is nearer, 76 degrees off
+        CHECK(punchTarget(two, p) == nullptr);
+    }
+
+    // Held swings chain without losing time to frame rounding: at 60 fps a 0.98 s swing would
+    // round up to 59 frames, and 50 swings would take 49 x 59 = 2891 frames.
+    run(2);
+    int swings = 0;
+    for (int i = 0; i < int(49 * swingTime(player.stats, kPunch) * 60) + 5; ++i) {
+        swings += startPunch(player, {-1, 0});
+        updateCombat(player, es, 1 / 60.0f, rng);
+    }
+    CHECK(swings == 50);
+
+    // Spirit regenerates health, but only out of combat.
+    dummy.body.health = 50;
+    dummy.body.combatTimer = kCombatSeconds;
+    run(kCombatSeconds - 0.5f);
+    CHECK(dummy.body.health == 50);
+    run(2.5f);  // ~2 s out of combat at 10 spirit = ~10 health
+    CHECK(dummy.body.health > 55 && dummy.body.health < 62);
+    run(20);
+    CHECK(dummy.body.health == 100);  // stops at max
+    player.health = 50;
+    player.combatTimer = kCombatSeconds;
+    run(1);
+    CHECK(player.health == 50);  // the player regenerates out of combat only, too
+
+    // At 0 health the dummy topples, can't be hit, and stands back up fully healed.
+    auto standing = poseModel(dummy.body, ModelDummy);
+    CHECK(damage(dummy, 1000) && !dummy.body.alive());
+    standBeside(dummy, 1.2f);
+    CHECK(punchTarget(es, player) == nullptr);
+    run(1);
+    CHECK(poseModel(dummy.body, ModelDummy)[Head][3].y < standing[Head][3].y - 0.8f);
+    run(kRespawnSeconds - 1.2f);
+    CHECK(!dummy.body.alive());
+    run(0.3f);
+    CHECK(dummy.body.alive() && dummy.body.health == 100);
+}
+
 int main() {
     meshing();
     packing();
     physics();
     entities();
+    combat();
     generation();
     regions();
     if (failures) std::println(stderr, "{} check(s) failed", failures);

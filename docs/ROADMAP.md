@@ -17,6 +17,8 @@ reach them.
 - Benchmark/screenshot mode and engine-core tests
 - First NPCs: a training dummy (attackable, static) and a wandering villager you can talk to (E),
   with nameplates, health bars and speech balloons
+- Five attributes (stamina, strength, agility, intellect, spirit) with derived health, damage, attack
+  speed and regeneration; punching (left mouse) with damage numbers; the dummy topples and recovers
 
 ## M1: A living world
 
@@ -28,15 +30,15 @@ reach them.
 
 ## M2: Action combat
 
-- Melee and ranged attacks, dodge roll, stamina; hit reactions and knockback
+- Weapon attacks and ranged attacks, dodge roll, an action resource for dodging; knockback
 - First enemies with simple AI (wander, aggro, chase, attack)
 - Health/mana/stamina HUD; death and respawn
 - Animation layer: blend procedural locomotion with authored attack poses
 
 ## M3: Character and progression
 
-- Classes with distinct roles (protector, healer, damage). Original designs, see VISION.md
-- Talent choices per class; skills that level with use
+- No classes: roles (protector, healer, damage) come from attributes, gear and talents
+- Talent choices; skills that level with use; intellect-based magic and spells
 - Loot, inventory, equipment that changes the voxel model, crafting basics
 
 ## M4: World with memory

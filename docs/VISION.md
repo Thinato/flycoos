@@ -13,8 +13,9 @@ Skyrim and the *structure and social play* of MMOs such as World of Warcraft.
    glance in a chunky voxel style.
 3. **A world with memory.** Inspired by open-world RPGs: towns, factions, quests that change the
    world, and NPCs with routines. Skills improve the more you use them.
-4. **Roles and teamwork.** Inspired by MMOs: classes with distinct roles, talent choices, group
-   dungeons and bosses, and gear progression that rewards playing together.
+4. **Roles and teamwork.** Inspired by MMOs: WoW-style attributes and roles you build through gear
+   and talents rather than a fixed class, group dungeons and bosses, and gear progression that
+   rewards playing together.
 5. **Readable voxel art.** Every object is made of flat-colored voxels, lit softly (ambient
    occlusion, warm sun, cool shadows). The art is distinct from any existing game.
 
@@ -24,7 +25,7 @@ Skyrim and the *structure and social play* of MMOs such as World of Warcraft.
 |---|---|---|
 | Voxel action-RPG genre (e.g. Cube World) | Colored-voxel look, procedural world, floating-limb characters, exploration loop | Its names, classes, creatures, character designs, UI, assets or code |
 | Skyrim-like open-world RPGs | Freeform exploration, quests and factions, learn-by-doing skills, dialogue | Lore, races, places or names |
-| WoW-like MMOs | Class roles (tank/healer/damage), talent trees, dungeons/raids, group play | Lore, races, places, names or UI |
+| WoW-like MMOs | Attributes (stamina, strength, agility, intellect, spirit), roles (tank/healer/damage), talent trees, dungeons/raids, group play | Lore, races, places, names or UI |
 
 ## IP guardrail
 

@@ -155,21 +155,48 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
     bobs, leans and twists.
   - `gaitAmount` blends between idle breathing and walking/running, and `airAmount` raises the arms
     and tucks the feet in the air.
-  - Body yaw eases toward the movement direction.
+  - Body yaw eases toward the movement direction, except during a punch, which keeps facing where it
+    was aimed.
+  - Punch: the fist shoots forward to shoulder height and the torso twists into it, alternating
+    hands. The dummy wobbles back when hit and topples over when out of health.
+
+## Stats and combat
+
+- Five attributes (`Stats` in stats.h); every other stat derives from them. No classes, so no attack
+  power or other in-between step:
+
+  | Attribute | Effect |
+  |---|---|
+  | Stamina | +10 max health per point |
+  | Strength | physical damage: `damage = baseDamage + strength * speed` |
+  | Agility | +1% physical attack speed per point (haste: swing time = speed / (1 + 1% x agility)) |
+  | Intellect | unused until magic |
+  | Spirit | +0.5 health per second, out of combat only |
+
+- `speed` in the damage formula is the attack's *base* speed (WoW's weapon speed), not the hasted
+  swing time. Slow attacks hit harder per swing, and agility only adds damage per second.
+- Punch (the only attack until equipment): 6–10 damage, speed 1.0 s. Base player: stamina 10,
+  everything else 2, so 100 health and 8–12 damage every 0.98 s.
+- Left mouse starts a punch toward where the camera looks, once the swing timer allows. Holding
+  keeps swinging; a click during the cooldown is queued. Damage lands at the fist's impact frame
+  (40% into a 0.35 s animation) on the nearest living, attackable entity within 2 blocks and
+  60° of the facing direction.
+- Dealing or taking damage puts a body in combat for 5 s; spirit regeneration only runs out of
+  combat.
+- At 0 health the dummy topples, can't be hit, and stands back up fully healed after 5 s. No reward.
+- HUD: a damage number pops above the target and rises for a second (the latest hit only).
 
 ## Entities
 
 - An `Entity` is a kind, a name, a level and a `Player` body (position, animation, health). Fixed
   traits per kind live in one table (`kTypes` in entity.cpp):
 
-  | Kind | Name | Lv | HP | Attackable | Moves | Talks |
-  |---|---|---|---|---|---|---|
-  | Training Dummy | "Training Dummy" | 1 | 100 | yes | no | no |
-  | Villager | random from a name list (seeded) | 5 | 250 | no | wanders | yes (E) |
+  | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Attackable | Moves | Talks |
+  |---|---|---|---|---|---|---|---|
+  | Training Dummy | "Training Dummy" | 1 | 10/0/0/0/10 | 100 | yes | no | no |
+  | Villager | random from a name list (seeded) | 5 | 25/5/5/5/5 | 250 | no | wanders | yes (E) |
 
-  The player starts with 100/100 health.
-- `damage()` only applies to attackable kinds and stops at 0. Nothing calls it in play yet (no
-  combat); the debug UI's "Hit for 10" does. Death has no effect and gives no reward.
+- `damage()` only applies to living, attackable kinds and stops at 0 (see Stats and combat).
 - **Villager AI:** alternates standing (2–6 s) and strolling at 2 b/s (2–5 s) in a random direction.
   Before each step it checks the block ahead: no walls it can't step up, no water, no drops of 2+.
   It turns back once more than 12 blocks from home. NPC bodies use the same `updatePlayer` physics as

@@ -12,9 +12,9 @@ constexpr float kSpeechSeconds = 5;
 constexpr float kBodyRadius = 0.8f;  // player-to-entity distance kept by separate()
 
 constexpr EntityType kTypes[] = {
-    // name              lvl  hp   attackable wanders talks model
-    {"Training Dummy",   1,   100, true,      false,  false, ModelDummy},
-    {nullptr,            5,   250, false,     true,   true,  ModelVillager},
+    // name             lvl  sta str agi int spi   attackable wanders talks model
+    {"Training Dummy",  1,   {10,  0,  0,  0, 10}, true,      false,  false, ModelDummy},
+    {nullptr,           5,   {25,  5,  5,  5,  5}, false,     true,   true,  ModelVillager},
 };
 
 constexpr const char* kNames[] = {
@@ -94,7 +94,8 @@ std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t se
         const EntityType& t = e.type();
         e.name = t.name ? t.name : kNames[e.rng() % std::size(kNames)];
         e.level = t.level;
-        e.body.health = e.body.maxHealth = t.maxHealth;
+        e.body.stats = t.stats;
+        e.body.health = float(maxHealth(t.stats));
         e.body.tuning.walkSpeed = 2;  // a stroll
         e.body.breathPhase = kTau * rand01(e.rng);
         // Nearest grass to the offset, but not on top of the player or an earlier entity.
@@ -167,7 +168,66 @@ void talk(Entity& e) {
 }
 
 bool damage(Entity& e, int amount) {
-    if (!e.type().attackable || amount <= 0 || e.body.health == 0) return false;
-    e.body.health = std::max(0, e.body.health - amount);
+    if (!e.type().attackable || amount <= 0 || !e.body.alive()) return false;
+    e.body.health = std::max(0.0f, e.body.health - float(amount));
+    e.body.lastDamage = amount;
+    e.body.hitTime = 0;
+    e.body.combatTimer = kCombatSeconds;
     return true;
+}
+
+bool startPunch(Player& b, glm::vec2 aim) {
+    if (!b.alive() || b.swingTimer > 0) return false;
+    b.swingTimer += swingTime(b.stats, kPunch);  // keeps the overshoot of the last frame
+    b.punchLength = std::min(kPunchSeconds, b.swingTimer);
+    b.punchTime = 0;
+    b.punchRight = !b.punchRight;
+    b.hitPending = true;
+    if (glm::length(aim) > 1e-4f) b.yaw = std::atan2(aim.x, aim.y);
+    return true;
+}
+
+Entity* punchTarget(std::vector<Entity>& entities, const Player& a) {
+    glm::vec2 forward{std::sin(a.yaw), std::cos(a.yaw)};
+    Entity* best = nullptr;
+    float bestDist = kPunchReach;
+    for (Entity& e : entities) {
+        glm::vec2 d = xz(e.body.pos - a.pos);
+        float dist = glm::length(d);
+        bool inFront = dist < 1e-3f || glm::dot(d / dist, forward) > 0.5f;  // within 60 degrees
+        bool level = std::abs(e.body.pos.y - a.pos.y) < kHeight;
+        if (e.type().attackable && e.body.alive() && inFront && level && dist < bestDist) {
+            best = &e;
+            bestDist = dist;
+        }
+    }
+    return best;
+}
+
+static void tick(Player& b, float dt) {
+    // May go up to one frame negative, so back-to-back swings don't lose time to frame rounding.
+    b.swingTimer = std::max(b.swingTimer - dt, -dt);
+    b.punchTime += dt;
+    b.hitTime += dt;
+    b.combatTimer = std::max(0.0f, b.combatTimer - dt);
+    if (!b.alive()) b.deadTime += dt;
+    else if (b.combatTimer == 0) b.health += healthRegen(b.stats) * dt;
+    b.health = std::min(b.health, float(maxHealth(b.stats)));
+}
+
+void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng) {
+    tick(player, dt);
+    if (player.hitPending && player.punchTime >= kPunchImpact * player.punchLength) {
+        player.hitPending = false;
+        Entity* target = punchTarget(entities, player);
+        if (target && damage(*target, rollDamage(player.stats, kPunch, rng))) player.combatTimer = kCombatSeconds;
+    }
+    for (Entity& e : entities) {
+        tick(e.body, dt);
+        if (!e.body.alive() && e.body.deadTime >= kRespawnSeconds) {  // back up, fully healed
+            e.body.health = float(maxHealth(e.body.stats));
+            e.body.deadTime = 0;
+            e.body.combatTimer = 0;
+        }
+    }
 }

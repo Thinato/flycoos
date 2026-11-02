@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <numbers>
 #include <print>
+#include <random>
 #include <string_view>
 #include <vector>
 
@@ -99,6 +100,8 @@ static int run(SDL_Window* window, const Options& opt) {
     Player player;
     player.pos = findSpawn(world);
     std::vector<Entity> entities = spawnEntities(world, player.pos, game.seed);
+    std::mt19937 rng(std::random_device{}());  // damage rolls
+    bool punchQueued = false;  // clicked before the swing was ready
     float camYaw = std::numbers::pi_v<float>, camPitch = 0.45f;  // behind the player
     if (opt.fixedLook) {  // degrees on the CLI; yaw 0 looks toward -Z, 90 toward -X
         camYaw = opt.lookYaw;
@@ -146,6 +149,8 @@ static int run(SDL_Window* window, const Options& opt) {
                 camYaw -= e.motion.xrel * game.mouseSensitivity;
                 camPitch = std::clamp(camPitch + e.motion.yrel * game.mouseSensitivity, -0.5f, 1.45f);
             }
+            if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT && !benchmark && !ui.open)
+                punchQueued = true;
             if (e.type == SDL_EVENT_MOUSE_WHEEL && !ui.wantsMouse())
                 game.cameraDistance = std::clamp(game.cameraDistance * std::pow(0.9f, e.wheel.y), 2.0f, 80.0f);
         }
@@ -162,9 +167,13 @@ static int run(SDL_Window* window, const Options& opt) {
         in.run = key(SDL_SCANCODE_LSHIFT);
         in.descend = key(SDL_SCANCODE_LCTRL);
         if (benchmark) in.move = {std::sin(elapsed * 0.4), std::cos(elapsed * 0.4)};  // walk a circle
+        // Left mouse punches toward where the camera looks; holding it keeps swinging.
+        bool punchHeld = !benchmark && !ui.open && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK);
+        if ((punchHeld || punchQueued) && (startPunch(player, forward) || !player.alive())) punchQueued = false;
         updatePlayer(player, world, in, dt);
         updateEntities(entities, world, player, dt);
         separate(player, world, entities);
+        updateCombat(player, entities, dt, rng);
 
         if (benchmark && !opt.fixedLook) camYaw -= dt * 0.5f;  // counter-orbit so the benchmark sees the player from all sides
         else if (!benchmark)
@@ -199,7 +208,8 @@ static int run(SDL_Window* window, const Options& opt) {
         if (actions.regenerate || actions.respawn) {
             player.pos = findSpawn(world);
             player.vel = {};
-            player.health = player.maxHealth;
+            player.health = float(maxHealth(player.stats));
+            player.deadTime = 0;
             camTarget = player.pos + glm::vec3(0, 1.4f, 0);
         }
         if (actions.regenerate || actions.respawnEntities) entities = spawnEntities(world, player.pos, game.seed);
@@ -209,8 +219,8 @@ static int run(SDL_Window* window, const Options& opt) {
         if (titleTimer > 0.5) {
             titleTimer = 0;
             int minutes = int(game.timeOfDay * 24 * 60);
-            char title[160];
-            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | E = talk | . = debug",
+            char title[192];
+            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = punch | E = talk | . = debug",
                           dt * 1000.0, 1.0 / std::max(dt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);
             SDL_SetWindowTitle(window, title);
         }

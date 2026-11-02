@@ -2,7 +2,7 @@
 
 An original voxel action-RPG in C++23. Colored-voxel art, a procedural open world, and third-person
 action. Over time it grows open-world RPG systems (quests, factions, skills you level by using them)
-and MMO-style systems (classes, talents, group dungeons).
+and MMO-style systems (attributes, talents, group dungeons), without classes.
 
 This repository is **milestone 0**: a playable prototype with a voxel character, a small procedural
 world with a day/night cycle, and procedural walk/idle animation. It runs at roughly 300+ FPS on an
@@ -49,6 +49,7 @@ GPU debug layer.
 | Mouse | Orbit the camera |
 | Wheel | Zoom |
 | T (hold) | Fast-forward time (60×) |
+| Left mouse | Punch (hold to keep swinging) |
 | E | Talk to a nearby villager |
 | `.` | Open/close the debug window |
 | Esc | Close the debug window, otherwise quit |
@@ -61,8 +62,8 @@ unless a text field has focus.
 | Tab | What's there |
 |---|---|
 | Render | View mode (shaded, greedy quads, chunks, ambient occlusion, normals), wireframe quad edges, sky/fog/water/character toggles, frustum culling on/off or frozen, per-frame chunk/quad/draw-call counts |
-| Player | Health, position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
-| Entities | Every NPC: health, traits, position, wander state; hit (attackable only), make talk, respawn NPCs near the player |
+| Player | Health, the five attributes and what derives from them (max health, regen, punch damage and speed, combat state), position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
+| Entities | Every NPC: health and attributes, traits, position, wander state; hit (attackable only), make talk, respawn NPCs near the player |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
 | Stats | Frame-time graph of the last 240 frames, average and worst frame |
@@ -91,8 +92,9 @@ Example benchmark at night:
 src/world.*      voxel grid, region-based terrain (forest / rocky / plains), trees + rocks, parallelFor
 src/mesher.*     greedy mesher with ambient occlusion -> 8-byte packed quads
 src/player.*     movement physics (+ fly/noclip tuning), camera collision, character models, procedural animation
-src/entity.*     NPCs: training dummy and villager (traits, wandering, talking, damage)
-src/hud.*        in-game overlay: nameplates, speech balloons, player health
+src/stats.h      the five attributes and the stats derived from them
+src/entity.*     NPCs: training dummy and villager (traits, wandering, talking), punching and damage
+src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, player health
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
 src/debug_ui.*   Dear ImGui debug window (toggle with .)
 src/main.cpp     window, input, camera, main loop, benchmark mode
