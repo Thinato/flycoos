@@ -474,6 +474,7 @@ json markerJson(const Marker& m) {
     json j = {{"id", m.id}, {"kind", kMarkerKindNames[int(m.kind)]}, {"name", m.name}, {"x", int(std::floor(m.pos.x))},
               {"z", int(std::floor(m.pos.z))}, {"y", m.pos.y - 1}, {"radius", m.radius}};
     if (m.kind == MarkerKind::Spawn) j["entity"] = kEntityKindNames[int(m.entity)], j["count"] = m.count;
+    if (!m.lines.empty()) j["lines"] = m.lines;
     return j;
 }
 
@@ -483,6 +484,13 @@ void markerArgs(const json& a, const Grid& g, Marker& m, bool create) {
     if (m.kind != MarkerKind::Spawn && (a.contains("entity") || a.contains("count")))
         throw BadArgs("'entity' and 'count' are for spawn markers");
     if (a.contains("name")) m.name = str(a, "name", "");
+    if (a.contains("lines")) {  // checkMarker (in putMarker) checks the count, lengths and text
+        const json& lines = a["lines"];
+        if (!lines.is_array() || lines.size() > kMaxMarkerLines || !std::ranges::all_of(lines, &json::is_string))
+            throw BadArgs("'lines' must be an array of at most 8 strings");
+        m.lines.clear();
+        for (const json& line : lines) m.lines.push_back(line.get<std::string>());
+    }
     if (create || a.contains("x") || a.contains("z") || a.contains("y")) {
         int x = integer(a, "x", 0, g.size.x - 1, create ? std::nullopt : std::optional(int(std::floor(m.pos.x))));
         int z = integer(a, "z", 0, g.size.z - 1, create ? std::nullopt : std::optional(int(std::floor(m.pos.z))));

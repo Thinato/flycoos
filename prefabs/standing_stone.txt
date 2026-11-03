@@ -1,0 +1,40 @@
+description: Tall irregular monolith, about 2x2x6, leaning slightly; place several for a ring
+foundation: Rock
+y: -1
+R = Rock
+S = Stone
+
+layer
+RRR
+RRR
+RR 
+
+layer
+RR 
+RRR
+ RR
+
+layer
+ RR
+ RS
+ R 
+
+layer
+ RR
+ SR
+   
+
+layer
+ RS
+ R 
+   
+
+layer
+  R
+ RR
+   
+
+layer
+  R
+   
+   

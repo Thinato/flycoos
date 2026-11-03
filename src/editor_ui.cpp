@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <numbers>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -74,6 +75,19 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
             ImGui::Combo("Entity", &entity, kEntityKindNames, int(EntityKind::Count));
             ed.mark.entity = EntityKind(entity);
             ImGui::SliderInt("Count", &ed.mark.count, 1, kMaxSpawnCount);
+        }
+        // Lines for spawns (not the dummy); blank lines are dropped, checkMarker rejects the rest.
+        bool lines = takesLines(ed.mark);
+        if (lines) {
+            ImGui::InputTextMultiline("Lines", ed.markLines, sizeof ed.markLines, {0, 5 * ImGui::GetTextLineHeightWithSpacing()});
+            ImGui::SetItemTooltip("What its NPCs say, one line each (up to 8 of 160 bytes), in order: talkers on E, fighters\n"
+                                  "when they attack. With lines and count 1 the NPC is called by the marker's name.");
+        }
+        ed.mark.lines.clear();
+        for (char *line = ed.markLines, *end = line + std::strlen(line); lines && line < end;) {
+            char* next = std::find(line, end, '\n');
+            if (next > line) ed.mark.lines.emplace_back(line, next);
+            line = next + (next < end);
         }
         ImGui::BeginDisabled(std::ranges::find(markers, ed.marked, &Marker::id) == markers.end());
         if (ImGui::Button("Update selected")) actions.updateMark = true;

@@ -1,0 +1,13 @@
+description: Small campfire: a ring of stones around glowing embers
+foundation: Cobble
+C = Cobble
+E = Ember
+
+layer
+.C.
+CEC
+.C.
+layer
+...
+.E.
+...

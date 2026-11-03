@@ -1,0 +1,32 @@
+description: Palisade gate: two thick wood posts, a plank crossbeam walkway above a 3-wide opening (4 high), log wings
+foundation: Wood
+W = Wood
+P = Planks
+
+layer
+WWW   WWW
+WWW   WWW
+
+layer
+WWW   WWW
+WWW   WWW
+
+layer
+WWW   WWW
+WWW   WWW
+
+layer
+WWW   WWW
+WWW   WWW
+
+layer
+WWWWWWWWW
+WWWWWWWWW
+
+layer
+W PPPPP W
+ WPPPPPW 
+
+layer
+  WW WW  
+  WW WW  

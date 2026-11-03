@@ -1,0 +1,259 @@
+description: Three-storey watchtower: cobble base storey, plank storeys above with stairs inside, a crenellated lookout platform with a thatch roof, door on +z
+foundation: Cobble
+C = Cobble
+P = Planks
+W = Wood
+T = Thatch
+
+layer
+         
+ CCCCCCC 
+ CCCCCCC 
+ CCCCCCC 
+ CCCCCCC 
+ CCCCCCC 
+ CCCCCCC 
+ CCCCCCC 
+    C    
+
+layer
+         
+ CCCCCCC 
+ CC    C 
+ C     C 
+ C     C 
+ C     C 
+ C     C 
+ CCC.CCC 
+         
+
+layer
+         
+ CCCCCCC 
+ C C   C 
+ C     C 
+ C     C 
+ C     C 
+ C     C 
+ CCC.CCC 
+         
+
+layer
+         
+ CCC.CCC 
+ C  C  C 
+ C     C 
+ .     . 
+ C     C 
+ C     C 
+ C.CCC.C 
+         
+
+layer
+         
+ CCCCCCC 
+ C   C C 
+ C     C 
+ C     C 
+ C     C 
+ C     C 
+ CCCCCCC 
+         
+
+layer
+         
+ WWWWWWW 
+ WPP..CW 
+ WPPPPPW 
+ WPPPPPW 
+ WPPPPPW 
+ WPPPPPW 
+ WWWWWWW 
+         
+
+layer
+         
+ WPPPPPW 
+ P     P 
+ P     P 
+ P     P 
+ P     P 
+ P    PP 
+ WPPPPPW 
+         
+
+layer
+         
+ WPPPPPW 
+ P     P 
+ P     P 
+ P     P 
+ P     P 
+ P   P P 
+ WPPPPPW 
+         
+
+layer
+         
+ WPP.PPW 
+ P     P 
+ P     P 
+ .     . 
+ P     P 
+ P  P  P 
+ WP.P.PW 
+         
+
+layer
+         
+ WPPPPPW 
+ P     P 
+ P     P 
+ P     P 
+ P     P 
+ P P   P 
+ WPPPPPW 
+         
+
+layer
+         
+ WWWWWWW 
+ WPPPPPW 
+ WPPPPPW 
+ WPPPPPW 
+ WPPPPPW 
+ WP..PPW 
+ WWWWWWW 
+         
+
+layer
+         
+ WPPPPPW 
+ P P   P 
+ P     P 
+ P     P 
+ P     P 
+ P     P 
+ WPPPPPW 
+         
+
+layer
+         
+ WPPPPPW 
+ P  P  P 
+ P     P 
+ P     P 
+ P     P 
+ P     P 
+ WPPPPPW 
+         
+
+layer
+         
+ WP.P.PW 
+ P   P P 
+ .     . 
+ P     P 
+ .     . 
+ P     P 
+ WP.P.PW 
+         
+
+layer
+         
+ WPPPPPW 
+ P    PP 
+ P     P 
+ P     P 
+ P     P 
+ P     P 
+ WPPPPPW 
+         
+
+layer
+PPPPPPPPP
+PPPPPPPPP
+PPPPP..PP
+PPPPPPPPP
+PPPPPPPPP
+PPPPPPPPP
+PPPPPPPPP
+PPPPPPPPP
+PPPPPPPPP
+
+layer
+PPPPPPPPP
+PW     WP
+P       P
+P       P
+P       P
+P       P
+P       P
+PW     WP
+PPPPPPPPP
+
+layer
+P P P P P
+ W     W 
+P       P
+         
+P       P
+         
+P       P
+ W     W 
+P P P P P
+
+layer
+         
+ W     W 
+         
+         
+         
+         
+         
+ W     W 
+         
+
+layer
+TTTTTTTTT
+TTTTTTTTT
+TTTTTTTTT
+TTTTTTTTT
+TTTTTTTTT
+TTTTTTTTT
+TTTTTTTTT
+TTTTTTTTT
+TTTTTTTTT
+
+layer
+         
+ TTTTTTT 
+ TTTTTTT 
+ TTTTTTT 
+ TTTTTTT 
+ TTTTTTT 
+ TTTTTTT 
+ TTTTTTT 
+         
+
+layer
+         
+         
+  TTTTT  
+  TTTTT  
+  TTTTT  
+  TTTTT  
+  TTTTT  
+         
+         
+
+layer
+         
+         
+         
+   TTT   
+   TTT   
+   TTT   
+         
+         
+         

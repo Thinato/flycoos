@@ -1,0 +1,71 @@
+description: Barrow door for a hillside: Rock mass, Stone jambs and lintel, Ember torches, an Air doorway 4 deep; set it into a slope, back (-z) in the hill
+foundation: Rock
+y: -2
+R = Rock
+S = Stone
+C = Cobble
+E = Ember
+
+layer
+ RRSSSRR 
+ RRCCCRR 
+ RRCCCRR 
+ RRCCCRR 
+ RRRRRRR 
+RRSRRRSRR
+
+layer
+ RRSSSRR 
+ RR...RR 
+ RR...RR 
+ RR...RR 
+ RRCCCRR 
+RRSCCCSRR
+
+layer
+ RRSSSRR 
+ RR...RR 
+ RR...RR 
+ RR...RR 
+ RR...RR 
+ RS...SR 
+
+layer
+ RRSSSRR 
+ RR...RR 
+ RR...RR 
+ RR...RR 
+ RR...RR 
+ RE...ER 
+
+layer
+ RRSSSRR 
+ RR...RR 
+ RR...RR 
+ RR...RR 
+ RR...RR 
+ RS...SR 
+
+layer
+ RRRRRRR 
+ RRRRRRR 
+ RRRRRRR 
+ RRRRRRR 
+ RRRRRRR 
+ RSSSSSR 
+
+layer
+  RRRRR  
+  RRRRR  
+  RRRRR  
+  RRRRR  
+  RRRRR  
+  RRRRR  
+
+layer
+         
+   RRR   
+   RRR   
+   RRR   
+   RRR   
+         

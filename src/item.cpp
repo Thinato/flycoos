@@ -16,6 +16,8 @@ constexpr ItemType kItems[ItemCount] = {
     {"Iron Gauntlets",   SlotHands,    {0, 0, 0},     0,         4},
     {"Iron Greaves",     SlotLegs,     {0, 0, 0},     0,         10},
     {"Iron Sabatons",    SlotFeet,     {0, 0, 0},     0,         5},
+    {"Wolf Pelt",        SlotNone,     {0, 0, 0},     0,         0},
+    {"Bone Charm",       SlotNone,     {0, 0, 0},     0,         0},  // a trinket; no slot for it yet
 };
 
 bool bagEmpty(const Inventory& inv, int bar) {

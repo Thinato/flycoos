@@ -1,0 +1,117 @@
+description: Big village hall: cobble floor, wood posts, plank walls, double door on +z, central hearth and a steep thatch roof with a smoke hole
+foundation: Cobble
+C = Cobble
+P = Planks
+W = Wood
+T = Thatch
+E = Ember
+
+layer
+               
+ CCCCCCCCCCCCC 
+ CCCCCCCCCCCCC 
+ CCCCCCCCCCCCC 
+ CCCCCCCCCCCCC 
+ CCCCCCCCCCCCC 
+ CCCCCCCCCCCCC 
+ CCCCCCCCCCCCC 
+      CCC      
+
+layer
+               
+ WPPPWPPPWPPPW 
+ P.PPP...PPP.P 
+ P.....C.....P 
+ W....CEC....W 
+ P.....C.....P 
+ P.PPP...PPP.P 
+ WPPPW...WPPPW 
+               
+
+layer
+               
+ WP.PWPPPWP.PW 
+ P...........P 
+ ............. 
+ W...........W 
+ ............. 
+ P...........P 
+ WP.PW...WP.PW 
+               
+
+layer
+               
+ WPPPWPPPWPPPW 
+ P...........P 
+ P...........P 
+ W...........W 
+ P...........P 
+ P...........P 
+ WPPPWWWWWPPPW 
+               
+
+layer
+               
+ WWWWWWWWWWWWW 
+ W...........W 
+ W...........W 
+ W...........W 
+ W...........W 
+ W...........W 
+ WWWWWWWWWWWWW 
+               
+
+layer
+TTTTTTTTTTTTTTT
+TTTTTTTTTTTTTTT
+ P           P 
+ P           P 
+ P           P 
+ P           P 
+ P           P 
+TTTTTTTTTTTTTTT
+TTTTTTTTTTTTTTT
+
+layer
+               
+TTTTTTTTTTTTTTT
+TTTTTTTTTTTTTTT
+ P           P 
+ P           P 
+ P           P 
+TTTTTTTTTTTTTTT
+TTTTTTTTTTTTTTT
+               
+
+layer
+               
+               
+TTTTTTTTTTTTTTT
+TTTTTTTTTTTTTTT
+ P           P 
+TTTTTTTTTTTTTTT
+TTTTTTTTTTTTTTT
+               
+               
+
+layer
+               
+               
+               
+TTTTTTTTTTTTTTT
+TTTTTTT.TTTTTTT
+TTTTTTTTTTTTTTT
+               
+               
+               
+
+layer
+               
+               
+               
+               
+TTTTTTT.TTTTTTT
+               
+               
+               
+               

@@ -158,7 +158,38 @@ static const PartSpec kBoar[PartCount] = {
     {{3, 4, 3}, {2.5f, 2, -4}},      // FootL: hind left leg
     {{3, 4, 3}, {-2.5f, 2, -4}},     // FootR: hind right leg
 };
-static const PartSpec* specs(Model m) { return m == ModelDummy ? kDummy : m == ModelBoar ? kBoar : kHumanoid; }
+// Longer legs and snout, ears, and a tail at the back of the torso's grid (the body starts at z 4).
+static const PartSpec kWolf[PartCount] = {
+    {{6, 7, 9}, {0, 11.5f, 9}},      // Head: skull at the back of the grid, snout out front, ears on top
+    {{7, 6, 17}, {0, 8, -2}},        // Torso: the body, and the tail drooping from its back end
+    {{3, 6, 3}, {2, 3, 4.5f}},       // HandL: front left leg
+    {{3, 6, 3}, {-2, 3, 4.5f}},      // HandR
+    {{3, 6, 3}, {2, 3, -4.5f}},      // FootL: hind left leg
+    {{3, 6, 3}, {-2, 3, -4.5f}},     // FootR
+};
+static bool quadruped(Model m) { return m == ModelBoar || m == ModelWolf; }
+static const PartSpec* specs(Model m) { return m == ModelDummy ? kDummy : m == ModelBoar ? kBoar : m == ModelWolf ? kWolf : kHumanoid; }
+
+// Grey flanks under a brown saddle (plain greys read blue in the sky's light), pale chest and jaw,
+// brown legs, dark ears, paws and tail tip.
+static Block wolfVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
+    switch (part) {
+    case Head:
+        if (v.y >= 5) return v.z >= 1 && v.z <= 2 && (v.x <= 1 || v.x >= 4) && (v.y == 5 || v.x == 0 || v.x == 5) ? DarkHair : Air;
+        if (v.z <= 4) return v.z == 4 && v.y == 3 && (v.x == 1 || v.x == 4) ? Eye : v.y == 4 ? Hide : Rock;
+        if (v.x < 1 || v.x > 4 || v.y > 2) return Air;  // the snout
+        if (v.z == s.z - 1 && v.y == 2 && (v.x == 2 || v.x == 3)) return Eye;  // nose
+        return v.y == 0 ? Tusk : Rock;
+    case Torso:
+        if (v.z < 4) {  // the tail
+            if (v.x < 2 || v.x > 4 || (v.y != v.z && v.y != v.z + 1)) return Air;
+            return v.z == 0 ? DarkHair : Hide;
+        }
+        if (v.y >= s.y - 2) return v.y == s.y - 1 && v.x >= 2 && v.x <= 4 ? DarkHair : Hide;
+        return v.z >= s.z - 3 && v.y <= 2 ? Tusk : Rock;
+    default: return v.y == 0 ? DarkHair : Hide;
+    }
+}
 
 static Block boarVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
     bool front = v.z == s.z - 1;
@@ -213,7 +244,7 @@ Model heldModel(ItemId weapon) { return weapon == Knife ? ModelKnife : ModelSwor
 std::array<Model, PartCount> partModels(Model model, const Inventory& inv) {
     std::array<Model, PartCount> out;
     out.fill(model);
-    if (model == ModelDummy || model == ModelBoar) return out;
+    if (model == ModelDummy || quadruped(model)) return out;
     auto& e = inv.equipped;
     if (e[SlotHead] == IronHelm) out[Head] = ModelIronArmor;
     if (e[SlotChest] == IronCuirass) out[Torso] = ModelIronArmor;
@@ -239,6 +270,46 @@ static Block armorVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
     }
 }
 
+// The guard: the iron helm and gauntlets, a cuirass under a dark red tabard, boots.
+static Block guardVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
+    if (part == FootL || part == FootR) return Boots;
+    if (part == Torso && v.z == s.z - 1 && v.x >= 2 && v.x <= s.x - 3 && v.y != 2) return Hood;
+    return armorVoxel(part, v, s);
+}
+
+// The bandit chief: a dark red hood with an iron mask, a hide jerkin with an iron mantle and a strap.
+static Block chiefVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
+    bool front = v.z == s.z - 1;
+    switch (part) {
+    case Head:
+        if (front && (v.y == 3 || v.y == 4) && (v.x == 2 || v.x == s.x - 3)) return Eye;
+        if (v.y <= 2 && v.z >= s.z - 2) return Iron;
+        return v.y >= 6 || v.z <= 2 || v.x == 0 || v.x == s.x - 1 ? Hood : Skin;
+    case Torso:
+        if (v.y == s.y - 1) return Iron;
+        if (v.y == 2) return Belt;
+        return front && v.x == v.y ? Belt : Hide;
+    case HandL: case HandR: return v.y == s.y - 1 ? Iron : Skin;
+    default: return Boots;
+    }
+}
+
+// The barrow ghoul: a skull with dark sockets and teeth, ribs under iron-grey rags, bony hands.
+static Block ghoulVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
+    bool front = v.z == s.z - 1;
+    switch (part) {
+    case Head:
+        if (front && (v.y == 3 || v.y == 4) && (v.x == 2 || v.x == 3 || v.x == s.x - 4 || v.x == s.x - 3)) return Eye;
+        if (front && v.y == 1 && v.x >= 2 && v.x <= s.x - 3) return v.x % 2 ? Eye : Tusk;  // teeth
+        return v.z <= 2 && v.y >= 4 ? Iron : Tusk;  // a rag of a hood at the back
+    case Torso:
+        if (v.y == 0 && v.x % 2) return Air;  // tattered hem
+        return front && (v.y == 3 || v.y == 5) && v.x >= 1 && v.x <= s.x - 2 ? Tusk : Iron;
+    case HandL: case HandR: return Tusk;
+    default: return Iron;
+    }
+}
+
 Grid buildPart(Model model, Part part) {
     if (model == ModelSword || model == ModelKnife)
         return part != Head ? Grid({1, 1, 1}) : model == ModelSword ? buildSword() : buildKnife();
@@ -254,6 +325,14 @@ Grid buildPart(Model model, Part part) {
                     b = dummyVoxel(part, {x, y, z}, s);
                 } else if (model == ModelBoar) {
                     b = boarVoxel(Part(part), {x, y, z}, s);
+                } else if (model == ModelWolf) {
+                    b = wolfVoxel(part, {x, y, z}, s);
+                } else if (model == ModelGuard) {
+                    b = guardVoxel(part, {x, y, z}, s);
+                } else if (model == ModelChief) {
+                    b = chiefVoxel(part, {x, y, z}, s);
+                } else if (model == ModelGhoul) {
+                    b = ghoulVoxel(part, {x, y, z}, s);
                 } else if (model == ModelIronArmor) {
                     b = armorVoxel(part, {x, y, z}, s);
                 } else if (part == Head) {
@@ -348,7 +427,7 @@ static void animateBoar(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 
 }
 
 std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held) {
-    bool armed = model != ModelDummy && model != ModelBoar && p.weapon() != NoItem;
+    bool armed = model != ModelDummy && !quadruped(model) && p.weapon() != NoItem;
     const PartSpec* parts = specs(model);
     glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
     glm::mat4 tilt(1);  // the dummy above its base: wobbles back when hit, topples when out of health
@@ -360,7 +439,7 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         tilt = glm::rotate(tilt, -(fall * fall * 1.45f + wobble), {1, 0, 0});
         tilt = glm::translate(tilt, -pivot);
     } else {
-        if (model == ModelBoar) animateBoar(p, off, rot);
+        if (quadruped(model)) animateBoar(p, off, rot);
         else animate(p, armed, off, rot);
         if (!p.alive()) {  // falls over onto its side
             float fall = std::min(p.deadTime / 0.5f, 1.0f);
@@ -373,7 +452,9 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
 
     glm::mat4 base = glm::translate(glm::mat4(1), p.pos);
     base = glm::rotate(base, p.yaw, {0, 1, 0});
-    base = glm::scale(base, glm::vec3(kVoxel));
+    // The chief is bigger and bulkier, the ghoul gaunt; only the drawing scales, not the body's box.
+    glm::vec3 scale = model == ModelChief ? glm::vec3(1.25f, 1.12f, 1.25f) : model == ModelGhoul ? glm::vec3(0.82f, 1.06f, 0.82f) : glm::vec3(1);
+    base = glm::scale(base, kVoxel * scale);
     std::array<glm::mat4, PartCount> out;
     for (int i = 0; i < PartCount; ++i) {
         bool tilted = !(model == ModelDummy && i == FootR);

@@ -1,0 +1,62 @@
+description: Lake dock 5 wide x 12 long: plank deck on posts that reach the lakebed, mooring posts and crates; the shore end is -z, the lake end +z
+foundation: Wood
+y: -2
+W = Wood
+P = Planks
+B = Burlap
+
+layer
+     
+W   W
+     
+     
+W   W
+     
+     
+W   W
+     
+     
+W   W
+     
+
+layer
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+
+layer
+     
+     
+ PP  
+     
+     
+W   W
+     
+     
+   B 
+   P 
+     
+W   W
+
+layer
+     
+     
+ B   
+     
+     
+W   W
+     
+     
+     
+   B 
+     
+W   W

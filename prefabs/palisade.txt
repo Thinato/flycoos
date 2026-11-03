@@ -1,0 +1,27 @@
+description: Log palisade segment along x: staggered pointed wood logs 6 tall, two rows thick
+foundation: Wood
+W = Wood
+
+layer
+WWWWWWWWW
+WWWWWWWWW
+
+layer
+WWWWWWWWW
+WWWWWWWWW
+
+layer
+WWWWWWWWW
+WWWWWWWWW
+
+layer
+WWWWWWWWW
+WWWWWWWWW
+
+layer
+WWWWWWWWW
+WWWWWWWWW
+
+layer
+W W W W W
+ W W W W 

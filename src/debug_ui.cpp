@@ -130,7 +130,7 @@ static void entitiesTab(std::vector<Entity>& entities, const Player& player, Deb
         Entity& e = entities[i];
         const EntityType& t = e.type();
         char title[96];
-        std::snprintf(title, sizeof title, "%s  (Lv %d)###entity%zu", e.name.c_str(), e.level, i);
+        std::snprintf(title, sizeof title, "%s  (Lv %d)###entity%zu", e.displayName().c_str(), e.level, i);
         if (!ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) continue;
         ImGui::PushID(int(i));
         attributes(e.body, false);
@@ -152,13 +152,13 @@ static void entitiesTab(std::vector<Entity>& entities, const Player& player, Deb
         if (t.wanders)
             ImGui::Text("%s %.1f s more, %.1f from home (wanders %.0f)", e.wanderDir == glm::vec2(0) ? "Standing" : "Walking",
                         e.wanderTimer, glm::distance(e.body.pos, e.home), e.wanderRadius);
-        if (e.spawn.id) ImGui::Text("From spawn marker #%u %s", e.spawn.id, e.spawn.name.c_str());
+        if (e.spawn.id) ImGui::Text("From spawn marker #%u %s (%zu lines)", e.spawn.id, e.spawn.name.c_str(), e.spawn.lines.size());
         if (t.attackable) {
             if (ImGui::Button("Hit for 10")) damage(e, 10);
             ImGui::SameLine();
             if (ImGui::Button("Kill")) damage(e, int(std::ceil(e.body.health)));
         }
-        if (t.talks && ImGui::Button("Talk")) talk(e);
+        if ((t.talks || !e.spawn.lines.empty()) && ImGui::Button("Talk")) talk(e);
         if (const char* s = e.speech()) ImGui::TextWrapped("Says: \"%s\"", s);
         ImGui::PopID();
     }

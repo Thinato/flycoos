@@ -35,11 +35,12 @@ struct Editor {
     glm::ivec3 aimedCell{-1};
     uint64_t edits = 0, aimedEdits = 0;  // edits counts every change to the world (see main.cpp)
 
-    // Marker tool (8): LMB places `mark` (kind, name, radius, entity, count) on the aimed voxel, or
+    // Marker tool (8): LMB places `mark` (kind, name, radius, entity, count, lines) on the aimed voxel, or
     // selects the marker standing there and loads its settings.
     bool markerTool = false;
     Marker mark{.kind = MarkerKind::Poi, .radius = 16};
     char markName[kMaxMarkerName + 1] = "";
+    char markLines[kMaxMarkerLines * (kMaxMarkerLine + 1)] = "";  // spawn: its lines, one per text line
     uint32_t marked = 0;  // selected marker id, 0 = none
     Marker markedWas;     // the selected marker as last loaded into the panel (main reloads it when it changes)
     // Marker circle heights per marker id, valid while ringEdits == edits (the overlay draws them each frame).

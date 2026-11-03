@@ -5,7 +5,7 @@ action. Over time it grows open-world RPG systems (quests, factions, skills you 
 and MMO-style systems (attributes, talents, group dungeons), without classes.
 
 This repository is **milestone 0**: a playable prototype with a voxel character, a small procedural
-world with a day/night cycle, and procedural walk/idle animation. It runs at roughly 300+ FPS on an
+world with a day/night cycle (72 minutes), and procedural walk/idle animation. It runs at roughly 300+ FPS on an
 Apple M4.
 
 - [docs/VISION.md](docs/VISION.md): what the game is, and what it is not
@@ -50,7 +50,7 @@ GPU debug layer.
 | Wheel | Zoom |
 | T (hold) | Fast-forward time (60×) |
 | Left mouse | Attack: sword slash with one equipped, otherwise punch (hold to keep swinging) |
-| E | Loot a nearby corpse, otherwise talk to a nearby villager |
+| E | Loot a nearby corpse, otherwise talk to a nearby villager or guard |
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
 | `.` | Open/close the debug window |
@@ -97,7 +97,7 @@ the brush on the ground. Fly up to aim farther away.
   over it since). The panel lists all instances with Go to and Remove buttons and any prefab file
   that failed to load. See "Prefabs" below.
 - **Marker** (8) places a story marker on the aimed voxel: pick the kind, type a name, set the radius
-  (and for a spawn the NPC kind and count). Clicking a marker selects it and loads its settings;
+  (and for a spawn the NPC kind, count and dialogue lines). Clicking a marker selects it and loads its settings;
   **Update selected** applies changed ones (the kind stays; changing Kind deselects), Delete removes
   it. Markers show as pins with their id and
   name, regions as circles on the ground; the panel lists them with Go to and Remove. See "Story
@@ -139,8 +139,8 @@ server. If the game isn't running, the tools say how to start it.
 | `move` `remove` | Move an instance (same id, one undo step) or remove it |
 | `instances` | The placed instances, optionally those touching a region |
 | `markers` | The story markers, optionally of one `kind` and in a region |
-| `mark` | Add a marker: `kind`, `name`, column `x`, `z` (optional ground `y`), `radius`, and for a spawn `entity` and `count`; returns its id |
-| `edit_marker` `unmark` | Rename, move or retune a marker by `id` (fields left out stay), or remove it |
+| `mark` | Add a marker: `kind`, `name`, column `x`, `z` (optional ground `y`), `radius`, and for a spawn `entity`, `count` and `lines`; returns its id |
+| `edit_marker` `unmark` | Rename, move, retune or rewrite the lines of a marker by `id` (fields left out stay), or remove it |
 
 Every command shows in the Editor panel's **MCP** section (last 20, with timings; rejected ones in
 red), and each edit's box flashes in the world for 3 seconds. **Follow Claude** (on by default) lets
@@ -198,14 +198,24 @@ Markers are authored places, saved with the world:
 | Kind | What it does |
 |---|---|
 | `player_spawn` | Where you start and get back up after being knocked out (one per world) |
-| `spawn` | `count` (1–8) NPCs of one kind (`dummy`, `villager`, `boar`, `bandit`) that wander within its radius and respawn there; editing it respawns them |
+| `spawn` | `count` (1–8) NPCs of one kind that wander within its radius and respawn there; editing it respawns them (a new name or new lines don't) |
 | `poi` | A named point, e.g. "Old Well"; its name shows while you're within its radius |
 | `region` | A named circle; walking into it shows its name for a few seconds (the innermost wins) |
 
 A world from before markers (or a new one) gets the training dummy, villager, boar and bandit as
 four spawn markers, so its NPCs stay where they were and can be moved or removed like any other.
-Names are up to 48 bytes; a world holds up to 4096 markers, and its spawn markers make at most
-256 NPCs together. Every marker edit is one undo step.
+NPC kinds: `dummy`, `villager` (talks), `boar` (Lv 1, fights back), `bandit` (Lv 2, attacks on
+sight), `wolf` (Lv 1, fast, attacks; drops Wolf Pelt), `guard` (Lv 4, talks, fights back, iron
+helm and sword), `bandit_chief` (Lv 3, attacks, always drops an Iron Helm) and `ghoul` (a Lv 3
+barrow ghoul, slow, attacks; may drop a Bone Charm). With the Iron set and a sword you beat the
+chief alone, or a pair of wolves or ghouls; a pack of three is too much.
+
+A spawn marker can carry up to 8 **lines** of dialogue (1–160 bytes each). Villagers and guards say
+the next one each time you press E, round and round; anyone who fights (guards too) shouts the
+next one when they turn on you.
+With lines and a count of 1 the NPC goes by the marker's name, so "Hakon the Red" on a
+`bandit_chief` marker is Hakon. Names are up to 48 bytes; a world holds up to 4096 markers, and its
+spawn markers make at most 256 NPCs together. Every marker edit is one undo step.
 
 ## Debug window
 
@@ -254,7 +264,7 @@ src/server.*     localhost command server thread (newline-delimited JSON)
 src/mesher.*     greedy mesher with ambient occlusion -> 8-byte packed quads
 src/player.*     movement physics (+ fly/noclip tuning), camera collision, character models, procedural animation
 src/stats.h      the five attributes and the stats derived from them
-src/entity.*     NPCs: dummy, villager, boar, bandit (traits, temper, wander/chase AI, talking, loot), attacks and damage
+src/entity.*     NPCs: dummy, villager, boar, bandit, wolf, guard, bandit chief, ghoul (traits, temper, AI, talking, loot), attacks and damage
 src/item.*       items, inventory (equipment, backpack, bags), move/equip rules
 src/inventory_ui.*  Character (C) and Bags (B) windows
 src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, place names

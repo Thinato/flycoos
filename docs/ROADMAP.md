@@ -38,6 +38,9 @@ reach them.
 - Story markers: the player spawn, NPC spawns (kind, count, wander area; the NPCs follow every
   edit and undo), named points of interest and regions (shown as labels and an on-entering name),
   placed in-game (Marker tool) or by Claude (MCP), saved with the world and drawn on the map
+- Story NPCs: dialogue lines on spawn markers (talkers say them on E, fighters when they attack; a
+  lone NPC takes the marker's name), new kinds (wolf, guard, bandit chief, barrow ghoul) with Wolf
+  Pelt and Bone Charm loot, and a 72-minute day
 
 ## M1: A living world
 
@@ -63,7 +66,7 @@ reach them.
 
 ## M4: World with memory
 
-- Towns with NPCs and daily routines; dialogue
+- Towns with NPCs and daily routines; branching dialogue (fixed lines per spawn marker ✅)
 - Quest system (data-driven), factions and reputation
 - Points of interest: ruins, camps, a first hand-designed dungeon with a boss
 

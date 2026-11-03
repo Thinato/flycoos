@@ -23,7 +23,7 @@
 #include "renderer.h"
 #include "server.h"
 
-constexpr float kDayLength = 600;     // seconds per full day/night cycle
+constexpr float kDayLength = 4320;    // seconds per full day/night cycle (72 minutes)
 constexpr float kCameraRadius = 0.3f;  // camera collision box half-size; > near-plane half-diagonal
 constexpr float kBrushRate = 8;        // editor brush applications per second while the button is held
 constexpr float kEditReach = 400;      // blocks; about where fog hides the ground
@@ -181,6 +181,9 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.marked = m.id;
         editor.mark = editor.markedWas = m;
         std::snprintf(editor.markName, sizeof editor.markName, "%s", m.name.c_str());
+        std::string lines;
+        for (const std::string& line : m.lines) lines += (lines.empty() ? "" : "\n") + line;
+        std::snprintf(editor.markLines, sizeof editor.markLines, "%s", lines.c_str());
     };
     float brushTimer = 0;
     CommandServer server;  // remote commands (the MCP bridge); runs once per frame below
@@ -522,6 +525,7 @@ static int run(SDL_Window* window, const Options& opt) {
             m.kind = it->kind;
             m.pos = it->pos;
             m.name = editor.markName;
+            if (!takesLines(m)) m.lines = it->lines;  // the panel hides the lines then: keep them (checkMarker decides)
             uint64_t start = SDL_GetTicksNS();
             EditResult r = putMarker(world, markers, editor.history, m);
             edited(r.dirty, start, r.error);

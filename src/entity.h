@@ -41,12 +41,15 @@ struct Entity {
     float wanderTimer = 0; // seconds until the next wander decision
     int phrase = -1;       // index into the phrase list, -1 = silent
     float speechTimer = 0; // seconds the balloon stays up
+    float shoutTimer = 0;  // > 0: shouted a line on turning angry lately: no new shout, and the balloon doesn't hold it still
     bool angry = false;    // chasing and attacking the player
     ItemId loot = NoItem;  // what its corpse holds
     std::mt19937 rng;
 
     const EntityType& type() const { return typeOf(kind); }
     const char* speech() const;  // current balloon text, null when silent
+    // Its name on the nameplate: the spawn marker's name for a lone NPC with lines, else `name`.
+    const std::string& displayName() const;
 };
 
 constexpr float kTalkRange = 3.5f;   // blocks between feet; also how close you loot from
@@ -58,8 +61,9 @@ constexpr float kPlayerRespawnSeconds = 5;
 // spawn). The bandit's camp is far enough away that it can't see `near`.
 std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t seed);
 // The NPCs of every spawn marker. Entities whose marker is gone or changed (position, radius, kind
-// or count) are replaced by fresh ones at the marker; the rest are left alone, so it's cheap to call
-// after anything that may have changed the markers. New ones face `face`.
+// or count) are replaced by fresh ones at the marker; the rest are left alone (a new name or new
+// lines only update their copy of the marker), so it's cheap to call after anything that may have
+// changed the markers. New ones face `face`.
 void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vector<Marker>& markers, uint32_t seed,
                 glm::vec3 face);
 // Where the player starts and gets back up: the player_spawn marker, else findSpawn, out of the terrain.
@@ -72,9 +76,9 @@ std::vector<Marker> defaultMarkers(const Grid& world, uint32_t seed);
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt);
 // Keeps the player from walking through entities (never pushes into terrain).
 void separate(Player& player, const Grid& world, const std::vector<Entity>& entities);
-// Nearest entity within talk range that can talk, or null.
+// Nearest living entity within talk range that can talk, or null.
 Entity* talkTarget(std::vector<Entity>& entities, const Player& player);
-// Starts a new random phrase (different from the last one).
+// Says the next of its spawn marker's lines (cycling), or else a new random phrase (different from the last one).
 void talk(Entity& e);
 // Nearest corpse within talk range that still holds loot, or null (also when the player is
 // knocked out or their bags are full).

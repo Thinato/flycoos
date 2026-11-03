@@ -1,0 +1,37 @@
+description: Market stall: burlap and leather awning on wood posts, a plank counter at the front with straw and burlap goods, stock at the back
+foundation: Wood
+W = Wood
+P = Planks
+B = Burlap
+L = Leather
+S = Straw
+
+layer
+W W
+SBS
+PPP
+W W
+
+layer
+W W
+ B 
+SBS
+W W
+
+layer
+W W
+   
+   
+W W
+
+layer
+W W
+   
+BLB
+BLB
+
+layer
+BLB
+BLB
+   
+   

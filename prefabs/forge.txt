@@ -1,0 +1,80 @@
+description: Open-sided smithy: thatch roof on wood posts, cobble hearth with Ember and a chimney, an iron anvil on a stump and a plank work table
+foundation: Cobble
+C = Cobble
+P = Planks
+W = Wood
+T = Thatch
+E = Ember
+I = Iron
+
+layer
+CCCCCCCCC
+CCCCCCCCC
+CCCCCCCCC
+CCCCCCCCC
+CCCCCCCCC
+CCCCCCCCC
+CCCCCCCCC
+
+layer
+         
+ WCCCCCW 
+   CCC   
+  P      
+  P   W  
+ W  P  W 
+         
+
+layer
+         
+ WCCECCW 
+   CEC   
+         
+      I  
+ W     W 
+         
+
+layer
+         
+ WCCCCCW 
+ W     W 
+ W     W 
+ W     W 
+ WWWWWWW 
+         
+
+layer
+TTTTTTTTT
+TTTTCTTTT
+TTTTTTTTT
+TTTTTTTTT
+TTTTTTTTT
+TTTTTTTTT
+TTTTTTTTT
+
+layer
+         
+ TTTCTTT 
+ TTTTTTT 
+ TTTTTTT 
+ TTTTTTT 
+ TTTTTTT 
+         
+
+layer
+         
+    C    
+  TTTTT  
+  TTTTT  
+  TTTTT  
+         
+         
+
+layer
+         
+    C    
+         
+         
+         
+         
+         

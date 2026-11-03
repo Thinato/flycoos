@@ -128,8 +128,8 @@ constexpr size_t kMaxInstanceParams = 8;
 constexpr int kMaxInstanceExtent = 96;  // the cells of one instance span at most this per axis
 
 // NPC kinds (their traits are in entity.cpp). Saved in spawn markers: only append.
-enum class EntityKind : uint8_t { TrainingDummy, Villager, Boar, Bandit, Count };
-inline constexpr const char* kEntityKindNames[] = {"dummy", "villager", "boar", "bandit"};
+enum class EntityKind : uint8_t { TrainingDummy, Villager, Boar, Bandit, Wolf, Guard, BanditChief, Ghoul, Count };
+inline constexpr const char* kEntityKindNames[] = {"dummy", "villager", "boar", "bandit", "wolf", "guard", "bandit_chief", "ghoul"};
 
 // Story markers: authored places in the world (see docs/ARCHITECTURE.md, "Markers"). Saved in world
 // files: only append kinds.
@@ -150,8 +150,15 @@ struct Marker {
     float radius = 0;
     EntityKind entity = EntityKind::Villager;  // spawn
     int count = 1;                             // spawn
+    // Spawn (not the dummy): what its NPCs say, in order and round again: talkers one line per E
+    // (none: random villager phrases), and any of them one when it turns on the player (at most every
+    // 8 s). Each line is checked like a name.
+    std::vector<std::string> lines;
     bool operator==(const Marker&) const = default;
 };
+// Whether a marker may carry lines: spawns of any kind but the dummy. Deliberately not tied to NPC
+// traits, so saved worlds keep loading when a kind's traits change.
+inline bool takesLines(const Marker& m) { return m.kind == MarkerKind::Spawn && m.entity != EntityKind::TrainingDummy; }
 
 // Caps, enforced when adding, editing and loading.
 constexpr size_t kMaxMarkers = 4096;
@@ -159,6 +166,8 @@ constexpr size_t kMaxMarkerName = 48;  // bytes
 constexpr int kMaxSpawnCount = 8;
 constexpr int kMaxSpawnedNpcs = 256;  // the counts of all spawn markers together: every NPC is simulated each frame
 constexpr float kMaxMarkerRadius = 512;
+constexpr size_t kMaxMarkerLines = 8;
+constexpr size_t kMaxMarkerLine = 160;  // bytes
 
 // Why the marker is invalid (ignoring its id and the other markers), or nullptr.
 const char* checkMarker(const Grid& g, const Marker& m);

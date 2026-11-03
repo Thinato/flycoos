@@ -213,6 +213,32 @@ def main():
                      dict(kind="poi", name="x", x=x, z=z, entity="boar"), dict(kind="player_spawn", x=x, z=z)):
             err, msg, _ = tool("mark", **args)
             check(err, f"mark refuses {str(args)[:60]} ({msg})")
+        # dialogue lines on spawn markers: set, listed, cleared; hostile ones change nothing
+        err, elder, _ = tool("mark", kind="spawn", name="Elder", x=x + 8, z=z + 8, entity="villager",
+                             lines=["Welcome, traveller.", "Gr\u00fc\u00df dich."])
+        check(not err and elder["marker"]["lines"] == ["Welcome, traveller.", "Gr\u00fc\u00df dich."], "mark a villager with lines")
+        err2, chief, _ = tool("mark", kind="spawn", name="Chief", x=x + 12, z=z + 8, entity="bandit_chief", lines=["Begone."])
+        err3, pack, _ = tool("mark", kind="spawn", x=x + 16, z=z + 8, entity="wolf", count=2)
+        check(not (err2 or err3) and "lines" not in pack["marker"], "new kinds take spawn markers (a chief with taunt lines)")
+        steps = tool("state")[1]["undo_steps"]
+        elder_id = elder["marker"]["id"] if not err else 0
+        for args in (dict(lines="Hello"), dict(lines=[1]), dict(lines=[""]), dict(lines=["x"] * 9), dict(lines=["x" * 161]),
+                     dict(lines=["a\u202eb"]), dict(lines=["a\u200bb"]), dict(lines=["a\nb"]), dict(entity="dummy")):
+            err, msg, _ = tool("edit_marker", id=elder_id, **args)
+            check(err, f"edit_marker refuses {str(args)[:50]} ({msg})")
+        for args in (dict(kind="poi", name="Sign", x=x, z=z, lines=["Hi"]), dict(kind="spawn", x=x, z=z, entity="dummy", lines=["Hi"])):
+            err, msg, _ = tool("mark", **args)
+            check(err, f"mark refuses {str(args)[:60]} ({msg})")
+        check(tool("state")[1]["undo_steps"] == steps, "refused lines change nothing")
+        err, r, _ = tool("edit_marker", id=elder_id, lines=[])
+        listed = [m for m in tool("markers", kind="spawn")[1]["markers"] if m["id"] == elder_id]
+        check(not err and listed and "lines" not in listed[0], "lines: [] clears them")
+        tool("undo")
+        listed = [m for m in tool("markers", kind="spawn")[1]["markers"] if m["id"] == elder_id]
+        check(listed and len(listed[0].get("lines", [])) == 2, "undo brings the lines back")
+        for marker in (elder, chief, pack):
+            tool("unmark", id=marker["marker"]["id"])
+        steps = tool("state")[1]["undo_steps"]
         err, msg, _ = tool("edit_marker", id=999999, name="x")
         err2, msg2, _ = tool("unmark", id=0)
         check(err and err2 and tool("state")[1]["undo_steps"] == steps, "bad ids are errors, and nothing changed")

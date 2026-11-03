@@ -253,6 +253,13 @@ const char* checkMarker(const Grid& g, const Marker& m) {
           m.pos.y <= float(g.size.y)))
         return "position outside the world";  // NaN fails every comparison
     if (!(m.radius >= 0 && m.radius <= kMaxMarkerRadius)) return "radius out of range (0..512)";
+    if (m.lines.empty()) return nullptr;
+    if (!takesLines(m)) return "lines are for spawn markers, not the dummy: clear them first (lines: [])";
+    if (m.lines.size() > kMaxMarkerLines) return "more than 8 lines";
+    for (const std::string& line : m.lines) {
+        if (line.empty() || line.size() > kMaxMarkerLine) return "each line needs 1..160 bytes";
+        if (!validName(line)) return "lines must be UTF-8 text without control, bidi or zero-width characters";
+    }
     return nullptr;
 }
 
@@ -276,6 +283,10 @@ const Marker* regionAt(const std::vector<Marker>& markers, glm::vec3 p) {
 // "INST" section (only when there are instances): u32 count, then per instance: u32 id | u8 name
 //   length | name | i32 x, y, z | u8 rotation | u32 seed | u8 param count | f32 params |
 //   u32 cell count | cells (u16 x, y, z | u8 before | u8 after).
+// "MARK" section (always): u32 count, then per marker: u32 id | u8 kind | u8 name length | name |
+//   f32 x, y, z, radius | u8 entity | u8 count.
+// "LINE" section (only when a marker has lines; after MARK): u32 count, then per marker with lines,
+//   by ascending id: u32 id | u8 line count | lines (u8 length | text). Older builds skip it.
 constexpr uint32_t kWorldFileVersion = 1;
 constexpr int kChunkVoxels = kChunk * kChunk * kChunk;
 
@@ -400,6 +411,22 @@ std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std:
         put(out, uint32_t(m.count), 1);
     }
     endSection();
+    if (size_t talking = size_t(std::ranges::count_if(markers, [](const Marker& m) { return !m.lines.empty(); }))) {
+        out.insert(out.end(), {'L', 'I', 'N', 'E'});
+        sizeAt = out.size();
+        put(out, 0, 8);
+        put(out, talking, 4);
+        for (const Marker& m : markers) {
+            if (m.lines.empty()) continue;
+            put(out, m.id, 4);
+            put(out, m.lines.size(), 1);
+            for (const std::string& line : m.lines) {
+                put(out, line.size(), 1);
+                out.insert(out.end(), line.begin(), line.end());
+            }
+        }
+        endSection();
+    }
     put(out, fnv1a(out.data(), out.size()), 4);
 
     // Write a temp file and rename it over the target, so a failed save never destroys the last good one.
@@ -507,6 +534,35 @@ static std::string readMarkers(const uint8_t* p, const uint8_t* end, const Grid&
     return p == end ? std::string() : "marker section size mismatch";
 }
 
+// Reads the LINE payload [p, end) onto the already loaded `markers`; returns why it's malformed, or "".
+static std::string readLines(const uint8_t* p, const uint8_t* end, const Grid& g, std::vector<Marker>& markers) {
+    bool truncated = false;
+    auto take = [&](int64_t bytes) -> uint64_t {  // a little-endian number, or 0 past the end
+        if (end - p < bytes) return truncated = true, p = end, 0;
+        p += bytes;
+        return get(p - bytes, int(bytes));
+    };
+    uint64_t count = take(4);
+    if (count > markers.size()) return "more marker lines than markers";
+    uint32_t last = 0;
+    for (uint64_t i = 0; i < count && !truncated; ++i) {
+        uint32_t id = uint32_t(take(4));
+        auto m = std::ranges::lower_bound(markers, id, {}, &Marker::id);
+        uint64_t n = take(1);
+        if (m == markers.end() || m->id != id || id <= last || n == 0 || n > kMaxMarkerLines) return std::format("bad lines for marker {}", id);
+        last = id;
+        for (uint64_t k = 0; k < n; ++k) {
+            uint64_t bytes = take(1);
+            if (truncated || end - p < int64_t(bytes)) return "truncated marker lines";
+            m->lines.emplace_back(p, p + bytes);
+            p += bytes;
+        }
+        if (!truncated && checkMarker(g, *m)) return std::format("bad lines for marker {}", id);
+    }
+    if (truncated) return "truncated marker lines";
+    return p == end ? std::string() : "marker lines section size mismatch";
+}
+
 std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances,
                       std::optional<std::vector<Marker>>& markers) {
     std::error_code ec;
@@ -532,6 +588,7 @@ std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Ins
     markers.reset();
 
     bool voxels = false;
+    const uint8_t *lines = nullptr, *linesEnd = nullptr;  // read once the markers are in
     for (p += kHeader; p < end;) {
         if (end - p < 12) return "truncated section header";
         const uint8_t* tag = p;
@@ -559,8 +616,14 @@ std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Ins
             if (std::string error = readInstances(p, next, size, instances); !error.empty()) return error;
         } else if (std::memcmp(tag, "MARK", 4) == 0) {
             if (std::string error = readMarkers(p, next, g, markers.emplace()); !error.empty()) return error;
+        } else if (std::memcmp(tag, "LINE", 4) == 0) {
+            if (lines) return "duplicate marker lines";
+            lines = p, linesEnd = next;
         }
         p = next;
     }
+    if (lines && !markers) return "marker lines without markers";
+    if (lines)
+        if (std::string error = readLines(lines, linesEnd, g, *markers); !error.empty()) return error;
     return voxels ? std::string() : "no voxel section";
 }

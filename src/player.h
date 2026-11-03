@@ -72,11 +72,12 @@ float cameraClearance(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDis
 // Character models: 6 floating voxel parts, each its own tiny grid meshed by meshRegion.
 // The training dummy reuses the slots: FootL is its post, FootR its base, hands its arms.
 enum Part { Head, Torso, HandL, HandR, FootL, FootR, PartCount };
-// The boar reuses them as a quadruped: hands are its front legs, feet its hind legs.
+// The boar and the wolf reuse them as quadrupeds: hands are front legs, feet hind legs.
 // Weapons are held items: only their Head slot has voxels, posed by poseModel's `held` output.
 // Armor is a humanoid whose parts are plated: a worn piece swaps in the part it covers.
+// The guard, the bandit chief and the ghoul are humanoids (the chief scaled up, the ghoul thinner).
 enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelBoar, ModelBandit, ModelSword, ModelKnife, ModelIronArmor,
-             ModelCount };
+             ModelWolf, ModelGuard, ModelChief, ModelGhoul, ModelCount };
 Grid buildPart(Model model, Part part);
 Model heldModel(ItemId weapon);
 // Which model each part of `model` is drawn from: its own, or the armor worn over it. Greaves have
@@ -85,5 +86,5 @@ std::array<Model, PartCount> partModels(Model model, const Inventory& inv);
 // Part-grid space -> world space for the body's current animation pose (the dummy only wobbles
 // when hit and topples when out of health; everyone else falls over). With a main-hand weapon
 // equipped, a humanoid's `held` gets its pose (gripped in the right hand) and attacks are slashes
-// instead of punches; the boar gores with its head.
+// instead of punches; the boar and the wolf lunge with their heads.
 std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model, glm::mat4* held = nullptr);

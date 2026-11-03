@@ -1,0 +1,87 @@
+description: Small stone wayshrine: stepped cobble base, a niche wall and two front pillars under a stone roof, with an Ember brazier
+foundation: Cobble
+C = Cobble
+S = Stone
+R = Rock
+E = Ember
+
+layer
+SSSSSSS
+SSSSSSS
+SSSSSSS
+SSSSSSS
+SSSSSSS
+SSSSSSS
+SSSSSSS
+
+layer
+       
+ CCCCC 
+ CCCCC 
+ CCCCC 
+ CCCCC 
+ CCCCC 
+       
+
+layer
+       
+ SSSSS 
+   C   
+ S   S 
+       
+ S   S 
+       
+
+layer
+       
+ SS.SS 
+   E   
+ S   S 
+       
+ S   S 
+       
+
+layer
+       
+ SSSSS 
+       
+       
+       
+ S   S 
+       
+
+layer
+SSSSSSS
+SSSSSSS
+SSSSSSS
+SSSSSSS
+SSSSSSS
+SSSSSSS
+SSSSSSS
+
+layer
+       
+ CCCCC 
+ CCCCC 
+ CCCCC 
+ CCCCC 
+ CCCCC 
+       
+
+layer
+       
+       
+  SSS  
+  SSS  
+  SSS  
+       
+       
+
+layer
+       
+       
+       
+   R   
+       
+       
+       

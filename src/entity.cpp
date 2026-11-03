@@ -11,6 +11,7 @@ namespace {
 
 constexpr float kTau = 2 * std::numbers::pi_v<float>;
 constexpr float kSpeechSeconds = 5;
+constexpr float kShoutSeconds = 8;  // at least this long between shouts
 constexpr float kBodyRadius = 0.8f;  // player-to-entity distance kept by separate()
 
 constexpr EntityType kTypes[] = {
@@ -26,6 +27,21 @@ constexpr EntityType kTypes[] = {
     // A bit tougher than a new player: more health and strength, and a quick knife.
     {"Bandit",          2,   {12,  3,  2,  2,  2}, true,      true,   false, ModelBandit,
                         Temper::Aggressive, 10,   5,     5.5f, Knife,  Knife,    0.4f,  30},
+    // The story is won at level 1 in the Iron set: with a sword, a pair of wolves or ghouls or the
+    // chief alone leaves the player at about a quarter of their health, a pair of wolves or ghouls
+    // a quarter to two fifths (storyNpcs test).
+    // Wolves hunt in packs: weak alone, quick on their feet (they outrun a walking player).
+    {"Wolf",            1,   { 8,  2,  4,  2,  2}, true,      true,   false, ModelWolf,
+                        Temper::Aggressive, 12,   10,    7.5f, NoItem, WolfPelt, 0.6f,  30},
+    // Keeps the peace: only fights back, but well armed and much tougher than the player.
+    {"Guard",           4,   {16,  5,  3,  2,  4}, true,      true,   true,  ModelGuard,
+                        Temper::Passive,    0,    6,     6,    Shortsword, NoItem, 0,   60},
+    // Leads the bandits: his sword does the work. Always carries an iron helm.
+    {"Bandit Chief",    3,   {11,  1,  2,  2,  2}, true,      true,   false, ModelChief,
+                        Temper::Aggressive, 10,   6,     5.5f, Shortsword, IronHelm, 1, 120},
+    // Shambles out of old graves: gaunt and slow, claws at you, sees you coming from close by only.
+    {"Barrow Ghoul",    3,   { 7,  2,  2,  2,  2}, true,      true,   false, ModelGhoul,
+                        Temper::Aggressive, 8,    4,     4,    NoItem, BoneCharm, 0.3f, 45},
 };
 
 constexpr const char* kNames[] = {
@@ -90,6 +106,16 @@ void wander(Entity& e, const Grid& g, glm::vec3 player, float dt) {
     }
 }
 
+// Turns a fighter on the player; one with spawn marker lines shouts the next one (not more often
+// than every kShoutSeconds, e.g. when the player hits it from outside its territory, where it can't stay angry).
+void anger(Entity& e) {
+    if (!e.angry && e.body.alive() && !e.spawn.lines.empty() && e.shoutTimer <= 0) {
+        talk(e);
+        e.shoutTimer = std::max(kShoutSeconds, e.speechTimer);
+    }
+    e.angry = true;
+}
+
 // A new entity of `kind` standing at (and at home on) `pos`, facing `face`.
 Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 face) {
     Entity e{};
@@ -116,7 +142,15 @@ Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 fa
 const EntityType& typeOf(EntityKind kind) { return kTypes[int(kind)]; }
 static_assert(std::size(kTypes) == size_t(EntityKind::Count) && std::size(kEntityKindNames) == size_t(EntityKind::Count));
 
-const char* Entity::speech() const { return speechTimer > 0 && phrase >= 0 ? kPhrases[phrase] : nullptr; }
+const char* Entity::speech() const {
+    if (speechTimer <= 0 || phrase < 0) return nullptr;
+    if (spawn.lines.empty()) return kPhrases[phrase];
+    return size_t(phrase) < spawn.lines.size() ? spawn.lines[size_t(phrase)].c_str() : nullptr;
+}
+
+const std::string& Entity::displayName() const {
+    return !spawn.lines.empty() && spawn.count == 1 && !spawn.name.empty() ? spawn.name : name;
+}
 
 std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t seed) {
     std::vector<Entity> out;
@@ -176,7 +210,8 @@ void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vec
     std::unordered_set<uint32_t> stale;
     for (Entity& e : entities) {
         const Marker* m = spawnOf(e.spawn.id);
-        if (m) e.spawn.name = m->name;  // a rename needs no respawn
+        if (m && m->lines != e.spawn.lines) e.phrase = -1, e.speechTimer = 0;  // new lines start from the first
+        if (m) e.spawn.name = m->name, e.spawn.lines = m->lines;  // a rename or new lines need no respawn
         if (!m || m->pos != e.spawn.pos || m->radius != e.spawn.radius || m->entity != e.spawn.entity || m->count != e.spawn.count)
             stale.insert(e.spawn.id);
         ++counts[e.spawn.id];
@@ -205,6 +240,7 @@ std::vector<Marker> defaultMarkers(const Grid& world, uint32_t seed) {
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt) {
     for (Entity& e : entities) {
         e.speechTimer = std::max(0.0f, e.speechTimer - dt);
+        e.shoutTimer = std::max(0.0f, e.shoutTimer - dt);
         e.body.pos = clearOfTerrain(world, e.body.pos);  // e.g. respawned at a home that was built over since
         const EntityType& t = e.type();
         if (!t.wanders) continue;
@@ -214,7 +250,7 @@ void updateEntities(std::vector<Entity>& entities, const Grid& world, const Play
         glm::vec2 dir = dist > 1e-3f ? toPlayer / dist : glm::vec2(0, 1);
         // Fighters only care about a living player inside their territory.
         bool inTerritory = player.alive() && glm::distance(xz(player.pos), xz(e.home)) < kLeashRadius;
-        if (t.temper == Temper::Aggressive && inTerritory && dist < t.aggroRange) e.angry = true;
+        if (t.temper == Temper::Aggressive && inTerritory && dist < t.aggroRange) anger(e);
         if (!inTerritory || !e.body.alive()) e.angry = false;
         if (!e.body.alive()) {
             // lies where it fell
@@ -226,7 +262,7 @@ void updateEntities(std::vector<Entity>& entities, const Grid& world, const Play
                 turnToward(e.body, dir, dt);
             }
             if (dist < kPunchReach - 0.2f) startPunch(e.body, dir);
-        } else if (e.speechTimer > 0) {  // stands still and faces the player while talking
+        } else if (e.speechTimer > 0 && e.shoutTimer == 0) {  // stands still and faces the player while talking (not after a shout)
             if (dist > 0.01f) turnToward(e.body, toPlayer, dt);
         } else {
             wander(e, world, player.pos, dt);
@@ -254,7 +290,7 @@ Entity* talkTarget(std::vector<Entity>& entities, const Player& player) {
     float bestDist = kTalkRange;
     for (Entity& e : entities) {
         float d = glm::distance(e.body.pos, player.pos);
-        if (e.type().talks && d < bestDist) {
+        if (e.type().talks && e.body.alive() && d < bestDist) {
             best = &e;
             bestDist = d;
         }
@@ -263,6 +299,12 @@ Entity* talkTarget(std::vector<Entity>& entities, const Player& player) {
 }
 
 void talk(Entity& e) {
+    e.shoutTimer = 0;  // spoken to: it listens (anger sets it again after a shout)
+    if (!e.spawn.lines.empty()) {  // the marker's lines, in order and round again
+        e.phrase = int(size_t(e.phrase + 1) % e.spawn.lines.size());
+        e.speechTimer = std::max(kSpeechSeconds, float(e.spawn.lines[size_t(e.phrase)].size()) / 18);  // long lines stay longer
+        return;
+    }
     int n = int(std::size(kPhrases)), p;
     do p = int(e.rng() % unsigned(n));
     while (p == e.phrase);
@@ -302,8 +344,8 @@ bool hurt(Player& b, int amount) {
 bool damage(Entity& e, int amount) {
     const EntityType& t = e.type();
     if (!t.attackable || !hurt(e.body, amount)) return false;
-    if (t.temper != Temper::Harmless) e.angry = true;
-    if (!e.body.alive() && rand01(e.rng) < t.lootChance) e.loot = t.loot;
+    if (t.temper != Temper::Harmless) anger(e);
+    if (!e.body.alive() && (t.lootChance >= 1 || rand01(e.rng) < t.lootChance)) e.loot = t.loot;  // rand01 may return 1
     return true;
 }
 

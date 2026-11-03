@@ -79,6 +79,25 @@ void icon(ImDrawList* dl, ItemId id, ImVec2 lo, float s) {
             dl->AddRectFilled(at(x + 0.26f, 0.62f), at(x + 0.36f, 0.8f), steel, s * 0.04f); // toe cap
         }
         break;
+    case WolfPelt: {  // a grey hide with a brown back stripe and a tail
+        ImU32 fur = uiColor(0.52f, 0.50f, 0.47f), back = uiColor(0.36f, 0.25f, 0.18f);
+        for (auto [x, y] : {std::pair{0.24f, 0.22f}, std::pair{0.76f, 0.22f}, std::pair{0.24f, 0.7f}, std::pair{0.76f, 0.7f}})
+            dl->AddCircleFilled(at(x, y), s * 0.09f, fur);
+        dl->AddRectFilled(at(0.28f, 0.14f), at(0.72f, 0.76f), fur, s * 0.16f);
+        dl->AddLine(at(0.5f, 0.76f), at(0.62f, 0.92f), fur, s * 0.1f);  // tail
+        dl->AddLine(at(0.5f, 0.18f), at(0.5f, 0.72f), back, s * 0.1f);
+        break;
+    }
+    case BoneCharm: {  // a bone on a cord
+        ImU32 bone = uiColor(0.92f, 0.88f, 0.76f);
+        dl->AddBezierCubic(at(0.2f, 0.16f), at(0.2f, 0.5f), at(0.8f, 0.5f), at(0.8f, 0.16f), leather, s * 0.05f);
+        dl->AddLine(at(0.5f, 0.42f), at(0.5f, 0.76f), bone, s * 0.1f);
+        for (float x : {0.43f, 0.57f}) {
+            dl->AddCircleFilled(at(x, 0.42f), s * 0.07f, bone);
+            dl->AddCircleFilled(at(x, 0.8f), s * 0.07f, bone);
+        }
+        break;
+    }
     default: break;
     }
 }

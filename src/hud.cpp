@@ -46,7 +46,8 @@ void balloon(ImDrawList* dl, ImVec2 anchor, const char* text, float alpha) {
 void hint(ImDrawList* dl, ImVec2 p, float alpha, const Entity& e) {
     char text[64];
     if (e.body.alive()) std::snprintf(text, sizeof text, "[E] Talk");
-    else std::snprintf(text, sizeof text, "[E] Loot %s", itemType(e.loot).name);
+    else if (e.loot != NoItem) std::snprintf(text, sizeof text, "[E] Loot %s", itemType(e.loot).name);
+    else return;
     ImVec2 size = ImGui::CalcTextSize(text);
     shadowText(dl, ImVec2(p.x - size.x / 2, p.y + 8), uiColor(1, 1, 1, alpha), alpha, text);
 }
@@ -77,7 +78,9 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     float line = ImGui::GetFontSize();
 
     for (const Entity& e : entities) {
-        glm::vec3 head = e.body.pos + glm::vec3(0, e.type().model == ModelBoar ? 1.6f : 2.5f, 0);  // above the model
+        Model model = e.type().model;
+        float top = model == ModelBoar ? 1.6f : model == ModelWolf ? 1.9f : model == ModelChief ? 2.8f : 2.5f;
+        glm::vec3 head = e.body.pos + glm::vec3(0, top, 0);  // above the model
         glm::vec3 toHead = head - eye;
         float dist = glm::length(toHead);
         glm::vec4 clip = viewProj * glm::vec4(head, 1);
@@ -96,7 +99,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
 
         const EntityType& t = e.type();
         char label[96];
-        std::snprintf(label, sizeof label, "Lv %d  %s", e.level, e.name.c_str());
+        std::snprintf(label, sizeof label, "Lv %d  %s", e.level, e.displayName().c_str());
         ImVec2 size = ImGui::CalcTextSize(label);
         // Names: red attacks on sight, amber can be attacked, green friendly. Attackable ones have red health.
         ImU32 nameColor = t.temper == Temper::Aggressive ? uiColor(1, 0.35f, 0.3f, alpha)

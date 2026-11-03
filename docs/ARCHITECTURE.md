@@ -90,6 +90,11 @@ u32 FNV-1a checksum of every byte before it
 - The `MARK` section (always written; empty when there are no markers) holds the markers sorted by
   id: `u32 count`, then per marker `u32 id | u8 kind | u8 name length | name | f32 x, y, z | f32
   radius | u8 entity | u8 count`. A file without it is older: it loads with `markers` = nullopt.
+- The `LINE` section (written after `MARK`, only when a marker has dialogue lines) holds them by
+  ascending marker id: `u32 count`, then per marker `u32 id | u8 line count | lines (u8 length |
+  text)`. Each marker must exist and pass `checkMarker` with its lines; a second `LINE` section is
+  rejected. A file without it (all
+  older ones) loads with no lines; older builds skip it and drop the lines.
 - Later content gets its own sections; old readers skip them, so adding one needs no version bump.
 - Loading rejects, with a message, anything that doesn't parse exactly: wrong magic or version,
   checksum mismatch (any corruption or truncation), bad sizes, block ids or run lengths. A
@@ -175,19 +180,21 @@ the screen center.
 
 Story markers say where things are and what places are called (ADR-015). A `Marker` is an id, a
 kind, a name, a position (feet: x, z at a column center, y the top of the ground voxel), a radius,
-and for spawns an entity kind and a count. Kinds:
+and for spawns an entity kind, a count and dialogue lines. Kinds:
 
 | Kind | Radius | Effect |
 |---|---|---|
 | `player_spawn` (at most one) | – | The player starts and gets back up here (`playerSpawn`); without one, `findSpawn` as before |
-| `spawn` | wander area | `count` (1–8) NPCs of `entity` (dummy, villager, boar, bandit); they wander within the radius and respawn at their home by the marker |
+| `spawn` | wander area | `count` (1–8) NPCs of `entity` (see "Entities"); they wander within the radius and respawn at their home by the marker |
 | `poi` | label range | Its name floats above it while the player is within the radius (fading in over the outer quarter) |
 | `region` | the circle | Walking into it shows its name for 4 s; `regionAt` picks the smallest containing circle, so nested regions work |
 
 - **Validation** (`checkMarker`, used by commands, the editor and the loader): known kind and
   entity, count 1–8, name ≤ 48 bytes of UTF-8 without control, bidi-override or zero-width
   characters (required for poi and region), finite position inside the world (y up to the world
-  height), radius 0–512. The list holds at most 4096 markers, one player spawn, and spawn counts
+  height), radius 0–512, and up to 8 lines of 1–160 bytes (checked like names) only on spawn
+  markers, not the dummy's (`takesLines`; deliberately not tied to NPC traits, so saved worlds keep
+  loading when a kind's traits change). The list holds at most 4096 markers, one player spawn, and spawn counts
   adding up to at most 256 NPCs (every NPC is simulated each frame); ids are never 0 or 2³²−1 and
   don't wrap.
 - **Edits** (`putMarker`, `removeMarker`) are one undo step each: an `EditRecord` carries `(id,
@@ -202,7 +209,15 @@ and for spawns an entity kind and a count. Kinds:
   NPC stands on the marker, the others on a small spiral around it, each on the first dry ground
   within a few blocks of the marker's height. A spot inside terrain (a marker built over since) is
   lifted until the body is free (`clearOfTerrain`), for the player's spawn and for NPCs, whose
-  update also frees one buried by a later edit. A rename only updates the NPCs' copy of the name.
+  update also frees one buried by a later edit. A rename or new lines only update the NPCs' copy of
+  the marker (new lines start over from the first).
+- **Lines** (ADR-016): talkers say the marker's next line on each E (cycling) instead of a random phrase;
+  anyone that fights (guards too) says the next one when it turns angry (`anger`), at most every
+  8 s, so hits from outside its territory (where it calms down at once) don't make it shout per hit;
+  a shout's balloon doesn't hold a calm NPC still. Only the living talk. A balloon stays up 5 s,
+  longer for long lines. With lines and count 1 the NPC's `displayName()` is the marker's name (nameplate,
+  debug window), so a story character is one marker. Caps: 8 × 160 bytes per marker, ~5 MB for
+  4096 markers at most, so no total cap.
 - **Older and new worlds** get `defaultMarkers`: one spawn marker per NPC `spawnEntities` places
   around the world spawn, with its kind's wander radius. The first NPC of a marker is seeded like
   `spawnEntities` seeded it, so the same NPCs (positions, facing, villager name) come back. A world
@@ -213,7 +228,9 @@ and for spawns an entity kind and a count. Kinds:
   deselects); Delete removes it, and a selection that disappears is cleared. In editor mode every
   marker within 300 blocks of the camera gets a pin with `#id name`, and regions (and the selected
   marker's radius) a circle projected onto the ground under the trees, all on ImGui's background
-  draw list. Circle heights are cached per marker until the world changes, and only the 32 nearest
+  draw list. The panel edits a spawn's lines (hidden for the dummy, when Update selected keeps the
+  marker's lines) in a multiline box, one per text line (blank ones are
+  dropped). Circle heights are cached per marker until the world changes, and only the 32 nearest
   circles are drawn. The panel lists the markers with Go to and Remove; the debug window's Player
   tab shows the current region.
 
@@ -499,9 +516,23 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   | Villager | random from a name list (seeded) | 5 | 25/5/5/5/5 | 250 | harmless (not attackable) | – | – | yes (E) |
   | Boar | "Boar" | 1 | 10/2/2/2/2 (the player's) | 100 | passive | tusks (= punch, 3–6) | Boar Skin 75% | no |
   | Bandit | "Bandit" | 2 | 12/3/2/2/2 | 120 | aggressive, aggro 10 | Rusty Knife (5–8) | Rusty Knife 40% | no |
+  | Wolf | "Wolf" | 1 | 8/2/4/2/2 | 80 | aggressive, aggro 12 | bite (= punch, 3–6) | Wolf Pelt 60% | no |
+  | Guard | "Guard" | 4 | 16/5/3/2/4 | 160 | passive | Iron Shortsword (11–15) | – | yes (E) |
+  | Bandit Chief | "Bandit Chief" | 3 | 11/1/2/2/2 | 110 | aggressive, aggro 10 | Iron Shortsword (7–11) | Iron Helm 100% | no |
+  | Barrow Ghoul | "Barrow Ghoul" | 3 | 7/2/2/2/2 | 70 | aggressive, aggro 8 | claws (= punch, 3–6) | Bone Charm 30% | no |
 
-  Per kind there's also a wander radius (villager 12, boar 10, bandit 5), a chase speed (boar 6,
-  bandit 5.5 b/s; the player walks 5 and runs 9) and a respawn time.
+  The story's foes are tuned for a level-1 player (there's no leveling yet): in the whole Iron set
+  with the sword, the chief alone or a pair of wolves or ghouls is won with about a fifth to two
+  fifths of the player's health left, a pack of three wolves is lost, and bare-handed without armor
+  the chief wins (`storyNpcs` simulates these fights). Higher levels get through more armor, so the
+  chief and the ghouls pay for theirs with less health. Per kind there's also a wander radius (villager 12, boar and wolf 10, guard
+  and chief 6, bandit 5, ghoul 4), a chase speed (ghoul 4, bandit and chief 5.5, boar and guard 6,
+  wolf 7.5 b/s; the player walks 5 and runs 9) and a respawn time (30 s; guard 60, ghoul 45, chief
+  120). Against the whole Iron set (armor 37) a wolf hits for 2–3, a ghoul 2–5, the chief 5–8.
+- **Models:** the wolf is a quadruped on the boar's animation with its own part sizes (longer
+  legs, snout and ears, a tail in the torso's grid); the guard wears the iron helm and gauntlets
+  and a tabard over the cuirass; the chief is the bandit's rig drawn 1.25× wide and 1.12× tall; the
+  ghoul is a skull-headed humanoid drawn thinner. Only existing palette colors (it's full at 32).
 - **Wandering:** alternates standing (2–6 s) and strolling at 2 b/s (2–5 s) in a random direction.
   Before each step it checks the block ahead: no walls it can't step up, no water, no drops of 2+.
   Beyond its wander radius it heads home. NPC bodies use the same `updatePlayer` physics as the
@@ -516,8 +547,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
 - **Default spawns:** dummy and villager just in front of the spawn, the boar about 14 blocks out, the
   bandit's camp about 22 blocks out: outside its leash from the spawn, and even at the edge of its
   wander radius more than its aggro range away.
-- **Talking:** E picks the nearest talker within 3.5 blocks. It shows a random phrase (never the same
-  twice in a row) for 5 s, while the villager stops and turns to face the player.
+- **Talking:** E picks the nearest talker within 3.5 blocks. It shows its spawn marker's next line,
+  or else a random phrase (never the same twice in a row), for 5 s, while it stops and turns to
+  face the player.
 - **Separation:** the player is pushed out of an entity's 0.8-block radius (never into terrain).
 - **HUD:** nameplates (level, name, health bar; red name for aggressive, amber for other attackable,
   green for friendly; red health bar if attackable) within
@@ -529,7 +561,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
 
 ## Day/night
 
-`timeOfDay` runs from 0 to 1 (10-minute day; hold T for 60×). The sun path is tilted so its peak is
+`timeOfDay` runs from 0 to 1 (72-minute day, `kDayLength` = 4320 s; hold T for 60×). The sun path is tilted so its peak is
 ~51°, which keeps it inside the orbit camera's reachable view. `ambience()` in `renderer.cpp`
 derives the following from the sun height:
 

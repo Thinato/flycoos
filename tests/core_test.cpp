@@ -4,10 +4,13 @@
 #include <chrono>
 #include <climits>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <numbers>
 #include <print>
+#include <ranges>
 #include <string_view>
+#include <tuple>
 
 #include "commands.h"
 #include "edit.h"
@@ -681,7 +684,7 @@ static void items() {
                 CHECK(v.equipped[size_t(s)] == NoItem || itemType(v.equipped[size_t(s)]).slot == s);
         }
     }
-    CHECK(moved > 700);  // most random pairs are two empty slots; this seed makes ~840 real moves
+    CHECK(moved > 600);  // most random pairs are two empty slots; this seed makes ~690 real moves
 
     // The sword is held only when equipped, and it points forward at the slash's impact frame.
     Player p;
@@ -1140,7 +1143,11 @@ static void commands() {
     instances.clear();
     prefabs.dir = std::filesystem::path(FLYCOOS_SOURCE_DIR) / "prefabs";
     c = run(R"({"cmd": "prefabs"})");
-    CHECK(ok(c) && c.response["result"]["prefabs"].size() == 11 && c.response["result"]["errors"].empty());
+    // Every shipped file loads without errors, after the 5 generated prefabs.
+    auto shipped = std::ranges::count_if(std::filesystem::directory_iterator(prefabs.dir), [](const auto& f) { return f.path().extension() == ".txt"; });
+    CHECK(ok(c) && c.response["result"]["prefabs"].size() == size_t(5 + shipped) && shipped >= 6 && c.response["result"]["errors"].empty());
+    for (size_t i = 0; ok(c) && i < c.response["result"]["prefabs"].size(); ++i)
+        CHECK(c.response["result"]["prefabs"][i].contains(i < 5 ? "params" : "size"));
     CHECK(c.response["result"]["prefabs"][0]["params"][0]["name"] == "trunk" && c.response["result"]["prefabs"][5].contains("size"));
     c = run(R"({"cmd": "place", "args": {"prefab": "cottage", "x": 30, "z": 30, "rotation": 90}})");
     CHECK(ok(c) && c.response["result"]["instance"]["id"] == 1 && c.response["result"]["instance"]["rotation"] == 90 && !c.dirty.empty());
@@ -1523,7 +1530,7 @@ static void markers() {
     CHECK(checkMarker(g, bad));
     bad = poi, bad.kind = MarkerKind(9);
     CHECK(checkMarker(g, bad));
-    bad = poi, bad.entity = EntityKind(4);
+    bad = poi, bad.entity = EntityKind::Count;
     CHECK(checkMarker(g, bad));
     bad = poi, bad.count = 0;
     CHECK(checkMarker(g, bad));
@@ -1802,6 +1809,365 @@ static void markers() {
     if (ok(c)) std::filesystem::remove(c.response["result"]["path"].get<std::string>());
 }
 
+// The story NPC kinds: table sanity, models, fights against an armored player, loot.
+static void storyNpcs() {
+    struct Row { EntityKind kind; int level; Temper temper; bool talks; Model model; ItemId weapon, loot; };
+    constexpr Row kRows[] = {
+        {EntityKind::Wolf, 1, Temper::Aggressive, false, ModelWolf, NoItem, WolfPelt},
+        {EntityKind::Guard, 4, Temper::Passive, true, ModelGuard, Shortsword, NoItem},
+        {EntityKind::BanditChief, 3, Temper::Aggressive, false, ModelChief, Shortsword, IronHelm},
+        {EntityKind::Ghoul, 3, Temper::Aggressive, false, ModelGhoul, NoItem, BoneCharm},
+    };
+    for (const Row& r : kRows) {
+        const EntityType& t = typeOf(r.kind);
+        CHECK(t.name && t.level == r.level && t.temper == r.temper && t.talks == r.talks && t.model == r.model);
+        CHECK(t.weapon == r.weapon && t.loot == r.loot && t.attackable && t.wanders && t.respawnSeconds > 0);
+        CHECK((t.loot == NoItem) == (t.lootChance == 0) && t.lootChance <= 1);
+        if (r.temper == Temper::Aggressive) CHECK(t.aggroRange > 0 && t.aggroRange < kLeashRadius && t.chaseSpeed > 0);
+    }
+    CHECK(typeOf(EntityKind::Wolf).chaseSpeed > 5 && typeOf(EntityKind::Ghoul).chaseSpeed < 5);  // the player walks 5, runs 9
+    CHECK(typeOf(EntityKind::BanditChief).lootChance == 1);
+    CHECK(std::string_view(kEntityKindNames[int(EntityKind::BanditChief)]) == "bandit_chief");
+    CHECK(itemType(WolfPelt).slot == SlotNone && itemType(BoneCharm).slot == SlotNone && std::string_view(itemType(BoneCharm).name) == "Bone Charm");
+    // Models: distinct, every part has voxels, sized like the rig they reuse.
+    for (Model m : {ModelWolf, ModelGuard, ModelChief, ModelGhoul})
+        for (int p = 0; p < PartCount; ++p) {
+            Grid part = buildPart(m, Part(p));
+            CHECK(std::ranges::count(part.cells, Air) < std::ssize(part.cells));
+            for (Model o : {ModelWolf, ModelGuard, ModelChief, ModelGhoul, ModelVillager, ModelBandit, ModelIronArmor, ModelBoar})
+                if (o != m && p == Torso) CHECK(buildPart(o, Torso).cells != part.cells);
+            if (m != ModelWolf) CHECK(part.size == buildPart(ModelPlayer, Part(p)).size);
+        }
+    Grid wolfHead = buildPart(ModelWolf, Head);
+    CHECK(wolfHead.size.z > buildPart(ModelBoar, Head).size.z && std::ranges::count(wolfHead.cells, DarkHair) >= 4);  // snout, ears
+    CHECK(buildPart(ModelWolf, HandL).size.y > buildPart(ModelBoar, HandL).size.y);  // longer legs
+    CHECK(std::ranges::count(buildPart(ModelWolf, Torso).cells, DarkHair) > 0);      // tail tip
+    CHECK(partModels(ModelWolf, Inventory{})[Head] == ModelWolf);
+    Player chiefBody, guardBody;
+    chiefBody.inv.equipped[SlotMainHand] = guardBody.inv.equipped[SlotMainHand] = Shortsword;
+    glm::mat4 held(0);
+    poseModel(chiefBody, ModelChief, &held);
+    CHECK(held != glm::mat4(0));
+    CHECK(poseModel(chiefBody, ModelChief)[Head][3].y > poseModel(guardBody, ModelGuard)[Head][3].y + 0.1f);  // bigger
+    held = glm::mat4(0);
+    poseModel(Player{}, ModelWolf, &held);
+    CHECK(held == glm::mat4(0));  // no hands
+
+    // Fights: a level-1 player in the whole Iron set (armor 37) with the sword stands still and
+    // swings at the nearest foe; foes come from a spawn marker 6 blocks away. Returns the player's
+    // health left, or minus the foes' health left when the player goes down.
+    Grid g = meadow();
+    auto fight = [&](EntityKind kind, int count, bool geared, uint32_t seed) {
+        Player player;
+        player.pos = {20.5f, 4, 32.5f};
+        if (geared)
+            for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, Shortsword}) {
+                giveItem(player.inv, id);
+                quickMove(player.inv, {SlotRef::Item, 0, 0});
+            }
+        CHECK(armor(player.inv) == (geared ? 37 : 0) && player.inv.equipped[SlotMainHand] == (geared ? Shortsword : NoItem));
+        Marker m{.id = 1, .kind = MarkerKind::Spawn, .pos = {26.5f, 4, 32.5f}, .radius = 3, .entity = kind, .count = count};
+        std::vector<Entity> es;
+        syncSpawns(es, g, {m}, seed, player.pos);
+        std::mt19937 rng(seed);
+        for (int i = 0; i < 120 * 60; ++i) {
+            updateEntities(es, g, player, 1 / 60.0f);
+            separate(player, g, es);
+            auto alive = es | std::views::filter([](const Entity& e) { return e.body.alive(); });
+            auto flat = [&](const Entity& e) { return glm::vec2(e.body.pos.x - player.pos.x, e.body.pos.z - player.pos.z); };
+            auto foe = std::ranges::min_element(alive, {}, [&](const Entity& e) { return glm::length(flat(e)); });
+            if (foe == alive.end()) return player.health;
+            if (glm::length(flat(*foe)) < kPunchReach - 0.1f) startPunch(player, glm::normalize(flat(*foe)));
+            updateCombat(player, es, 1 / 60.0f, rng);
+            if (!player.alive()) return -std::ranges::fold_left(es, 0.0f, [](float n, const Entity& e) { return n + e.body.health; });
+        }
+        return 999.0f;  // nobody won in two minutes
+    };
+    // Twelve seeds: every fight goes the same way; health left varies a little per seed, so its mean
+    // is what's tuned.
+    constexpr int kSeeds = 12;
+    float chiefSum = 0, wolvesSum = 0, ghoulsSum = 0;
+    for (uint32_t seed = 1; seed <= kSeeds; ++seed) {
+        float chief = fight(EntityKind::BanditChief, 1, true, seed), wolves = fight(EntityKind::Wolf, 2, true, seed);
+        float ghouls = fight(EntityKind::Ghoul, 2, true, seed), bare = fight(EntityKind::BanditChief, 1, false, seed);
+        if (!(chief > 0 && chief < 50 && wolves > 0 && wolves < 60 && ghouls > 0 && ghouls < 60 && bare < 0))
+            std::println(stderr, "seed {}: chief {} wolves {} ghouls {} bare-handed {}", seed, chief, wolves, ghouls, bare);
+        CHECK(chief > 0 && chief < 50);    // the chief alone: won, never easily
+        CHECK(wolves > 0 && wolves < 60);  // a pair of wolves
+        CHECK(ghouls > 0 && ghouls < 60);  // a pair of ghouls
+        CHECK(bare < 0);                   // bare-handed and unarmored, the chief wins
+        chiefSum += chief, wolvesSum += wolves, ghoulsSum += ghouls;
+    }
+    float chiefMean = chiefSum / kSeeds, wolvesMean = wolvesSum / kSeeds, ghoulsMean = ghoulsSum / kSeeds;
+    std::println("story fights, health left on average: chief {:.0f}, wolves {:.0f}, ghouls {:.0f}", chiefMean, wolvesMean, ghoulsMean);
+    CHECK(chiefMean >= 20 && chiefMean <= 30);                           // about a quarter
+    CHECK(wolvesMean >= 25 && wolvesMean <= 45 && ghoulsMean >= 20 && ghoulsMean <= 40);  // a quarter to two fifths
+    CHECK(fight(EntityKind::Wolf, 3, true, 1) < 0);  // a pack of three is too much alone
+    // Their hits on that player: punch or sword + strength x speed, less armor / (armor + 40 x level).
+    std::mt19937 rng(3);
+    Player armored;
+    for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons}) armored.inv.equipped[itemType(id).slot] = id;
+    for (auto [kind, lo, hi] : {std::tuple{EntityKind::Wolf, 2, 3}, std::tuple{EntityKind::Ghoul, 2, 5}, std::tuple{EntityKind::BanditChief, 5, 8}}) {
+        const EntityType& t = typeOf(kind);
+        int least = 99, most = 0;
+        for (int i = 0; i < 500; ++i) {
+            int d = mitigate(rollDamage(t.stats, weaponAttack(t.weapon), rng), armor(armored.inv), t.level);
+            least = std::min(least, d), most = std::max(most, d);
+        }
+        CHECK(least == lo && most == hi);
+    }
+
+    // The chief of a story camp: named by its marker, taunts when it turns on the player, always drops the helm.
+    Marker camp{.id = 3, .kind = MarkerKind::Spawn, .name = "Hakon the Red", .pos = {12.5f, 4, 12.5f}, .radius = 6,
+                .entity = EntityKind::BanditChief, .count = 1, .lines = {"You walked into the wrong camp.", "Is that all?"}};
+    CHECK(!checkMarker(g, camp));
+    std::vector<Entity> es;
+    syncSpawns(es, g, {camp}, 1, {20, 4, 12});
+    Entity& hakon = es[0];
+    CHECK(hakon.displayName() == "Hakon the Red" && hakon.speech() == nullptr);
+    Player player;
+    player.pos = hakon.body.pos + glm::vec3(5, 0, 0);
+    updateEntities(es, g, player, 1 / 60.0f);
+    CHECK(hakon.angry && hakon.speech() && std::string_view(hakon.speech()) == "You walked into the wrong camp.");
+    CHECK(damage(hakon, 10000) && hakon.loot == IronHelm);
+    hakon.speechTimer = 0;
+    for (int i = 0; i < 3; ++i) updateEntities(es, g, player, 1 / 60.0f);
+    CHECK(hakon.speech() == nullptr);  // the dead don't taunt
+
+    // Guards: talk while calm (E), shout their next line when attacked, never talk once dead.
+    Marker post{.id = 4, .kind = MarkerKind::Spawn, .name = "Gate", .pos = {30.5f, 4, 30.5f}, .radius = 4,
+                .entity = EntityKind::Guard, .count = 1, .lines = {"Halt.", "Have at you!", "Move along."}};
+    std::vector<Entity> gs;
+    syncSpawns(gs, g, {post}, 1, {34, 4, 30});
+    Entity& guard = gs[0];
+    player.pos = guard.body.pos + glm::vec3(2, 0, 0);
+    CHECK(talkTarget(gs, player) == &guard);
+    talk(guard);
+    CHECK(std::string_view(guard.speech()) == "Halt.");
+    CHECK(damage(guard, 5) && guard.angry && std::string_view(guard.speech()) == "Have at you!");
+    // Hit from outside its territory it can't stay angry: one shout, not one per hit, and it doesn't
+    // stand frozen under the balloon.
+    Player far;
+    far.pos = guard.home + glm::vec3(kLeashRadius + 2, 0, 0);
+    guard.angry = false, guard.shoutTimer = 0, guard.speechTimer = 0;
+    int shouts = 0;
+    for (int i = 0; i < 4 * 60; ++i) {  // within the balloon's 5 s
+        int before = guard.phrase;
+        if (i % 30 == 0) damage(guard, 1);
+        float waited = guard.wanderTimer;
+        updateEntities(gs, g, far, 1 / 60.0f);
+        shouts += guard.phrase != before;
+        CHECK(!guard.angry && (guard.wanderTimer < waited || guard.wanderTimer > waited + 1));  // it keeps wandering
+    }
+    CHECK(shouts == 1 && guard.speech());
+    guard.body.health = 0;
+    CHECK(talkTarget(gs, player) == nullptr);  // the dead don't talk (E loots instead)
+    player.pos = hakon.body.pos + glm::vec3(1, 0, 0);
+    CHECK(lootTarget(es, player) == &hakon && takeLoot(hakon, player.inv) && player.inv.containers[0][0] == IronHelm);
+}
+
+// Spawn marker lines: validation, talking, editing without respawning, undo, files, commands.
+static void markerLines() {
+    Grid g = meadow();
+    Marker town{.kind = MarkerKind::Spawn, .name = "Maren Holt", .pos = {10.5f, 4, 10.5f}, .radius = 4,
+                .entity = EntityKind::Villager, .count = 1, .lines = {"Welcome to the ford.", "Mind the wolves.", "Gr\xC3\xBC\xC3\x9F dich!"}};
+    CHECK(!checkMarker(g, town));
+    Marker m = town;
+    m.lines.assign(kMaxMarkerLines, std::string(kMaxMarkerLine, 'a'));
+    CHECK(!checkMarker(g, m));  // 8 lines of 160 bytes is the cap
+    for (auto bad : std::initializer_list<std::vector<std::string>>{
+             std::vector<std::string>(kMaxMarkerLines + 1, "a"), {std::string(kMaxMarkerLine + 1, 'a')}, {""}, {"ok", ""},
+             {"\xC3"}, {"\xC0\x80"}, {"a\nb"}, {"a\x7F"}, {"a\xE2\x80\xAE" "b"}, {"a\xE2\x80\x8B" "b"}, {"\xEF\xBB\xBF" "a"}}) {
+        m = town;
+        m.lines = bad;
+        CHECK(checkMarker(g, m));
+    }
+    m = town, m.entity = EntityKind::TrainingDummy;  // the dummy neither talks nor fights
+    CHECK(checkMarker(g, m));
+    m = town, m.kind = MarkerKind::Poi;
+    CHECK(checkMarker(g, m));
+    for (EntityKind k : {EntityKind::Guard, EntityKind::Boar, EntityKind::Wolf, EntityKind::BanditChief, EntityKind::Ghoul}) {
+        m = town, m.entity = k;
+        CHECK(!checkMarker(g, m));
+    }
+
+    // Talking: the lines in order and round again; the lone NPC takes the marker's name.
+    std::vector<Marker> list;
+    EditHistory h;
+    std::vector<Instance> none;
+    std::vector<Entity> npcs;
+    auto sync = [&] { syncSpawns(npcs, g, list, 1, {16, 4, 16}); };
+    CHECK(!putMarker(g, list, h, town).error);
+    sync();
+    CHECK(npcs.size() == 1 && npcs[0].displayName() == "Maren Holt" && npcs[0].name != "Maren Holt");
+    std::vector<std::string> said;
+    for (int i = 0; i < 4; ++i) {
+        talk(npcs[0]);
+        said.push_back(npcs[0].speech());
+    }
+    CHECK(said == std::vector<std::string>({town.lines[0], town.lines[1], town.lines[2], town.lines[0]}));
+    Player player;
+    player.pos = npcs[0].body.pos + glm::vec3(1.5f, 0, 0);
+    CHECK(talkTarget(npcs, player) == &npcs[0]);
+
+    // A guard: edit its lines and name; it isn't respawned (it keeps its damage) and starts over.
+    Marker guard = town;
+    guard.name = "Gate";
+    guard.entity = EntityKind::Guard;
+    guard.pos = {20.5f, 4, 10.5f};
+    guard.lines = {"Halt."};
+    EditResult r = putMarker(g, list, h, guard);
+    CHECK(!r.error && r.id == 2);
+    sync();
+    Entity* g1 = &npcs[1];
+    CHECK(g1->kind == EntityKind::Guard && g1->displayName() == "Gate" && damage(*g1, 7) && g1->body.health == 153);
+    g1->angry = false;
+    talk(*g1);
+    CHECK(std::string_view(g1->speech()) == "Halt.");
+    guard = list[1];
+    guard.name = "Sergeant Brask";
+    guard.lines = {"Move along.", "The road east is closed."};
+    size_t steps = h.undo.size();
+    CHECK(!putMarker(g, list, h, guard).error && h.undo.size() == steps + 1);  // one undo step
+    sync();
+    g1 = &npcs[1];
+    CHECK(npcs.size() == 2 && g1->body.health == 153 && g1->displayName() == "Sergeant Brask" && g1->speech() == nullptr);
+    talk(*g1);
+    CHECK(std::string_view(g1->speech()) == "Move along.");
+    CHECK(!undoEdit(g, h, none, list).empty() && list[1].lines == std::vector<std::string>{"Halt."});
+    sync();
+    g1 = &npcs[1];
+    CHECK(npcs.size() == 2 && g1->body.health == 153 && g1->displayName() == "Gate");
+    talk(*g1);
+    CHECK(std::string_view(g1->speech()) == "Halt.");
+    CHECK(!redoEdit(g, h, none, list).empty());
+    sync();
+    CHECK(npcs[1].body.health == 153 && npcs[1].displayName() == "Sergeant Brask");
+    // Two of them keep their own names; without lines they say random phrases again.
+    guard = list[1];
+    guard.count = 2;
+    CHECK(!putMarker(g, list, h, guard).error);
+    sync();
+    CHECK(npcs.size() == 3 && npcs[1].displayName() == "Guard" && npcs[2].displayName() == "Guard");
+    Marker plain = list[0];
+    plain.lines.clear();
+    CHECK(!putMarker(g, list, h, plain).error);
+    sync();
+    CHECK(npcs[0].displayName() == npcs[0].name);
+    talk(npcs[0]);
+    CHECK(npcs[0].speech() && std::ranges::find(town.lines, std::string(npcs[0].speech())) == town.lines.end());
+    undoEdit(g, h, none, list);
+    sync();
+
+    // Files: lines round-trip in their own section; files without it load without lines; hostile ones fail.
+    std::string path = (std::filesystem::temp_directory_path() / "flycoos_lines_test.flyw").string();
+    std::optional<std::vector<Marker>> loaded;
+    std::vector<Instance> instances;
+    uint32_t seed = 0;
+    Grid fg({64, 32, 64});
+    fg.set({1, 2, 3}, Stone);
+    CHECK(saveWorld(path.c_str(), fg, 5, {}, list).empty());
+    Grid back({32, 32, 32});
+    CHECK(loadWorld(path.c_str(), back, seed, instances, loaded).empty() && loaded && *loaded == list && !(*loaded)[0].lines.empty());
+    std::ifstream in(path, std::ios::binary);
+    const std::string file((std::istreambuf_iterator<char>(in)), {});
+    in.close();
+    CHECK(file.contains("LINE"));
+    size_t at = file.rfind("LINE");
+    auto u32 = [](uint32_t v) { return std::string{char(v), char(v >> 8), char(v >> 16), char(v >> 24)}; };
+    auto seal = [&](std::string head, std::string payload) {  // the file up to LINE, then `payload` as LINE (none: no section)
+        std::string bytes = head;
+        if (!payload.empty()) {
+            bytes += "LINE";
+            for (int i = 0; i < 8; ++i) bytes += char(uint64_t(payload.size()) >> (8 * i));
+            bytes += payload;
+        }
+        uint32_t hash = 2166136261u;
+        for (char c : bytes) hash = (hash ^ uint8_t(c)) * 16777619u;
+        for (int i = 0; i < 4; ++i) bytes += char(hash >> (8 * i));
+        std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes;
+        return loadWorld(path.c_str(), back, seed, instances, loaded);
+    };
+    std::string head = file.substr(0, at);
+    CHECK(seal(head, "").empty() && loaded && loaded->size() == list.size() &&
+          std::ranges::all_of(*loaded, [](const Marker& k) { return k.lines.empty(); }));  // an older file
+    auto lines = [&](uint32_t id, std::vector<std::string> ls) {
+        std::string out = u32(id) + char(ls.size());
+        for (const std::string& l : ls) out += char(l.size()) + l;
+        return out;
+    };
+    CHECK(seal(head, u32(1) + lines(2, {"Halt."})).empty() && (*loaded)[1].lines == std::vector<std::string>{"Halt."});
+    std::string noMarks = file.substr(0, file.rfind("MARK"));  // no MARK section before it
+    CHECK(seal(noMarks, u32(1) + lines(1, {"Hi"})).contains("without markers"));
+    for (const std::string& hostile : {
+             u32(1) + lines(9, {"x"}),                                      // no such marker
+             u32(2) + lines(2, {"x"}) + lines(1, {"y"}),                    // ids not ascending
+             u32(2) + lines(1, {"x"}) + lines(1, {"y"}),                    // twice
+             u32(3) + lines(1, {"x"}) + lines(2, {"y"}) + lines(3, {"z"}),  // more than the markers
+             u32(1) + lines(1, {}),                                         // no lines
+             u32(1) + lines(1, std::vector<std::string>(9, "x")),           // too many
+             u32(1) + lines(1, {""}),                                       // an empty line
+             u32(1) + lines(1, {std::string(161, 'x')}),                    // too long
+             u32(1) + lines(1, {"a\xE2\x80\xAE" "b"}),                      // bidi override
+             u32(1) + lines(1, {"\xC3\x28"}),                               // invalid UTF-8
+             u32(2) + lines(1, {"x"}),                                      // truncated
+             u32(1) + lines(1, {"x"}) + "z",                                // trailing bytes
+             u32(1) + lines(1, {"xyz"}).substr(0, 7),                       // cut inside a line
+         }) {
+        std::string error = seal(head, hostile);
+        CHECK(!error.empty() && (error.contains("lines") || error.contains("truncated")));
+    }
+    {  // two LINE sections: rejected, not one overwriting the other
+        std::string first = u32(1) + lines(1, {"Hi"}), section = "LINE";
+        for (int i = 0; i < 8; ++i) section += char(uint64_t(first.size()) >> (8 * i));
+        CHECK(seal(head + section + first, u32(1) + lines(2, {"Ho"})).contains("duplicate"));
+    }
+    // A dummy's marker can't carry lines, even from a file.
+    std::vector<Marker> dummies = {Marker{.id = 1, .kind = MarkerKind::Spawn, .pos = {5.5f, 4, 5.5f}, .entity = EntityKind::TrainingDummy}};
+    CHECK(saveWorld(path.c_str(), fg, 5, {}, dummies).empty());
+    std::ifstream in2(path, std::ios::binary);
+    const std::string dummyFile((std::istreambuf_iterator<char>(in2)), {});
+    in2.close();
+    CHECK(!dummyFile.contains("LINE") && seal(dummyFile.substr(0, dummyFile.size() - 4), u32(1) + lines(1, {"Hi"})).contains("lines"));
+    std::filesystem::remove(path);
+
+    // Commands: mark and edit_marker take lines, markers lists them, hostile ones change nothing.
+    std::vector<Marker> marks;
+    EditHistory ch;
+    PrefabLibrary lib = loadPrefabs("no-such-folder");
+    GameView view;
+    auto run = [&](std::string_view request) { return runCommand(request, g, instances, marks, ch, lib, view); };
+    auto ok = [&](const Command& c) { return c.response["ok"].get<bool>(); };
+    Command c = run(R"({"cmd": "mark", "args": {"kind": "spawn", "name": "Torvald", "x": 10, "z": 10, "entity": "villager", "lines": ["My iron is gone.", "Bandits took it."]}})");
+    CHECK(ok(c) && marks.size() == 1 && marks[0].lines.size() == 2 && c.response["result"]["marker"]["lines"][1] == "Bandits took it.");
+    c = run(R"({"cmd": "markers", "args": {}})");
+    CHECK(ok(c) && c.response["result"]["markers"][0]["lines"].size() == 2);
+    CHECK(ok(run(R"({"cmd": "edit_marker", "args": {"id": 1, "lines": ["Thank you."]}})")) && marks[0].lines == std::vector<std::string>{"Thank you."});
+    CHECK(ok(run(R"({"cmd": "mark", "args": {"kind": "spawn", "x": 20, "z": 10, "entity": "wolf", "count": 3}})")));
+    CHECK(!run(R"({"cmd": "markers", "args": {"kind": "spawn"}})").response["result"]["markers"][1].contains("lines"));
+    CHECK(ch.undo.size() == 3);
+    std::string tooLong = std::format(R"({{"cmd": "edit_marker", "args": {{"id": 1, "lines": ["{}"]}}}})", std::string(161, 'x'));
+    for (const std::string& hostile : {
+             std::string(R"({"cmd": "edit_marker", "args": {"id": 1, "lines": "Hello"}})"),
+             std::string(R"({"cmd": "edit_marker", "args": {"id": 1, "lines": [1]}})"),
+             std::string(R"({"cmd": "edit_marker", "args": {"id": 1, "lines": [["a"]]}})"),
+             std::string(R"({"cmd": "edit_marker", "args": {"id": 1, "lines": ["1","2","3","4","5","6","7","8","9"]}})"),
+             std::string(R"({"cmd": "edit_marker", "args": {"id": 1, "lines": [""]}})"),
+             std::string(R"({"cmd": "edit_marker", "args": {"id": 1, "lines": ["a‮b"]}})"),
+             std::string(R"({"cmd": "edit_marker", "args": {"id": 1, "lines": ["a\u0007b"]}})"),
+             std::string(R"({"cmd": "edit_marker", "args": {"id": 1, "entity": "dummy"}})"),  // it has lines
+             std::string(R"({"cmd": "mark", "args": {"kind": "poi", "name": "Well", "x": 5, "z": 5, "lines": ["Hi"]}})"),
+             std::string(R"({"cmd": "mark", "args": {"kind": "spawn", "x": 5, "z": 5, "entity": "dummy", "lines": ["Hi"]}})"),
+             tooLong,
+         }) {
+        c = run(hostile);
+        CHECK(!ok(c) && c.dirty.empty());
+    }
+    CHECK(marks.size() == 2 && ch.undo.size() == 3 && marks[0].lines == std::vector<std::string>{"Thank you."});
+    CHECK(ok(run(R"({"cmd": "edit_marker", "args": {"id": 1, "lines": [], "entity": "dummy"}})")) && marks[0].lines.empty());
+    CHECK(ok(run(R"({"cmd": "undo"})")) && marks[0].lines.size() == 1 && marks[0].entity == EntityKind::Villager);
+}
+
 static void raycasting() {
     Grid g = flatWorld(3);  // ground top y = 3, wall at x = 10 up to y = 6
     auto hit = raycast(g, {8.5f, 10, 8.5f}, {0, -1, 0}, 100);
@@ -1858,6 +2224,8 @@ int main() {
     commands();
     prefabs();
     markers();
+    storyNpcs();
+    markerLines();
     raycasting();
     if (failures) std::println(stderr, "{} check(s) failed", failures);
     else std::println("all checks passed");

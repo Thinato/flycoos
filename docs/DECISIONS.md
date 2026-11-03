@@ -327,3 +327,45 @@
   - A marker edit remeshes the chunks around one voxel (~1 ms) because that is how the game learns
     the world changed; the cost is negligible next to a brush.
   - Removing every spawn marker leaves the world without NPCs, by design.
+
+## ADR-016: Story NPCs: dialogue lines on spawn markers, new kinds as table rows
+
+- **Status:** accepted (2026-11-03)
+- **Context:** the first story act needs named characters who say specific things (an elder, a
+  smith, a bandit leader who taunts), and enemies beyond the boar and bandit, without a quest or
+  dialogue system yet.
+- **Decision:**
+  - A spawn marker carries up to 8 lines (1–160 bytes, validated like names). Talkers say the next
+    one on each E, cycling; anyone that fights (guards too) says the next one when it turns angry,
+    at most every 8 s. Lines are refused only on other marker kinds and the dummy, a fixed rule
+    rather than one derived from NPC traits, so saved worlds keep loading when traits change.
+  - A spawn with lines and count 1 is a named character: its NPC's display name is the marker's
+    name. The character is one marker; there's no separate NPC record.
+  - Lines live in their own `LINE` world-file section keyed by marker id, written only when some
+    marker has lines. `MARK` keeps its layout, so files stay loadable both ways (older builds skip
+    `LINE`) and no version bump is needed.
+  - New lines, like a new name, update the NPCs' copy of the marker without respawning them;
+    undo works because lines are part of `Marker`.
+  - Wolf, guard, bandit chief and barrow ghoul are rows in `kTypes` plus models built from the
+    existing rigs and palette. Armor, damage and the player's stats are unchanged.
+  - With no leveling yet, the story's foes are tuned so a level-1 player in the Iron set with the
+    sword wins: the chief 1v1 with 15–35% health left, a pair of wolves or of ghouls; bare-handed
+    and unarmored they lose to the chief, and a pack of three wolves still wins. A test simulates
+    these fights. Levels show danger and armor penetration, health and strength set the balance:
+    wolf Lv 1 (80 HP), chief Lv 3 (110 HP, his sword does the damage), ghoul Lv 3 (70 HP, claws).
+    The guard (Lv 4, passive) isn't meant to be fought.
+- **Alternatives considered:**
+  - Lines inside `MARK` behind a version bump: every older build would refuse the new files.
+  - Stats on a strict level curve (+2 stamina, +1 strength per level): a level-4 chief and
+    level-3 ghouls with knives beat a geared level-1 player every time.
+  - Ghouls with knives: the knife's quick swings made any pair of level-3 ghouls unwinnable.
+  - Lines only for kinds that talk: a bandit leader couldn't be named or taunt.
+  - A dialogue tree or quest state: not needed for one act told through lines, regions and labels.
+  - A new palette color for the wolf: the palette is full (32), and growing it needs a shader
+    change and a perf A/B. Plain greys read blue in the sky light, so the wolf wears brown on top.
+- **Consequences:**
+  - Dialogue is linear and stateless: no branching, no memory of what was said across respawns.
+  - Lines cost at most 8 × 160 bytes per marker (~5 MB in the worst case of 4096 markers); there's
+    no total cap.
+  - Once the player can level up, these foes need retuning (the fight test will say by how much).
+  - Lower stats than their levels suggest: a level-3 chief has less health than a level-2 bandit.
