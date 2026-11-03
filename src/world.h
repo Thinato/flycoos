@@ -14,7 +14,8 @@ enum Block : uint8_t { Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water,
                        Steel, Iron,                    // items
                        Hide, Tusk, Snout, Hood, Leather,  // boar, bandit
                        Plate,                             // armor
-                       Planks, Cobble, Thatch, Ember,     // prefabs (the renderer's palette holds 32)
+                       Planks, Cobble, Thatch, Ember,     // prefabs
+                       Brick, MossyCobble, DarkPlanks, Hay, Clay, Slate, Lantern,  // building (the palette holds 64)
                        BlockCount };
 
 inline bool isOpaque(Block b) { return b != Air && b != Water; }
@@ -22,7 +23,7 @@ inline bool isOpaque(Block b) { return b != Air && b != Water; }
 inline constexpr const char* kBlockNames[BlockCount] = {
     "Air", "Grass", "Dirt", "Stone", "Sand", "Snow", "Wood", "Leaves", "Water", "Skin", "Tunic", "Belt", "Boots", "Hair",
     "Eye", "Rock", "Robe", "DarkHair", "Straw", "Burlap", "Steel", "Iron", "Hide", "Tusk", "Snout", "Hood", "Leather", "Plate",
-    "Planks", "Cobble", "Thatch", "Ember"};
+    "Planks", "Cobble", "Thatch", "Ember", "Brick", "MossyCobble", "DarkPlanks", "Hay", "Clay", "Slate", "Lantern"};
 
 // Block colors in sRGB, indexed by Block. The renderer converts them to linear; the map command uses them as is.
 inline constexpr float kPalette[BlockCount][3] = {
@@ -58,6 +59,13 @@ inline constexpr float kPalette[BlockCount][3] = {
     {0.45f, 0.44f, 0.43f},  // Cobble
     {0.56f, 0.45f, 0.26f},  // Thatch
     {1.00f, 0.42f, 0.10f},  // Ember
+    {0.62f, 0.31f, 0.23f},  // Brick
+    {0.40f, 0.47f, 0.33f},  // MossyCobble
+    {0.50f, 0.33f, 0.20f},  // DarkPlanks
+    {0.90f, 0.72f, 0.30f},  // Hay
+    {0.74f, 0.52f, 0.38f},  // Clay
+    {0.35f, 0.37f, 0.42f},  // Slate
+    {1.00f, 0.80f, 0.45f},  // Lantern
 };
 
 constexpr int kChunk = 32;

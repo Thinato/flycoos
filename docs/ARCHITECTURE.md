@@ -56,6 +56,16 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 
 - `Grid` stores one `Block` byte per voxel: 1024×192×1024 = 192 MiB. There is no per-chunk storage.
   Chunks (32³) exist only as meshing and draw units.
+- **Blocks** (`Block` in `world.h`): the id is the palette index and the saved byte, so new blocks
+  only append. The renderer holds 64 (6 bits in the shader's flat output, ADR-019); 39 are used.
+
+  | Ids | Blocks | Used by |
+  |---|---|---|
+  | 0–8 | Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water | terrain (Water is `kWater` in the shader) |
+  | 9–19 | Skin, Tunic, Belt, Boots, Hair, Eye, Rock, Robe, DarkHair, Straw, Burlap | models (Rock: boulders) |
+  | 20–27 | Steel, Iron, Hide, Tusk, Snout, Hood, Leather, Plate | items, boar, bandit, armor |
+  | 28–31 | Planks, Cobble, Thatch, Ember | prefabs; Ember emits light 13 |
+  | 32–38 | Brick, MossyCobble, DarkPlanks, Hay, Clay, Slate, Lantern | building (fill, prefabs); Lantern emits 11 |
 - **Regions.** Two very low-frequency noise fields (freq 0.002, domain-warped by up to 100 blocks for
   organic borders) give each column a *forest* and a *rocky* strength from 0 to 1. Rocky land
   suppresses forest, so the two stay mostly separate. Where both are near 0 the land is **open
@@ -344,7 +354,8 @@ Two channels of 0..15 per voxel, stored as one byte `sky << 4 | block`:
   spreads in all six directions, losing `lightCost` per voxel entered: 1 for air and leaves, 2 for
   water; everything else stops it. Only air passes the full 15 straight down, so the ground under
   a canopy, inside a house or at a lake bed is lit by what spreads in sideways.
-- **Block light** floods the same way from emitters: `Ember` emits 13 (its own voxel holds 13).
+- **Block light** floods the same way from emitters: `Ember` emits 13 (its own voxel holds 13),
+  `Lantern` 11 (a dimmer light for interiors).
 - **Storage:** `Light` keeps one entry per 32³ chunk: a single `fill` value, or a 32 KiB array once
   its voxels differ. Open sky and solid ground cost nothing; the story world needs 47 MiB in 1,515
   of its 6,144 chunks (a dense grid would be 192 MiB). A relight that makes a chunk uniform again
@@ -418,7 +429,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   Measured (M4, release): an edit touching 1–8 chunks applies and re-uploads in 1–2 ms, a radius-32
   brush (18 chunks) in ~2.7 ms; 400 random brushes averaged 2.7 ms with one repack, worst ~10 ms.
 - **Per-draw data:** one 96-byte uniform push per chunk (`model` matrix, color-jitter offset,
-  `firstQuad`). Frame data (matrices, lighting, 32-entry palette) is pushed once per frame to
+  `firstQuad`). Frame data (matrices, lighting, 64-entry palette) is pushed once per frame to
   vertex and fragment slot 0. The projection is built from the swapchain size inside `render()`.
 - **Binding order** (SDL_gpu.h, MSL): `voxel_vs` has `buffer(0)` Frame, `buffer(1)` Draw and
   `buffer(2)` quads. The fragment shaders use `buffer(0)` Frame.
@@ -435,7 +446,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - **Debug views:** `Frame.debug.x` selects shaded, greedy quads (color per merged quad), chunks
   (color per 32³ cell), AO only, normals, or light levels (sky blue-white, block orange;
   `--view light`). The branch is on a uniform, so it's coherent. The quad's light and index ride in
-  the existing flat `blockAndQuad` output (block id bits 0-4, light 5-12, quad index 13-31) rather
+  the existing flat `blockAndQuad` output (block id bits 0-5, light 6-13, quad index 14-31) rather
   than new ones: on Apple's tile-based GPUs every extra vertex output costs bandwidth, and two extra
   outputs measured ~15% slower frames.
 - **Color:** the swapchain is `SDR_LINEAR` (sRGB format), so all lighting is in linear space. The
@@ -700,7 +711,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - **Models:** the wolf is a quadruped on the boar's animation with its own part sizes (longer
   legs, snout and ears, a tail in the torso's grid); the guard wears the iron helm and gauntlets
   and a tabard over the cuirass; the chief is the bandit's rig drawn 1.25× wide and 1.12× tall; the
-  ghoul is a skull-headed humanoid drawn thinner. Only existing palette colors (it's full at 32).
+  ghoul is a skull-headed humanoid drawn thinner. Only existing palette colors (it was full at 32 then).
 - **Wandering:** alternates standing (2–6 s) and strolling at 2 b/s (2–5 s) in a random direction.
   Before each step it checks the block ahead: no walls it can't step up, no water, no drops of 2+.
   Beyond its wander radius it heads home. NPC bodies use the same `updatePlayer` physics as the

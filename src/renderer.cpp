@@ -24,16 +24,16 @@ struct FrameUniforms {
     glm::vec4 aoCurve, shadowTint;
     glm::vec4 lightParams;  // x sun gate, y light falloff, z dark ambient, w voxel light on
     glm::vec4 emberColor;   // rgb linear, times strength
-    glm::vec4 palette[32];
+    glm::vec4 palette[64];
 };
 struct DrawUniforms {
     glm::mat4 model;
     glm::vec4 hashOffset;
     glm::uvec4 firstQuad;  // x used
 };
-static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 32 * 16);
+static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 64 * 16);
 static_assert(sizeof(DrawUniforms) == 64 + 16 + 16);
-static_assert(BlockCount <= 32);  // also: shaders/world.metal packs block ids into 5 bits
+static_assert(BlockCount <= 64);  // also: shaders/world.metal packs block ids into 6 bits
 
 glm::vec3 lin(glm::vec3 srgb) { return glm::pow(srgb, glm::vec3(2.2f)); }
 

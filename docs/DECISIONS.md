@@ -538,6 +538,12 @@
     rules by darkness) moves it next to the grid.
   - Changing `lightCost`, `emission` or the curve changes meshes and screenshots; `core_test` pins
     the falloff and the lit seed-7 quad count.
+  - Later (2026-11-03): the palette grew to 64 entries (1 KiB of the per-frame uniforms) and the flat
+    output's block id to 6 bits (light bits 6-13), leaving the greedy-quads view an 18-bit quad index
+    (its colors repeat past 256K quads; debug only). `Quad.b` already held 8 bits of block. Seven
+    building blocks were appended (Brick … Slate, and `Lantern`, an emitter of 11). Perf A/B against
+    the 32-entry build, story world, fixed look, 7 quiet alternating pairs: mean 2.00 vs 2.01 ms,
+    p99 median 3.1 vs 3.3 ms, identical quad counts: no measurable cost.
 
 ## ADR-020: NPC AI as one explicit state machine with per-kind numbers
 

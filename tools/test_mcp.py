@@ -122,8 +122,8 @@ def main():
         check(listed["paint"]["material"]["enum"] == cat["solid_materials"] and "Grass" in cat["solid_materials"] and
               "Air" not in cat["solid_materials"] and listed["fill"]["material"]["enum"] == cat["materials"] and
               listed["path"]["material"]["enum"] == cat["solid_materials"], "paint, path and fill list the game's materials")
-        check({"Ember", "Planks", "Cobble", "Thatch", "Air", "Water"} <= set(cat["materials"]) and
-              {"Ember", "Planks"} <= set(cat["solid_materials"]) and "Water" not in cat["solid_materials"],
+        check({"Ember", "Planks", "Cobble", "Thatch", "Lantern", "Slate", "Air", "Water"} <= set(cat["materials"]) and
+              {"Ember", "Planks", "Lantern"} <= set(cat["solid_materials"]) and "Water" not in cat["solid_materials"],
               "the materials are every block (building blocks too; paint takes the solid ones)")
         offline = subprocess.Popen([sys.executable, os.path.join(ROOT, "tools/flycoos_mcp.py")], cwd=ROOT,
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,

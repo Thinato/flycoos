@@ -115,6 +115,7 @@ static void packing() {
         {{0, 0, 0}, 1, 1, 0, {0, 0, 0, 0}, Grass},
         {{31, 31, 31}, 32, 32, 5, {3, 2, 1, 0}, Eye},
         {{7, 19, 2}, 13, 4, 3, {1, 3, 0, 2}, Water},
+        {{1, 2, 3}, 4, 5, 2, {2, 1, 0, 3}, Block(63), 7, 11},  // the highest block id the shader's 6 bits hold
     };
     for (const QuadInfo& q : cases) CHECK(unpack(pack(q)) == q);
 }
@@ -949,14 +950,16 @@ static void worldFiles() {
     std::optional<std::vector<Marker>> fileMarks;  // the files below have a marker section
     Grid g({64, 96, 32});
     generateTerrain(g, 3);
-    g.set({5, 90, 5}, Plate);  // a block generation never places
+    g.set({5, 90, 5}, Plate);  // blocks generation never places, ids past 32 too
+    g.set({6, 90, 5}, Lantern);
+    g.set({7, 90, 5}, Slate);
     std::string path = (std::filesystem::temp_directory_path() / "flycoos_core_test.flyw").string();
     CHECK(saveWorld(path.c_str(), g, 99, {}, {}).empty());
     Grid back({32, 32, 32});
     uint32_t seed = 0;
     std::vector<Instance> none;
     CHECK(loadWorld(path.c_str(), back, seed, none, fileMarks).empty());
-    CHECK(back.size == g.size && back.cells == g.cells && seed == 99);
+    CHECK(back.size == g.size && back.cells == g.cells && seed == 99 && back.get({6, 90, 5}) == Lantern);
 
     std::ifstream in(path, std::ios::binary);
     const std::string file((std::istreambuf_iterator<char>(in)), {});
@@ -1206,7 +1209,8 @@ static void commands() {
     CHECK(ok(c) && cat["entities"].size() == size_t(EntityKind::Count) && cat["entities"][6]["id"] == "bandit_chief" &&
           cat["entities"][6]["loot"] == "Iron Helm" && cat["entities"][6]["temper"] == "aggressive" && cat["entities"][1]["name"].is_null() &&
           cat["entities"][1]["wander_radius"] == 12 && cat["materials"].size() == BlockCount && cat["solid_materials"].size() == BlockCount - 2 &&
-          cat["materials"][Ember] == "Ember");  // every block; solid: all but Air and Water
+          cat["materials"][Ember] == "Ember" && cat["materials"][Lantern] == "Lantern" &&
+          std::ranges::count(cat["solid_materials"], "Slate") == 1);  // every block; solid: all but Air and Water
 
     // apply and path: many ops, one undo step; undo brings back exactly what was there
     uint64_t raised = hashCells(g);
@@ -3436,6 +3440,14 @@ static void lighting() {
         relight(w, wl, {{30, 1, 1}, {30, 1, 1}});
         fillLight(w, full);
         CHECK(blockLight(wl.get({15, 1, 1})) == emission(Ember) - 5 && sameLight(wl, full));
+    }
+
+    {  // a lantern is a dimmer emitter
+        Grid w({16, 4, 4});
+        w.set({2, 1, 1}, Lantern);
+        Light wl;
+        fillLight(w, wl);
+        CHECK(emission(Lantern) == 11 && blockLight(wl.get({2, 1, 1})) == 11 && blockLight(wl.get({5, 1, 1})) == 8);
     }
 
     // Packing: light round-trips through the quad.

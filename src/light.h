@@ -7,14 +7,14 @@
 
 // Voxel light, two channels of 0..15 (Minecraft-style flood fill; docs/DECISIONS.md ADR-019).
 // Sky light is 15 in every voxel open to the sky straight above, and spreads from there losing
-// lightCost per voxel entered. Block light floods the same way from emitters (Ember). Air and
-// leaves cost 1 and water 2, everything else stops light. Only air passes open sky down without
-// loss, so the ground under a canopy or in a lake is shadier. Light
-// depends only on the voxels, never on the time of day: the shader scales sky light by the sun.
+// lightCost per voxel entered. Block light floods the same way from emitters (Ember, Lantern).
+// Air and leaves cost 1 and water 2, everything else stops light. Only air passes open sky down
+// without loss, so the ground under a canopy or in a lake is shadier.
+// Light depends only on the voxels, never on the time of day: the shader scales sky light by the sun.
 constexpr int kMaxLight = 15;
 
 inline int lightCost(Block b) { return b == Air || b == Leaves ? 1 : b == Water ? 2 : 0; }
-inline int emission(Block b) { return b == Ember ? 13 : 0; }
+inline int emission(Block b) { return b == Ember ? 13 : b == Lantern ? 11 : 0; }
 
 // One byte per voxel, sky << 4 | block, kept per 32^3 chunk (chunkOrigin order). A chunk holds a
 // single value until one of its voxels differs, so open sky (15) and solid ground (0) cost nothing.

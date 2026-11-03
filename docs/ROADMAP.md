@@ -90,7 +90,8 @@ Not yet scheduled into a milestone; see docs/STORY.md for where Act 1 needs each
 - [ ] Occlusion-based color ramping (ambient occlusion that darkens and shifts block colors)
 - [ ] Time-of-day spawns (e.g. ghouls only at night)
 - [x] Trinket slot (Bone Charm), and gear attributes on top of base stats (stat pipeline, ADR-022)
-- [ ] Bigger block palette (the renderer's 32 colors are full; needs a shader change + perf A/B)
+- [x] Bigger block palette: 64 colors, and Brick, MossyCobble, DarkPlanks, Hay, Clay, Slate and a
+      Lantern (light 11) to build with (ADR-019)
 - [x] Editor: `flatten` under tree canopies spreads Leaves; `fill` over MCP only takes natural
       blocks; prefab-placed markers (a camp that brings its own bandits) (ADR-021)
 - [ ] Re-run the render perf A/B once the 120 fps cap on the dev machine is lifted
