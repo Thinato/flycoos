@@ -75,3 +75,22 @@ reach them.
 - Authoritative server and client prediction; co-op for 2–4 players first
 - Group dungeons, party UI, shared quests
 - Persistence (characters, world changes); groundwork for larger shared worlds
+
+## Backlog (TODO, collected 2026-11-03 after Act 1)
+
+Not yet scheduled into a milestone; see docs/STORY.md for where Act 1 needs each one.
+
+- [ ] Architecture refactor before the features below: data-driven entity definitions and
+      behavior (state machines), clearer module boundaries; plan in docs/research/Voxel RPG code architecture.md (11 steps)
+- [ ] Quests and a quest journal: data-driven objectives and flags (e.g. "bring Hakon's helm to
+      Torvald"), dialogue that reacts to quest state
+- [ ] Player leveling: XP, levels, a talent point per level, talent trees per ability
+- [ ] Skills that improve with use (e.g. one-handed improves by fighting with a one-handed weapon)
+- [ ] Dynamic lighting: Ember/torches/campfires emit light at night; dark interiors (barrow)
+- [ ] Occlusion-based color ramping (ambient occlusion that darkens and shifts block colors)
+- [ ] Time-of-day spawns (e.g. ghouls only at night)
+- [ ] Trinket slot (Bone Charm), and gear attributes on top of base stats
+- [ ] Bigger block palette (the renderer's 32 colors are full; needs a shader change + perf A/B)
+- [ ] Editor: `flatten` under tree canopies spreads Leaves; `fill` over MCP only takes natural
+      blocks; prefab-placed markers (a camp that brings its own bandits)
+- [ ] Re-run the render perf A/B once the 120 fps cap on the dev machine is lifted
