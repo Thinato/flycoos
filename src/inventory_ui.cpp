@@ -1,12 +1,15 @@
 #include "inventory_ui.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
 
 #include <imgui.h>
 
+#include "defs.h"
 #include "hud.h"
+#include "session.h"
 
 namespace {
 
@@ -122,11 +125,12 @@ void tooltip(ItemId id, SlotRef where) {
         ImGui::Text("(%.1f damage per second)", float(a.minDamage + a.maxDamage) / 2 / a.speed);
     }
     if (t.slot != SlotNone) ImGui::TextDisabled(where.kind == SlotRef::Item ? "Right-click to equip" : "Right-click to unequip");
+    ImGui::TextDisabled("Ctrl+right-click to destroy");
     ImGui::EndTooltip();
 }
 
 // One square slot: drag its item onto another slot to move or swap it, right-click to equip or
-// unequip. Empty slots show `label` (if any) in faint text.
+// unequip, Ctrl+right-click (or Cmd) to destroy it. Empty slots show `label` (if any) in faint text.
 void slot(Inventory& inv, SlotRef ref, const char* label) {
     ImGui::PushID(int(ref.kind) * 1000 + ref.container * 100 + ref.index);
     ImGui::InvisibleButton("slot", {kSlot, kSlot});  // left button only: right-click never starts a drag
@@ -157,7 +161,11 @@ void slot(Inventory& inv, SlotRef ref, const char* label) {
             moveItem(inv, *static_cast<const SlotRef*>(p->Data), ref);
         ImGui::EndDragDropTarget();
     }
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) quickMove(inv, ref);
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.KeyCtrl || io.KeySuper) discardItem(inv, ref);  // either, whichever way the backend maps them on macOS
+        else quickMove(inv, ref);
+    }
     else if (item != NoItem && hovered && !ImGui::GetDragDropPayload()) tooltip(item, ref);
     ImGui::PopID();
 }
@@ -258,6 +266,51 @@ void bagsWindow(bool& open, Player& p) {
         }
         ImGui::TextDisabled("%d / %d slots free", freeSlots(inv), itemSlots(inv));
         ImGui::PopStyleVar();
+    }
+    ImGui::End();
+}
+
+void journalWindow(bool& open, const Session& s) {
+    if (!open) return;
+    const Defs& d = defs();
+    ImGui::SetNextWindowPos({40, 140}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({460, 420}, ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Journal   ( J )", &open, ImGuiWindowFlags_NoCollapse)) {
+        auto quests = [&](const char* heading, auto shows) {
+            ImGui::SeparatorText(heading);
+            bool any = false;
+            for (size_t q = 0; q < std::min(s.quests.size(), d.quests.size()); ++q) {
+                const QuestState& st = s.quests[q];
+                if (st.stage == 0 || !shows(st)) continue;
+                any = true;
+                const QuestDef& def = d.quests[q];
+                ImGui::PushID(int(q));
+                if (!st.active()) {
+                    ImGui::TextDisabled("%s", def.title.c_str());
+                } else if (ImGui::TreeNodeEx(def.title.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                    if (const Stage* stage = findStage(def, st.stage); stage && !stage->journal.empty())
+                        ImGui::TextWrapped("%s", stage->journal.c_str());
+                    for (size_t o = 0; o < std::min(st.objectives.size(), def.objectives.size()); ++o) {
+                        ObjectiveState os = st.objectives[o];
+                        if (os == ObjectiveState::Hidden) continue;
+                        bool done = os == ObjectiveState::Completed;
+                        ImGui::PushID(int(o));
+                        ImGui::BeginDisabled(os != ObjectiveState::Shown);  // done and failed ones are dimmed
+                        ImGui::Checkbox("##done", &done);  // a copy: clicking changes nothing
+                        ImGui::SameLine();
+                        ImGui::TextWrapped("%s%s", def.objectives[o].text.c_str(), os == ObjectiveState::Failed ? "  (failed)" : "");
+                        ImGui::EndDisabled();
+                        ImGui::PopID();
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (!any) ImGui::TextDisabled("None");
+        };
+        quests("Active", [](const QuestState& st) { return st.active(); });
+        quests("Completed", [](const QuestState& st) { return st.done; });
+        quests("Failed", [](const QuestState& st) { return st.failed; });
     }
     ImGui::End();
 }

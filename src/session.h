@@ -1,6 +1,9 @@
 #pragma once
 #include <cstdint>
+#include <deque>
+#include <map>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "entity.h"
@@ -23,6 +26,15 @@ struct Session {
     float armorK = kArmorK;                 // armor balance: see armorReduction
     uint32_t regionId = 0;                  // the region marker the player is in (0: none), since `regionSince` of `elapsed`
     double regionSince = 0;
+    // Quests (ADR-026): this tick's events, drained once at the end of step(); each quest's state
+    // (by handle, defs().quests); the world flags; the player's item counts as of the last tick
+    // (a change raises ItemCountChanged; empty: everything held counts as new).
+    std::vector<GameEvent> events;
+    std::vector<QuestState> quests;
+    std::map<std::string, int32_t, std::less<>> flags;
+    std::vector<int> itemCounts;
+    std::deque<std::string> eventLog;  // the latest kEventLogSize drained events, newest last (debug window)
+    std::vector<std::pair<int, std::string>> toasts;  // quest news since main last took them: quest handle (-1: none), text
 };
 
 // What the player wants this step; main.cpp maps keys and mouse to it.
@@ -41,11 +53,12 @@ struct StepResult {
 };
 
 // A fresh player with the starting gear at the player spawn, fresh NPCs from the markers, the clock
-// and region at 0, and the sim RNG seeded from `seed`. Call after the world and markers are in place.
+// and region at 0, every quest not started and no flags, and the sim RNG seeded from `seed`. Call after the world and markers are in place.
 void startSession(Session& s);
 // Back at the player spawn with full health, out of combat.
 void respawnPlayer(Session& s);
-// Advances the simulation by `dt` seconds (the game always passes kTick): interaction, the player's swing and movement, NPCs and
-// combat (paused while editing), the time of day, and which region the player is in. A player
-// knocked out for kPlayerRespawnSeconds gets back up first.
+// Advances the simulation by `dt` seconds (the game always passes kTick): the NPCs' quest lines,
+// interaction, the player's swing and movement, NPCs and combat (paused while editing), the time of
+// day, which region the player is in, item count changes, then the quests drain the tick's events.
+// A player knocked out for kPlayerRespawnSeconds gets back up first.
 StepResult step(Session& s, const SimInput& in, float dt);

@@ -869,3 +869,99 @@
   - `EquipSlot` values are saved now: append only (amends ADR-022's note).
   - World files gain the `MKID` section; older builds skip it (and may reuse a removed marker's id).
   - A save on a world without a file (generated, never saved) records checksum 0 and the seed.
+
+## ADR-026: Quests as data, one event drain per tick, and condition-gated dialogue
+
+- **Status:** accepted (2026-11-03)
+- **Context:** Act 1 tells "bring Hakon's helm to Torvald" only through fixed lines (ADR-016).
+  A quest needs progress from gameplay (talking, kills, loot, places), lines that react to it, a
+  journal, and state that survives a save (ADR-025). Combat, the inventory and talking shouldn't
+  call into quests, and a quest's effects (giving an item) mustn't re-enter the code that raised
+  the event. Research: Bethesda's stage/objective model, the Morrowind/Creation Kit dialogue rule
+  (top to bottom, first line whose conditions all pass), Nystrom's observer and event-queue
+  pitfalls (docs/research/notes/quests_dialogue_saves.md).
+- **Decision:**
+  - **Events.** `GameEvent` is a variant carried by value: `Killed{kind, spawnMarkerId}`,
+    `ItemCountChanged{item, count}`, `TalkedTo{spawnMarkerId}`, `RegionEntered{markerId}`. One
+    `std::vector<GameEvent>` per tick in `Session`. Combat pushes the player's killing hit, E pushes
+    a talk, the region check an entry; item counts are *derived* at the end of `step()` against
+    last tick's, so every inventory change (loot, quest actions, the UIs, a load) counts without
+    each path pushing. `updateQuests` drains the vector once, at the end of `step()`; what handling
+    raises lands in the next tick's batch. Each event meets the quests as they were before it (a
+    quest another started on it hears the next, so quest order doesn't matter); an item's count
+    change counts once per batch and has_item reads the live count. `RegionEntered` is for the
+    innermost region only, when it changes. No subscribers, so no dangling listeners; a request
+    with an answer ("does this line pass?") stays a direct call.
+  - **Quests** are `data/quests/*.json` (arrays of records, file name order) loaded by `loadDefs`
+    after items and creatures: `{id, title, objectives: [{id, text}], stages: [{id, journal,
+    actions, on: [triggers]}], lines}`. Stage 0 is "not started" and holds only the triggers that
+    start the quest. Actions are a closed set: show/complete/fail objective, give/take item, set
+    flag, set stage, start/complete/fail quest. Triggers: `talked_to` / `killed` (spawn marker
+    name), `killed_creature` (creature id), `entered` (region marker name), `has_item` (item id,
+    count), each with optional conditions. "Has item" is a state: entering a stage queues an
+    `ItemCountChanged` for each of its has_item triggers. Done and failed quests enter no stages,
+    and the current stage isn't entered again.
+  - **A reward is never lost.** `give_item` stows (`stowItem`: an item slot, else the item's empty
+    equip slot or bag bar slot). Before a trigger runs, its actions and the stages they enter are
+    played out on a copy of the inventory; if a give wouldn't fit, the trigger doesn't run, a
+    "Make room in your bags" toast shows, and the next matching event (talking again) retries.
+    `take_item` refuses bags (they may hold items). Loot stows too, so full bags don't lock the
+    quest's helm on Hakon's corpse, and Ctrl+right-click destroys an item to make room (quest
+    items too: Hakon respawns and always drops the helm, so the quest stays completable). Quest, objective, stage, item and
+    creature references resolve to handles at load (pass 2a collects quest, stage and objective
+    ids so references may point forward); a bad one is a hard error naming file, record and field.
+  - **Markers by name stand in for aliases.** Marker names aren't unique ids, but they are what
+    designers and the MCP bridge already use, and they survive the editor (ids too, but a quest
+    file naming "#13" can't be read). On world load `checkQuestMarkers` warns about every name
+    that doesn't name exactly one marker of its kind; at run time a name matches any marker of it.
+  - **Flags** are one `std::map<std::string, int32_t>` in `Session` (the CK's global variables);
+    quest stages stay their own conditions, not mirrored into flags.
+  - **Dialogue.** Lines are picked top to bottom; the first whose conditions all pass (AND, with a
+    per-condition `not`) is said. Vocabulary: `stage op n`, `done`, `failed`, `objective is`,
+    `flag op n`, `has_item op n`, `in_region`, `npc_dead`. Quest-owned lines live in the quest file
+    keyed by spawn marker name; the world's `LINE` section stays the fallback that cycles as
+    before and stays editable in game and over MCP. On E, `pickLine` asks the evaluator and `talk`
+    says the quest line, unless it said that same one last time and the marker has lines: then the
+    marker's next line, so the two take turns (the markers' route hints stay reachable) and a new
+    quest line, such as Torvald's hand-over, is said first. Shouts say only the marker's lines.
+    A talk is answered from the state the player walked up in; the quest reacts after, so Act 1
+    gives stage 0 its own lines for the talk that starts it. The loader warns when a line without
+    conditions shadows a later one.
+  - **Saves.** `QUST` (per quest: stage, done/failed, objective states) and `FLAG` sections in the
+    `.flys`, keyed by string ids (quests and objectives), so data edits don't scramble them; an
+    unknown quest or objective is dropped with a note, a stage the quest no longer has is kept with
+    a note. Bounds as for the other sections; a bad section rejects the file.
+  - **UI.** J opens the Journal (free key); quest news shows in the notice line; the debug window
+    gets a Quests tab (stages, objectives, flags, warnings, the last 32 events).
+  - The first quest, "Torvald's Helm", replaces the Act 1 follow-up; Torvald rewards the helm with
+    the Iron Cuirass (docs/STORY.md). A player who brings the helm before being asked finishes it in
+    one talk (a first trigger in stages 0 and 10).
+  - `reloadDefs` keeps quest handles and objective indices: quests and objectives may be appended
+    (or dropped from the end), not renamed or reordered. QUST rejects a quest both done and failed.
+- **Alternatives considered:**
+  - Ink (inkcpp) or Yarn Spinner: both bring a variable store and save blob to keep in sync with
+    quest state and an external compiler, for branching choices E-to-talk NPCs don't have.
+    Reconsider inkcpp if conversations gain choices.
+  - Observer callbacks (combat calls quest listeners): re-entrancy and listener lifetimes, and
+    harder to trace than one drain.
+  - Every inventory change pushing `ItemCountChanged`: loot, quest actions, the debug window's
+    give and empty, a load, each kept honest by hand; the derived count is a scan of the ~40
+    item slots per item per tick.
+  - OR in conditions (the CK's binding rule): no Act 1 line needs it; `not` and line order cover it.
+  - A stage-0-less model with a separate `start` list: one more concept for what stage 0's
+    triggers already say.
+  - Quest lines in a new world-file section, editable over MCP: possible later as its own tagged
+    section; `LINE` keeps its meaning.
+  - Unique alias ids on markers: a new marker field and editor UI; the load-time check is enough
+    while names are hand-picked.
+- **Consequences:**
+  - A quest's progress may lag the event that caused it by one tick (17 ms) when it chains through
+    a re-check; not visible.
+  - A talk that advances a quest is answered with the line of the stage it was in (the line is
+    picked before the tick's events), hence the stage-0 lines.
+  - Alternation means a marker's own lines come back after a quest is done; lines that only make
+    sense before it (Torvald's "bring it back") should be reworded in the world.
+  - A trigger refused for room has already shown its line (the line can't know about bag space).
+  - `reloadDefs` may append or drop quests at the end, never reorder them (`Session::quests` is by
+    handle; the save is by id).
+  - `pickLine` scans every quest line on each talk; fine for tens of quests.

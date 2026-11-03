@@ -105,7 +105,9 @@ Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 fa
 const EntityType& typeOf(EntityKind kind) { return defs().creatures[size_t(kind)]; }
 
 const char* Entity::speech() const {
-    if (speechTimer <= 0 || phrase < 0) return nullptr;
+    if (speechTimer <= 0) return nullptr;
+    if (saying >= 0) return size_t(saying) < defs().questLines.size() ? defs().questLines[size_t(saying)].text.c_str() : nullptr;
+    if (phrase < 0) return nullptr;
     if (spawn.lines.empty()) return kPhrases[phrase];
     return size_t(phrase) < spawn.lines.size() ? spawn.lines[size_t(phrase)].c_str() : nullptr;
 }
@@ -404,8 +406,14 @@ Entity* talkTarget(std::vector<Entity>& entities, const Player& player) {
     return best;
 }
 
-void talk(Entity& e) {
+void talk(Entity& e, int questLine) {
     e.shoutTimer = 0;  // spoken to: it listens (anger sets it again after a shout)
+    bool fresh = questLine != e.saying || e.spawn.lines.empty();  // the same quest line again: the marker's turn
+    e.saying = size_t(questLine) < defs().questLines.size() && fresh ? questLine : -1;
+    if (e.saying >= 0) {  // a quest's line for this marker: the same one until the quest moves on
+        e.speechTimer = std::max(kSpeechSeconds, float(defs().questLines[size_t(e.saying)].text.size()) / 18);
+        return;
+    }
     if (!e.spawn.lines.empty()) {  // the marker's lines, in order and round again
         e.phrase = int(size_t(e.phrase + 1) % e.spawn.lines.size());
         e.speechTimer = std::max(kSpeechSeconds, float(e.spawn.lines[size_t(e.phrase)].size()) / 18);  // long lines stay longer
@@ -419,12 +427,12 @@ void talk(Entity& e) {
 }
 
 Entity* lootTarget(std::vector<Entity>& entities, const Player& player) {
-    if (!player.alive() || freeSlots(player.inv) == 0) return nullptr;  // E talks instead
+    if (!player.alive()) return nullptr;
     Entity* best = nullptr;
     float bestDist = kTalkRange;
     for (Entity& e : entities) {
         float d = glm::distance(e.body.pos, player.pos);
-        if (!e.body.alive() && e.loot != NoItem && d < bestDist) {
+        if (!e.body.alive() && e.loot != NoItem && d < bestDist && canStow(player.inv, e.loot)) {  // else E talks instead
             best = &e;
             bestDist = d;
         }
@@ -433,7 +441,7 @@ Entity* lootTarget(std::vector<Entity>& entities, const Player& player) {
 }
 
 bool takeLoot(Entity& e, Inventory& inv) {
-    if (!giveItem(inv, e.loot)) return false;
+    if (!stowItem(inv, e.loot)) return false;
     e.loot = NoItem;
     return true;
 }
@@ -514,13 +522,16 @@ int resolveHit(const Combatant& attacker, const Combatant& defender, const Attac
     return mitigate(hit, d[Stat::Armor], attacker.level, ctx.armorK, d[Stat::DamageTaken]);
 }
 
-void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK) {
+void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK,
+                  std::vector<GameEvent>* events) {
     HitContext ctx{rng, armorK};
     tick(player, dt);
     if (lands(player)) {
         Entity* target = punchTarget(entities, player);
-        if (target && damage(*target, resolveHit(player, target->body, weaponAttack(player.swingWeapon), ctx)))
+        if (target && damage(*target, resolveHit(player, target->body, weaponAttack(player.swingWeapon), ctx))) {
             player.combatTimer = kCombatSeconds;
+            if (!target->body.alive() && events) events->push_back(Killed{target->kind, target->spawn.id});
+        }
     }
     for (Entity& e : entities) {
         tick(e.body, dt);

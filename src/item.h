@@ -52,6 +52,13 @@ bool moveItem(Inventory& inv, SlotRef from, SlotRef to);
 // Right-click: equips gear and bags from the item slots, or puts equipped things back into them.
 bool quickMove(Inventory& inv, SlotRef from);
 bool giveItem(Inventory& inv, ItemId id);  // into the first free item slot
+// giveItem, or with the bags full into its empty equip slot (a bag: an empty bag bar slot). Loot and quest rewards.
+bool stowItem(Inventory& inv, ItemId id);
+bool canStow(const Inventory& inv, ItemId id);
+// Removes one `id`: from the item slots first, then worn. False if there's none.
+bool takeItem(Inventory& inv, ItemId id);
+// Destroys what's in `ref` (Ctrl+right-click): an item slot's or a worn item, or an empty bag from the bar.
+bool discardItem(Inventory& inv, SlotRef ref);
 int itemSlots(const Inventory& inv);
 int freeSlots(const Inventory& inv);
 

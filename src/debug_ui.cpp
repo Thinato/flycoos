@@ -13,6 +13,7 @@
 #include <imgui_impl_sdlgpu3.h>
 
 #include "defs.h"
+#include "text.h"
 
 DebugUI::DebugUI(SDL_Window* window, const Renderer& renderer) {
     IMGUI_CHECKVERSION();
@@ -187,7 +188,13 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
     if (ImGui::Button("Reset movement")) t = PlayerTuning{};
 }
 
-static void entitiesTab(std::vector<Entity>& entities, const Player& player, DebugActions& actions) {
+static void entitiesTab(Session& session, DebugActions& actions) {
+    std::vector<Entity>& entities = session.entities;
+    const Player& player = session.player;
+    // Hits from here count for quests as the player's would.
+    auto hit = [&](Entity& e, int amount) {
+        if (damage(e, amount) && !e.body.alive()) session.events.push_back(Killed{e.kind, e.spawn.id});
+    };
     if (ImGui::Button("Respawn NPCs at their markers")) actions.respawnEntities = true;
     for (size_t i = 0; i < entities.size(); ++i) {
         Entity& e = entities[i];
@@ -228,12 +235,14 @@ static void entitiesTab(std::vector<Entity>& entities, const Player& player, Deb
                         e.wanderTimer, glm::distance(e.body.pos, e.home), e.wanderRadius);
         if (e.spawn.id) ImGui::Text("From spawn marker #%u %s (%zu lines)", e.spawn.id, e.spawn.name.c_str(), e.spawn.lines.size());
         if (t.attackable) {
-            if (ImGui::Button("Hit for 10")) damage(e, 10);
+            if (ImGui::Button("Hit for 10")) hit(e, 10);
             ImGui::SameLine();
-            if (ImGui::Button("Kill")) damage(e, int(std::ceil(e.body.health)));
+            if (ImGui::Button("Kill")) hit(e, int(std::ceil(e.body.health)));
         }
-        if ((t.talks || !e.spawn.lines.empty()) && ImGui::Button("Talk")) talk(e);
+        int line = pickLine(session, e);
+        if ((t.talks || !e.spawn.lines.empty()) && ImGui::Button("Talk")) talk(e, line);  // no TalkedTo: quests don't move
         if (const char* s = e.speech()) ImGui::TextWrapped("Says: \"%s\"", s);
+        if (line >= 0) ImGui::TextDisabled("Quest line %d of %s passes now", line, defs().questIds[defs().questLines[size_t(line)].quest].c_str());
         ImGui::PopID();
     }
 }
@@ -310,6 +319,74 @@ static void dataTab(std::string& status) {
         }
         ImGui::EndTable();
     }
+}
+
+// Quests (ADR-026): every quest's stage and objectives (set or reset them), the flags, warnings
+// about the data and the world's markers, and the latest events the quests saw. Runs between ticks.
+static void questsTab(Session& s) {
+    const Defs& d = defs();
+    std::vector<std::string> warnings = d.warnings, markers = checkQuestMarkers(d, s.markers);
+    warnings.insert(warnings.end(), markers.begin(), markers.end());
+    for (const std::string& w : warnings) ImGui::TextColored({1, 0.7f, 0.3f, 1}, "%s", w.c_str());
+    if (d.quests.empty()) ImGui::TextDisabled("No quests in %s", (dataDir() / "quests").string().c_str());
+    for (size_t q = 0; q < std::min(d.quests.size(), s.quests.size()); ++q) {
+        const QuestDef& def = d.quests[q];
+        QuestState& st = s.quests[q];
+        char title[128];
+        std::snprintf(title, sizeof title, "%s (%s): stage %d%s###quest%zu", def.title.c_str(), def.id.c_str(), st.stage,
+                      st.done ? ", done" : st.failed ? ", failed" : st.stage ? "" : ", not started", q);
+        if (!ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) continue;
+        ImGui::PushID(int(q));
+        char stage[16];
+        std::snprintf(stage, sizeof stage, "%d", st.stage);
+        if (ImGui::BeginCombo("Set stage", stage)) {
+            for (const Stage& option : def.stages)
+                if (std::snprintf(stage, sizeof stage, "%d", option.id); ImGui::Selectable(stage, option.id == st.stage))
+                    setQuestStage(s, q, option.id);
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Enters the stage: runs its actions (objectives, items, flags), as the game would.\nNot on a done or failed quest: clear those first.");
+        ImGui::SameLine();
+        if (ImGui::Button("Reset")) resetQuest(s, q);
+        ImGui::Checkbox("Done", &st.done);
+        ImGui::SameLine();
+        ImGui::Checkbox("Failed", &st.failed);
+        if (const Stage* now = findStage(def, st.stage); now && !now->journal.empty()) ImGui::TextWrapped("%s", now->journal.c_str());
+        for (size_t o = 0; o < std::min(def.objectives.size(), st.objectives.size()); ++o) {
+            ImGui::PushID(int(o));
+            int state = int(st.objectives[o]);
+            ImGui::SetNextItemWidth(110);
+            if (ImGui::Combo("##state", &state, kObjectiveStateNames, int(ObjectiveState::Count))) st.objectives[o] = ObjectiveState(state);
+            ImGui::SameLine();
+            ImGui::Text("%s: %s", def.objectives[o].id.c_str(), def.objectives[o].text.c_str());
+            ImGui::PopID();
+        }
+        ImGui::PopID();
+    }
+    ImGui::SeparatorText("Flags");
+    for (auto it = s.flags.begin(); it != s.flags.end();) {
+        ImGui::PushID(it->first.c_str());
+        bool remove = ImGui::SmallButton("x");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(120);
+        ImGui::InputInt(it->first.c_str(), &it->second);
+        ImGui::PopID();
+        it = remove ? s.flags.erase(it) : std::next(it);
+    }
+    static char name[49] = "";
+    static int value = 1;
+    ImGui::SetNextItemWidth(160);
+    ImGui::InputText("##flag", name, sizeof name);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
+    ImGui::InputInt("##value", &value);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!*name || !validName(name) || s.flags.size() >= kMaxFlags);  // the save's bounds
+    if (ImGui::Button("Set flag")) s.flags[name] = value;
+    ImGui::EndDisabled();
+    ImGui::SeparatorText("Events (newest first)");
+    if (s.eventLog.empty()) ImGui::TextDisabled("None yet");
+    for (auto it = s.eventLog.rbegin(); it != s.eventLog.rend(); ++it) ImGui::TextUnformatted(it->c_str());
 }
 
 static void cameraTab(GameSettings& g) {
@@ -402,7 +479,8 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
         if (ImGui::BeginTabItem("Render")) { renderTab(render, stats); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Player")) { playerTab(player, session.armorK, actions, region); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Items")) { itemsTab(player); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Entities")) { entitiesTab(session.entities, player, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Entities")) { entitiesTab(session, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Quests")) { questsTab(session); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Data")) { dataTab(defsStatus_); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions); ImGui::EndTabItem(); }

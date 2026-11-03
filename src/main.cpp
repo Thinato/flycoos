@@ -146,6 +146,7 @@ static int run(SDL_Window* window, const Options& opt) {
     }
     renderer.uploadModels();
     const RenderStats& s = renderer.stats;
+    for (const std::string& warning : checkQuestMarkers(defs(), markers)) std::println(stderr, "warning: {}", warning);
 
     auto save = [&] {
         uint64_t start = SDL_GetTicksNS();
@@ -248,9 +249,9 @@ static int run(SDL_Window* window, const Options& opt) {
     }
     glm::vec3 camTarget = player.pos + glm::vec3(0, 1.4f, 0);
     float camDist = game.cameraDistance;  // actual distance after terrain collision
-    bool characterOpen = false, bagsOpen = false;
+    bool characterOpen = false, bagsOpen = false, journalOpen = false;
     // Any open window frees the cursor and stops mouse look and attacks; the keyboard still plays.
-    auto menus = [&] { return ui.open || characterOpen || bagsOpen || editor.cursor; };
+    auto menus = [&] { return ui.open || characterOpen || bagsOpen || journalOpen || editor.cursor; };
     auto updateMouseMode = [&] { SDL_SetWindowRelativeMouseMode(window, !benchmark && !menus()); };
     updateMouseMode();
     PlayerTuning walking;  // movement settings from before entering the editor
@@ -325,6 +326,9 @@ static int run(SDL_Window* window, const Options& opt) {
                 } else if (e.key.key == SDLK_B) {
                     bagsOpen = !bagsOpen;
                     updateMouseMode();
+                } else if (e.key.key == SDLK_J) {
+                    journalOpen = !journalOpen;
+                    updateMouseMode();
                 } else if (e.key.key == SDLK_E) {  // loot a corpse, else talk
                     interactQueued = true;
                 } else if (e.key.key == SDLK_TAB) {
@@ -359,7 +363,7 @@ static int run(SDL_Window* window, const Options& opt) {
                     if (!menus() && (!editor.unsaved || editor.quitArmed)) return quit();
                     if (!menus()) editor.quitArmed = true;
                     else if (ui.open) ui.open = false;
-                    else characterOpen = bagsOpen = editor.cursor = false;
+                    else characterOpen = bagsOpen = journalOpen = editor.cursor = false;
                     updateMouseMode();
                 }
             }
@@ -410,6 +414,12 @@ static int run(SDL_Window* window, const Options& opt) {
             if (stepped.attacked) punchQueued = false;
             interactQueued = false;
             respawned |= stepped.respawned;
+        }
+        if (!session.toasts.empty()) {  // quest news: started, updated, complete
+            notice.clear();
+            for (const auto& [quest, text] : session.toasts) notice += (notice.empty() ? "" : "   |   ") + text;
+            noticeAt = SDL_GetTicksNS();
+            session.toasts.clear();
         }
         float alpha = ui.tickAlpha = tickTime / kTick;  // how far into the next tick this frame is drawn
         glm::vec3 drawnAt = drawPos(player, alpha);
@@ -565,6 +575,7 @@ static int run(SDL_Window* window, const Options& opt) {
         drawEditorOverlay(fp.view, fp.fovY, fp.eye, world, instances, markers, editor, aim);
         characterWindow(characterOpen, player, session.armorK);
         bagsWindow(bagsOpen, player);
+        journalWindow(journalOpen, session);
         editorWindow(editor, instances, markers, aim, s, editorActions);
         ImDrawData* uiDraw = ui.end(game, render, session, s, actions);
         if (menus() != wasOpen) updateMouseMode();  // closed with a window's X button
@@ -652,8 +663,8 @@ static int run(SDL_Window* window, const Options& opt) {
         if (titleTimer > 0.5) {
             titleTimer = 0;
             int minutes = int(session.timeOfDay * 24 * 60);
-            char title[224];
-            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack | E = talk/loot | C = character | B = bags | . = debug | Tab = editor",
+            char title[256];
+            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack | E = talk/loot | C = character | B = bags | J = journal | . = debug | Tab = editor",
                           realDt * 1000.0, 1.0 / std::max(realDt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);
             SDL_SetWindowTitle(window, title);
         }
@@ -682,6 +693,7 @@ int main(int argc, char** argv) {
         std::println(stderr, "cannot load definitions: {}", error);
         return 1;
     }
+    for (const std::string& warning : loaded.warnings) std::println(stderr, "warning: {}", warning);
     setDefs(std::move(loaded));
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::println(stderr, "SDL_Init failed: {}", SDL_GetError());

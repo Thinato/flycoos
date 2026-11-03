@@ -24,7 +24,8 @@ struct DebugActions {
     bool saveGame = false, loadGame = false, deleteSave = false;  // the player save (F5, F9)
 };
 
-// Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Items, Entities, Data, Camera, World, Save, Stats.
+// Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Items, Entities, Quests, Data, Camera, World, Save,
+// Stats.
 // Also owns the ImGui frame the in-game HUD draws into.
 class DebugUI {
 public:

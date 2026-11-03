@@ -7,8 +7,8 @@
 #include "session.h"
 
 // Player saves (.flys, ADR-025): what the play changed on top of the authored world file, which
-// only the editor writes. The player, their inventory and the NPCs (keyed by spawn marker id and
-// slot), in the .flyw's tagged-section style; see docs/ARCHITECTURE.md. Every new runtime state
+// only the editor writes. The player, their inventory, the NPCs (keyed by spawn marker id and
+// slot), the quests (by string id) and the flags, in the .flyw's tagged-section style; see docs/ARCHITECTURE.md. Every new runtime state
 // gets its own section and a round-trip test.
 
 // What a load restored and dropped, for the log and the debug window's Save tab.
@@ -32,9 +32,9 @@ uint32_t worldFileChecksum(const char* path);
 // the world it belongs to.
 std::string savePlayer(const char* path, const Session& s, const std::string& worldName, uint32_t worldHash);
 // Takes the save's time of day (spawns may depend on it), resets `s` as startSession does (keeping the
-// player's movement tuning), then applies the save: the clock, the player, the inventory and every
-// NPC whose spawn marker and slot still spawn its kind; the rest, and items or creatures of ids the
-// data doesn't know, are dropped with a note. Missing sections keep startSession's state.
+// player's movement tuning), then applies the save: the clock, the player, the inventory, the flags,
+// every quest the data still has and every NPC whose spawn marker and slot still spawn its kind; the
+// rest, and items, creatures, quests or objectives of ids the data doesn't know, are dropped with a note. Missing sections keep startSession's state.
 // A file that doesn't parse exactly (or fails a bound) falls back to PATH.bak; if that fails too,
 // `s` is untouched. `worldHash` is the checksum of the world loaded now.
 std::string loadPlayer(const char* path, Session& s, uint32_t worldHash, SaveReport& report);

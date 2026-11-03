@@ -7,6 +7,7 @@
 
 #include "model.h"
 #include "player.h"
+#include "quest.h"
 #include "story.h"
 
 // How an NPC treats the player. Harmless ones never fight back.
@@ -68,6 +69,7 @@ struct Entity {
     glm::vec2 wanderDir{}; // zero = standing still
     float wanderTimer = 0; // seconds until the next wander decision
     int phrase = -1;       // index into the phrase list, -1 = silent
+    int saying = -1;       // the quest line (defs().questLines) its balloon shows, -1: `phrase`'s
     float speechTimer = 0; // seconds the balloon stays up
     float shoutTimer = 0;  // > 0: shouted a line on turning angry lately: no new shout, and the balloon doesn't hold it still
     AiState state = AiState::Idle;  // change it with setState
@@ -121,12 +123,14 @@ void updateEntities(std::vector<Entity>& entities, const Grid& world, const Play
 void separate(Player& player, const Grid& world, const std::vector<Entity>& entities);
 // Nearest living entity within talk range that can talk, or null.
 Entity* talkTarget(std::vector<Entity>& entities, const Player& player);
-// Says the next of its spawn marker's lines (cycling), or else a new random phrase (different from the last one).
-void talk(Entity& e);
-// Nearest corpse within talk range that still holds loot, or null (also when the player is
-// knocked out or their bags are full).
+// Says `questLine` (an index into defs().questLines, pickLine's) unless it said that one last time and
+// its marker has lines of its own; else the next of its marker's lines (cycling), or else a new random
+// phrase (different from the last one). So quest lines and the marker's lines take turns.
+void talk(Entity& e, int questLine = -1);
+// Nearest corpse within talk range that still holds loot the player can stow (canStow), or null
+// (also when the player is knocked out).
 Entity* lootTarget(std::vector<Entity>& entities, const Player& player);
-// Moves the corpse's loot into the player's bags; false if they're full.
+// Moves the corpse's loot into the player's bags, else its empty equip slot (stowItem); false if neither.
 bool takeLoot(Entity& e, Inventory& inv);
 
 // Takes damage if alive; health stops at 0. Puts the body in combat. Returns whether it applied.
@@ -153,5 +157,6 @@ struct HitContext {
 int resolveHit(const Combatant& attacker, const Combatant& defender, const Attack& attack, const HitContext& ctx);
 // Combat timers and out-of-combat regeneration for everyone; lands every swing at its impact frame
 // (the player's on entities, entities' on the player) through resolveHit (`armorK` is the K of
-// armorReduction); brings the dead back home.
-void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK = kArmorK);
+// armorReduction); brings the dead back home. A kill by the player raises Killed into `events`.
+void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK = kArmorK,
+                  std::vector<GameEvent>* events = nullptr);

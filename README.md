@@ -53,16 +53,23 @@ GPU debug layer.
 | E | Loot a nearby corpse, otherwise talk to a nearby villager or guard |
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
+| J | Journal: active and finished quests, the current entry and objectives |
 | `.` | Open/close the debug window |
 | Tab | Enter/leave the world editor (see below) |
 | F5 / F9 | Save / load the game (the player save next to the world file, e.g. `worlds/story.flys`) |
 | Esc | Close the open windows, otherwise quit (asks twice with unsaved world edits); quitting saves the game (see below) |
 
-In the Character and Bags windows, drag items between slots and right-click to equip or unequip.
+In the Character and Bags windows, drag items between slots and right-click to equip or unequip;
+Ctrl+right-click (or Cmd+right-click) destroys an item. With the bags full, loot goes straight into
+its empty equipment slot.
 The mouse cursor is free while any window is open.
 
+Quests (`data/quests/*.json`, ADR-026) move on when you talk to, kill or loot what they name;
+the top of the screen says when one starts, updates or completes, and NPCs say other lines as
+they do. The first one is "Torvald's Helm" in Ravensford (see docs/STORY.md).
+
 The game loads its world's player save on start, if there is one (`--new-game` starts fresh). The
-save holds the player, the inventory and every NPC (health, dead or alive and its respawn timer,
+save holds the player, the inventory, the quests and world flags, and every NPC (health, dead or alive and its respawn timer,
 loot, position); the world file stays as the editor saved it. A save from before the world was
 edited loads what still matches and lists what it dropped in the debug window's Save tab.
 Quitting doesn't save after a save failed to load (F5 neither: save over it or delete it in the
@@ -288,18 +295,19 @@ src/player.*     movement physics (+ fly/noclip tuning), camera collision, chara
 src/stats.h      the five attributes and the stats derived from them
 src/entity.*     NPCs: dummy, villager, boar, bandit, wolf, guard, bandit chief, ghoul (traits, temper, AI, talking, loot), attacks and damage
 src/defs.*       data definitions: the two-pass loader of data/*.json
-src/save.*       player saves (.flys): player, inventory, NPCs by spawn marker and slot
+src/save.*       player saves (.flys): player, inventory, NPCs by spawn marker and slot, quests and flags
+src/quest.*      quests: the per-tick event drain, stages, triggers and actions, dialogue conditions
 src/item.*       items, inventory (equipment, backpack, bags), move/equip rules
-src/inventory_ui.*  Character (C) and Bags (B) windows
+src/inventory_ui.*  Character (C), Bags (B) and Journal (J) windows
 src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, place names
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
 src/debug_ui.*   Dear ImGui debug window (toggle with .)
 src/editor_ui.*  Editor panel, crosshair and brush preview (Tab)
 src/main.cpp     window, input, camera, main loop, benchmark mode, runs remote commands
-data/            definition files: items.json (one record per item, ADR-018)
+data/            definition files: items.json, creatures.json (ADR-018), quests/*.json (ADR-026)
 prefabs/         structure prefab files (cottage, tent, camp, well, fence, ruin)
 tools/           flycoos_mcp.py (MCP server bridging Claude Code to the game), test_mcp.py (end-to-end check)
 shaders/         world.metal (voxel, water, sky), compiled at runtime
 tests/           core_test.cpp: mesher, packing, physics, flight, camera, combat, NPC fights and loot, inventory, generation,
-                 world files, edits and undo, remote commands, prefabs and instances, markers and spawns, raycast, data files checks
+                 world files, edits and undo, remote commands, prefabs and instances, markers and spawns, raycast, data files checks, quests
 ```

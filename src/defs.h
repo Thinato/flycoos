@@ -6,9 +6,10 @@
 #include <vector>
 
 #include "entity.h"
+#include "quest.h"
 
-// Definitions loaded from data/ (ADR-018): one JSON file per type, each an array of records keyed
-// by a snake_case string id. Runtime code holds dense handles (an ItemId is the record's save_id),
+// Definitions loaded from data/ (ADR-018): one JSON file per type (quests: one folder, ADR-026),
+// each an array of records keyed by a snake_case string id. Runtime code holds dense handles (an ItemId is the record's save_id),
 // never strings. Move-only: the ItemType and EntityType names point into `itemNames` and `creatureNames`.
 struct Defs {
     std::vector<ItemType> items{ItemType{"", SlotNone, {0, 0, 0}, 0, 0, {}}};  // by save id; 0 is NoItem
@@ -17,6 +18,11 @@ struct Defs {
     std::vector<EntityType> creatures;                     // by save id (EntityKind), from 0
     std::vector<std::string> creatureIds, creatureNames;   // parallel to `creatures`; "" name: a random villager name
     std::map<std::string, EntityKind, std::less<>> creatureById;
+    std::vector<QuestDef> quests;          // by quest handle: data/quests/*.json in file name order, records in file order
+    std::vector<std::string> questIds;     // parallel to `quests`
+    std::map<std::string, uint16_t, std::less<>> questById;
+    std::vector<QuestLine> questLines;     // every quest's lines, in that order (pickLine)
+    std::vector<std::string> warnings;     // what loaded but looks wrong (a line that shadows a later one)
 
     Defs() = default;
     Defs(Defs&&) = default;
@@ -35,5 +41,6 @@ bool loadDefs(const std::filesystem::path& dir, Defs& out, std::string& err);
 const Defs& defs();
 void setDefs(Defs&& d);
 // Loads `dir` and swaps it in, unless it fails or would change what live ids mean: every loaded
-// item and creature save id must keep its string id. On a refusal the current defs stay and `err` says why.
+// item and creature save id must keep its string id, every quest handle that stays its quest
+// (Session::quests is by handle; quests may be added or dropped at the end). On a refusal the current defs stay and `err` says why.
 bool reloadDefs(const std::filesystem::path& dir, std::string& err);

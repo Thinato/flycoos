@@ -6,10 +6,13 @@
 #include <cstring>
 #include <format>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <set>
+#include <span>
 
 #include "defs.h"
+#include "text.h"
 
 // Save file layout (little-endian), the .flyw container with another magic:
 //   "FLYS" | u32 version | sections (char tag[4] | u64 bytes | payload; unknown tags are skipped,
@@ -22,6 +25,10 @@
 //   u8 container count, each u8 slot count + item save ids (container 0 is the backpack).
 // "NPCS": u32 count, then per NPC: u32 spawn marker id | u8 slot | u8 kind | f32 health |
 //   f32 seconds dead | u8 loot item | f32 x, y, z, yaw.
+// "QUST" (ADR-026): u32 count, then per quest: u8 length | quest id | u32 stage | u8 bits (1 done,
+//   2 failed) | u8 objective count, each u8 length | objective id | u8 ObjectiveState. By string id:
+//   reordering or adding quests and objectives in the data doesn't scramble them.
+// "FLAG": u32 count, then per flag: u8 length | name | i32 value.
 constexpr uint32_t kSaveFileVersion = 1;
 constexpr size_t kMaxSaveBytes = size_t(1) << 20;  // the biggest valid one is a few KB
 constexpr size_t kNpcBytes = 31;
@@ -33,6 +40,11 @@ void put(std::vector<uint8_t>& out, uint64_t v, int bytes) {
     for (int i = 0; i < bytes; ++i) out.push_back(uint8_t(v >> (8 * i)));
 }
 void putF(std::vector<uint8_t>& out, float f) { put(out, std::bit_cast<uint32_t>(f), 4); }
+void putStr(std::vector<uint8_t>& out, const std::string& s) {  // ids and flag names are at most 48 bytes
+    size_t n = std::min<size_t>(s.size(), 255);
+    put(out, n, 1);
+    out.insert(out.end(), s.begin(), s.begin() + long(n));
+}
 
 uint64_t get(const uint8_t* p, int bytes) {
     uint64_t v = 0;
@@ -50,6 +62,12 @@ struct Reader {
         return get(p - bytes, bytes);
     }
     float f32() { return std::bit_cast<float>(uint32_t(take(4))); }
+    std::string str() {  // u8 length, then the bytes
+        uint64_t n = take(1);
+        if (uint64_t(end - p) < n) return truncated = true, p = end, std::string();
+        p += n;
+        return std::string(p - n, p);
+    }
     // Why it's malformed (truncated, or bytes left over), or "".
     std::string done(const char* what) const {
         return truncated ? std::format("truncated {}", what) : p != end ? std::format("{} section size mismatch", what) : "";
@@ -66,6 +84,13 @@ struct SavedNpc {
     float yaw;
 };
 
+struct SavedQuest {
+    std::string id;
+    int stage = 0;
+    bool done = false, failed = false;
+    std::vector<std::pair<std::string, ObjectiveState>> objectives;
+};
+
 // A parsed save, checked against the bounds (unknown ids already dropped), not yet applied.
 struct SaveData {
     std::string world;
@@ -75,6 +100,8 @@ struct SaveData {
     std::optional<Player> player;  // pos, yaw, health, deadTime, level, stats
     std::optional<Inventory> inv;  // as saved: containers may not match the bags (applyInventory fixes that)
     std::optional<std::vector<SavedNpc>> npcs;
+    std::optional<std::vector<SavedQuest>> quests;
+    std::optional<std::map<std::string, int32_t, std::less<>>> flags;
     std::vector<std::string> notes;  // what parsing dropped (ids this build's data doesn't know)
 };
 
@@ -174,6 +201,44 @@ std::string readNpcs(Reader r, SaveData& d) {
     return r.done("NPC");
 }
 
+std::string readQuests(Reader r, SaveData& d) {
+    uint64_t count = r.take(4);
+    if (count > 65535) return "more than 65535 quests";
+    std::vector<SavedQuest>& out = d.quests.emplace();
+    std::set<std::string> ids;
+    for (uint64_t i = 0; i < count && !r.truncated; ++i) {
+        SavedQuest q;
+        q.id = r.str();
+        uint64_t stage = r.take(4), bits = r.take(1), objectives = r.take(1);
+        q.done = bits & 1, q.failed = bits & 2;
+        q.stage = int(std::min<uint64_t>(stage, kMaxStageId + 1));
+        std::set<std::string> objectiveIds;
+        bool bad = q.id.empty() || stage > uint64_t(kMaxStageId) || bits > 2 || !ids.insert(q.id).second;  // done or failed, not both
+        for (uint64_t k = 0; k < objectives && !r.truncated; ++k) {
+            std::string id = r.str();
+            uint64_t state = r.take(1);
+            bad |= id.empty() || state >= uint64_t(ObjectiveState::Count) || !objectiveIds.insert(id).second;
+            q.objectives.emplace_back(id, ObjectiveState(state));
+        }
+        if (bad && !r.truncated) return std::format("bad quest '{}'", q.id);
+        out.push_back(std::move(q));
+    }
+    return r.done("quest");
+}
+
+std::string readFlags(Reader r, SaveData& d) {
+    uint64_t count = r.take(4);
+    if (count > kMaxFlags) return std::format("more than {} flags", kMaxFlags);
+    auto& out = d.flags.emplace();
+    for (uint64_t i = 0; i < count && !r.truncated; ++i) {
+        std::string name = r.str();
+        auto value = int32_t(uint32_t(r.take(4)));
+        if (r.truncated) break;
+        if (name.empty() || name.size() > 48 || !validName(name) || !out.emplace(name, value).second) return "bad flag";
+    }
+    return r.done("flag");
+}
+
 std::string parse(const char* path, SaveData& d) {
     std::error_code ec;
     uintmax_t fileBytes = std::filesystem::file_size(path, ec);
@@ -202,6 +267,8 @@ std::string parse(const char* path, SaveData& d) {
         else if (tag == "PLYR") error = readPlayer(r, d);
         else if (tag == "INVT") error = readInventory(r, d);
         else if (tag == "NPCS") error = readNpcs(r, d);
+        else if (tag == "QUST") error = readQuests(r, d);
+        else if (tag == "FLAG") error = readFlags(r, d);
         else continue;  // a later build's section
         if (!seen.insert(tag).second) return std::format("duplicate {} section", tag);
         if (!error.empty()) return error;
@@ -256,6 +323,25 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
         p.teleport(inWorld(d.player->pos));
         p.deadTime = d.player->deadTime;
         p.health = std::min(d.player->health, float(maxHealth(sheet(p))));  // after the gear: it adds health
+    }
+    if (d.flags) s.flags = *d.flags;
+    for (const SavedQuest& q : d.quests ? *d.quests : std::span<const SavedQuest>{}) {
+        const Defs& defined = defs();
+        auto it = defined.questById.find(q.id);
+        if (it == defined.questById.end()) {  // a quest the data no longer has (or a later build's)
+            r.notes.push_back(std::format("dropped quest '{}': the data has no such quest", q.id));
+            continue;
+        }
+        const QuestDef& def = defined.quests[it->second];
+        QuestState& st = s.quests[it->second];
+        st.stage = q.stage, st.done = q.done, st.failed = q.failed;
+        if (!findStage(def, q.stage))
+            r.notes.push_back(std::format("quest '{}': stage {} is gone from the data: kept (the debug window's Quests tab can set another)", q.id, q.stage));
+        for (const auto& [id, state] : q.objectives) {
+            auto o = std::ranges::find(def.objectives, id, &Objective::id);
+            if (o == def.objectives.end()) r.notes.push_back(std::format("quest '{}': dropped objective '{}': the data has no such objective", q.id, id));
+            else st.objectives[size_t(o - def.objectives.begin())] = state;
+        }
     }
     if (!d.npcs) return;
     for (const SavedNpc& n : *d.npcs) {
@@ -340,6 +426,30 @@ std::string savePlayer(const char* path, const Session& s, const std::string& wo
             putF(out, e.body.deadTime);
             put(out, e.loot, 1);
             for (float f : {e.body.pos.x, e.body.pos.y, e.body.pos.z, e.body.yaw}) putF(out, f);
+        }
+    });
+    section("QUST", [&] {
+        const Defs& d = defs();
+        size_t count = std::min(s.quests.size(), d.quests.size());  // equal, unless the defs were reloaded since the last tick
+        put(out, count, 4);
+        for (size_t q = 0; q < count; ++q) {
+            const QuestState& st = s.quests[q];
+            putStr(out, d.questIds[q]);
+            put(out, uint32_t(st.stage), 4);
+            put(out, (st.done ? 1 : 0) | (st.failed ? 2 : 0), 1);
+            size_t n = std::min(st.objectives.size(), d.quests[q].objectives.size());
+            put(out, n, 1);
+            for (size_t o = 0; o < n; ++o) {
+                putStr(out, d.quests[q].objectives[o].id);
+                put(out, uint8_t(st.objectives[o]), 1);
+            }
+        }
+    });
+    section("FLAG", [&] {
+        put(out, s.flags.size(), 4);
+        for (const auto& [name, value] : s.flags) {
+            putStr(out, name);
+            put(out, uint32_t(value), 4);
         }
     });
     put(out, fnv1a(out.data(), out.size()), 4);

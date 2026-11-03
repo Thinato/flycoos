@@ -328,6 +328,288 @@ void loadCreatures(const File& f, Defs& d) {
     for (size_t s = 0; s < d.creatures.size(); ++s) d.creatures[s].name = d.creatureNames[s].empty() ? nullptr : d.creatureNames[s].c_str();
 }
 
+// ---- Quests (after items and creatures: they name both; ADR-026). Every file in data/quests/.
+
+constexpr size_t kMaxQuestList = 64;  // entries of any one list: stages, objectives, triggers, actions, conditions
+constexpr size_t kMaxQuestLines = 256;
+constexpr size_t kMaxJournal = 600;   // bytes
+
+// Pass 2 of one quest record. The ids, stage ids and objective ids of every quest are known (pass
+// 2a), so references may point at later quests.
+struct QuestReader {
+    const Record& r;
+    const Defs& d;
+    uint16_t self;
+    const std::vector<std::vector<std::string>>& objectiveIds;  // by quest handle
+
+    template <class... Ks>
+    static int keyCount(const json& j, Ks... keys) { return (int(j.contains(keys)) + ...); }
+    void only(const json& j, const std::string& field, std::initializer_list<std::string_view> names) const {
+        for (const auto& [k, v] : j.items())
+            if (std::ranges::find(names, std::string_view(k)) == names.end()) throw r.fail(field + "." + k, "unknown field");
+    }
+    const json& object(const json& j, const std::string& field) const {
+        if (!j.is_object()) throw r.fail(field, "must be an object");
+        return j;
+    }
+    // An array of at most `most` entries; a missing one is empty unless required.
+    json list(const json& obj, const char* key, const std::string& field, bool required, size_t most = kMaxQuestList) const {
+        if (!obj.contains(key)) {
+            if (required) throw r.fail(field, "missing");
+            return json::array();
+        }
+        const json& v = obj[key];
+        if (!v.is_array() || v.size() > most) throw r.fail(field, std::format("must be an array of at most {}", most));
+        return v;
+    }
+    // Text of 1..`most` bytes without control, bidi or zero-width characters.
+    std::string text(const json& v, const std::string& field, size_t most) const {
+        if (!v.is_string() || v.get_ref<const std::string&>().empty() || v.get_ref<const std::string&>().size() > most ||
+            !validName(v.get_ref<const std::string&>()))
+            throw r.fail(field, std::format("must be 1..{} bytes of text without control, bidi or zero-width characters", most));
+        return v.get<std::string>();
+    }
+    std::string id(const json& v, const std::string& field) const {
+        if (!v.is_string() || !snakeCase(v.get<std::string>())) throw r.fail(field, "must be a snake_case id of 1..48 bytes");
+        return v.get<std::string>();
+    }
+    uint16_t quest(const json& v, const std::string& field) const {
+        auto it = d.questById.find(id(v, field));
+        if (it == d.questById.end()) throw r.fail(field, std::format("unknown quest {}", v.dump()));
+        return it->second;
+    }
+    uint16_t objective(uint16_t q, const json& v, const std::string& field) const {
+        const std::vector<std::string>& ids = objectiveIds[q];
+        auto it = std::ranges::find(ids, id(v, field));
+        if (it == ids.end()) throw r.fail(field, std::format("quest '{}' has no objective {}", d.questIds[q], v.dump()));
+        return uint16_t(it - ids.begin());
+    }
+    ItemId item(const json& v, const std::string& field) const {
+        auto it = v.is_string() ? d.itemById.find(v.get<std::string>()) : d.itemById.end();
+        if (it == d.itemById.end()) throw r.fail(field, std::format("unknown item {}", v.dump()));
+        return it->second;
+    }
+    Cmp op(const json& c, const std::string& field, Cmp def) const {
+        if (!c.contains("op")) return def;
+        auto it = std::ranges::find(kCmpNames, c["op"].is_string() ? c["op"].get<std::string>() : "");
+        if (it == std::end(kCmpNames)) throw r.fail(field + ".op", oneOf(kCmpNames));
+        return Cmp(it - std::begin(kCmpNames));
+    }
+
+    Condition condition(const json& c, const std::string& field) const {
+        object(c, field);
+        static constexpr const char* kKinds[] = {"stage", "done", "failed", "objective", "flag", "has_item", "in_region", "npc_dead"};
+        Condition out;
+        int found = 0;
+        for (size_t k = 0; k < std::size(kKinds); ++k)
+            if (c.contains(kKinds[k])) out.kind = Condition::Kind(k), ++found;
+        if (found != 1) throw r.fail(field, std::string("needs exactly one of stage, done, failed, objective, flag, has_item, in_region, npc_dead"));
+        std::string key = kKinds[out.kind], at = field + "." + key;
+        const json& v = c[key];
+        bool compares = out.kind == Condition::Stage || out.kind == Condition::Flag || out.kind == Condition::HasItem;
+        if (compares) only(c, field, {key, "op", "value", "not"});
+        else if (out.kind == Condition::Objective) only(c, field, {key, "is", "not"});
+        else only(c, field, {key, "not"});
+        if (c.contains("not")) {
+            if (!c["not"].is_boolean()) throw r.fail(field + ".not", "must be true or false");
+            out.negate = c["not"].get<bool>();
+        }
+        switch (out.kind) {
+        case Condition::Stage:
+            out.quest = quest(v, at);
+            out.op = op(c, field, Cmp::Eq);
+            out.value = int(r.number(c, field + ".value", 0, kMaxStageId));
+            break;
+        case Condition::Done:
+        case Condition::Failed: out.quest = quest(v, at); break;
+        case Condition::Objective: {  // "quest_id.objective_id"
+            std::string ref = v.is_string() ? v.get<std::string>() : "";
+            size_t dot = ref.find('.');
+            if (dot == std::string::npos) throw r.fail(at, "must be \"quest_id.objective_id\"");
+            out.quest = quest(ref.substr(0, dot), at);
+            out.objective = objective(out.quest, ref.substr(dot + 1), at);
+            auto is = std::ranges::find(kObjectiveStateNames, c.contains("is") && c["is"].is_string() ? c["is"].get<std::string>() : "");
+            if (is == std::end(kObjectiveStateNames)) throw r.fail(field + ".is", oneOf(kObjectiveStateNames));
+            out.value = int(is - std::begin(kObjectiveStateNames));
+            break;
+        }
+        case Condition::Flag:
+            out.name = id(v, at);
+            out.op = op(c, field, Cmp::Eq);
+            out.value = int(r.number(c, field + ".value", std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max()));
+            break;
+        case Condition::HasItem:
+            out.item = item(v, at);
+            out.op = op(c, field, Cmp::Ge);
+            out.value = int(r.number(c, field + ".value", 0, 1000, 1));
+            break;
+        case Condition::InRegion:
+        case Condition::NpcDead: out.name = text(v, at, kMaxMarkerName); break;
+        }
+        return out;
+    }
+    std::vector<Condition> conditions(const json& obj, const std::string& field) const {
+        std::vector<Condition> out;
+        json cs = list(obj, "if", field + ".if", false);
+        for (size_t i = 0; i < cs.size(); ++i) out.push_back(condition(cs[i], std::format("{}.if[{}]", field, i)));
+        return out;
+    }
+
+    Action action(const json& a, const std::string& field, const std::vector<int>& stages) const {
+        object(a, field);
+        static constexpr const char* kKinds[] = {"show_objective", "complete_objective", "fail_objective", "give_item", "take_item",
+                                                 "set_flag", "set_stage", "start_quest", "complete_quest", "fail_quest"};
+        Action out;
+        int found = 0;
+        for (size_t k = 0; k < std::size(kKinds); ++k)
+            if (a.contains(kKinds[k])) out.kind = Action::Kind(k), ++found;
+        if (found != 1) throw r.fail(field, "needs exactly one of " + oneOf(kKinds).substr(std::string_view("must be one of ").size()));
+        std::string key = kKinds[out.kind], at = field + "." + key;
+        const json& v = a[key];
+        if (out.kind == Action::SetFlag) only(a, field, {key, "value"});
+        else only(a, field, {key});
+        out.quest = self;
+        switch (out.kind) {
+        case Action::ShowObjective:
+        case Action::CompleteObjective:
+        case Action::FailObjective: out.value = objective(self, v, at); break;
+        case Action::GiveItem:
+        case Action::TakeItem:
+            out.item = item(v, at);
+            if (out.kind == Action::TakeItem && d.items[out.item].slot == SlotBag) throw r.fail(at, "a bag can't be taken (it may hold items)");
+            break;
+        case Action::SetFlag:
+            out.flag = id(v, at);
+            out.value = int(r.number(a, field + ".value", std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max()));
+            break;
+        case Action::SetStage:
+            if (!v.is_number_integer() || std::ranges::find(stages, v.get<int64_t>()) == stages.end() || v.get<int64_t>() == 0)
+                throw r.fail(at, std::format("{} is not one of this quest's stages (other than 0)", v.dump()));
+            out.value = v.get<int>();
+            break;
+        case Action::StartQuest:
+        case Action::CompleteQuest:
+        case Action::FailQuest: out.quest = quest(v, at); break;
+        }
+        return out;
+    }
+    std::vector<Action> actions(const json& obj, const char* key, const std::string& field, const std::vector<int>& stages) const {
+        std::vector<Action> out;
+        json as = list(obj, key, field + "." + key, std::string_view(key) == "do");
+        for (size_t i = 0; i < as.size(); ++i) out.push_back(action(as[i], std::format("{}.{}[{}]", field, key, i), stages));
+        return out;
+    }
+
+    Trigger trigger(const json& t, const std::string& field, const std::vector<int>& stages) const {
+        object(t, field);
+        static constexpr const char* kKinds[] = {"talked_to", "killed", "killed_creature", "entered", "has_item"};
+        Trigger out;
+        int found = 0;
+        for (size_t k = 0; k < std::size(kKinds); ++k)
+            if (t.contains(kKinds[k])) out.kind = Trigger::Kind(k), ++found;
+        if (found != 1) throw r.fail(field, "needs exactly one of talked_to, killed, killed_creature, entered, has_item");
+        std::string key = kKinds[out.kind], at = field + "." + key;
+        const json& v = t[key];
+        if (out.kind == Trigger::HasItem) only(t, field, {key, "count", "if", "do"});
+        else only(t, field, {key, "if", "do"});
+        switch (out.kind) {
+        case Trigger::TalkedTo:
+        case Trigger::Killed:
+        case Trigger::Entered: out.name = text(v, at, kMaxMarkerName); break;
+        case Trigger::KilledCreature: {
+            auto it = v.is_string() ? d.creatureById.find(v.get<std::string>()) : d.creatureById.end();
+            if (it == d.creatureById.end()) throw r.fail(at, std::format("unknown creature {}", v.dump()));
+            out.creature = it->second;
+            break;
+        }
+        case Trigger::HasItem:
+            out.item = item(v, at);
+            out.count = int(r.number(t, field + ".count", 1, 1000, 1));
+            break;
+        }
+        out.conditions = conditions(t, field);
+        out.actions = actions(t, "do", field, stages);
+        return out;
+    }
+};
+
+void loadQuests(const std::vector<File>& files, Defs& d) {
+    // Pass 2a: every quest's id, stage ids and objective ids.
+    std::vector<std::pair<const File*, size_t>> records;
+    std::vector<std::vector<int>> stageIds;
+    std::vector<std::vector<std::string>> objectiveIds;
+    for (const File& f : files)
+        for (size_t i = 0; i < f.records.size(); ++i) {
+            Record r{f, i, f.records[i].second};
+            r.allow({"id", "title", "stages", "objectives", "lines"});
+            if (d.questById.contains(r.id())) throw r.fail("id", "another quest file has this id");
+            if (records.size() >= 65535) throw r.fail("id", "more than 65535 quests");
+            d.questById.emplace(r.id(), uint16_t(records.size()));
+            d.questIds.push_back(r.id());
+            records.emplace_back(&f, i);
+            QuestReader q{r, d, 0, objectiveIds};
+            std::vector<int>& stages = stageIds.emplace_back();
+            json ss = q.list(r.fields, "stages", "stages", true);
+            for (size_t k = 0; k < ss.size(); ++k) {
+                std::string field = std::format("stages[{}]", k);
+                int id = int(r.number(q.object(ss[k], field), field + ".id", 0, kMaxStageId));
+                if (std::ranges::find(stages, id) != stages.end()) throw r.fail(field + ".id", std::format("stage {} is listed twice", id));
+                stages.push_back(id);
+            }
+            if (!std::ranges::any_of(stages, [](int s) { return s > 0; })) throw r.fail("stages", "needs a stage other than 0 (0 is: not started)");
+            std::vector<std::string>& objectives = objectiveIds.emplace_back();
+            json os = q.list(r.fields, "objectives", "objectives", false);
+            for (size_t k = 0; k < os.size(); ++k) {
+                std::string field = std::format("objectives[{}]", k);
+                q.object(os[k], field);
+                std::string id = q.id(os[k].contains("id") ? os[k]["id"] : json(), field + ".id");
+                if (std::ranges::find(objectives, id) != objectives.end()) throw r.fail(field + ".id", std::format("objective '{}' is listed twice", id));
+                objectives.push_back(id);
+            }
+        }
+    // Pass 2b: everything else, with references resolved to handles.
+    for (size_t h = 0; h < records.size(); ++h) {
+        Record r{*records[h].first, records[h].second, records[h].first->records[records[h].second].second};
+        QuestReader q{r, d, uint16_t(h), objectiveIds};
+        QuestDef def{r.id(), r.text("title"), {}, {}};
+        json ss = r.fields["stages"];
+        for (size_t k = 0; k < ss.size(); ++k) {
+            std::string field = std::format("stages[{}]", k);
+            const json& st = ss[k];
+            q.only(st, field, {"id", "journal", "actions", "on"});
+            Stage stage{stageIds[h][k], {}, {}, {}};
+            if (stage.id == 0 && (st.contains("journal") || st.contains("actions")))
+                throw r.fail(field, "stage 0 (not started) has only triggers: no journal or actions");
+            if (st.contains("journal")) stage.journal = q.text(st["journal"], field + ".journal", kMaxJournal);
+            stage.actions = q.actions(st, "actions", field, stageIds[h]);
+            json on = q.list(st, "on", field + ".on", false);
+            for (size_t t = 0; t < on.size(); ++t) stage.on.push_back(q.trigger(on[t], std::format("{}.on[{}]", field, t), stageIds[h]));
+            def.stages.push_back(std::move(stage));
+        }
+        json os = q.list(r.fields, "objectives", "objectives", false);
+        for (size_t k = 0; k < os.size(); ++k) {
+            std::string field = std::format("objectives[{}]", k);
+            q.only(os[k], field, {"id", "text"});
+            def.objectives.push_back({objectiveIds[h][k], q.text(os[k].contains("text") ? os[k]["text"] : json(), field + ".text", kMaxMarkerLine)});
+        }
+        json ls = q.list(r.fields, "lines", "lines", false, kMaxQuestLines);
+        for (size_t k = 0; k < ls.size(); ++k) {
+            std::string field = std::format("lines[{}]", k);
+            q.object(ls[k], field);
+            q.only(ls[k], field, {"spawn", "if", "say"});
+            QuestLine line{q.text(ls[k].contains("spawn") ? ls[k]["spawn"] : json(), field + ".spawn", kMaxMarkerName),
+                           q.text(ls[k].contains("say") ? ls[k]["say"] : json(), field + ".say", kMaxMarkerLine), q.conditions(ls[k], field),
+                           uint16_t(h)};
+            // The first passing line wins, so one without conditions hides every later line of its spawn.
+            if (std::ranges::any_of(d.questLines, [&](const QuestLine& e) { return e.spawn == line.spawn && e.conditions.empty(); }))
+                d.warnings.push_back(std::format("{}: record {} '{}': field '{}': never said: an earlier line for '{}' has no conditions",
+                                                 r.file.path, r.index, r.id(), field, line.spawn));
+            d.questLines.push_back(std::move(line));
+        }
+        d.quests.push_back(std::move(def));
+    }
+}
+
 }  // namespace
 
 std::filesystem::path dataDir() {
@@ -340,9 +622,17 @@ bool loadDefs(const std::filesystem::path& dir, Defs& out, std::string& err) {
     try {
         File items = parseFile(dir / "items.json");  // pass 1: every file before any reference is resolved
         File creatures = parseFile(dir / "creatures.json");
+        std::vector<std::filesystem::path> questPaths;  // every file in quests/, in name order (none: no quests)
+        if (std::error_code ec; std::filesystem::is_directory(dir / "quests", ec))
+            for (const auto& entry : std::filesystem::directory_iterator(dir / "quests"))
+                if (entry.path().extension() == ".json") questPaths.push_back(entry.path());
+        std::ranges::sort(questPaths);
+        std::vector<File> quests;
+        for (const auto& path : questPaths) quests.push_back(parseFile(path));
         Defs d;
-        loadItems(items, d);  // pass 2, in reference order: items first
+        loadItems(items, d);  // pass 2, in reference order: items, creatures, quests
         loadCreatures(creatures, d);
+        loadQuests(quests, d);
         out = std::move(d);
         err.clear();
         return true;
@@ -376,6 +666,22 @@ bool reloadDefs(const std::filesystem::path& dir, std::string& err) {
     if (!kept(d.itemIds, gDefs.itemIds, 1, "item", "inventories") ||
         !kept(d.creatureIds, gDefs.creatureIds, 0, "creature", "spawn markers"))
         return false;
+    // Session::quests is by handle: a quest may be appended or dropped from the end (its state goes), not moved.
+    // So are its objectives (QuestState::objectives is by index).
+    for (size_t q = 0; q < std::min(d.questIds.size(), gDefs.questIds.size()); ++q) {
+        if (d.questIds[q] != gDefs.questIds[q]) {
+            err = std::format("quest {} is now '{}', was '{}': add quest files after the others (by name) or restart", q, d.questIds[q],
+                              gDefs.questIds[q]);
+            return false;
+        }
+        const auto &now = d.quests[q].objectives, &was = gDefs.quests[q].objectives;
+        for (size_t o = 0; o < std::min(now.size(), was.size()); ++o)
+            if (now[o].id != was[o].id) {
+                err = std::format("quest '{}': objective {} is now '{}', was '{}': add objectives at the end or restart", d.questIds[q], o,
+                                  now[o].id, was[o].id);
+                return false;
+            }
+    }
     setDefs(std::move(d));
     return true;
 }

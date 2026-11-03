@@ -2,7 +2,7 @@
 
 Milestone 0 is about 1,200 lines of C++ (including tests) and 160 lines of MSL. It has two layers:
 
-- **`flycoos_core`** (static library: `world`, `story`, `mesher`, `model`, `player`, `entity`, `item`, `defs`, `edit`, `prefab`, `commands`, `session`, `save`): pure CPU
+- **`flycoos_core`** (static library: `world`, `story`, `mesher`, `model`, `player`, `entity`, `item`, `defs`, `edit`, `prefab`, `commands`, `session`, `save`, `quest`): pure CPU
   code with no GPU or SDL dependency, unit-tested by `tests/core_test.cpp`.
 - **`flycoos`** (executable: `main`, `renderer` + `shaders/world.metal`, `server`): platform, input,
   camera, GPU and the command server.
@@ -41,17 +41,18 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch` |
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), talking, damage both ways (`resolveHit`), loot |
-| `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in); `startSession` (starting gear, spawns), `step(Session&, SimInput, dt)` (one `kTick`: interaction, swing, movement, NPCs and combat, time of day, region enter, the knocked-out player's respawn) |
-| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`; NPCs keyed by spawn marker id and slot), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
-| `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` (records by string id, `copy_from`, field and range checks), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
+| `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the quest drain, the knocked-out player's respawn) |
+| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
+| `src/quest.h/.cpp` | Quests (ADR-026): `GameEvent` (`Killed`, `ItemCountChanged`, `TalkedTo`, `RegionEntered`), the quest data types the loader fills (`QuestDef`, `Stage`, `Trigger`, `Action`, `Condition`, `QuestLine`), `QuestState`; `updateQuests` (the once-per-tick drain), `setQuestStage`/`resetQuest(s)`, the condition evaluator (`passes`, `passesAll`, `pickLine`), `countItem`, `checkQuestMarkers` |
+| `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` and `data/quests/*.json` (records by string id, `copy_from`, field and range checks, quest references resolved to handles, warnings), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
-| `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
+| `src/inventory_ui.h/.cpp` | In-game Character (C), Bags (B) and Journal (J) windows: slots, drag and drop, right-click equip, tooltips, attributes; quests with the current entry and checked objectives |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, poi labels and the region name (`drawPlaces`) |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, the world's `Light` (filled by `uploadWorld`, relit by `updateWorld`), uploads of the core's chunk and model meshes, render targets, frustum culling, day/night lighting, screenshots |
 | `src/text.h` | `validName`: UTF-8 display text without control, bidi or zero-width characters (marker names and lines, item names) |
 | `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh, light and remesh times, light memory), for the debug and editor UIs without `renderer.h` |
 | `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
-| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Data, Camera, World, Save, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
+| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Quests, Data, Camera, World, Save, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor) into `SimInput`, orbit camera, main loop around `step`, remote commands, benchmark stats |
 | `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs` |
 
@@ -181,6 +182,13 @@ u32 FNV-1a checksum of every byte before it
   (`--new-game` skips it). Benchmarks never read or write one. The MCP `save` writes the world only.
   Quitting skips the save after a failed load (F5 too, until the Save tab overwrites or deletes
   the file), after Delete (until the next F5), and in a session that opened the editor.
+- `QUST` (ADR-026): `u32 count`, then per quest `u8 length | quest id | u32 stage | u8 bits (1 done,
+  2 failed) | u8 objective count`, each `u8 length | objective id | u8 ObjectiveState` (hidden,
+  shown, completed, failed). Keyed by string id, so reordering or adding quests and objectives in
+  the data scrambles nothing; a quest or objective the data no longer has is dropped with a note,
+  a stage it no longer has is kept with a note. `FLAG`: `u32 count` (≤ 4096), then per flag `u8
+  length | name (1–48 bytes, checked like names) | i32 value`. Duplicate keys, unknown bits or states
+  and stages above 65535 reject the file.
 - Every new runtime state gets a section here and a round-trip test.
 
 ## Editing (`applyEdit`)
@@ -722,11 +730,14 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   slots take their own slot's items, bag slots take bags, item slots take anything. A bag leaves the
   bar only when empty, and never into its own slots, so items are never lost. `quickMove`
   (right-click) equips from the item slots or unequips into the first free one.
-- No stacks, no dropping or destroying yet.
+- `stowItem` (loot, quest rewards): the first free item slot, else the item's empty equip slot (a
+  bag: an empty bag bar slot); `canStow` asks without changing anything. `takeItem` removes one
+  (item slots first, then worn). `discardItem` destroys a slot's item (Ctrl or Cmd+right-click in
+  the windows), or an empty bag from the bar. No stacks and no dropping yet.
 - **UI:** C opens Character (equipment around an attribute sheet with final attributes, what gear
   adds in green, damage, speed, damage per second, regen, armor and its damage reduction against a
   level 1 enemy; the weapons and the trinket below); B opens Bags (backpack,
-  each bag, the bag bar, free slots). Drag to move, right-click to equip/unequip, hover for a
+  each bag, the bag bar, free slots). Drag to move, right-click to equip/unequip, Ctrl+right-click to destroy, hover for a
   tooltip (with armor pieces' "N Armor" and an item's mods in green). Icons are drawn with ImGui shapes. Any open window frees
   the cursor and pauses mouse look and attacks (a click queued before it opened is dropped, and a
   press that began in a window doesn't attack after it closes); the keyboard still moves the
@@ -807,7 +818,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   every shipped kind: never) it runs from the player for 4 s, then returns. No line-of-sight or
   FOV check yet. The Entities tab shows the state, time in it, the transitions and a force-state combo.
 - **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell until it
-  respawns; E within 3.5 blocks moves the loot into the bags (it stays on the corpse if they're full).
+  respawns; E within 3.5 blocks moves the loot into the bags, else into its empty equip slot (it
+  stays on the corpse if neither has room, and E talks instead).
 - **Default spawns:** dummy and villager just in front of the spawn, the boar about 14 blocks out, the
   bandit's camp about 22 blocks out: outside its leash from the spawn, and even at the edge of its
   wander radius more than its aggro range away.
@@ -822,6 +834,89 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - **From markers:** the NPCs come from spawn markers (see "Markers"); a world without markers
   gets the four above as default markers. Regeneration resets the markers to those defaults; the
   Entities tab respawns every NPC at its marker.
+
+## Quests (`quest.h`, ADR-026)
+
+- **Events.** Systems tell quests what happened through `Session::events`, one vector per tick of
+  `GameEvent`s carried by value: `Killed{kind, spawnMarkerId}` (the player's killing hit, in
+  `updateCombat`; the debug window's Hit and Kill too), `TalkedTo{spawnMarkerId}` (E),
+  `RegionEntered{markerId}` and `ItemCountChanged{item, count}`. RegionEntered is for the innermost
+  region only (`regionAt`), when it changes: from the Vale into Ravensford enters Ravensford, back out
+  enters the Vale again, and an `entered` trigger on an outer region doesn't fire from inside an inner one.
+  Item counts are derived: `step()` compares the player's counts (`countItem`: item slots, worn,
+  bag bar) with last tick's (`Session::itemCounts`), so loot, quest actions, the UIs and a load all
+  count without each pushing. `updateQuests` runs once at the end of `step()`: it swaps the vector
+  out and hands each event to the triggers of every quest's current stage, as the quests were before
+  that event (a quest another one started on it hears the next one, so quest order doesn't matter).
+  An item's `ItemCountChanged` counts once per batch, and has_item reads the count now, not the
+  event's. What handling raises (a stage's has_item re-check, an item it gave) lands in the next
+  tick's batch: no re-entrancy, no feedback loop within a tick.
+- **Data.** `data/quests/*.json` (file name order), each an array of quest records loaded after
+  items and creatures (pass 2a collects every quest's id, stage ids and objective ids, so
+  references may point forward; pass 2b resolves the rest to handles):
+
+  ```
+  {"id": "torvalds_helm", "title": "Torvald's Helm",
+   "objectives": [{"id": "get_helm", "text": "Take the helm Hakon the Red wears"}, ...],
+   "stages": [{"id": 0, "on": [{"talked_to": "Maren Holt", "do": [{"set_stage": 10}]}]},
+              {"id": 10, "journal": "...", "actions": [{"show_objective": "talk_torvald"}], "on": [...]}, ...],
+   "lines": [{"spawn": "Torvald", "if": [{"stage": "torvalds_helm", "value": 20}], "say": "..."}, ...]}
+  ```
+
+  - **Stages** are numbered 0–65535 (gaps leave room). Stage 0 is "not started": only its triggers
+    (what starts the quest), no journal or actions. A quest needs one other stage. Entering a stage
+    runs its `actions` in order and queues an `ItemCountChanged` for each of its has_item
+    triggers ("has item" is a state: the player may hold it already).
+  - **Triggers** (`on`): exactly one of `talked_to` / `killed` (a spawn marker's name),
+    `killed_creature` (a creature id), `entered` (a region marker's name), `has_item` (an item id,
+    `count` ≥ 1), optional `if` (conditions), required `do` (actions). The first trigger of the
+    current stage that matches the event and passes runs; then the quest is done with that event.
+    Before it runs, its actions (and the stages they enter) are played out on a copy of the
+    inventory: if an item it gives wouldn't fit, it doesn't run (a "Make room in your bags" toast)
+    and fires on the next matching event instead, so a reward is never lost. Done and failed quests
+    listen no more and enter no stages; entering the current stage again does nothing.
+  - **Actions** (closed set): `show_objective`, `complete_objective`, `fail_objective` (own
+    objectives), `give_item` (`stowItem`: an item slot, else its empty equip slot or bag bar slot),
+    `take_item` (one; the item slots first, then worn gear; not bags, which may hold items), `set_flag`
+    (+ `value`), `set_stage` (one of its own stages but 0), `start_quest` (its lowest stage above 0,
+    if not started), `complete_quest`, `fail_quest` (by quest id). `set_stage` from a stage's own
+    actions chains up to 16 deep; a cycle stops there with a log line.
+  - **Conditions** (all must pass, AND; `"not": true` flips one): `stage` (quest id, `op`
+    `== != < <= > >=`, default `==`, `value`), `done`, `failed` (quest id), `objective`
+    (`"quest.objective"`, `is`: hidden, shown, completed, failed), `flag` (name, `op`, `value`;
+    unset is 0), `has_item` (item id, `op` default `>=`, `value` default 1), `in_region` (a region
+    marker's name: any region of that name around the player, nested ones too), `npc_dead` (a spawn
+    marker's name: every NPC of the spawns of that name is dead, and there is one). `passes` is a
+    plain function; dialogue asks it directly.
+  - Errors are hard and name file, record and field (`quests/a.json: record 0 'q': field
+    'stages[1].on[0].do[0].set_stage': 50 is not one of this quest's stages`); unknown fields,
+    references (quests, objectives, items, creatures) and stages, duplicate ids (across files too)
+    and out-of-range values fail the load.
+- **Marker names stand in for aliases.** Triggers and conditions name spawn and region markers by
+  name, resolved at run time against the world (`Marker::id` → name), since the world can change
+  under the data. Names aren't unique (the story has three "Hakon's Raiders"), so on world load
+  `checkQuestMarkers` warns (log, debug Quests tab) about each name that doesn't name exactly one
+  marker of its kind. Act 1's quest names only unique ones.
+- **Dialogue.** Quest-owned lines live in the quest file keyed by spawn marker name; the world's
+  `LINE` section stays the unconditioned, in-game-editable fallback. On E (and the debug Talk
+  button) `pickLine` finds the first line (quests in load order, lines in file order) for the NPC's
+  marker name whose conditions all pass, and `talk` says it, unless it said that same line last
+  time and the marker has lines of its own: then the marker's next line. So quest lines and the
+  marker's lines take turns, and a new quest line is always said first. Shouts on turning angry say
+  only the marker's lines. The line is picked before the tick's events are handled, so a talk that
+  moves the quest on is answered from the state the player walked up in (Act 1 gives stage 0 its
+  own lines for that talk). The loader warns when a line without conditions comes before another line of the
+  same spawn (it would never be said).
+- **State.** `Session::quests` (by quest handle: `QuestState` stage, done, failed, objective
+  states) and `Session::flags` (one `string → int32` map) are saved (`QUST`, `FLAG`).
+  `startSession` resets both. A defs reload may add or drop quests at the end, not reorder them.
+- **UI.** J opens the Journal: active quests with the current stage's journal text and their
+  shown objectives (a check mark when completed, dimmed when failed), then completed and failed
+  titles. `updateQuests` leaves quest news in `Session::toasts` ("Quest started/updated/complete/
+  failed: title", "Make room in your bags: title"; one per quest per tick); main shows them in the notice line. The debug Quests
+  tab lists every quest (set any stage, which runs its actions, reset, done/failed, objective
+  states), the flags (edit, delete, add), the loader's and the marker check's warnings, and the
+  last 32 events the drain saw with the stage changes they caused.
 
 ## Day/night
 
@@ -868,4 +963,7 @@ derives the following from the sun height:
 | Stepped per-face light (one value per quad, Minecraft's "smooth lighting off"); models get one value | Player-centred RG8 3D light texture sampled per fragment, or per-corner light in a third quad word |
 | Relighting recomputes whole columns (all 192 heights) around an edit | BFS add / two-phase removal on the stored light if edits get big or frequent |
 | A 128³ Ember fill (the biggest `fill`, now that it takes any block) stalls the game ~130–250 ms, mostly relighting 2M emitters (the same box of Stone ~60 ms, Air 30–50 ms; M4, release, story world); the command budget doesn't count relight | Count emitters in the budget, or the BFS relight above |
+| Quest triggers and lines name markers by name, checked for uniqueness only on world load | Stable alias ids on markers if names keep colliding |
+| A trigger whose reward doesn't fit waits for room (the player destroys something with Ctrl+right-click) | Ground items to drop it on |
+| `pickLine` scans every quest line on each talk | Index lines by spawn name if there are thousands |
 | Absolute world-space float positions (jitter far from the origin) | Camera-relative rendering: subtract the camera's chunk origin on the CPU (needed for M1 streaming) |

@@ -4002,6 +4002,448 @@ static void lighting() {
     }
 }
 
+// Quests (ADR-026): the event drain, the condition evaluator, the quest loader and the QUST/FLAG save
+// sections, and Act 1's "Torvald's Helm" played through step() on a scratch world.
+static void quests() {
+    namespace fs = std::filesystem;
+    const Defs& shipped = defs();
+    CHECK(shipped.questById.contains("torvalds_helm") && shipped.warnings.empty());
+    const auto helm = size_t(shipped.questById.at("torvalds_helm"));
+    auto flat = [] {  // 128 x 128 of grass, no water
+        Grid g({128, 8, 128});
+        for (int z = 0; z < 128; ++z)
+            for (int x = 0; x < 128; ++x) {
+                for (int y = 0; y < 3; ++y) g.set({x, y, z}, Dirt);
+                g.set({x, 3, z}, Grass);
+            }
+        return g;
+    };
+    auto spawn = [](uint32_t id, const char* name, EntityKind kind, glm::vec3 pos, std::vector<std::string> lines = {}) {
+        return Marker{.id = id, .kind = MarkerKind::Spawn, .name = name, .pos = pos, .radius = 2, .entity = kind, .count = 1, .lines = std::move(lines)};
+    };
+    std::vector<Marker> act1 = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}},
+                                spawn(2, "Maren Holt", EntityKind::Villager, {20.5f, 4, 20.5f}, {"Welcome, traveler."}),
+                                spawn(3, "Torvald", EntityKind::Villager, {60.5f, 4, 20.5f}, {"Iron? They took it all."}),
+                                spawn(4, "Captain Brenna", EntityKind::Guard, {100.5f, 4, 20.5f}, {"Halt.", "Move along."}),
+                                spawn(5, "Hakon the Red", EntityKind::BanditChief, {64.5f, 4, 100.5f}),
+                                {.id = 6, .kind = MarkerKind::Region, .name = "Greyfang Rise", .pos = {64.5f, 4, 100.5f}, .radius = 12}};
+    CHECK(checkQuestMarkers(shipped, act1).empty());
+    {  // names that don't resolve to exactly one marker are warned about
+        std::vector<Marker> twice = act1;
+        twice.push_back(spawn(7, "Torvald", EntityKind::Villager, {70.5f, 4, 30.5f}));
+        twice.erase(twice.begin() + 1);  // no Maren
+        std::vector<std::string> w = checkQuestMarkers(shipped, twice);
+        CHECK(w.size() == 2 && std::ranges::count_if(w, [](const std::string& x) { return x.contains("no spawn marker named 'Maren Holt'"); }) == 1 &&
+              std::ranges::count_if(w, [](const std::string& x) { return x.contains("more than one spawn marker named 'Torvald'"); }) == 1);
+    }
+
+    Session s{.world = flat(), .seed = 9};
+    s.markers = act1;
+    startSession(s);
+    auto npc = [&](const char* name) -> Entity& {
+        return *std::ranges::find_if(s.entities, [&](const Entity& e) { return e.spawn.name == name; });
+    };
+    SimInput idle, interact;
+    interact.interact = true;
+    // Walks up to `name` and presses E: the line it says (picked before the quests react).
+    auto talkTo = [&](const char* name) {
+        s.player.teleport(npc(name).body.pos + glm::vec3(1.5f, 0, 0));
+        step(s, interact, kTick);
+        const char* said = npc(name).speech();
+        return std::string(said ? said : "");
+    };
+    const QuestState& q = s.quests[helm];
+    auto objective = [&](const char* id) {
+        const auto& os = shipped.quests[helm].objectives;
+        return q.objectives[size_t(std::ranges::find(os, std::string(id), &Objective::id) - os.begin())];
+    };
+    CHECK(q.stage == 0 && !q.active() && q.objectives.size() == 3);
+    CHECK(talkTo("Captain Brenna") == "Halt.");  // nothing passes: the marker's own lines cycle
+    CHECK(talkTo("Captain Brenna") == "Move along.");
+    // Answered from the state the player walked up in (stage 0's line), then the quest starts.
+    CHECK(talkTo("Maren Holt").starts_with("Hakon the Red's raiders stripped") && q.stage == 10 && objective("talk_torvald") == ObjectiveState::Shown);
+    CHECK(s.toasts.size() == 1 && s.toasts[0].second == "Quest started: Torvald's Helm");
+    s.toasts.clear();
+    CHECK(talkTo("Maren Holt").starts_with("Torvald's forge is on the east side"));
+    CHECK(talkTo("Torvald").starts_with("Maren sent you?") && q.stage == 20);
+    CHECK(objective("talk_torvald") == ObjectiveState::Completed && objective("get_helm") == ObjectiveState::Shown);
+    CHECK(talkTo("Torvald").starts_with("Greyfang Rise, past the south-east fields"));
+    CHECK(talkTo("Torvald") == "Iron? They took it all.");  // the same quest line again: the marker's own line's turn
+    CHECK(talkTo("Torvald").starts_with("Greyfang Rise, past"));
+    CHECK(talkTo("Captain Brenna").starts_with("Going after Hakon?"));
+    CHECK(talkTo("Maren Holt").starts_with("Greyfang Rise is south-east"));
+
+    // Kill Hakon with the sword: the hit that kills raises Killed, his corpse holds the helm.
+    CHECK(quickMove(s.player.inv, {SlotRef::Item, 0}) && s.player.inv.equipped[SlotMainHand] == Shortsword);
+    Entity& hakon = npc("Hakon the Red");
+    s.player.teleport(hakon.body.pos + glm::vec3(0, 0, -1.2f));
+    hakon.body.health = 1;
+    for (int i = 0; i < 120 && hakon.body.alive(); ++i) {
+        SimInput swing;
+        swing.attack = true;
+        glm::vec3 d = hakon.body.pos - s.player.pos;
+        swing.aim = glm::normalize(glm::vec2(d.x, d.z));
+        step(s, swing, kTick);
+    }
+    CHECK(!hakon.body.alive() && hakon.loot == IronHelm && q.stage == 25);
+    CHECK(std::ranges::any_of(s.eventLog, [](const std::string& l) { return l.contains("killed bandit_chief of #5 Hakon the Red"); }));
+    CHECK(std::ranges::any_of(s.eventLog, [](const std::string& l) { return l.contains("entered #6 Greyfang Rise"); }));
+    CHECK(talkTo("Captain Brenna").starts_with("Word is Hakon fell"));  // npc_dead
+    CHECK(talkTo("Torvald").starts_with("Hakon's down?"));
+    s.player.teleport(hakon.body.pos + glm::vec3(1, 0, 0));
+    step(s, interact, kTick);  // loot: the count changes this tick, so has_item fires in the same drain
+    CHECK(countItem(s.player.inv, IronHelm) == 1 && q.stage == 30);
+    CHECK(objective("get_helm") == ObjectiveState::Completed && objective("return_helm") == ObjectiveState::Shown);
+    CHECK(talkTo("Maren Holt").starts_with("Is that Torvald's helm?"));
+    // Wearing it still counts as having it; Torvald takes it off your head and gives the cuirass.
+    CHECK(quickMove(s.player.inv, {SlotRef::Item, int(std::ranges::find(s.player.inv.containers[0], IronHelm) - s.player.inv.containers[0].begin())}));
+    CHECK(s.player.inv.equipped[SlotHead] == IronHelm);
+    s.toasts.clear();
+    CHECK(talkTo("Torvald").starts_with("That's my mark on the brow!"));
+    CHECK(q.done && q.stage == 40 && objective("return_helm") == ObjectiveState::Completed);
+    CHECK(countItem(s.player.inv, IronHelm) == 0 && countItem(s.player.inv, IronCuirass) == 1 && s.flags.at("ravensford_friend") == 1);
+    CHECK(s.toasts.size() == 1 && s.toasts[0].second == "Quest complete: Torvald's Helm");
+    CHECK(talkTo("Torvald").starts_with("Wear that cuirass well"));
+    CHECK(talkTo("Maren Holt").starts_with("Torvald sings at his anvil"));
+    CHECK(talkTo("Maren Holt") == "Welcome, traveler." && talkTo("Maren Holt").starts_with("Torvald sings"));  // they take turns
+    CHECK(talkTo("Captain Brenna").starts_with("So you're the one"));  // the flag
+    {  // a shout on turning angry says only the marker's lines
+        Entity& brenna = npc("Captain Brenna");
+        brenna.speechTimer = brenna.shoutTimer = 0;
+        brenna.state = AiState::Wander;
+        setState(brenna, AiState::Chase, "damaged");
+        std::string shout = brenna.speech() ? brenna.speech() : "";
+        CHECK(shout == "Halt." || shout == "Move along.");
+        setState(brenna, AiState::Return, "forced");
+    }
+    for (int i = 0; i < 4; ++i) talkTo("Torvald");  // a done quest listens no more
+    CHECK(countItem(s.player.inv, IronCuirass) == 1);
+    setQuestStage(s, helm, 20);  // nor does it enter stages
+    CHECK(q.stage == 40 && q.done);
+
+    // The hand-over never loses the reward: with the bags full it goes into the empty chest slot;
+    // with that taken too the trigger waits (and says so) until there is room.
+    auto handOver = [&](bool chestFree) {
+        Session h{.world = flat(), .seed = 9};
+        h.markers = act1;
+        startSession(h);
+        setQuestStage(h, helm, 30);
+        Inventory& inv = h.player.inv;
+        while (giveItem(inv, BoarSkin)) {}
+        inv.equipped[SlotHead] = IronHelm;
+        if (!chestFree) inv.equipped[SlotChest] = IronCuirass;
+        Entity& torvald = *std::ranges::find_if(h.entities, [](const Entity& e) { return e.spawn.name == "Torvald"; });
+        h.player.teleport(torvald.body.pos + glm::vec3(1.5f, 0, 0));
+        h.toasts.clear();
+        step(h, interact, kTick);
+        return h;
+    };
+    {
+        Session h = handOver(true);
+        CHECK(h.quests[helm].done && h.player.inv.equipped[SlotChest] == IronCuirass && countItem(h.player.inv, IronHelm) == 0);
+        h = handOver(false);
+        CHECK(h.quests[helm].stage == 30 && !h.quests[helm].done && countItem(h.player.inv, IronHelm) == 1 && countItem(h.player.inv, IronCuirass) == 1);
+        CHECK(h.toasts.size() == 1 && h.toasts[0].second == "Make room in your bags: Torvald's Helm");
+        CHECK(discardItem(h.player.inv, {SlotRef::Item, 3}));  // destroy a boar skin, talk again
+        Entity& torvald = *std::ranges::find_if(h.entities, [](const Entity& e) { return e.spawn.name == "Torvald"; });
+        h.player.teleport(torvald.body.pos + glm::vec3(1.5f, 0, 0));
+        step(h, interact, kTick);
+        CHECK(h.quests[helm].done && countItem(h.player.inv, IronCuirass) == 2 && h.player.inv.containers[0][3] == IronCuirass);
+    }
+    {  // a helm-first player: Torvald takes it on the first talk, whatever the stage before 20
+        for (int start : {0, 10}) {
+            Session h{.world = flat(), .seed = 9};
+            h.markers = act1;
+            startSession(h);
+            if (start) setQuestStage(h, helm, start);
+            CHECK(giveItem(h.player.inv, IronHelm));
+            step(h, idle, kTick);
+            Entity& torvald = *std::ranges::find_if(h.entities, [](const Entity& e) { return e.spawn.name == "Torvald"; });
+            h.player.teleport(torvald.body.pos + glm::vec3(1.5f, 0, 0));
+            step(h, interact, kTick);
+            CHECK(std::string_view(torvald.speech() ? torvald.speech() : "").starts_with("That's my mark on the brow!"));
+            CHECK(h.quests[helm].done && countItem(h.player.inv, IronHelm) == 0 && countItem(h.player.inv, IronCuirass) == 1);
+        }
+    }
+
+    // Save round trip: stage, objectives, done and the flags, by string id.
+    fs::path dir = fs::temp_directory_path() / "flycoos_quest_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "quests");
+    std::string path = (dir / "q.flys").string();
+    s.flags["negative"] = -7;
+    CHECK(savePlayer(path.c_str(), s, "q.flyw", 1).empty());
+    Session t{.world = flat(), .seed = 9};
+    t.markers = act1;
+    startSession(t);
+    SaveReport r;
+    CHECK(loadPlayer(path.c_str(), t, 1, r).empty() && r.notes.empty());
+    CHECK(t.quests[helm].stage == 40 && t.quests[helm].done && !t.quests[helm].failed && t.quests[helm].objectives == q.objectives);
+    CHECK(t.flags == s.flags && t.flags.at("negative") == -7);
+    {  // crafted QUST and FLAG sections: an unknown quest and objective are dropped with notes, bad ones reject the file
+        auto le = [](std::vector<uint8_t>& out, uint64_t v, int n) {
+            for (int i = 0; i < n; ++i) out.push_back(uint8_t(v >> (8 * i)));
+        };
+        auto str = [&](std::vector<uint8_t>& out, std::string_view v) { out.push_back(uint8_t(v.size())), out.insert(out.end(), v.begin(), v.end()); };
+        auto craft = [&](std::vector<std::pair<std::string, std::vector<uint8_t>>> sections) {
+            std::vector<uint8_t> out{'F', 'L', 'Y', 'S', 1, 0, 0, 0};
+            std::vector<uint8_t> head{0};
+            le(head, 1, 4), le(head, 9, 4), le(head, std::bit_cast<uint64_t>(5.0), 8), le(head, std::bit_cast<uint32_t>(0.5f), 4);
+            sections.insert(sections.begin(), {"HEAD", head});
+            for (auto& [tag, payload] : sections) {
+                out.insert(out.end(), tag.begin(), tag.end());
+                le(out, payload.size(), 8);
+                out.insert(out.end(), payload.begin(), payload.end());
+            }
+            le(out, fnv1a(out.data(), out.size()), 4);
+            std::ofstream(path, std::ios::binary | std::ios::trunc).write(reinterpret_cast<const char*>(out.data()), std::streamsize(out.size()));
+        };
+        auto quest = [&](std::string_view id, uint32_t stage, uint8_t bits, std::vector<std::pair<std::string_view, uint8_t>> objectives) {
+            std::vector<uint8_t> v;
+            str(v, id), le(v, stage, 4), v.push_back(bits), v.push_back(uint8_t(objectives.size()));
+            for (auto [o, state] : objectives) str(v, o), v.push_back(state);
+            return v;
+        };
+        auto quests = [&](std::vector<std::vector<uint8_t>> list) {
+            std::vector<uint8_t> v;
+            le(v, list.size(), 4);
+            for (auto& one : list) v.insert(v.end(), one.begin(), one.end());
+            return v;
+        };
+        fs::remove(path + ".bak");
+        craft({{"QUST", quests({quest("lost_quest", 3, 0, {}), quest("torvalds_helm", 20, 0, {{"get_helm", 1}, {"old_objective", 2}})})}});
+        Session u = t;
+        CHECK(loadPlayer(path.c_str(), u, 1, r).empty() && r.notes.size() == 2 && r.notes[0].contains("dropped quest 'lost_quest'") &&
+              r.notes[1].contains("dropped objective 'old_objective'"));
+        CHECK(u.quests[helm].stage == 20 && !u.quests[helm].done && objective("get_helm") == ObjectiveState::Completed &&
+              u.quests[helm].objectives[1] == ObjectiveState::Shown && u.quests[helm].objectives[0] == ObjectiveState::Hidden && u.flags.empty());
+        craft({{"QUST", quests({quest("torvalds_helm", 15, 0, {})})}});
+        CHECK(loadPlayer(path.c_str(), u, 1, r).empty() && r.notes.size() == 1 && r.notes[0].contains("stage 15 is gone") && u.quests[helm].stage == 15);
+        std::vector<uint8_t> flags;
+        le(flags, 2, 4), str(flags, "a"), le(flags, 1, 4), str(flags, "a"), le(flags, 2, 4);  // the same flag twice
+        std::vector<uint8_t> badName;
+        le(badName, 1, 4), str(badName, "a\nb"), le(badName, 1, 4);
+        std::vector<uint8_t> hugeQuests, hugeFlags;
+        le(hugeQuests, 70000, 4), le(hugeFlags, 5000, 4);
+        std::vector<std::vector<std::pair<std::string, std::vector<uint8_t>>>> broken = {
+            {{"QUST", quests({quest("torvalds_helm", 20, 4, {})})}},             // unknown bits
+            {{"QUST", quests({quest("torvalds_helm", 20, 3, {})})}},             // done and failed
+            {{"QUST", quests({quest("torvalds_helm", 70000, 0, {})})}},          // stage out of range
+            {{"QUST", quests({quest("torvalds_helm", 20, 0, {{"get_helm", 9}})})}},  // no such objective state
+            {{"QUST", quests({quest("torvalds_helm", 20, 0, {{"get_helm", 1}, {"get_helm", 2}})})}},
+            {{"QUST", quests({quest("torvalds_helm", 20, 0, {}), quest("torvalds_helm", 10, 0, {})})}},
+            {{"QUST", quests({quest("", 20, 0, {})})}},
+            {{"QUST", hugeQuests}},
+            {{"QUST", [&] { auto v = quests({quest("torvalds_helm", 20, 0, {})}); v.pop_back(); return v; }()}},  // truncated
+            {{"QUST", [&] { auto v = quests({quest("torvalds_helm", 20, 0, {})}); v.push_back(0); return v; }()}},  // left over
+            {{"FLAG", flags}},
+            {{"FLAG", badName}},
+            {{"FLAG", hugeFlags}},
+            {{"QUST", quests({})}, {"QUST", quests({})}},
+        };
+        for (auto& sections : broken) {
+            craft(sections);
+            Session v = t;
+            CHECK(!loadPlayer(path.c_str(), v, 1, r).empty() && v.quests[helm].stage == 40 && v.flags.size() == 2);
+        }
+    }
+
+    // Data: a quest exercising every trigger, the drain order and the loader's checks, in a scratch data folder.
+    for (const char* f : {"items.json", "creatures.json"}) fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / f, dir / f);
+    std::string error;
+    auto load = [&](std::string_view quest, Defs& d) {
+        std::ofstream(dir / "quests" / "a.json", std::ios::trunc) << quest;
+        return loadDefs(dir, d, error);
+    };
+    Defs scratch;
+    CHECK(load(R"([{"id": "pond", "title": "The Pond", "objectives": [{"id": "boar", "text": "Kill a boar"}],
+        "stages": [
+          {"id": 0, "on": [{"entered": "Pond", "do": [{"set_stage": 10}]}]},
+          {"id": 10, "journal": "At the pond.", "actions": [{"show_objective": "boar"}, {"give_item": "rusty_knife"}, {"start_quest": "pond_b"}],
+           "on": [{"has_item": "rusty_knife", "do": [{"set_stage": 20}]}]},
+          {"id": 20, "journal": "Armed.", "on": [{"killed_creature": "boar", "if": [{"in_region": "Pond", "not": true}], "do": [{"set_stage": 30}]},
+                                                 {"killed_creature": "boar", "do": [{"set_flag": "pond_kills", "value": 1}]}]},
+          {"id": 30, "actions": [{"complete_objective": "boar"}, {"set_stage": 31}]},
+          {"id": 31, "actions": [{"set_stage": 30}]}
+        ],
+        "lines": [{"spawn": "Boar", "say": "Oink."}, {"spawn": "Boar", "if": [{"done": "pond"}], "say": "Never."}]},
+       {"id": "pond_b", "title": "Started", "stages": [{"id": 10, "on": [{"entered": "Pond", "do": [{"set_stage": 20}]}]}, {"id": 20}]}])", scratch));
+    if (!error.empty()) std::println(stderr, "FAIL scratch quest: {}", error);
+    CHECK(scratch.quests.size() == 2 && scratch.questLines.size() == 2 && scratch.warnings.size() == 1 &&
+          scratch.warnings[0].contains("field 'lines[1]': never said: an earlier line for 'Boar' has no conditions"));
+    setDefs(std::move(scratch));
+    {
+        Session p{.world = flat(), .seed = 3};
+        p.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}},
+                     {.id = 2, .kind = MarkerKind::Region, .name = "Pond", .pos = {40.5f, 4, 40.5f}, .radius = 5},
+                     spawn(3, "Boar", EntityKind::Boar, {80.5f, 4, 80.5f})};
+        startSession(p);
+        const QuestState& pond = p.quests[0];
+        step(p, idle, kTick);
+        CHECK(pond.stage == 0);
+        p.player.teleport({40.5f, 4, 40.5f});
+        step(p, idle, kTick);  // RegionEntered: stage 10 gives the knife; its has_item re-check waits for the next batch
+        CHECK(pond.stage == 10 && countItem(p.player.inv, Knife) == 1 && pond.objectives[0] == ObjectiveState::Shown);
+        CHECK(p.events.size() == 1 && std::holds_alternative<ItemCountChanged>(p.events[0]));
+        // pond_b was started on that RegionEntered: it didn't hear the same event (quest order doesn't matter).
+        CHECK(p.quests[1].stage == 10);
+        // has_item reads the count now, not the event's: the knife gone, the stale re-check doesn't fire.
+        CHECK(takeItem(p.player.inv, Knife) && !takeItem(p.player.inv, Knife));
+        step(p, idle, kTick);
+        CHECK(pond.stage == 10);
+        CHECK(giveItem(p.player.inv, Knife));
+        p.events.push_back(ItemCountChanged{Knife, 1});  // and one count per item per batch (with step's own)
+        size_t logged = p.eventLog.size();
+        step(p, idle, kTick);
+        CHECK(pond.stage == 20 && p.events.empty() && p.eventLog.size() == logged + 2);  // the event, the stage
+        // The kill in the pond doesn't pass the first trigger's condition; the second one sets the flag.
+        Entity& boar = p.entities[0];
+        p.events.push_back(Killed{EntityKind::Boar, 3});
+        step(p, idle, kTick);
+        CHECK(pond.stage == 20 && p.flags.at("pond_kills") == 1);
+        p.player.teleport({10.5f, 4, 10.5f});
+        CHECK(damage(boar, 1000));
+        p.events.push_back(Killed{boar.kind, boar.spawn.id});
+        step(p, idle, kTick);  // stages 30 and 31 set each other: the chain stops, the log says so
+        CHECK((pond.stage == 30 || pond.stage == 31) && pond.objectives[0] == ObjectiveState::Completed);
+        CHECK(std::ranges::any_of(p.eventLog, [](const std::string& l) { return l.contains("set_stage chain longer than 16"); }));
+        for (int i = 0; i < 40; ++i) p.events.push_back(TalkedTo{3});
+        step(p, idle, kTick);
+        CHECK(p.eventLog.size() == kEventLogSize && p.eventLog.back().contains("talked to #3 Boar"));
+        p.entities[0].body.health = 10;
+        p.entities[0].spawn.name = "Boar";
+        CHECK(pickLine(p, p.entities[0]) == 0);  // the unconditioned line shadows the later one
+    }
+    {  // a reload keeps quest handles and objective indices: renaming an objective is refused, appending one is fine
+        std::ostringstream text;
+        text << std::ifstream(dir / "quests" / "a.json").rdbuf();
+        std::string shipped = text.str(), renamed = shipped, grown = shipped;
+        auto swap = [](std::string& in, std::string_view from, std::string_view to) { in.replace(in.find(from), from.size(), to); };
+        swap(renamed, R"("id": "boar")", R"("id": "hog")");
+        swap(renamed, R"("show_objective": "boar")", R"("show_objective": "hog")");
+        swap(renamed, R"("complete_objective": "boar")", R"("complete_objective": "hog")");
+        swap(grown, R"({"id": "boar", "text": "Kill a boar"})", R"({"id": "boar", "text": "Kill a boar"}, {"id": "more", "text": "More"})");
+        std::ofstream(dir / "quests" / "a.json", std::ios::trunc) << renamed;
+        CHECK(!reloadDefs(dir, error) && error.contains("objective 0 is now 'hog', was 'boar'"));
+        std::ofstream(dir / "quests" / "a.json", std::ios::trunc) << grown;
+        CHECK(reloadDefs(dir, error) && defs().quests[0].objectives.size() == 2);
+        if (!error.empty()) std::println(stderr, "FAIL reload: {}", error);
+    }
+    // Loader errors name file, record and field.
+    std::string file = (dir / "quests" / "a.json").string();
+    auto quest = [](std::string_view stages, std::string_view more = "") {
+        return std::format(R"([{{"id": "q", "title": "Q", "objectives": [{{"id": "o", "text": "Do it"}}], "stages": [{}]{}}}])", stages, more);
+    };
+    for (auto [text, want] : std::initializer_list<std::pair<std::string, std::string_view>>{
+             {quest(R"({"id": 10, "actions": [{"give_item": "gold"}]})"), "record 0 'q': field 'stages[0].actions[0].give_item': unknown item \"gold\""},
+             {quest(R"({"id": 10, "on": [{"talked_to": "X", "do": [{"set_stage": 50}]}]})"), "field 'stages[0].on[0].do[0].set_stage': 50 is not one of"},
+             {quest(R"({"id": 10, "actions": [{"show_objective": "p"}]})"), "field 'stages[0].actions[0].show_objective': quest 'q' has no objective \"p\""},
+             {quest(R"({"id": 10, "on": [{"talked_to": "X", "killed": "Y", "do": [{"set_stage": 10}]}]})"), "field 'stages[0].on[0]': needs exactly one of talked_to"},
+             {quest(R"({"id": 10, "on": [{"talked_to": "X"}]})"), "field 'stages[0].on[0].do': missing"},
+             {quest(R"({"id": 10, "on": [{"killed_creature": "dragon", "do": [{"set_stage": 10}]}]})"), "field 'stages[0].on[0].killed_creature': unknown creature"},
+             {quest(R"({"id": 10, "jornal": "x"})"), "field 'stages[0].jornal': unknown field"},
+             {quest(R"({"id": 10}, {"id": 10})"), "field 'stages[1].id': stage 10 is listed twice"},
+             {quest(R"({"id": 0, "journal": "x"}, {"id": 10})"), "field 'stages[0]': stage 0 (not started) has only triggers"},
+             {quest(R"({"id": 0})"), "field 'stages': needs a stage other than 0"},
+             {quest(R"({"id": 70000})"), "field 'stages[0].id': 70000 is out of range"},
+             {quest(R"({"id": 10, "on": [{"entered": "R", "if": [{"stage": "nope", "value": 1}], "do": [{"set_stage": 10}]}]})"),
+              "field 'stages[0].on[0].if[0].stage': unknown quest \"nope\""},
+             {quest(R"({"id": 10})", R"(, "lines": [{"spawn": "A", "if": [{"flag": "f", "op": "=>", "value": 1}], "say": "Hi"}])"),
+              "field 'lines[0].if[0].op': must be one of ==, !="},
+             {quest(R"({"id": 10})", R"(, "lines": [{"spawn": "A", "if": [{"objective": "o", "is": "shown"}], "say": "Hi"}])"),
+              "field 'lines[0].if[0].objective': must be \"quest_id.objective_id\""},
+             {quest(R"({"id": 10})", R"(, "lines": [{"spawn": "A", "if": [{"objective": "q.o", "is": "open"}], "say": "Hi"}])"),
+              "field 'lines[0].if[0].is': must be one of hidden"},
+             {quest(R"({"id": 10})", R"(, "lines": [{"spawn": "A", "if": [{"has_item": "iron_helm", "done": "q"}], "say": "Hi"}])"),
+              "field 'lines[0].if[0]': needs exactly one of stage"},
+             {quest(R"({"id": 10})", R"(, "lines": [{"spawn": "A", "say": ""}])"), "field 'lines[0].say': must be 1..160 bytes"},
+             {quest(R"({"id": 10})", R"(, "lines": [{"spawn": "A", "if": [{"flag": "f"}], "say": "Hi"}])"), "field 'lines[0].if[0].value': missing"},
+             {quest(R"({"id": 10, "actions": [{"set_flag": "Bad Name", "value": 1}]})"), "field 'stages[0].actions[0].set_flag': must be a snake_case id"},
+             {quest(R"({"id": 10, "actions": [{"complete_quest": "q", "value": 1}]})"), "field 'stages[0].actions[0].value': unknown field"},
+             {quest(R"({"id": 10})", R"(, "copy_from": "x")"), "record 0 'q': field 'copy_from': unknown field"},
+             {quest(R"({"id": 10, "actions": [{"take_item": "canvas_satchel"}]})"), "field 'stages[0].actions[0].take_item': a bag can't be taken"},
+         }) {
+        Defs bad;
+        CHECK(!load(text, bad));
+        if (error.find(want) == std::string::npos || !error.starts_with(file)) std::println(stderr, "FAIL quest error '{}', want '{}'", error, want);
+        CHECK(error.find(want) != std::string::npos && error.starts_with(file));
+    }
+    {  // two files with the same quest id
+        std::ofstream(dir / "quests" / "b.json") << quest(R"({"id": 10})");
+        Defs bad;
+        CHECK(!load(quest(R"({"id": 10})"), bad) && error.contains("b.json: record 0 'q': field 'id': another quest file has this id"));
+        fs::remove(dir / "quests" / "b.json");
+    }
+    {  // set back the shipped data for the tests after this one
+        Defs again;
+        CHECK(loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", again, error));
+        setDefs(std::move(again));
+    }
+}
+
+// Every condition kind against hand-set state, its operator and "not".
+static void conditions() {
+    const auto q = defs().questById.at("torvalds_helm");
+    Session s{.world = meadow(), .seed = 1};
+    s.markers = {{.id = 1, .kind = MarkerKind::Region, .name = "Vale", .pos = {20.5f, 4, 20.5f}, .radius = 30},
+                 {.id = 2, .kind = MarkerKind::Region, .name = "Village", .pos = {10.5f, 4, 10.5f}, .radius = 5},
+                 {.id = 3, .kind = MarkerKind::Spawn, .name = "Raiders", .pos = {20.5f, 4, 40.5f}, .radius = 2, .entity = EntityKind::Bandit, .count = 2}};
+    startSession(s);
+    s.player.teleport({10.5f, 4, 10.5f});
+    auto is = [&](Condition c) { return passes(s, c); };
+    using C = Condition;
+    s.quests[q].stage = 20;
+    CHECK(is({.kind = C::Stage, .op = Cmp::Eq, .value = 20, .quest = q}) && !is({.kind = C::Stage, .op = Cmp::Ne, .value = 20, .quest = q}));
+    CHECK(is({.kind = C::Stage, .op = Cmp::Lt, .value = 21, .quest = q}) && !is({.kind = C::Stage, .op = Cmp::Lt, .value = 20, .quest = q}));
+    CHECK(is({.kind = C::Stage, .op = Cmp::Le, .value = 20, .quest = q}) && is({.kind = C::Stage, .op = Cmp::Gt, .value = 19, .quest = q}));
+    CHECK(is({.kind = C::Stage, .op = Cmp::Ge, .value = 20, .quest = q}) && !is({.kind = C::Stage, .op = Cmp::Gt, .value = 20, .quest = q}));
+    CHECK(!is({.kind = C::Stage, .negate = true, .op = Cmp::Eq, .value = 20, .quest = q}));
+    CHECK(!is({.kind = C::Done, .quest = q}) && is({.kind = C::Done, .negate = true, .quest = q}) && !is({.kind = C::Failed, .quest = q}));
+    s.quests[q].failed = true;
+    CHECK(is({.kind = C::Failed, .quest = q}) && !s.quests[q].active());
+    s.quests[q].objectives[1] = ObjectiveState::Shown;
+    CHECK(is({.kind = C::Objective, .value = int(ObjectiveState::Shown), .quest = q, .objective = 1}));
+    CHECK(is({.kind = C::Objective, .value = int(ObjectiveState::Hidden), .quest = q, .objective = 0}));
+    CHECK(!is({.kind = C::Objective, .value = int(ObjectiveState::Completed), .quest = q, .objective = 1}));
+    CHECK(is({.kind = C::Flag, .op = Cmp::Eq, .value = 0, .name = "unset"}));  // an unset flag is 0
+    s.flags["f"] = -3;
+    CHECK(is({.kind = C::Flag, .op = Cmp::Lt, .value = 0, .name = "f"}) && !is({.kind = C::Flag, .op = Cmp::Ge, .value = -2, .name = "f"}));
+    CHECK(is({.kind = C::HasItem, .op = Cmp::Ge, .value = 1, .item = Shortsword}) && !is({.kind = C::HasItem, .op = Cmp::Ge, .value = 1, .item = IronHelm}));
+    CHECK(giveItem(s.player.inv, IronHelm) && giveItem(s.player.inv, IronHelm) && quickMove(s.player.inv, {SlotRef::Item, 2}));
+    CHECK(countItem(s.player.inv, IronHelm) == 2 && countItem(s.player.inv, NoItem) == 0);  // one worn, one in the backpack
+    CHECK(is({.kind = C::HasItem, .op = Cmp::Ge, .value = 2, .item = IronHelm}) && !is({.kind = C::HasItem, .op = Cmp::Ge, .value = 3, .item = IronHelm}));
+    CHECK(quickMove(s.player.inv, {SlotRef::Item, 1}) && is({.kind = C::HasItem, .op = Cmp::Eq, .value = 1, .item = Satchel}));  // on the bag bar
+    CHECK(is({.kind = C::InRegion, .name = "Village"}) && is({.kind = C::InRegion, .name = "Vale"}));  // nested: both count
+    CHECK(!is({.kind = C::InRegion, .name = "Raiders"}) && is({.kind = C::InRegion, .negate = true, .name = "Elsewhere"}));
+    CHECK(s.entities.size() == 2 && !is({.kind = C::NpcDead, .name = "Raiders"}) && !is({.kind = C::NpcDead, .name = "Nobody"}));
+    CHECK(damage(s.entities[0], 1000) && !is({.kind = C::NpcDead, .name = "Raiders"}));
+    CHECK(damage(s.entities[1], 1000) && is({.kind = C::NpcDead, .name = "Raiders"}));
+    CHECK(passesAll(s, {}) && !passesAll(s, {{.kind = C::NpcDead, .name = "Raiders"}, {.kind = C::Done, .quest = q}}));
+    // Loot and rewards go into an empty matching equip slot when the bags are full; Ctrl+right-click destroys.
+    {
+        Inventory inv;
+        while (giveItem(inv, BoarSkin)) {}
+        CHECK(!canStow(inv, WolfPelt) && canStow(inv, IronHelm) && stowItem(inv, IronHelm) && inv.equipped[SlotHead] == IronHelm);
+        CHECK(!canStow(inv, IronHelm) && stowItem(inv, Satchel) && inv.bags[0] == Satchel && inv.containers[1].size() == size_t(itemType(Satchel).bagSlots));
+        Entity& corpse = s.entities[0];
+        corpse.loot = IronHelm;
+        Player looter;
+        looter.inv = inv;
+        looter.pos = corpse.body.pos;
+        while (giveItem(looter.inv, BoarSkin)) {}
+        CHECK(lootTarget(s.entities, looter) == nullptr);  // head taken, bags full
+        CHECK(discardItem(looter.inv, {SlotRef::Equip, SlotHead}) && lootTarget(s.entities, looter) == &corpse);
+        CHECK(takeLoot(corpse, looter.inv) && looter.inv.equipped[SlotHead] == IronHelm && corpse.loot == NoItem);
+        CHECK(!discardItem(looter.inv, {SlotRef::Bag, 0}));  // a bag that holds items stays
+        CHECK(discardItem(looter.inv, {SlotRef::Item, 0, 0}) && looter.inv.containers[0][0] == NoItem);
+        for (ItemId& id : looter.inv.containers[1]) id = NoItem;
+        CHECK(discardItem(looter.inv, {SlotRef::Bag, 0}) && looter.inv.bags[0] == NoItem && looter.inv.containers[1].empty());
+        CHECK(!discardItem(looter.inv, {SlotRef::Bag, 0}) && takeItem(looter.inv, IronHelm) && looter.inv.equipped[SlotHead] == NoItem);
+    }
+    // A quest handle a reload dropped reads as not started.
+    CHECK(is({.kind = C::Stage, .op = Cmp::Eq, .value = 0, .quest = 999}));
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -4049,6 +4491,8 @@ int main() {
     timedSpawns();
     ticks();
     playerSaves();
+    quests();
+    conditions();
     std::error_code ec;
     std::filesystem::remove_all(tmp, ec);
     if (failures) std::println(stderr, "{} check(s) failed", failures);

@@ -80,6 +80,43 @@ bool giveItem(Inventory& inv, ItemId id) {
     return false;
 }
 
+bool stowItem(Inventory& inv, ItemId id) {
+    if (giveItem(inv, id)) return true;
+    EquipSlot slot = itemType(id).slot;
+    if (slot < EquipCount && inv.equipped[slot] == NoItem) return inv.equipped[slot] = id, true;
+    if (slot == SlotBag)
+        for (int i = 0; i < kBagBarSlots; ++i)
+            if (inv.bags[size_t(i)] == NoItem) {
+                inv.bags[size_t(i)] = id;
+                inv.containers[size_t(i) + 1].assign(size_t(itemType(id).bagSlots), NoItem);
+                return true;
+            }
+    return false;
+}
+
+bool canStow(const Inventory& inv, ItemId id) {
+    Inventory trial = inv;
+    return stowItem(trial, id);
+}
+
+bool takeItem(Inventory& inv, ItemId id) {
+    if (id == NoItem) return false;
+    for (auto& c : inv.containers)
+        for (ItemId& slot : c)
+            if (slot == id) return slot = NoItem, true;
+    for (ItemId& slot : inv.equipped)
+        if (slot == id) return slot = NoItem, true;
+    return false;
+}
+
+bool discardItem(Inventory& inv, SlotRef ref) {
+    ItemId* item = slotAt(inv, ref);
+    if (!item || *item == NoItem || (ref.kind == SlotRef::Bag && !bagEmpty(inv, ref.index))) return false;
+    *item = NoItem;
+    if (ref.kind == SlotRef::Bag) inv.containers[size_t(ref.index) + 1].clear();
+    return true;
+}
+
 int itemSlots(const Inventory& inv) {
     int n = 0;
     for (const auto& c : inv.containers) n += int(c.size());
