@@ -45,6 +45,7 @@ public:
                     const RenderStats& stats, DebugActions& actions);
 
     bool open = false;
+    const char* region = nullptr;  // the name of the region the player is in (main sets it each frame)
 
 private:
     void window(GameSettings& game, RenderSettings& render, Player& player, std::vector<Entity>& entities,

@@ -3,11 +3,18 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <utility>
 
 int groundTop(const Grid& g, int x, int z) {
     for (int y = g.size.y - 1; y >= 0; --y)
         if (isOpaque(g.get({x, y, z}))) return y;
     return -1;
+}
+
+int groundUnderTrees(const Grid& g, int x, int z) {
+    int y = groundTop(g, x, z);
+    for (Block b; y > 0 && ((b = g.get({x, y, z})) == Wood || b == Leaves || b == Air);) --y;
+    return y;
 }
 
 namespace {
@@ -87,9 +94,32 @@ void brush(Grid& g, const EditOp& op, Box box) {
         }
 }
 
-// Swaps the record's cells and instances with the live ones (the last change first when undoing)
-// and moves it to the other stack.
-Box swapRecord(Grid& g, std::vector<Instance>& list, std::vector<EditRecord>& from, std::vector<EditRecord>& to, bool undo) {
+Box markerBox(const Grid& g, const Marker& m) {
+    glm::ivec3 p = glm::clamp(glm::ivec3(glm::floor(m.pos)), glm::ivec3(0), g.size - 1);
+    return {p, p};
+}
+
+// Swaps a record's (id, item on the other side) entries with the live list sorted by id (the last
+// entry first when undoing). `touched(live, other)` sees both sides first (null: none).
+template <class T, class Fn>
+void swapEntries(std::vector<T>& list, std::vector<std::pair<uint32_t, std::optional<T>>>& entries, bool undo, Fn touched) {
+    for (size_t k = 0; k < entries.size(); ++k) {
+        auto& [id, other] = entries[undo ? entries.size() - 1 - k : k];
+        auto it = std::ranges::lower_bound(list, id, {}, &T::id);
+        bool live = it != list.end() && it->id == id;
+        touched(live ? &*it : nullptr, other ? &*other : nullptr);
+        std::optional<T> was = live ? std::optional(std::move(*it)) : std::nullopt;
+        if (other && live) *it = std::move(*other);
+        else if (other) list.insert(it, std::move(*other));
+        else if (live) list.erase(it);
+        other = std::move(was);
+    }
+}
+
+// Swaps the record's cells, instances and markers with the live ones (the last change first when
+// undoing) and moves it to the other stack.
+Box swapRecord(Grid& g, std::vector<Instance>& list, std::vector<Marker>& markers, std::vector<EditRecord>& from,
+               std::vector<EditRecord>& to, bool undo) {
     if (from.empty()) return {};
     EditRecord rec = std::move(from.back());
     from.pop_back();
@@ -103,20 +133,24 @@ Box swapRecord(Grid& g, std::vector<Instance>& list, std::vector<EditRecord>& fr
         rows(g, p.box, [&](size_t i, size_t r) { std::swap_ranges(&p.cells[r * w], &p.cells[r * w] + w, &g.cells[i]); });
         grow(p.box);
     }
-    for (size_t k = 0; k < rec.instances.size(); ++k) {
-        auto& [id, other] = rec.instances[undo ? rec.instances.size() - 1 - k : k];
-        auto it = std::ranges::lower_bound(list, id, {}, &Instance::id);
-        bool live = it != list.end() && it->id == id;
-        if (live) grow(instanceBox(*it));  // both sides are boxes the step touched
+    swapEntries(list, rec.instances, undo, [&](const Instance* live, const Instance* other) {
+        if (live) grow(instanceBox(*live));  // both sides are boxes the step touched
         if (other) grow(instanceBox(*other));
-        std::optional<Instance> was = live ? std::optional(std::move(*it)) : std::nullopt;
-        if (other && live) *it = std::move(*other);
-        else if (other) list.insert(it, std::move(*other));
-        else if (live) list.erase(it);
-        other = std::move(was);
-    }
+    });
+    // Only the side that ends up live (or the removed one): a far move mustn't remesh all in between.
+    swapEntries(markers, rec.markers, undo, [&](const Marker* live, const Marker* other) {
+        if (other || live) grow(markerBox(g, other ? *other : *live));
+    });
     to.push_back(std::move(rec));
     return all;
+}
+
+uint32_t nextMarkerId(const std::vector<Marker>& list, const EditHistory& h) {
+    uint32_t id = list.empty() ? 0 : list.back().id;
+    for (const std::vector<EditRecord>* stack : {&h.undo, &h.redo})  // ids an undo or redo may bring back
+        for (const EditRecord& r : *stack)
+            for (const auto& entry : r.markers) id = std::max(id, entry.first);
+    return id >= UINT32_MAX - 1 ? 0 : id + 1;  // 0 when the ids ran out (2^32-1 is never an id)
 }
 
 }  // namespace
@@ -193,6 +227,7 @@ void pushRecord(EditHistory& history, EditRecord rec, bool join) {
         last.bytes += entry.second ? entry.second->cells.size() * sizeof(Instance::Cell) : 0;
         last.instances.push_back(std::move(entry));
     }
+    for (auto& entry : rec.markers) last.markers.push_back(std::move(entry));
     size_t total = 0;
     for (const EditRecord& r : history.undo) total += r.bytes;
     while (history.undo.size() > kMaxUndo || (total > kMaxUndoBytes && history.undo.size() > 1)) {
@@ -226,11 +261,47 @@ EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join)
     return {dirty};
 }
 
-Box undoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances) {
-    return swapRecord(g, instances, history.undo, history.redo, true);
+Box undoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances, std::vector<Marker>& markers) {
+    return swapRecord(g, instances, markers, history.undo, history.redo, true);
 }
-Box redoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances) {
-    return swapRecord(g, instances, history.redo, history.undo, false);
+Box redoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances, std::vector<Marker>& markers) {
+    return swapRecord(g, instances, markers, history.redo, history.undo, false);
+}
+
+EditResult putMarker(const Grid& g, std::vector<Marker>& list, EditHistory& h, Marker m) {
+    if (const char* error = checkMarker(g, m)) return {{}, error};
+    auto spawn = std::ranges::find(list, MarkerKind::PlayerSpawn, &Marker::kind);
+    if (m.kind == MarkerKind::PlayerSpawn && spawn != list.end() && spawn->id != m.id)
+        return {{}, "there is a player_spawn already: move that one instead"};
+    int npcs = m.kind == MarkerKind::Spawn ? m.count : 0;
+    for (const Marker& o : list) npcs += o.kind == MarkerKind::Spawn && o.id != m.id ? o.count : 0;
+    if (npcs > kMaxSpawnedNpcs) return {{}, "spawn markers would make more than 256 NPCs: lower some counts or remove some"};
+    std::optional<Marker> old;
+    if (m.id) {
+        auto it = std::ranges::lower_bound(list, m.id, {}, &Marker::id);
+        if (it == list.end() || it->id != m.id) return {{}, "no marker with that id"};
+        if (*it == m) return {{}, nullptr, m.id};  // nothing changes: no undo step
+        old = std::exchange(*it, m);
+    } else {
+        if (list.size() >= kMaxMarkers) return {{}, "too many markers: remove some first"};
+        if (!(m.id = nextMarkerId(list, h))) return {{}, "out of marker ids"};
+        list.insert(std::ranges::lower_bound(list, m.id, {}, &Marker::id), m);
+    }
+    EditRecord rec;
+    rec.markers.push_back({m.id, std::move(old)});
+    pushRecord(h, std::move(rec), false);
+    return {markerBox(g, m), nullptr, m.id};
+}
+
+EditResult removeMarker(const Grid& g, std::vector<Marker>& list, EditHistory& h, uint32_t id) {
+    auto it = std::ranges::lower_bound(list, id, {}, &Marker::id);
+    if (it == list.end() || it->id != id) return {{}, "no marker with that id"};
+    Box box = markerBox(g, *it);
+    EditRecord rec;
+    rec.markers.push_back({id, std::move(*it)});
+    list.erase(it);
+    pushRecord(h, std::move(rec), false);
+    return {box, nullptr, id};
 }
 
 std::optional<RayHit> raycast(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDistance) {

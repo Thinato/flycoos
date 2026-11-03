@@ -35,11 +35,14 @@ reach them.
 - Prefabs: generated trees, pines, bushes, boulders and spires, and structures from text files
   (cottage, tent, bandit camp, well, fence, ruin), placed as instances that can be moved and
   removed (in-game Prefab tool and MCP tools), saved with the world
+- Story markers: the player spawn, NPC spawns (kind, count, wander area; the NPCs follow every
+  edit and undo), named points of interest and regions (shown as labels and an on-entering name),
+  placed in-game (Marker tool) or by Claude (MCP), saved with the world and drawn on the map
 
 ## M1: A living world
 
 - A hand-authored story world: the fixed-size 1024×192×1024 world, generated once and then shaped
-  in the in-game editor, replaces an infinite streamed one. Story markers in the world file
+  in the in-game editor, replaces an infinite streamed one. Story markers in the world file ✅
 - Biomes (grassland, desert, tundra, swamp), rivers, caves; LOD for distant terrain
 - Shadow maps for sun and moon; clouds; wind-animated foliage
 - Ambient audio (wind, birds by day, crickets by night) and footsteps

@@ -298,3 +298,32 @@
   - Editing a prefab file changes only later placements and moves; placed instances keep their
     voxels and can always be removed, even when the file is gone.
   - Another block needs a bigger palette (shader and uniform change, with a perf A/B).
+
+## ADR-015: Story markers in the world file; NPC spawns derive from them
+
+- **Status:** accepted (2026-11-03)
+- **Context:** the user and Claude write a story and shape its world together. Where the player
+  starts, where NPCs live and what places are called were hard-coded offsets from the world spawn.
+- **Decision:**
+  - A marker is plain data (id, kind, name, position, radius, entity, count) of four kinds:
+    player spawn, NPC spawn, point of interest, region. They live in a `MARK` section of the world
+    file and in the undo history next to voxels and instances, so one undo restores both.
+  - NPCs are derived state: each remembers the marker it came from, and `syncSpawns` respawns a
+    marker's NPCs when the marker changed. Undo, redo, commands and the editor never touch NPCs
+    directly.
+  - Worlds without a marker section (all earlier files) and new worlds get the four old spawns as
+    ordinary markers, seeded so the same NPCs appear; from then on they're editable like any other.
+  - Region and poi names are drawn on ImGui's background list (HUD and editor), not in the world
+    renderer; the map image marks them with ids, and the JSON carries the names.
+- **Alternatives considered:**
+  - Keep the hard-coded spawns when a world has no spawn markers: the first spawn marker the user
+    adds would make the old NPCs vanish.
+  - Patch NPCs from each edit's result (ids changed): undo and redo would need the same plumbing;
+    comparing against the markers after any change is one function and can't drift.
+  - Markers as prefab instances: they have no voxels, and instances can't carry kind-specific data.
+- **Consequences:**
+  - Editing a spawn marker resets its NPCs (health, loot, position); the others keep their state.
+  - Spawn counts add up to at most 256 NPCs per world, since every NPC is simulated each frame.
+  - A marker edit remeshes the chunks around one voxel (~1 ms) because that is how the game learns
+    the world changed; the cost is negligible next to a brush.
+  - Removing every spawn marker leaves the world without NPCs, by design.

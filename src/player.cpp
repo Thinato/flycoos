@@ -19,6 +19,11 @@ bool overlapsSolid(const Grid& g, glm::vec3 p) {
     return false;
 }
 
+glm::vec3 clearOfTerrain(const Grid& g, glm::vec3 feet) {
+    while (overlapsSolid(g, feet) && feet.y < float(g.size.y)) feet.y = std::floor(feet.y) + 1;
+    return feet;
+}
+
 // Moves along one axis; on contact snaps flush to the block face. Horizontal moves
 // on the ground may step up one block. |delta| must stay below one block.
 static void moveAxis(Player& p, const Grid& g, int axis, float delta, bool canStep) {

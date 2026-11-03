@@ -60,7 +60,7 @@ def main():
         assert reply["id"] == msg["id"], reply
         return reply["result"]
 
-    def tool(name, **args):
+    def tool(name, /, **args):  # positional-only: markers take a `name` argument
         r = rpc("tools/call", {"name": name, "arguments": args})
         text = next(c["text"] for c in r["content"] if c["type"] == "text")
         images = [base64.b64decode(c["data"]) for c in r["content"] if c["type"] == "image"]
@@ -84,7 +84,7 @@ def main():
         bridge.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
         names = {t["name"] for t in rpc("tools/list")["tools"]}
         check({"state", "raise", "path", "apply", "undo", "save", "screenshot", "map", "heights", "inspect", "goto",
-               "prefabs", "place", "remove", "move", "instances"} <= names,
+               "prefabs", "place", "remove", "move", "instances", "markers", "mark", "edit_marker", "unmark"} <= names,
               f"tools/list ({len(names)} tools)")
 
         for _ in range(3000):  # the game generates its world first (~1 s release, ~1-2 min with sanitizers)
@@ -94,7 +94,8 @@ def main():
             except OSError:
                 time.sleep(0.1)
         err, state, _ = tool("state")
-        check(not err and state["size"] == [1024, 192, 1024] and state["undo_steps"] == 0, "state")
+        check(not err and state["size"] == [1024, 192, 1024] and state["undo_steps"] == 0 and state["markers"] == 4,
+              "state (a new world has the 4 default spawn markers)")
         if err:
             raise RuntimeError(state)
         x, z = int(state["player"][0]) + 20, int(state["player"][2]) + 20
@@ -178,12 +179,54 @@ def main():
         check(tool("instances")[1]["count"] == 3, "undo brings the instance back")
         err, msg, _ = tool("remove", id=999)
         check(err and "999" in msg, "remove an unknown id is an error")
+        # story markers: add each kind, edit, list, map, undo; hostile arguments change nothing
+        err, r, _ = tool("markers", kind="spawn")
+        check(not err and r["count"] == 4 and {m["entity"] for m in r["markers"]} == {"dummy", "villager", "boar", "bandit"},
+              "markers lists the default spawns")
+        steps = tool("state")[1]["undo_steps"]
+        err, well, _ = tool("mark", kind="poi", name="Old Well", x=x, z=z - 10)
+        err2, vale, _ = tool("mark", kind="region", name="Quiet Vale", x=x, z=z, radius=60)
+        err3, den, _ = tool("mark", kind="spawn", name="Boar Den", x=x + 20, z=z, entity="boar", count=3, radius=8)
+        err4, start, _ = tool("mark", kind="player_spawn", x=x - 5, z=z - 5)
+        check(not (err or err2 or err3 or err4) and well["marker"]["radius"] == 16 and den["marker"]["count"] == 3 and
+              tool("state")[1]["undo_steps"] == steps + 4, "mark each kind (one undo step each)")
+        if err or err2 or err3 or err4:
+            raise RuntimeError((well, vale, den, start))
+        den_id = den["marker"]["id"]
+        err, r, _ = tool("edit_marker", id=den_id, x=x + 30, count=5, name="Boar Wallow")
+        check(not err and r["marker"]["x"] == x + 30 and r["marker"]["count"] == 5 and r["marker"]["name"] == "Boar Wallow"
+              and r["marker"]["entity"] == "boar", "edit_marker moves and renames, keeps the rest")
+        err, r, _ = tool("markers", x0=x - 3, z0=z - 3, x1=x + 3, z1=z + 3)
+        check(not err and {m["name"] for m in r["markers"]} == {"Quiet Vale"}, "markers in a region (the region's circle reaches in)")
+        err, r, images = tool("map", x0=x - 64, z0=z - 64, x1=x + 63, z1=z + 63)
+        ids = {m["id"] for m in r.get("markers", [])}
+        check(not err and images and {well["marker"]["id"], vale["marker"]["id"], den_id, start["marker"]["id"]} <= ids,
+              "the map draws the markers and lists them")
+        if opt.keep and not err:
+            shutil.copy(r["path"], os.path.join(opt.keep, "e2e_map_markers.png"))
+        steps = tool("state")[1]["undo_steps"]
+        for args in (dict(kind="castle", name="x", x=x, z=z), dict(kind="spawn", x=x, z=z),
+                     dict(kind="spawn", x=x, z=z, entity="dragon"), dict(kind="spawn", x=x, z=z, entity="boar", count=99),
+                     dict(kind="poi", x=x, z=z), dict(kind="poi", name="x" * 49, x=x, z=z),
+                     dict(kind="poi", name="x", x=5000, z=z), dict(kind="poi", name="x", x=float("nan"), z=z),
+                     dict(kind="poi", name="x", x=x, z=z, radius=1e9), dict(kind="poi", name="a\u0000b", x=x, z=z),
+                     dict(kind="poi", name="x", x=x, z=z, entity="boar"), dict(kind="player_spawn", x=x, z=z)):
+            err, msg, _ = tool("mark", **args)
+            check(err, f"mark refuses {str(args)[:60]} ({msg})")
+        err, msg, _ = tool("edit_marker", id=999999, name="x")
+        err2, msg2, _ = tool("unmark", id=0)
+        check(err and err2 and tool("state")[1]["undo_steps"] == steps, "bad ids are errors, and nothing changed")
+        err, r, _ = tool("unmark", id=den_id)
+        check(not err and tool("markers", kind="spawn")[1]["count"] == 4, "unmark")
+        tool("undo")
+        check(tool("markers", kind="spawn")[1]["count"] == 5, "undo brings the marker back")
         err, r, _ = tool("goto", position=[x, before + 20, z + 30], look_at=[x, before, z])
         check(not err and r["moved"], "goto")
         err, r, _ = tool("save")
         check(not err and os.path.getsize(opt.world) > 100_000, f"save writes {opt.world}")
         with open(opt.world, "rb") as f:
-            check(b"INST" in f.read(), "the saved world holds the prefab instances")
+            data = f.read()
+            check(b"INST" in data and b"MARK" in data, "the saved world holds the prefab instances and the markers")
         copy = os.path.join(os.path.dirname(opt.world), "e2e-copy.flyw")
         err, r, _ = tool("save", path=copy)
         check(not err and os.path.exists(copy) and os.path.getsize(copy) > 100_000, "save a copy next to the world file")

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <numbers>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -11,17 +12,30 @@
 
 namespace {
 
-constexpr const char* kToolNames[] = {"Raise", "Lower", "Smooth", "Flatten", "Paint", "Fill box", "Prefab"};
-static_assert(std::size(kToolNames) == size_t(Tool::Count) + 1);
+constexpr const char* kToolNames[] = {"Raise", "Lower", "Smooth", "Flatten", "Paint", "Fill box", "Prefab", "Marker"};
+static_assert(std::size(kToolNames) == size_t(Tool::Count) + 2);
 constexpr Block kMaterials[] = {Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Rock, Water, Air};  // solid ones first
 constexpr const char* kMaterialNames[] = {"Grass", "Dirt", "Stone", "Sand", "Snow", "Wood", "Leaves", "Rock", "Water", "Air (clear)"};
 constexpr int kSolidMaterials = 8;
 constexpr float kFlashSeconds = 3;
+constexpr float kMarkerRange = 300;  // blocks from the camera
+constexpr size_t kMaxRings = 32;     // marker circles drawn per frame (the nearest)
+constexpr int kRingPoints = Editor::kRingPoints;
+// A ring's unit circle, point kRingPoints closing it.
+const auto [kRingCos, kRingSin] = [] {
+    std::array<float, kRingPoints + 1> c{}, s{};
+    for (int i = 0; i <= kRingPoints; ++i) {
+        float angle = float(i) / kRingPoints * 2 * std::numbers::pi_v<float>;
+        c[size_t(i)] = std::cos(angle), s[size_t(i)] = std::sin(angle);
+    }
+    return std::pair{c, s};
+}();
+constexpr float kMarkerColors[][3] = {{1, 1, 1}, {0.95f, 0.3f, 0.25f}, {1, 0.85f, 0.2f}, {0.3f, 0.9f, 1}};  // by kind
 
 }  // namespace
 
-void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std::optional<RayHit>& aim, const RenderStats& s,
-                  EditorActions& actions) {
+void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std::vector<Marker>& markers,
+                  const std::optional<RayHit>& aim, const RenderStats& s, EditorActions& actions) {
     EditOp& b = ed.brush;
     if (b.tool == Tool::Paint && !isOpaque(b.block)) b.block = Grass;  // Paint needs a solid block
     const Prefab* prefab = ed.prefabs.find(ed.place.prefab);
@@ -39,13 +53,34 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
         ImGui::End();
         return;
     }
-    int tool = ed.prefabTool ? int(Tool::Count) : int(b.tool);
-    for (int t = 0; t <= int(Tool::Count); ++t) {
+    int tool = ed.markerTool ? int(Tool::Count) + 1 : ed.prefabTool ? int(Tool::Count) : int(b.tool);
+    for (int t = 0; t <= int(Tool::Count) + 1; ++t) {
         if (t % 4) ImGui::SameLine();
         ImGui::RadioButton(kToolNames[t], &tool, t);
     }
     ed.prefabTool = tool == int(Tool::Count);
-    if (!ed.prefabTool) b.tool = Tool(tool);
+    ed.markerTool = tool == int(Tool::Count) + 1;
+    bool brushTool = tool < int(Tool::Count);
+    if (brushTool) b.tool = Tool(tool);
+    if (ed.markerTool) {
+        int kind = int(ed.mark.kind), entity = int(ed.mark.entity);
+        if (ImGui::Combo("Kind", &kind, kMarkerKindNames, int(MarkerKind::Count))) ed.marked = 0;  // a new kind is for placing
+        ImGui::SetItemTooltip("Changing it deselects: a marker's kind can't change (remove it and place another).");
+        ed.mark.kind = MarkerKind(kind);
+        ImGui::InputText("Name", ed.markName, sizeof ed.markName);
+        ImGui::SliderFloat("Radius##marker", &ed.mark.radius, 0, kMaxMarkerRadius, "%.0f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Spawn: how far its NPCs wander. Poi: its label shows within it. Region: the circle.");
+        if (ed.mark.kind == MarkerKind::Spawn) {
+            ImGui::Combo("Entity", &entity, kEntityKindNames, int(EntityKind::Count));
+            ed.mark.entity = EntityKind(entity);
+            ImGui::SliderInt("Count", &ed.mark.count, 1, kMaxSpawnCount);
+        }
+        ImGui::BeginDisabled(std::ranges::find(markers, ed.marked, &Marker::id) == markers.end());
+        if (ImGui::Button("Update selected")) actions.updateMark = true;
+        ImGui::SetItemTooltip("The selected marker takes these settings (but keeps its kind) and stays where it is.");
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("LMB places on the aimed voxel, or selects the marker\nthere (its settings load above); Delete removes it.");
+    }
     if (ed.prefabTool) {
         if (ImGui::BeginCombo("Prefab", prefab ? prefab->name.c_str() : "none loaded")) {
             for (const Prefab& p : ed.prefabs.prefabs)
@@ -75,17 +110,17 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
         if (ImGui::Button("Rescan prefabs/")) ed.prefabs = loadPrefabs(ed.prefabs.dir);
         ImGui::TextDisabled("LMB places on the aimed voxel, or selects the\nprefab you aim at; Delete removes the selection.");
     }
-    if (!ed.prefabTool && b.tool != Tool::Fill) {
+    if (brushTool && b.tool != Tool::Fill) {
         ImGui::SliderInt("Radius", &b.radius, 0, kMaxBrushRadius);
         ImGui::SetItemTooltip("[ and ] change it too.");
         ImGui::SliderInt("Strength", &b.strength, 1, 16);
         ImGui::SetItemTooltip("Blocks per application at the center; holding the button applies 8 times a second.");
     }
-    if (!ed.prefabTool && b.tool == Tool::Flatten) {
+    if (brushTool && b.tool == Tool::Flatten) {
         ImGui::SliderInt("Height", &b.height, 0, kWorldSize.y - 1);
         ImGui::SetItemTooltip("Ground height to flatten to. Each stroke takes it from where it starts.");
     }
-    if (!ed.prefabTool && (b.tool == Tool::Paint || b.tool == Tool::Fill)) {
+    if (brushTool && (b.tool == Tool::Paint || b.tool == Tool::Fill)) {
         int count = b.tool == Tool::Fill ? int(std::size(kMaterials)) : kSolidMaterials;
         int current = int(std::ranges::find(kMaterials, b.block) - std::begin(kMaterials));
         if (ImGui::BeginCombo("Material", current < count ? kMaterialNames[current] : "?")) {
@@ -94,7 +129,7 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
             ImGui::EndCombo();
         }
     }
-    if (!ed.prefabTool && b.tool == Tool::Fill) {
+    if (brushTool && b.tool == Tool::Fill) {
         if (ed.corner) ImGui::Text("First corner %d %d %d: click the second", ed.corner->x, ed.corner->y, ed.corner->z);
         else ImGui::TextDisabled("Click two corners. Air clears the aimed voxels;\nblocks go in front of the aimed face.");
     }
@@ -134,6 +169,27 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
     }
     if (!instances.empty()) ImGui::EndChild();
 
+    ImGui::SeparatorText("Markers");
+    ImGui::Text("%zu markers (max %zu)", markers.size(), kMaxMarkers);
+    if (!markers.empty() && ImGui::BeginChild("markers", {0, float(std::min<size_t>(markers.size(), 6)) * ImGui::GetFrameHeightWithSpacing()})) {
+        ImGuiListClipper clipper;
+        clipper.Begin(int(markers.size()));
+        while (clipper.Step())
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                const Marker& m = markers[size_t(i)];
+                ImGui::PushID(int(m.id));
+                if (ImGui::SmallButton("Go to")) actions.markGoTo = m.id;
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove")) actions.unmark = m.id;
+                ImGui::SameLine();
+                ImGui::TextColored(m.id == ed.marked ? ImVec4(0.3f, 1, 0.5f, 1) : ImVec4(0.8f, 0.85f, 0.9f, 1), "#%u %s %s%s%s at %.0f %.0f r %.0f",
+                                   m.id, kMarkerKindNames[int(m.kind)], m.name.c_str(), m.kind == MarkerKind::Spawn ? " / " : "",
+                                   m.kind == MarkerKind::Spawn ? kEntityKindNames[int(m.entity)] : "", m.pos.x, m.pos.z, m.radius);
+                ImGui::PopID();
+            }
+    }
+    if (!markers.empty()) ImGui::EndChild();
+
     ImGui::SeparatorText("Debug");
     if (aim) ImGui::Text("Aim %d %d %d, face %d %d %d", aim->cell.x, aim->cell.y, aim->cell.z, aim->normal.x, aim->normal.y, aim->normal.z);
     else ImGui::TextDisabled("Aim: no ground in range");
@@ -154,12 +210,12 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
     ImGui::PopTextWrapPos();
     ImGui::Separator();
     ImGui::TextDisabled("%s", ed.cursor ? "Q: back to the crosshair" : "Q: cursor for this panel");
-    ImGui::TextDisabled("LMB apply (hold repeats)   1-7 tool   [ ] radius   R rotate prefab\nCtrl+Z undo   Ctrl+Shift+Z / Ctrl+Y redo   Ctrl+S save");
+    ImGui::TextDisabled("LMB apply (hold repeats)   1-8 tool   [ ] radius   R rotate prefab\nCtrl+Z undo   Ctrl+Shift+Z / Ctrl+Y redo   Ctrl+S save");
     ImGui::End();
 }
 
-void drawEditorOverlay(const glm::mat4& view, float fovY, const Grid& world, const std::vector<Instance>& instances,
-                       const Editor& ed, const std::optional<RayHit>& aim) {
+void drawEditorOverlay(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world, const std::vector<Instance>& instances,
+                       const std::vector<Marker>& markers, const Editor& ed, const std::optional<RayHit>& aim) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ImVec2 screen = ImGui::GetIO().DisplaySize;
     if (screen.x <= 0 || screen.y <= 0) return;
@@ -198,9 +254,52 @@ void drawEditorOverlay(const glm::mat4& view, float fovY, const Grid& world, con
         Box b = instanceBox(*it);
         drawBox(b.lo, b.hi, uiColor(0.3f, 1, 0.5f, 0.9f));
     }
+    // A circle at heights[i] above its points, outlined; segments behind the camera are skipped.
+    auto ring = [&](glm::vec2 center, float r, const Editor::Ring& heights, ImU32 color) {
+        ImVec2 points[kRingPoints + 1];
+        bool front[kRingPoints + 1];
+        for (int i = 0; i <= kRingPoints; ++i)
+            front[i] = project({center.x + r * kRingCos[i], heights[size_t(i)], center.y + r * kRingSin[i]}, points[i]);
+        for (auto [c, w] : {std::pair{uiColor(0, 0, 0, 0.6f), 4.0f}, std::pair{color, 2.0f}})
+            for (int i = 0; i < kRingPoints; ++i)
+                if (front[i] && front[i + 1]) dl->AddLine(points[i], points[i + 1], c, w);
+    };
+    // Markers: a pin with "#id name" (green when selected), regions and the selected one's radius as
+    // circles on the ground under the trees. Ring heights are cached until the world changes, and
+    // only the nearest kMaxRings are drawn.
+    if (ed.ringEdits != ed.edits) ed.rings.clear(), ed.ringEdits = ed.edits;
+    std::vector<std::pair<float, const Marker*>> rings;  // distance from the eye to the circle
+    for (const Marker& m : markers) {
+        const float* rgb = kMarkerColors[int(m.kind)];
+        float far = glm::distance(glm::vec2(eye.x, eye.z), glm::vec2(m.pos.x, m.pos.z));
+        if ((m.kind == MarkerKind::Region || m.id == ed.marked) && m.radius > 0 && far < kMarkerRange + m.radius)
+            rings.push_back({std::abs(far - m.radius), &m});
+        ImVec2 foot, head;
+        if (far > kMarkerRange || !project(m.pos, foot) || !project(m.pos + glm::vec3(0, 2.5f, 0), head)) continue;
+        dl->AddLine(foot, head, uiColor(0, 0, 0, 0.8f), 2);
+        dl->AddCircleFilled(head, 6, uiColor(0, 0, 0, 0.8f));
+        dl->AddCircleFilled(head, 4.5f, uiColor(rgb[0], rgb[1], rgb[2]));
+        char label[96];
+        std::snprintf(label, sizeof label, "#%u %s%s%s", m.id, m.name.c_str(), m.kind == MarkerKind::Spawn ? " - " : "",
+                      m.kind == MarkerKind::Spawn ? kEntityKindNames[int(m.entity)] : "");
+        ImVec2 at(head.x + 9, head.y - ImGui::GetFontSize() / 2);
+        dl->AddText(ImVec2(at.x + 1, at.y + 1), uiColor(0, 0, 0, 0.8f), label);
+        dl->AddText(at, m.id == ed.marked ? uiColor(0.3f, 1, 0.5f) : uiColor(1, 1, 1), label);
+    }
+    if (rings.size() > kMaxRings) std::ranges::nth_element(rings, rings.begin() + kMaxRings), rings.resize(kMaxRings);
+    for (auto [distance, m] : rings) {
+        auto [it, fresh] = ed.rings.try_emplace(m->id);
+        for (int i = 0; fresh && i <= kRingPoints; ++i) {
+            int top = groundUnderTrees(world, int(std::floor(m->pos.x + m->radius * kRingCos[i])), int(std::floor(m->pos.z + m->radius * kRingSin[i])));
+            it->second[size_t(i)] = top >= 0 ? float(top) + 1.05f : m->pos.y + 0.05f;
+        }
+        const float* rgb = kMarkerColors[int(m->kind)];
+        ring({m->pos.x, m->pos.z}, m->radius, it->second, uiColor(rgb[0], rgb[1], rgb[2], m->id == ed.marked ? 0.95f : 0.6f));
+    }
     if (!aim) return;
 
     ImU32 color = uiColor(1, 0.85f, 0.3f, 0.95f);
+    if (ed.markerTool) return;
     if (ed.prefabTool) {  // the box the prefab may fill (without the foundation's reach down)
         const Prefab* p = ed.prefabs.find(ed.place.prefab);
         Instance at = ed.place;
@@ -216,16 +315,12 @@ void drawEditorOverlay(const glm::mat4& view, float fovY, const Grid& world, con
         return;
     }
     // The brush ring follows the ground tops around the aimed column.
-    constexpr int kPoints = 64;
-    ImVec2 ring[kPoints];
     glm::vec2 center(float(aim->cell.x) + 0.5f, float(aim->cell.z) + 0.5f);
     float r = float(ed.brush.radius) + 0.5f;
-    for (int i = 0; i < kPoints; ++i) {
-        float angle = float(i) / kPoints * 2 * std::numbers::pi_v<float>;
-        glm::vec2 p = center + r * glm::vec2(std::cos(angle), std::sin(angle));
-        int top = groundTop(world, int(std::floor(p.x)), int(std::floor(p.y)));
-        if (!project({p.x, float(top >= 0 ? top : aim->cell.y) + 1.05f, p.y}, ring[i])) return;
+    Editor::Ring heights;
+    for (int i = 0; i <= kRingPoints; ++i) {
+        int top = groundTop(world, int(std::floor(center.x + r * kRingCos[i])), int(std::floor(center.y + r * kRingSin[i])));
+        heights[size_t(i)] = float(top >= 0 ? top : aim->cell.y) + 1.05f;
     }
-    dl->AddPolyline(ring, kPoints, uiColor(0, 0, 0, 0.6f), ImDrawFlags_Closed, 4.0f);
-    dl->AddPolyline(ring, kPoints, color, ImDrawFlags_Closed, 2.0f);
+    ring(center, r, heights, color);
 }

@@ -74,10 +74,10 @@ the brush on the ground. Fly up to aim farther away.
 
 | Input | Action |
 |---|---|
-| Left mouse | Apply the brush at the crosshair (hold: 8 times a second). Fill box: click two corners. Prefab: place, or select the prefab you aim at |
-| 1–7 | Tool: Raise, Lower, Smooth, Flatten, Paint, Fill box, Prefab |
+| Left mouse | Apply the brush at the crosshair (hold: 8 times a second). Fill box: click two corners. Prefab: place, or select the prefab you aim at. Marker: place, or select the marker there |
+| 1–8 | Tool: Raise, Lower, Smooth, Flatten, Paint, Fill box, Prefab, Marker |
 | R | Prefab tool: rotate the next structure a quarter turn |
-| Delete / Backspace | Remove the selected prefab instance |
+| Delete / Backspace | Remove the selected prefab instance (Prefab tool) or marker (Marker tool) |
 | `[` `]` | Brush radius |
 | Q | Free the cursor to use the Editor panel (tool, radius, strength, height, material); Q again to aim |
 | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y | Undo / redo (Cmd works too) |
@@ -96,6 +96,12 @@ the brush on the ground. Fly up to aim farther away.
   its voxels selects it, Delete removes it and puts back what was there (except what you sculpted
   over it since). The panel lists all instances with Go to and Remove buttons and any prefab file
   that failed to load. See "Prefabs" below.
+- **Marker** (8) places a story marker on the aimed voxel: pick the kind, type a name, set the radius
+  (and for a spawn the NPC kind and count). Clicking a marker selects it and loads its settings;
+  **Update selected** applies changed ones (the kind stays; changing Kind deselects), Delete removes
+  it. Markers show as pins with their id and
+  name, regions as circles on the ground; the panel lists them with Go to and Remove. See "Story
+  markers" below.
 - The Editor panel shows undo depth, unsaved changes and when you last saved, plus debug numbers
   (aimed voxel, last op time and size, remesh time).
 
@@ -132,6 +138,9 @@ server. If the game isn't running, the tools say how to start it.
 | `place` | Place a prefab at column `x`, `z` (optional ground `y`, `rotation` 0/90/180/270, `seed`, `params`); returns its instance id and box |
 | `move` `remove` | Move an instance (same id, one undo step) or remove it |
 | `instances` | The placed instances, optionally those touching a region |
+| `markers` | The story markers, optionally of one `kind` and in a region |
+| `mark` | Add a marker: `kind`, `name`, column `x`, `z` (optional ground `y`), `radius`, and for a spawn `entity` and `count`; returns its id |
+| `edit_marker` `unmark` | Rename, move or retune a marker by `id` (fields left out stay), or remove it |
 
 Every command shows in the Editor panel's **MCP** section (last 20, with timings; rejected ones in
 red), and each edit's box flashes in the world for 3 seconds. **Follow Claude** (on by default) lets
@@ -182,6 +191,22 @@ W  W  W
   above (90 turns +x toward −z); by convention the front is the last row (+z).
 - Errors name the file and line (unknown block, character not in the legend, too big...).
 
+## Story markers
+
+Markers are authored places, saved with the world:
+
+| Kind | What it does |
+|---|---|
+| `player_spawn` | Where you start and get back up after being knocked out (one per world) |
+| `spawn` | `count` (1–8) NPCs of one kind (`dummy`, `villager`, `boar`, `bandit`) that wander within its radius and respawn there; editing it respawns them |
+| `poi` | A named point, e.g. "Old Well"; its name shows while you're within its radius |
+| `region` | A named circle; walking into it shows its name for a few seconds (the innermost wins) |
+
+A world from before markers (or a new one) gets the training dummy, villager, boar and bandit as
+four spawn markers, so its NPCs stay where they were and can be moved or removed like any other.
+Names are up to 48 bytes; a world holds up to 4096 markers, and its spawn markers make at most
+256 NPCs together. Every marker edit is one undo step.
+
 ## Debug window
 
 Press `.` to open it. The mouse cursor is freed while it's open; the keyboard still moves the player
@@ -190,9 +215,9 @@ unless a text field has focus.
 | Tab | What's there |
 |---|---|
 | Render | View mode (shaded, greedy quads, chunks, ambient occlusion, normals), wireframe quad edges, sky/fog/water/character toggles, frustum culling on/off or frozen, per-frame chunk/quad/draw-call counts |
-| Player | Health, the five attributes and what derives from them (max health, regen, attack damage and speed, combat state), armor K (damage reduction = armor / (armor + K x attacker level)) with the current armor and its reduction vs level 1 and 2, position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
+| Player | The region you're in, health, the five attributes and what derives from them (max health, regen, attack damage and speed, combat state), armor K (damage reduction = armor / (armor + K x attacker level)) with the current armor and its reduction vs level 1 and 2, position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
 | Items | Give any item or the whole Iron armor set, see what's equipped and in the bag slots, empty the inventory |
-| Entities | Every NPC: health and attributes, traits and temper, aggro/leash/chase numbers, angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, respawn NPCs near the player |
+| Entities | Every NPC: health and attributes, traits and temper, aggro/leash/chase numbers, angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
 | Stats | Frame-time graph of the last 240 frames, average and worst frame |
@@ -221,7 +246,7 @@ Example benchmark at night:
 ## Layout
 
 ```
-src/world.*      voxel grid, region-based terrain (forest / rocky / plains), trees + rocks, parallelFor, world files
+src/world.*      voxel grid, region-based terrain (forest / rocky / plains), trees + rocks, parallelFor, markers, world files
 src/edit.*       world edits (fill, raise, lower, smooth, flatten, paint) with undo/redo, voxel raycast
 src/prefab.*     prefabs: generated ones, the structure file parser, place/move/remove of instances
 src/commands.*   remote commands: JSON request -> edits, queries, top-down map PNG (no sockets, unit-tested)
@@ -232,7 +257,7 @@ src/stats.h      the five attributes and the stats derived from them
 src/entity.*     NPCs: dummy, villager, boar, bandit (traits, temper, wander/chase AI, talking, loot), attacks and damage
 src/item.*       items, inventory (equipment, backpack, bags), move/equip rules
 src/inventory_ui.*  Character (C) and Bags (B) windows
-src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message
+src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, place names
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
 src/debug_ui.*   Dear ImGui debug window (toggle with .)
 src/editor_ui.*  Editor panel, crosshair and brush preview (Tab)
@@ -241,5 +266,5 @@ prefabs/         structure prefab files (cottage, tent, camp, well, fence, ruin)
 tools/           flycoos_mcp.py (MCP server bridging Claude Code to the game), test_mcp.py (end-to-end check)
 shaders/         world.metal (voxel, water, sky), compiled at runtime
 tests/           core_test.cpp: mesher, packing, physics, flight, camera, combat, NPC fights and loot, inventory, generation,
-                 world files, edits and undo, remote commands, prefabs and instances, raycast checks
+                 world files, edits and undo, remote commands, prefabs and instances, markers and spawns, raycast checks
 ```

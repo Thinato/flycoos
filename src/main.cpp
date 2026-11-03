@@ -98,6 +98,7 @@ static int run(SDL_Window* window, const Options& opt) {
 
     Grid world(kWorldSize);
     std::vector<Instance> instances;  // placed prefabs, saved with the world
+    std::vector<Marker> markers;      // story markers (spawns, places), saved with the world
     uint32_t worldSeed = game.seed;  // what the world was generated from; saved with it
     auto buildWorld = [&] {
         uint64_t start = SDL_GetTicksNS();
@@ -121,28 +122,31 @@ static int run(SDL_Window* window, const Options& opt) {
     std::error_code ec;
     if (opt.world && std::filesystem::exists(opt.world, ec)) {
         uint64_t start = SDL_GetTicksNS();
-        if (std::string error = loadWorld(opt.world, world, worldSeed, instances); !error.empty()) {
+        std::optional<std::vector<Marker>> loaded;
+        if (std::string error = loadWorld(opt.world, world, worldSeed, instances, loaded); !error.empty()) {
             std::println(stderr, "cannot load world {}: {}", opt.world, error);
             return 1;  // never fall back to generating: the next save would overwrite the file
         }
+        markers = loaded ? std::move(*loaded) : defaultMarkers(world, worldSeed);  // older files: the NPCs they always had
         double loadSeconds = double(SDL_GetTicksNS() - start) * 1e-9;
         game.seed = worldSeed;
         renderer.uploadWorld(world);
         const RenderStats& s = renderer.stats;
         std::println("world {} ({:.1f} MB, {}x{}x{}, seed {}) loaded {:.3f}s + meshed/uploaded {:.3f}s | "
-                     "{} opaque + {} water quads in {} chunks, {} prefab instances",
+                     "{} opaque + {} water quads in {} chunks, {} prefab instances, {} markers",
                      opt.world, double(std::filesystem::file_size(opt.world, ec)) / (1 << 20), world.size.x,
                      world.size.y, world.size.z, worldSeed, loadSeconds, s.meshSeconds, s.opaqueQuads, s.waterQuads,
-                     s.chunksTotal, instances.size());
+                     s.chunksTotal, instances.size(), markers.size());
     } else {
         buildWorld();
+        markers = defaultMarkers(world, worldSeed);
     }
     renderer.uploadModels();
     const RenderStats& s = renderer.stats;
 
     auto save = [&] {
         uint64_t start = SDL_GetTicksNS();
-        std::string error = saveWorld(editor.path.c_str(), world, worldSeed, instances);
+        std::string error = saveWorld(editor.path.c_str(), world, worldSeed, instances, markers);
         double seconds = double(SDL_GetTicksNS() - start) * 1e-9;
         editor.status = error.empty() ? std::format("Saved {:.1f} MB in {:.2f} s",
                                                     double(std::filesystem::file_size(editor.path, ec)) / (1 << 20), seconds)
@@ -153,7 +157,14 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.savedAt = double(SDL_GetTicksNS()) * 1e-9;
         return error;
     };
-    // After an edit, undo or redo: remesh what changed and keep the editor's bookkeeping.
+    Player player;
+    player.pos = playerSpawn(world, markers);
+    giveItem(player.inv, Shortsword);
+    giveItem(player.inv, Satchel);
+    std::vector<Entity> entities;
+    syncSpawns(entities, world, markers, worldSeed, player.pos);
+    // After an edit, undo or redo: remesh what changed, bring spawns in line with the markers and
+    // keep the editor's bookkeeping.
     auto edited = [&](Box dirty, uint64_t start, const char* error) {
         editor.opMs = double(SDL_GetTicksNS() - start) * 1e-6;
         editor.error = error;
@@ -161,22 +172,25 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.lastDirty = dirty;
         ++editor.edits;
         renderer.updateWorld(world, dirty);
+        syncSpawns(entities, world, markers, worldSeed, player.pos);
         editor.unsaved = true;
         editor.quitArmed = false;
     };
     EditorActions editorActions;
+    auto selectMarker = [&](const Marker& m) {  // its settings load into the panel, for Update selected
+        editor.marked = m.id;
+        editor.mark = editor.markedWas = m;
+        std::snprintf(editor.markName, sizeof editor.markName, "%s", m.name.c_str());
+    };
     float brushTimer = 0;
     CommandServer server;  // remote commands (the MCP bridge); runs once per frame below
     if (!benchmark && opt.serve && server.start(opt.port)) editor.server = std::format("127.0.0.1:{}", opt.port);
 
-    Player player;
-    player.pos = findSpawn(world);
-    giveItem(player.inv, Shortsword);
-    giveItem(player.inv, Satchel);
-    std::vector<Entity> entities = spawnEntities(world, player.pos, game.seed);
     std::mt19937 rng(std::random_device{}());  // damage rolls
     bool punchQueued = false;  // clicked before the swing was ready
     bool pressInGame = false;  // the left button went down while no window was open
+    uint32_t regionId = 0;  // the region the player is in (0: none), since `regionSince` seconds of `elapsed`
+    double regionSince = 0;
     float camYaw = std::numbers::pi_v<float>, camPitch = 0.45f;  // behind the player
     if (opt.fixedLook) {  // degrees on the CLI; yaw 0 looks toward -Z, 90 toward -X
         camYaw = opt.lookYaw;
@@ -200,7 +214,7 @@ static int run(SDL_Window* window, const Options& opt) {
         } else {
             player.tuning.fly = walking.fly;
             player.tuning.noclip = walking.noclip;
-            while (overlapsSolid(world, player.pos) && player.pos.y < float(world.size.y)) player.pos.y += 1;  // not buried by an edit
+            player.pos = clearOfTerrain(world, player.pos);  // not buried by an edit
         }
         updateMouseMode();
     };
@@ -262,14 +276,18 @@ static int run(SDL_Window* window, const Options& opt) {
                 } else if (editor.active && e.key.key == SDLK_Q) {
                     editor.cursor = !editor.cursor;
                     updateMouseMode();
-                } else if (editor.active && e.key.key >= SDLK_1 && e.key.key <= SDLK_1 + int(Tool::Count)) {
-                    editor.prefabTool = e.key.key == SDLK_1 + int(Tool::Count);
-                    if (!editor.prefabTool) editor.brush.tool = Tool(e.key.key - SDLK_1);
+                } else if (editor.active && e.key.key >= SDLK_1 && e.key.key <= SDLK_1 + int(Tool::Count) + 1) {
+                    int tool = int(e.key.key - SDLK_1);  // the brushes, then Prefab, then Marker
+                    editor.prefabTool = tool == int(Tool::Count);
+                    editor.markerTool = tool == int(Tool::Count) + 1;
+                    if (tool < int(Tool::Count)) editor.brush.tool = Tool(tool);
                     editor.corner.reset();
                 } else if (editor.active && editor.prefabTool && e.key.key == SDLK_R) {
                     editor.place.rotation = (editor.place.rotation + 1) % 4;
                 } else if (editor.active && editor.prefabTool && editor.selected && (e.key.key == SDLK_DELETE || e.key.key == SDLK_BACKSPACE)) {
                     editorActions.remove = editor.selected;
+                } else if (editor.active && editor.markerTool && editor.marked && (e.key.key == SDLK_DELETE || e.key.key == SDLK_BACKSPACE)) {
+                    editorActions.unmark = editor.marked;
                 } else if (editor.active && (e.key.key == SDLK_LEFTBRACKET || e.key.key == SDLK_RIGHTBRACKET)) {
                     editor.brush.radius = std::clamp(editor.brush.radius + (e.key.key == SDLK_RIGHTBRACKET ? 1 : -1), 0, kMaxBrushRadius);
                 } else if (e.key.key == SDLK_ESCAPE) {
@@ -351,7 +369,26 @@ static int run(SDL_Window* window, const Options& opt) {
                 editor.aimedEdits = editor.edits;
             }
             if (!aim) editor.aimed = 0, editor.aimedCell = glm::ivec3(-1);
-            if (editor.prefabTool) {  // clicks only: select the aimed instance, else place one
+            if (editor.markerTool) {  // clicks only: select the marker standing on the aimed voxel, else place one there
+                if (punchQueued && aim) {  // on the ground of the aimed column, under trees and not inside a cliff face
+                    glm::vec3 spot(float(aim->cell.x) + 0.5f, float(groundUnderTrees(world, aim->cell.x, aim->cell.z) + 1), float(aim->cell.z) + 0.5f);
+                    auto near = std::ranges::find_if(markers, [&](const Marker& m) {
+                        return glm::distance(glm::vec2(m.pos.x, m.pos.z), glm::vec2(spot.x, spot.z)) < 1.5f && std::abs(m.pos.y - spot.y) < 3;
+                    });
+                    if (near != markers.end()) {
+                        selectMarker(*near);
+                    } else {
+                        Marker m = editor.mark;
+                        m.id = 0;
+                        m.name = editor.markName;
+                        m.pos = spot;
+                        uint64_t start = SDL_GetTicksNS();
+                        EditResult r = putMarker(world, markers, editor.history, m);
+                        edited(r.dirty, start, r.error);
+                        if (!r.error) selectMarker(*std::ranges::find(markers, r.id, &Marker::id));
+                    }
+                }
+            } else if (editor.prefabTool) {  // clicks only: select the aimed instance, else place one
                 const Prefab* prefab = editor.prefabs.find(editor.place.prefab);
                 if (punchQueued && editor.aimed) {
                     editor.selected = editor.aimed;
@@ -399,7 +436,7 @@ static int run(SDL_Window* window, const Options& opt) {
             uint64_t start = SDL_GetTicksNS();
             GameView view{editor.path, worldSeed, editor.unsaved, editor.active, editor.follow, player.pos, fp.eye,
                           glm::degrees(camYaw), glm::degrees(camPitch), game.fovDegrees, game.timeOfDay};
-            Command c = runCommand(*request, world, instances, editor.history, editor.prefabs, view);
+            Command c = runCommand(*request, world, instances, markers, editor.history, editor.prefabs, view);
             nlohmann::json& response = c.response;
             if (!c.dirty.empty()) {
                 edited(c.dirty, start, nullptr);
@@ -408,7 +445,7 @@ static int run(SDL_Window* window, const Options& opt) {
             }
             if (c.save) {  // to the world's file, or a copy elsewhere (which leaves the unsaved state alone)
                 std::string target = c.save->empty() ? editor.path : *c.save;
-                std::string error = c.save->empty() ? save() : saveWorld(target.c_str(), world, worldSeed, instances);
+                std::string error = c.save->empty() ? save() : saveWorld(target.c_str(), world, worldSeed, instances, markers);
                 if (error.empty()) response["result"]["path"] = std::filesystem::absolute(target, ec).string();
                 else response = {{"id", response["id"]}, {"ok", false}, {"error", "save failed: " + error}};
             }
@@ -434,16 +471,24 @@ static int run(SDL_Window* window, const Options& opt) {
             server.reply(response.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));  // never throws on bad UTF-8
         }
 
+        // After the command: it may have changed the markers. The selected one's settings in the panel
+        // follow it (an undo, Claude); a removed one is deselected.
+        if (auto it = std::ranges::find(markers, editor.marked, &Marker::id); it == markers.end()) editor.marked = 0;
+        else if (*it != editor.markedWas) selectMarker(*it);
+        const Marker* region = regionAt(markers, player.pos);  // its name shows for a few seconds on entering
+        if (uint32_t id = region ? region->id : 0; id != regionId) regionId = id, regionSince = elapsed;
+        ui.region = region ? region->name.c_str() : nullptr;
         bool wasOpen = menus();
         ui.begin(dt, wasOpen);
         if (game.hud) {
             const Entity* target = lootTarget(entities, player);
             drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player));
+            drawPlaces(fp.view, fp.fovY, player, markers, region, float(elapsed - regionSince));
         }
-        drawEditorOverlay(fp.view, fp.fovY, world, instances, editor, aim);
+        drawEditorOverlay(fp.view, fp.fovY, fp.eye, world, instances, markers, editor, aim);
         characterWindow(characterOpen, player, game.armorK);
         bagsWindow(bagsOpen, player);
-        editorWindow(editor, instances, aim, s, editorActions);
+        editorWindow(editor, instances, markers, aim, s, editorActions);
         ImDrawData* uiDraw = ui.end(game, render, player, entities, s, actions);
         if (menus() != wasOpen) updateMouseMode();  // closed with a window's X button
         bool lastFrame = benchmark && frame + 1 >= opt.frames;
@@ -451,7 +496,8 @@ static int run(SDL_Window* window, const Options& opt) {
 
         if (editorActions.undo || editorActions.redo) {
             uint64_t start = SDL_GetTicksNS();
-            edited(editorActions.undo ? undoEdit(world, editor.history, instances) : redoEdit(world, editor.history, instances), start, nullptr);
+            edited(editorActions.undo ? undoEdit(world, editor.history, instances, markers) : redoEdit(world, editor.history, instances, markers),
+                   start, nullptr);
         }
         if (editorActions.remove) {
             uint64_t start = SDL_GetTicksNS();
@@ -465,25 +511,49 @@ static int run(SDL_Window* window, const Options& opt) {
             flyTo(center + glm::vec3(0, size * 0.8f + 4, size * 1.2f + 8), center);
             editor.selected = it->id;
         }
+        if (editorActions.unmark) {
+            uint64_t start = SDL_GetTicksNS();
+            EditResult r = removeMarker(world, markers, editor.history, editorActions.unmark);
+            edited(r.dirty, start, r.error);
+        }
+        if (auto it = std::ranges::find(markers, editor.marked, &Marker::id); editorActions.updateMark && it != markers.end()) {
+            Marker m = editor.mark;  // the panel's settings, at the same place, of the same kind
+            m.id = it->id;
+            m.kind = it->kind;
+            m.pos = it->pos;
+            m.name = editor.markName;
+            uint64_t start = SDL_GetTicksNS();
+            EditResult r = putMarker(world, markers, editor.history, m);
+            edited(r.dirty, start, r.error);
+        }
+        if (auto it = std::ranges::find(markers, editorActions.markGoTo, &Marker::id); it != markers.end()) {
+            flyTo(it->pos + glm::vec3(0, 10, 16), it->pos);  // from the south, above
+            selectMarker(*it);
+        }
         if (editorActions.save) save();
         editorActions = {};
         if (actions.regenerate) {
             buildWorld();
             editor.history = {};  // its records belong to the old world
             instances.clear();
+            markers = defaultMarkers(world, worldSeed);
+            editor.marked = 0;
             ++editor.edits;
             editor.corner.reset();
             editor.unsaved = true;
         }
         if (actions.regenerate || actions.respawn || player.deadTime >= kPlayerRespawnSeconds) {
-            player.pos = findSpawn(world);
+            player.pos = playerSpawn(world, markers);
             player.vel = {};
             player.health = float(maxHealth(player.stats));
             player.deadTime = 0;
             player.combatTimer = 0;
             camTarget = player.pos + glm::vec3(0, 1.4f, 0);
         }
-        if (actions.regenerate || actions.respawnEntities) entities = spawnEntities(world, player.pos, game.seed);
+        if (actions.regenerate || actions.respawnEntities) {
+            entities.clear();
+            syncSpawns(entities, world, markers, worldSeed, player.pos);
+        }
         actions = {};
 
         titleTimer += dt;

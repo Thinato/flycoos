@@ -8,10 +8,13 @@
 #include <cmath>
 #include <filesystem>
 #include <format>
+#include <numbers>
 #include <stdexcept>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
+
+#include "entity.h"
 
 using json = nlohmann::json;
 
@@ -30,7 +33,7 @@ constexpr int kMaxDepth = 64;          // JSON nesting; deeper requests are refu
 constexpr double kBudgetMs = 50, kBrushNs = 20, kFillNs = 1, kColumnMs = 0.8;
 constexpr int kMaxPathSamples = 4096;  // brush positions per `path`
 constexpr int kMaxSamples = 4096;      // `heights` columns
-constexpr size_t kMaxListed = 500;     // `instances` entries
+constexpr size_t kMaxListed = 500;     // `instances` and `markers` entries
 constexpr int kMaxShot[2] = {1600, 900};
 constexpr Block kMaterials[] = {Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Rock, Water, Air};
 constexpr std::string_view kTools[] = {"raise", "lower", "smooth", "flatten", "paint", "fill"};
@@ -260,7 +263,7 @@ constexpr uint16_t kDigits[10] = {0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9, 0x79CF
 
 // Top-down map: surface colors from the palette, hillshaded (light from the north-west), water
 // tinted by depth, grid lines every `grid` blocks labelled with their coordinate.
-json map(const json& a, const Grid& g) {
+json map(const json& a, const Grid& g, const std::vector<Marker>& markers) {
     auto [lo, hi] = region(a, g);
     int side = std::max(hi.x - lo.x, hi.y - lo.y) + 1, maxSize = integer(a, "max_size", 64, 1024, 1024);
     int step = (side + maxSize - 1) / maxSize, scale = std::clamp(maxSize / side, 1, 16);  // blocks per sample, pixels per sample
@@ -322,11 +325,35 @@ json map(const json& a, const Grid& g) {
         for (int x = (lo.x + grid - 1) / grid * grid; x <= hi.x; x += grid) label(toPixel(x, lo.x) + 3, 3, x);
         for (int z = (lo.y + grid - 1) / grid * grid; z <= hi.y; z += grid) label(3, toPixel(z, lo.y) + 3, z);
     }
+    // Markers: a dot per marker (regions also their circle) labelled with its id; names go in the JSON.
+    constexpr glm::vec3 kMarkerColors[] = {{1, 1, 1}, {0.95f, 0.2f, 0.15f}, {1, 0.85f, 0.1f}, {0.2f, 0.9f, 1}};
+    json drawn = json::array();
+    float perBlock = float(scale) / float(step);
+    for (const Marker& m : markers) {
+        glm::vec2 p((m.pos.x - float(lo.x)) * perBlock, (m.pos.z - float(lo.y)) * perBlock);
+        float r = m.kind == MarkerKind::Region ? m.radius * perBlock : 0;
+        glm::vec2 nearest = glm::clamp(p, glm::vec2(0), glm::vec2(float(w), float(h)));
+        if (glm::distance(p, nearest) > r) continue;  // misses the image
+        glm::vec3 color = kMarkerColors[int(m.kind)];
+        glm::vec2 farthest(p.x < float(w) / 2 ? float(w) : 0, p.y < float(h) / 2 ? float(h) : 0);
+        // About one point per pixel of the circle, at most what the image's outline needs; none when
+        // the disc covers the whole image (the circle is outside it).
+        int steps = glm::distance(p, farthest) <= r ? 0 : int(std::min(2 * std::numbers::pi_v<float> * r, 4.0f * float(w + h))) + 1;
+        for (int i = 0; i < steps && r > 0; ++i) {
+            float t = float(i) / float(steps) * 2 * std::numbers::pi_v<float>;
+            for (int k = 0; k < 4; ++k) pixel(int(p.x + r * std::cos(t)) + k % 2, int(p.y + r * std::sin(t)) + k / 2, color, 0.9f);
+        }
+        for (int dy = -5; dy <= 5; ++dy)
+            for (int dx = -5; dx <= 5; ++dx)
+                if (int d = dx * dx + dy * dy; d <= 25) pixel(int(p.x) + dx, int(p.y) + dy, d <= 10 ? color : glm::vec3(0), 1);
+        label(int(p.x) + 8, int(p.y) - 5, int(m.id));
+        if (drawn.size() < kMaxListed) drawn.push_back({{"id", m.id}, {"kind", kMarkerKindNames[int(m.kind)]}, {"name", m.name}, {"pixel", {int(p.x), int(p.y)}}});
+    }
     std::string path = writePng("map", w, h, rgb.data());
     if (path.empty()) throw std::runtime_error("cannot write the map PNG");
     return {{"path", path}, {"width", w}, {"height", h}, {"x0", lo.x}, {"z0", lo.y}, {"x1", hi.x}, {"z1", hi.y},
             {"blocks_per_pixel", float(step) / float(scale)}, {"grid", grid}, {"min_height", minH}, {"max_height", maxH},
-            {"sea_level", kSeaLevel}};
+            {"sea_level", kSeaLevel}, {"markers", std::move(drawn)}};
 }
 
 Shot shot(const json& a, const GameView& v) {
@@ -389,8 +416,15 @@ std::vector<float> params(const json& a, const Prefab& p) {
     return v;
 }
 
+// An id argument: a whole number (1.9 isn't 1).
+uint32_t wholeId(const json& a) {
+    double id = number(a, "id", 1, 4294967295.0);
+    if (id != std::floor(id)) throw BadArgs("'id' must be a whole number");
+    return uint32_t(id);
+}
+
 uint32_t instanceId(const json& a, const std::vector<Instance>& list) {
-    uint32_t id = uint32_t(number(a, "id", 1, 4294967295.0));
+    uint32_t id = wholeId(a);
     if (std::ranges::find(list, id, &Instance::id) == list.end())
         throw BadArgs(std::format("no instance {} (the instances command lists them)", id));
     return id;
@@ -426,14 +460,57 @@ json prefabsJson(PrefabLibrary& lib, const std::vector<Instance>& instances) {
             {"blocks", kBlockNames}, {"instances", instances.size()}};
 }
 
-json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& list, EditHistory& h, PrefabLibrary& lib,
-         const GameView& v, Command& out) {
+// The index of a[key] in `names`.
+template <size_t N> int named(const json& a, const char* key, const char* const (&names)[N]) {
+    std::string s = str(a, key, ""), all;
+    for (size_t i = 0; i < N; ++i) {
+        if (s == names[i]) return int(i);
+        all += (i ? ", " : "") + std::string(names[i]);
+    }
+    throw BadArgs(std::format("'{}' must be one of {}", key, all));
+}
+
+json markerJson(const Marker& m) {
+    json j = {{"id", m.id}, {"kind", kMarkerKindNames[int(m.kind)]}, {"name", m.name}, {"x", int(std::floor(m.pos.x))},
+              {"z", int(std::floor(m.pos.z))}, {"y", m.pos.y - 1}, {"radius", m.radius}};
+    if (m.kind == MarkerKind::Spawn) j["entity"] = kEntityKindNames[int(m.entity)], j["count"] = m.count;
+    return j;
+}
+
+// Sets the fields `a` gives on `m` (a new one needs x and z). Markers stand at the center of column
+// x, z on ground voxel y (default: the column's ground, under any tree).
+void markerArgs(const json& a, const Grid& g, Marker& m, bool create) {
+    if (m.kind != MarkerKind::Spawn && (a.contains("entity") || a.contains("count")))
+        throw BadArgs("'entity' and 'count' are for spawn markers");
+    if (a.contains("name")) m.name = str(a, "name", "");
+    if (create || a.contains("x") || a.contains("z") || a.contains("y")) {
+        int x = integer(a, "x", 0, g.size.x - 1, create ? std::nullopt : std::optional(int(std::floor(m.pos.x))));
+        int z = integer(a, "z", 0, g.size.z - 1, create ? std::nullopt : std::optional(int(std::floor(m.pos.z))));
+        int y = integer(a, "y", -1, g.size.y - 1, groundUnderTrees(g, x, z));
+        m.pos = {float(x) + 0.5f, float(y + 1), float(z) + 0.5f};
+    }
+    if (a.contains("entity")) m.entity = EntityKind(named(a, "entity", kEntityKindNames));
+    if (create && m.kind == MarkerKind::Spawn && !a.contains("entity")) throw BadArgs("a spawn marker needs 'entity'");
+    m.count = integer(a, "count", 1, kMaxSpawnCount, m.count);
+    float fallback = m.kind == MarkerKind::Spawn ? typeOf(m.entity).wanderRadius : m.kind == MarkerKind::Poi ? 16 : m.kind == MarkerKind::Region ? 32 : 0;
+    m.radius = float(number(a, "radius", 0, kMaxMarkerRadius, create ? fallback : m.radius));
+}
+
+uint32_t markerId(const json& a, const std::vector<Marker>& list) {
+    uint32_t id = wholeId(a);
+    if (std::ranges::find(list, id, &Marker::id) == list.end())
+        throw BadArgs(std::format("no marker {} (the markers command lists them)", id));
+    return id;
+}
+
+json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& list, std::vector<Marker>& markers,
+         EditHistory& h, PrefabLibrary& lib, const GameView& v, Command& out) {
     if (cmd == "state")
         return {{"world", v.path}, {"size", {g.size.x, g.size.y, g.size.z}}, {"seed", v.seed}, {"sea_level", kSeaLevel},
                 {"unsaved", v.unsaved}, {"undo_steps", h.undo.size()}, {"redo_steps", h.redo.size()},
                 {"player", {v.player.x, v.player.y, v.player.z}}, {"camera", {v.eye.x, v.eye.y, v.eye.z}},
                 {"camera_yaw", v.yawDegrees}, {"camera_pitch", v.pitchDegrees}, {"editor", v.editing},
-                {"follow_claude", v.follow}, {"time_of_day", v.timeOfDay}, {"instances", list.size()}};
+                {"follow_claude", v.follow}, {"time_of_day", v.timeOfDay}, {"instances", list.size()}, {"markers", markers.size()}};
     if (std::ranges::find(kTools, cmd) != std::end(kTools)) return edit({parseOp(cmd, a, g)}, g, h, out.dirty);
     if (cmd == "apply") {
         if (!a.contains("ops") || !a["ops"].is_array() || a["ops"].empty() || a["ops"].size() > size_t(kMaxOps))
@@ -451,7 +528,7 @@ json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& 
     }
     if (cmd == "path") return edit(pathOps(a, g), g, h, out.dirty);
     if (cmd == "undo" || cmd == "redo") {
-        out.dirty = cmd == "undo" ? undoEdit(g, h, list) : redoEdit(g, h, list);
+        out.dirty = cmd == "undo" ? undoEdit(g, h, list, markers) : redoEdit(g, h, list, markers);
         return {{"changed", !out.dirty.empty()}, {"box", boxJson(out.dirty)}, {"undo_steps", h.undo.size()}, {"redo_steps", h.redo.size()}};
     }
     if (cmd == "save") {
@@ -516,9 +593,37 @@ json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& 
         }
         return {{"count", count}, {"listed", found.size()}, {"instances", std::move(found)}};
     }
+    if (cmd == "markers") {
+        bool all = !a.contains("x0") && !a.contains("z0") && !a.contains("x1") && !a.contains("z1");
+        auto [lo, hi] = all ? std::pair(glm::ivec2(0), glm::ivec2(g.size.x - 1, g.size.z - 1)) : region(a, g);
+        int kind = a.contains("kind") ? named(a, "kind", kMarkerKindNames) : -1;
+        json found = json::array();
+        size_t count = 0;
+        for (const Marker& m : markers) {
+            glm::vec2 p(m.pos.x, m.pos.z), nearest = glm::clamp(p, glm::vec2(lo), glm::vec2(hi + 1));  // a region's circle may reach in
+            if ((kind >= 0 && int(m.kind) != kind) || glm::distance(p, nearest) > (m.kind == MarkerKind::Region ? m.radius : 0)) continue;
+            if (++count <= kMaxListed) found.push_back(markerJson(m));
+        }
+        return {{"count", count}, {"listed", found.size()}, {"markers", std::move(found)}};
+    }
+    if (cmd == "mark" || cmd == "edit_marker") {
+        Marker m;
+        if (cmd == "mark") m.kind = MarkerKind(named(a, "kind", kMarkerKindNames));
+        else m = *std::ranges::find(markers, markerId(a, markers), &Marker::id);
+        markerArgs(a, g, m, cmd == "mark");
+        EditResult r = putMarker(g, markers, h, m);
+        if (r.error) throw BadArgs(r.error);
+        out.dirty = r.dirty;
+        return {{"marker", markerJson(*std::ranges::find(markers, r.id, &Marker::id))}, {"undo_steps", h.undo.size()}};
+    }
+    if (cmd == "unmark") {
+        EditResult r = removeMarker(g, markers, h, markerId(a, markers));
+        out.dirty = r.dirty;
+        return {{"removed", r.id}, {"undo_steps", h.undo.size()}};
+    }
     if (cmd == "heights") return heights(a, g);
     if (cmd == "inspect") return inspect(a, g);
-    if (cmd == "map") return map(a, g);
+    if (cmd == "map") return map(a, g, markers);
     if (cmd == "screenshot") {
         out.shot = shot(a, v);
         return json::object();
@@ -534,8 +639,8 @@ json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& 
 
 }  // namespace
 
-Command runCommand(std::string_view request, Grid& world, std::vector<Instance>& instances, EditHistory& history,
-                   PrefabLibrary& prefabs, const GameView& view) {
+Command runCommand(std::string_view request, Grid& world, std::vector<Instance>& instances, std::vector<Marker>& markers,
+                   EditHistory& history, PrefabLibrary& prefabs, const GameView& view) {
     Command out;
     json id;
     try {
@@ -551,7 +656,7 @@ Command runCommand(std::string_view request, Grid& world, std::vector<Instance>&
         std::string brief = args.dump();
         std::erase(brief, '"');
         out.summary = cmd + " " + (brief.size() > 56 ? brief.substr(0, 53) + "..." : brief);
-        out.response = {{"id", id}, {"ok", true}, {"result", run(cmd, args, world, instances, history, prefabs, view, out)}};
+        out.response = {{"id", id}, {"ok", true}, {"result", run(cmd, args, world, instances, markers, history, prefabs, view, out)}};
     } catch (const std::exception& e) {  // bad JSON or args: thrown before anything changed
         std::string error = e.what();
         std::ranges::replace_if(error, [](unsigned char c) { return c >= 0x80; }, '?');  // parse errors quote raw bytes: keep it valid UTF-8

@@ -59,6 +59,23 @@ PREFAB_FORMAT = (
     "after `layer` is a row of keep cells; blank lines before the next `layer` are ignored. Lines starting with # are "
     "comments. At most 64 cells per axis. Convention: the front (door) is the last row, +z, at rotation 0. The "
     "footprint is centered on the placed column.")
+MARKER_KINDS = ["player_spawn", "spawn", "poi", "region"]
+ENTITIES = ["dummy", "villager", "boar", "bandit"]
+MARKER_NOTE = (" Markers are authored story data: they stand at the center of column x, z on ground voxel y. Kinds: "
+               "`player_spawn` (where the player starts and gets back up after being knocked out; at most one), `spawn` "
+               "(`count` NPCs of kind `entity` that wander within `radius` of it and respawn there; editing it respawns "
+               "them), `poi` (a named place; its name shows to a player within `radius`), `region` (a named circle; "
+               "walking into it shows its name, the smallest wins when they nest). One call is one undo step, shared "
+               "with the user's undo.")
+MARKER_FIELDS = {
+    "name": {"type": "string", "description": "Up to 48 bytes of UTF-8, no control or invisible characters; required for poi and region"},
+    "x": num("Column x", 0, 1023), "z": num("Column z", 0, 1023),
+    "y": num("Ground voxel it stands on (default: the column's ground, under any tree)", -1, 191),
+    "radius": num("Blocks, 0..512. Spawn: wander area (default the kind's: villager 12, boar 10, bandit 5); "
+                  "poi: label range (default 16); region: the circle (default 32)", 0, 512, False),
+    "entity": {"type": "string", "enum": ENTITIES, "description": "Spawn only: the NPC kind"},
+    "count": num("Spawn only: how many NPCs, default 1 (all spawn markers together make at most 256)", 1, 8),
+}
 INSTANCE_NOTE = (" One call is one undo step (voxels and the instance list together), shared with the user's undo. The "
                  "change flashes in the game.")
 OPS = {
@@ -84,7 +101,8 @@ OPS = {
 
 TOOLS = {
     "state": ("Game and world state: world file, size, seed, unsaved flag, undo/redo depth, player and camera "
-              "position, editor mode, Follow Claude, time of day, prefab instance count. Start here. " + WORLD, obj({})),
+              "position, editor mode, Follow Claude, time of day, prefab instance and marker counts. Start here. " + WORLD,
+              obj({})),
     **{k: (d + EDIT_NOTE, s) for k, (d, s) in OPS.items()},
     "apply": ("Apply a list of edits (up to 256) as one undo step. Each op is an object with `tool` (raise, lower, "
               "smooth, flatten, paint, fill) and that tool's arguments. All ops are checked first; if one is invalid "
@@ -136,6 +154,18 @@ TOOLS = {
     "instances": ("List placed prefab instances (id, prefab, position, rotation, seed, params, box, cells), all of them "
                   "or those whose box touches a region; at most 500 listed, `count` has the total.",
                   obj(REGION)),
+    "markers": ("List the story markers (id, kind, name, x, y, z, radius; spawns also entity and count), all of them "
+                "or those in a region (a region marker's circle counts), optionally of one kind; at most 500 listed, "
+                "`count` has the total." + MARKER_NOTE,
+                obj({**REGION, "kind": {"type": "string", "enum": MARKER_KINDS}})),
+    "mark": ("Add a story marker; returns it with its id." + MARKER_NOTE,
+             obj({"kind": {"type": "string", "enum": MARKER_KINDS}, **MARKER_FIELDS}, ["kind", "x", "z"])),
+    "edit_marker": ("Change a marker's name, place (x, z, y; a new column without y stands on its ground), radius, or "
+                    "a spawn's entity and count. Fields you leave out stay; the kind can't change (remove it and mark "
+                    "again)." + MARKER_NOTE,
+                    obj({"id": num("Marker id (markers lists them)", 1), **MARKER_FIELDS}, ["id"])),
+    "unmark": ("Remove a story marker (a spawn's NPCs go with it)." + MARKER_NOTE,
+               obj({"id": num("Marker id", 1)}, ["id"])),
     "undo": ("Undo the last edit step (the user's or Claude's: one shared history).", obj({})),
     "redo": ("Redo the last undone step.", obj({})),
     "save": ("Save the world to its .flyw file. With `path`, write a copy there instead (the world file and the "
@@ -151,7 +181,9 @@ TOOLS = {
                                     0, 1, False)}, ["position"])),
     "map": ("Top-down map of a region as a PNG: surface colors, hillshade (lit from the north-west, i.e. -x/-z), "
             "brighter = higher, water tinted darker by depth, grid lines labelled with x (top) and z (left) "
-            "coordinates. Image x runs along +x, image down along +z. Returns min/max ground height. " + WORLD,
+            "coordinates. Image x runs along +x, image down along +z. Story markers are dots labelled with their id "
+            "(white player_spawn, red spawn, yellow poi, cyan region with its circle); `markers` in the result has each "
+            "drawn one's id, kind, name and pixel. Returns min/max ground height. " + WORLD,
             obj({**REGION, "max_size": num("Longest image side in pixels, default 1024", 64, 1024),
                  "grid": num("Grid line spacing in blocks; default picks ~8 lines, 0 = none", 0, 1024)},
                 ["x0", "z0", "x1", "z1"])),
@@ -218,7 +250,8 @@ def handle(msg):
                 "serverInfo": {"name": "flycoos", "version": "0.1.0"},
                 "instructions": "Shape the flycoos story world in the running game together with the user. " + WORLD +
                                 " Look before and after editing (map, heights, screenshot); every edit is undoable. Houses, camps, trees "
-                                "and rocks are prefabs: place, move and remove them as instances."}
+                                "and rocks are prefabs: place, move and remove them as instances. Story places (player spawn, "
+                                "NPC spawns, named points and regions) are markers."}
     if method == "ping":
         return {}
     if method == "tools/list":

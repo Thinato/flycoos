@@ -6,8 +6,6 @@
 
 #include "player.h"
 
-enum class EntityKind { TrainingDummy, Villager, Boar, Bandit };
-
 // How an NPC treats the player. Harmless ones never fight back.
 enum class Temper { Harmless, Passive, Aggressive };  // passive: fights back once hit; aggressive: attacks on sight
 
@@ -36,7 +34,9 @@ struct Entity {
     std::string name;
     int level = 1;
     Player body;           // position, animation, health
-    glm::vec3 home{};      // wanderers stay near this
+    glm::vec3 home{};      // wanderers stay near this; respawns here
+    float wanderRadius = 0;  // how far from home it wanders: its kind's, or its spawn marker's radius
+    Marker spawn;          // the spawn marker it came from as it was then (id 0: none); see syncSpawns
     glm::vec2 wanderDir{}; // zero = standing still
     float wanderTimer = 0; // seconds until the next wander decision
     int phrase = -1;       // index into the phrase list, -1 = silent
@@ -57,6 +57,16 @@ constexpr float kPlayerRespawnSeconds = 5;
 // The training dummy, a villager, a boar and a bandit on grass beside `near` (usually the player
 // spawn). The bandit's camp is far enough away that it can't see `near`.
 std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t seed);
+// The NPCs of every spawn marker. Entities whose marker is gone or changed (position, radius, kind
+// or count) are replaced by fresh ones at the marker; the rest are left alone, so it's cheap to call
+// after anything that may have changed the markers. New ones face `face`.
+void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vector<Marker>& markers, uint32_t seed,
+                glm::vec3 face);
+// Where the player starts and gets back up: the player_spawn marker, else findSpawn, out of the terrain.
+glm::vec3 playerSpawn(const Grid& world, const std::vector<Marker>& markers);
+// Spawn markers for the NPCs that worlds had before markers existed: one per spawnEntities entity
+// around the world spawn (findSpawn), with its kind's wander radius. For new worlds and older files.
+std::vector<Marker> defaultMarkers(const Grid& world, uint32_t seed);
 // AI and physics for every entity: wandering, talking villagers stop and face the player, angry
 // fighters chase the player and swing at them.
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt);

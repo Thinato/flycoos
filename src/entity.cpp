@@ -4,6 +4,8 @@
 #include <cmath>
 #include <iterator>
 #include <numbers>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -80,7 +82,7 @@ void wander(Entity& e, const Grid& g, glm::vec3 player, float dt) {
         }
     }
     glm::vec2 toHome = xz(e.home - e.body.pos);
-    if (glm::length(toHome) > e.type().wanderRadius && glm::dot(e.wanderDir, toHome) <= 0)
+    if (glm::length(toHome) > e.wanderRadius && glm::dot(e.wanderDir, toHome) <= 0)
         e.wanderDir = glm::normalize(toHome);  // strayed (or was chasing someone): head back
     if (e.wanderDir != glm::vec2(0) && !walkable(g, e.body.pos, e.wanderDir, player)) {
         e.wanderDir = {};  // stop and think again soon
@@ -88,41 +90,49 @@ void wander(Entity& e, const Grid& g, glm::vec3 player, float dt) {
     }
 }
 
+// A new entity of `kind` standing at (and at home on) `pos`, facing `face`.
+Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 face) {
+    Entity e{};
+    e.kind = kind;
+    e.rng.seed(rngSeed);
+    const EntityType& t = e.type();
+    e.name = t.name ? t.name : kNames[e.rng() % std::size(kNames)];
+    e.level = t.level;
+    e.wanderRadius = t.wanderRadius;
+    e.body.stats = t.stats;
+    e.body.health = float(maxHealth(t.stats));
+    e.body.tuning.walkSpeed = 2;  // a stroll
+    e.body.tuning.runSpeed = t.chaseSpeed;
+    e.body.inv.equipped[SlotMainHand] = t.weapon;
+    e.body.breathPhase = kTau * rand01(e.rng);
+    e.body.pos = e.home = pos;
+    glm::vec2 toFace = xz(face) - xz(pos);
+    if (glm::length(toFace) > 0.01f) e.body.yaw = std::atan2(toFace.x, toFace.y);
+    return e;
+}
+
 }  // namespace
 
 const EntityType& typeOf(EntityKind kind) { return kTypes[int(kind)]; }
+static_assert(std::size(kTypes) == size_t(EntityKind::Count) && std::size(kEntityKindNames) == size_t(EntityKind::Count));
 
 const char* Entity::speech() const { return speechTimer > 0 && phrase >= 0 ? kPhrases[phrase] : nullptr; }
 
 std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t seed) {
     std::vector<Entity> out;
     auto add = [&](EntityKind kind, glm::vec2 offset) {
-        Entity e{};
-        e.kind = kind;
-        e.rng.seed(seed * 2654435761u + uint32_t(out.size()));
-        const EntityType& t = e.type();
-        e.name = t.name ? t.name : kNames[e.rng() % std::size(kNames)];
-        e.level = t.level;
-        e.body.stats = t.stats;
-        e.body.health = float(maxHealth(t.stats));
-        e.body.tuning.walkSpeed = 2;  // a stroll
-        e.body.tuning.runSpeed = t.chaseSpeed;
-        e.body.inv.equipped[SlotMainHand] = t.weapon;
-        e.body.breathPhase = kTau * rand01(e.rng);
         // Nearest grass to the offset, but not on top of the player or an earlier entity.
         auto crowded = [&](glm::vec3 p) {
             bool c = glm::distance(xz(p), xz(near)) < 1.5f;
             for (const Entity& o : out) c |= glm::distance(xz(p), xz(o.body.pos)) < 1.5f;
             return c;
         };
+        glm::vec3 pos;
         for (int tries = 0; tries < 8; ++tries, offset.x += 2) {
-            e.body.pos = findSpawn(world, glm::ivec2(glm::floor(xz(near) + offset)));
-            if (!crowded(e.body.pos)) break;
+            pos = findSpawn(world, glm::ivec2(glm::floor(xz(near) + offset)));
+            if (!crowded(pos)) break;
         }
-        glm::vec2 toNear = xz(near) - xz(e.body.pos);
-        if (glm::length(toNear) > 0.01f) e.body.yaw = std::atan2(toNear.x, toNear.y);
-        e.home = e.body.pos;
-        out.push_back(e);
+        out.push_back(makeEntity(kind, seed * 2654435761u + uint32_t(out.size()), pos, near));
     };
     // In front of the starting camera, which looks toward +Z. The bandit's camp is over 20 blocks
     // out: beyond its leash from the spawn, and even wandering it stays out of aggro range.
@@ -133,9 +143,69 @@ std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t se
     return out;
 }
 
+// The entities of spawn marker `m`: the first on the marker, the others on a small spiral around it,
+// each on the first dry ground within a few blocks of the marker's height (else on the marker).
+static void spawnAt(std::vector<Entity>& out, const Grid& world, const Marker& m, uint32_t seed, glm::vec3 face) {
+    for (int i = 0; i < m.count; ++i) {
+        glm::vec3 pos = clearOfTerrain(world, m.pos);
+        glm::vec2 at = xz(m.pos) + (i ? 1.6f * std::sqrt(float(i)) * glm::vec2(std::cos(2.4f * float(i)), std::sin(2.4f * float(i))) : glm::vec2(0));
+        glm::ivec2 c(glm::floor(at));
+        for (int y = int(m.pos.y) + 3; i && y > int(m.pos.y) - 4; --y) {
+            auto block = [&](int dy) { return world.get({c.x, y + dy, c.y}); };
+            if (isOpaque(block(-1)) && block(0) == Air && block(1) == Air) {
+                pos = {float(c.x) + 0.5f, float(y), float(c.y) + 0.5f};
+                break;
+            }
+        }
+        // Seeded like spawnEntities for a marker's first entity, so the default markers keep the old names.
+        Entity e = makeEntity(m.entity, seed * 2654435761u + (m.id - 1) + uint32_t(i) * 0x9E3779B9u, pos, face);
+        e.wanderRadius = m.radius;
+        e.spawn = m;
+        out.push_back(std::move(e));
+    }
+}
+
+void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vector<Marker>& markers, uint32_t seed,
+                glm::vec3 face) {
+    auto spawnOf = [&](uint32_t id) -> const Marker* {
+        auto it = std::ranges::lower_bound(markers, id, {}, &Marker::id);
+        return it != markers.end() && it->id == id && it->kind == MarkerKind::Spawn ? &*it : nullptr;
+    };
+    // A marker respawns all of its entities when any is out of date or their number is off.
+    std::unordered_map<uint32_t, int> counts;
+    std::unordered_set<uint32_t> stale;
+    for (Entity& e : entities) {
+        const Marker* m = spawnOf(e.spawn.id);
+        if (m) e.spawn.name = m->name;  // a rename needs no respawn
+        if (!m || m->pos != e.spawn.pos || m->radius != e.spawn.radius || m->entity != e.spawn.entity || m->count != e.spawn.count)
+            stale.insert(e.spawn.id);
+        ++counts[e.spawn.id];
+    }
+    for (const Marker& m : markers)
+        if (m.kind == MarkerKind::Spawn && counts[m.id] != m.count) stale.insert(m.id);
+    if (stale.empty()) return;
+    std::erase_if(entities, [&](const Entity& e) { return stale.contains(e.spawn.id); });
+    for (const Marker& m : markers)
+        if (m.kind == MarkerKind::Spawn && stale.contains(m.id)) spawnAt(entities, world, m, seed, face);
+}
+
+glm::vec3 playerSpawn(const Grid& world, const std::vector<Marker>& markers) {
+    auto it = std::ranges::find(markers, MarkerKind::PlayerSpawn, &Marker::kind);
+    return clearOfTerrain(world, it != markers.end() ? it->pos : findSpawn(world));
+}
+
+std::vector<Marker> defaultMarkers(const Grid& world, uint32_t seed) {
+    std::vector<Marker> out;
+    for (const Entity& e : spawnEntities(world, findSpawn(world), seed))
+        out.push_back({.id = uint32_t(out.size() + 1), .kind = MarkerKind::Spawn, .name = e.type().name ? e.type().name : "Villager",
+                       .pos = e.home, .radius = e.wanderRadius, .entity = e.kind, .count = 1});
+    return out;
+}
+
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt) {
     for (Entity& e : entities) {
         e.speechTimer = std::max(0.0f, e.speechTimer - dt);
+        e.body.pos = clearOfTerrain(world, e.body.pos);  // e.g. respawned at a home that was built over since
         const EntityType& t = e.type();
         if (!t.wanders) continue;
         Input in;

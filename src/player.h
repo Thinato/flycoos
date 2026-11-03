@@ -60,6 +60,9 @@ constexpr float kPunchSeconds = 0.35f;  // punch animation length (shorter if sw
 constexpr float kPunchImpact = 0.4f;    // fraction of the animation where the fist lands
 
 bool overlapsSolid(const Grid& g, glm::vec3 feet);
+// `feet` raised a block at a time until the body is out of the terrain (up to the world's top), so a
+// spawn buried by later edits doesn't trap whoever appears there.
+glm::vec3 clearOfTerrain(const Grid& g, glm::vec3 feet);
 void updatePlayer(Player& p, const Grid& g, const Input& in, float dt);
 
 // How far a camera (a cube of half-size `radius`, bigger than the near plane) can move from `from`

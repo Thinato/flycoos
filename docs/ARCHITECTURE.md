@@ -27,19 +27,19 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 
 | File | Responsibility |
 |---|---|
-| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, world files (`saveWorld`/`loadWorld`) |
-| `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels and prefab instances); `raycast` (voxel DDA); `groundTop` |
+| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, `Marker` (`checkMarker`, `regionAt`, `playerSpawn`), world files (`saveWorld`/`loadWorld`) |
+| `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels, prefab instances and markers); `putMarker`/`removeMarker`; `raycast` (voxel DDA); `groundTop` |
 | `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances |
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO, `Quad` packing/unpacking |
 | `src/player.h/.cpp` | Walking-body physics and collision (player and NPCs), character models (`buildPart`), procedural animation (`poseModel`) |
-| `src/entity.h/.cpp` | NPC entities: per-kind traits and temper, spawning, wander and chase AI, talking, damage both ways, loot |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits and temper, spawning (`syncSpawns` from spawn markers, `defaultMarkers`), wander and chase AI, talking, damage both ways, loot |
 | `src/item.h/.cpp` | Item table, `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
-| `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message |
+| `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, poi labels and the region name (`drawPlaces`) |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, buffer uploads, render targets, frustum culling, day/night lighting, screenshots |
-| `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box) |
+| `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
 | `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor), orbit camera, main loop, remote commands, benchmark stats |
 | `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs` |
@@ -87,8 +87,10 @@ u32 FNV-1a checksum of every byte before it
   instance `u32 id | u8 name length | name | i32 x, y, z | u8 rotation | u32 seed | u8 param count |
   f32 params | u32 cell count | cells (u16 x, y, z | u8 before | u8 after)`. A file without it
   loads with no instances; older builds skip it.
-- Later content (story markers) gets its own sections; old readers skip them, so adding one needs
-  no version bump.
+- The `MARK` section (always written; empty when there are no markers) holds the markers sorted by
+  id: `u32 count`, then per marker `u32 id | u8 kind | u8 name length | name | f32 x, y, z | f32
+  radius | u8 entity | u8 count`. A file without it is older: it loads with `markers` = nullopt.
+- Later content gets its own sections; old readers skip them, so adding one needs no version bump.
 - Loading rejects, with a message, anything that doesn't parse exactly: wrong magic or version,
   checksum mismatch (any corruption or truncation), bad sizes, block ids or run lengths. A
   `--world` file that exists but fails to load stops the game rather than generating a world that a
@@ -169,6 +171,52 @@ the screen center.
   `instanceAt` scans every instance cell, so the result is cached until the aimed voxel changes or
   the world is edited (`editor.edits`). The panel's instance list draws only its visible rows.
 
+## Markers
+
+Story markers say where things are and what places are called (ADR-015). A `Marker` is an id, a
+kind, a name, a position (feet: x, z at a column center, y the top of the ground voxel), a radius,
+and for spawns an entity kind and a count. Kinds:
+
+| Kind | Radius | Effect |
+|---|---|---|
+| `player_spawn` (at most one) | – | The player starts and gets back up here (`playerSpawn`); without one, `findSpawn` as before |
+| `spawn` | wander area | `count` (1–8) NPCs of `entity` (dummy, villager, boar, bandit); they wander within the radius and respawn at their home by the marker |
+| `poi` | label range | Its name floats above it while the player is within the radius (fading in over the outer quarter) |
+| `region` | the circle | Walking into it shows its name for 4 s; `regionAt` picks the smallest containing circle, so nested regions work |
+
+- **Validation** (`checkMarker`, used by commands, the editor and the loader): known kind and
+  entity, count 1–8, name ≤ 48 bytes of UTF-8 without control, bidi-override or zero-width
+  characters (required for poi and region), finite position inside the world (y up to the world
+  height), radius 0–512. The list holds at most 4096 markers, one player spawn, and spawn counts
+  adding up to at most 256 NPCs (every NPC is simulated each frame); ids are never 0 or 2³²−1 and
+  don't wrap.
+- **Edits** (`putMarker`, `removeMarker`) are one undo step each: an `EditRecord` carries `(id,
+  marker on the other side)` pairs like it does for instances. The returned box is the voxel at the
+  marker (on undo/redo: the side that ends up live), so the game marks the world unsaved and
+  remeshes one voxel's chunks (~1 ms) without a special case; a far move doesn't remesh what lies
+  between.
+- **Spawns follow the markers.** Every NPC remembers the spawn marker it came from as it was then
+  (`Entity::spawn`). `syncSpawns` runs after every edit, undo, redo and command (`edited` in
+  main.cpp): a marker whose NPCs are missing, too many, or out of date (position, radius, entity,
+  count) gets them all respawned; NPCs of a removed marker go; the rest keep their state. The first
+  NPC stands on the marker, the others on a small spiral around it, each on the first dry ground
+  within a few blocks of the marker's height. A spot inside terrain (a marker built over since) is
+  lifted until the body is free (`clearOfTerrain`), for the player's spawn and for NPCs, whose
+  update also frees one buried by a later edit. A rename only updates the NPCs' copy of the name.
+- **Older and new worlds** get `defaultMarkers`: one spawn marker per NPC `spawnEntities` places
+  around the world spawn, with its kind's wander radius. The first NPC of a marker is seeded like
+  `spawnEntities` seeded it, so the same NPCs (positions, facing, villager name) come back. A world
+  that has a `MARK` section, even an empty one, keeps exactly its markers.
+- **Editor:** tool 8 places the panel's marker on the aimed column's ground (under trees) or selects
+  the one standing there. Selecting, Go to, and any change to the selected marker (undo, Claude)
+  load its settings into the panel; Update selected applies them but keeps the kind (changing Kind
+  deselects); Delete removes it, and a selection that disappears is cleared. In editor mode every
+  marker within 300 blocks of the camera gets a pin with `#id name`, and regions (and the selected
+  marker's radius) a circle projected onto the ground under the trees, all on ImGui's background
+  draw list. Circle heights are cached per marker until the world changes, and only the 32 nearest
+  circles are drawn. The panel lists the markers with Go to and Remove; the debug window's Player
+  tab shows the current region.
+
 ## Command server and MCP bridge
 
 Claude edits the world through the running game, so its edits share the user's undo history,
@@ -205,6 +253,14 @@ remesh path and screen.
   `prefabBox` (20 ns per voxel plus the remeshed chunk columns); `remove` by the instance's box;
   `move` by the old and new boxes together (the new one at the ground before the removal: an
   estimate), so far moves are refused with advice to remove and place again.
+- **Marker commands:** `markers` (optionally of one kind and in a region, a region's circle
+  counting), `mark`, `edit_marker`, `unmark`. Markers stand at the center of column `x`, `z` on
+  ground voxel `y` (default the column's top). `map` draws them as dots labelled with their id
+  (white player spawn, red spawn, yellow poi, cyan region with its circle) and lists the drawn ones
+  (at most 500) with their name and pixel, since the map has digits only. A circle that misses the
+  image or covers all of it isn't drawn, and one has at most as many points as the image's outline
+  has pixels, so 1024 huge regions don't slow a small map. Default ground `y` is under any tree;
+  ids must be whole numbers.
 - **`path`:** samples the polyline every half brush radius, takes the ground height under each
   sample (ignoring trees), averages it over ±(16 + width) blocks along the path (or uses a fixed
   height), subtracts `depth`, and emits Flatten discs at full strength, then Paint discs.
@@ -395,7 +451,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   combat.
 - At 0 health a body falls over (the dummy topples off its base) and can't be hit. NPCs come back
   at home, fully healed, after their kind's respawn time (dummy 5 s, others 30 s). The player is
-  knocked out: no movement or attacks, then back at the world spawn with full health after 5 s.
+  knocked out: no movement or attacks, then back at the player spawn (marker, else the world spawn) with full health after 5 s.
 - HUD: a damage number pops above whoever was hit and rises for a second (the latest hit only):
   gold over NPCs, red over the player.
 
@@ -457,7 +513,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   player leaves it, or is knocked out, they calm down and walk back. No line-of-sight check yet.
 - **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell until it
   respawns; E within 3.5 blocks moves the loot into the bags (it stays on the corpse if they're full).
-- **Spawning:** dummy and villager just in front of the spawn, the boar about 14 blocks out, the
+- **Default spawns:** dummy and villager just in front of the spawn, the boar about 14 blocks out, the
   bandit's camp about 22 blocks out: outside its leash from the spawn, and even at the edge of its
   wander radius more than its aggro range away.
 - **Talking:** E picks the nearest talker within 3.5 blocks. It shows a random phrase (never the same
@@ -467,7 +523,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   green for friendly; red health bar if attackable) within
   40 blocks. They're hidden when terrain blocks the line of sight, using the camera's box march. The
   HUD always runs an ImGui frame; the UI render pass is skipped when there is nothing to draw.
-- NPCs are respawned beside the player on world regeneration or from the Entities tab.
+- **From markers:** the NPCs come from spawn markers (see "Markers"); a world without markers
+  gets the four above as default markers. Regeneration resets the markers to those defaults; the
+  Entities tab respawns every NPC at its marker.
 
 ## Day/night
 
@@ -505,6 +563,7 @@ derives the following from the sun height:
 | A long remote `path` (and its undo) remeshes its whole bounding box | Remesh per op / record part |
 | Far prefab moves are over the budget (one bounding box is remeshed) | The same: remesh per record part |
 | `instanceAt` scans every instance's cells (cached per aimed voxel) | A per-chunk index of instance cells if there are thousands |
+| At most 256 NPCs from spawn markers, all simulated every frame | Simulate only NPCs near the player (M1 streaming), then raise the cap |
 | Overlapping instances can leave orphaned voxels when removed oldest first | Track which instance owns each voxel |
 | One draw call per chunk | `SDL_DrawGPUPrimitivesIndirect` with a GPU-culled draw list |
 | MSL-only shaders (macOS) | HLSL/Slang + SDL_shadercross for SPIR-V/DXIL (M1) |

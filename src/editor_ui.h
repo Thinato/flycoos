@@ -1,5 +1,7 @@
 #pragma once
+#include <array>
 #include <deque>
+#include <unordered_map>
 #include <optional>
 #include <string>
 
@@ -33,6 +35,19 @@ struct Editor {
     glm::ivec3 aimedCell{-1};
     uint64_t edits = 0, aimedEdits = 0;  // edits counts every change to the world (see main.cpp)
 
+    // Marker tool (8): LMB places `mark` (kind, name, radius, entity, count) on the aimed voxel, or
+    // selects the marker standing there and loads its settings.
+    bool markerTool = false;
+    Marker mark{.kind = MarkerKind::Poi, .radius = 16};
+    char markName[kMaxMarkerName + 1] = "";
+    uint32_t marked = 0;  // selected marker id, 0 = none
+    Marker markedWas;     // the selected marker as last loaded into the panel (main reloads it when it changes)
+    // Marker circle heights per marker id, valid while ringEdits == edits (the overlay draws them each frame).
+    static constexpr int kRingPoints = 64;
+    using Ring = std::array<float, kRingPoints + 1>;
+    mutable std::unordered_map<uint32_t, Ring> rings;
+    mutable uint64_t ringEdits = 0;
+
     // Remote commands (Claude through the MCP bridge).
     struct LogLine {
         std::string text;
@@ -55,12 +70,15 @@ inline glm::ivec3 fillCell(const Editor& editor, const RayHit& aim) {
 struct EditorActions {
     bool undo = false, redo = false, save = false;
     uint32_t remove = 0, goTo = 0;  // instance ids
+    uint32_t unmark = 0, markGoTo = 0;  // marker ids
+    bool updateMark = false;            // the selected marker takes the panel's settings
 };
 
 // The Editor panel (only takes input while editor.cursor is set). Call between DebugUI::begin and end.
-void editorWindow(Editor& editor, const std::vector<Instance>& instances, const std::optional<RayHit>& aim,
-                  const RenderStats& stats, EditorActions& actions);
+void editorWindow(Editor& editor, const std::vector<Instance>& instances, const std::vector<Marker>& markers,
+                  const std::optional<RayHit>& aim, const RenderStats& stats, EditorActions& actions);
 // Crosshair, the brush ring on the terrain (or Fill's box, or the prefab's box) at `aim`, the
-// selected instance's box, and the unsaved-quit warning.
-void drawEditorOverlay(const glm::mat4& view, float fovY, const Grid& world, const std::vector<Instance>& instances,
-                       const Editor& editor, const std::optional<RayHit>& aim);
+// selected instance's box, the markers near the camera (pins with labels, region circles) and the
+// unsaved-quit warning.
+void drawEditorOverlay(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world, const std::vector<Instance>& instances,
+                       const std::vector<Marker>& markers, const Editor& editor, const std::optional<RayHit>& aim);

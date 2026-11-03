@@ -55,6 +55,7 @@ struct EditRecord {
     // Prefab instances the step placed, removed or moved: the id and that instance on the other side
     // of the step (none: it doesn't exist there). Swapped with the live list like the cells.
     std::vector<std::pair<uint32_t, std::optional<Instance>>> instances;
+    std::vector<std::pair<uint32_t, std::optional<Marker>>> markers;  // the same for markers
     size_t bytes = 0;  // cells in all parts, plus the instances' cell lists
 };
 struct EditHistory {
@@ -74,10 +75,18 @@ Box editBox(const Grid& g, const EditOp& op);
 // Applies the op. If anything changed, pushes an undo record (or, with `join`, adds to the last one)
 // and clears the redo stack; the oldest records go past kMaxUndo steps or kMaxUndoBytes.
 EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join = false);
-// Restore the boxes and instances of the last undo/redo record exactly; return their bounding box
-// (empty when there's none).
-Box undoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances);
-Box redoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances);
+// Restore the boxes, instances and markers of the last undo/redo record exactly; return their
+// bounding box (a marker counts as the voxel at its position; empty when there's no record).
+Box undoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances, std::vector<Marker>& markers);
+Box redoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances, std::vector<Marker>& markers);
+
+// Markers (sorted by id), one undo step each. putMarker adds `m` with a new id (m.id == 0) or replaces
+// the marker with id m.id; it checks the marker, the caps (markers, NPCs of all spawn markers) and
+// that there's at most one player_spawn.
+// removeMarker removes one. Both return the voxel at the marker's (new) position as `dirty`, so the
+// game marks the world unsaved, and the marker's id.
+EditResult putMarker(const Grid& g, std::vector<Marker>& list, EditHistory& h, Marker m);
+EditResult removeMarker(const Grid& g, std::vector<Marker>& list, EditHistory& h, uint32_t id);
 
 // Building blocks for edits outside applyEdit (prefab instances):
 // a copy of the box (inside g), x fastest, then z, then y;
@@ -100,3 +109,5 @@ std::optional<RayHit> raycast(const Grid& g, glm::vec3 from, glm::vec3 dir, floa
 
 // Highest opaque voxel of a column, or -1.
 int groundTop(const Grid& g, int x, int z);
+// The same below any tree on it (skipping Wood and Leaves, and the air under a canopy), or -1.
+int groundUnderTrees(const Grid& g, int x, int z);

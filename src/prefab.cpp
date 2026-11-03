@@ -318,7 +318,8 @@ EditResult movePrefab(Grid& g, const Prefab& p, uint32_t id, glm::ivec2 column, 
     Box from = removePrefab(g, id, list, step).dirty;
     EditResult placed = placePrefab(g, p, std::move(moved), y, list, step, true);
     if (placed.error) {
-        undoEdit(g, step, list);
+        std::vector<Marker> none;  // the step changed no markers
+        undoEdit(g, step, list, none);
         return placed;
     }
     pushRecord(h, std::move(step.undo.back()), false);

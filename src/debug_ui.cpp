@@ -91,7 +91,7 @@ static void attributes(Player& b, bool fights) {
     else ImGui::TextDisabled("Out of combat");
 }
 
-static void playerTab(Player& p, GameSettings& g, DebugActions& actions) {
+static void playerTab(Player& p, GameSettings& g, DebugActions& actions, const char* region) {
     attributes(p, true);
     ImGui::SeparatorText("Armor");
     ImGui::SliderFloat("Armor K", &g.armorK, 1, 200, "%.0f");
@@ -104,6 +104,7 @@ static void playerTab(Player& p, GameSettings& g, DebugActions& actions) {
     ImGui::DragFloat3("Position", &p.pos.x, 0.25f);
     ImGui::Text("Velocity  %.2f  %.2f  %.2f  (%.2f b/s)", p.vel.x, p.vel.y, p.vel.z, glm::length(p.vel));
     ImGui::Text("On ground %s   In water %s", p.onGround ? "yes" : "no", p.inWater ? "yes" : "no");
+    ImGui::Text("Region %s", region ? region : "-");
     if (ImGui::Button("Respawn")) actions.respawn = true;
 
     PlayerTuning& t = p.tuning;
@@ -124,7 +125,7 @@ static void playerTab(Player& p, GameSettings& g, DebugActions& actions) {
 }
 
 static void entitiesTab(std::vector<Entity>& entities, const Player& player, DebugActions& actions) {
-    if (ImGui::Button("Respawn NPCs near player")) actions.respawnEntities = true;
+    if (ImGui::Button("Respawn NPCs at their markers")) actions.respawnEntities = true;
     for (size_t i = 0; i < entities.size(); ++i) {
         Entity& e = entities[i];
         const EntityType& t = e.type();
@@ -149,8 +150,9 @@ static void entitiesTab(std::vector<Entity>& entities, const Player& player, Deb
         ImGui::Text("At %.1f %.1f %.1f, %.1f from you", e.body.pos.x, e.body.pos.y, e.body.pos.z,
                     glm::distance(e.body.pos, player.pos));
         if (t.wanders)
-            ImGui::Text("%s %.1f s more, %.1f from home", e.wanderDir == glm::vec2(0) ? "Standing" : "Walking",
-                        e.wanderTimer, glm::distance(e.body.pos, e.home));
+            ImGui::Text("%s %.1f s more, %.1f from home (wanders %.0f)", e.wanderDir == glm::vec2(0) ? "Standing" : "Walking",
+                        e.wanderTimer, glm::distance(e.body.pos, e.home), e.wanderRadius);
+        if (e.spawn.id) ImGui::Text("From spawn marker #%u %s", e.spawn.id, e.spawn.name.c_str());
         if (t.attackable) {
             if (ImGui::Button("Hit for 10")) damage(e, 10);
             ImGui::SameLine();
@@ -232,7 +234,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Player& player,
     ImGui::SetNextWindowSize({440, 470}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Debug   ( . to toggle )", &open) && ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Render")) { renderTab(render, stats); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Player")) { playerTab(player, game, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Player")) { playerTab(player, game, actions, region); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Items")) { itemsTab(player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Entities")) { entitiesTab(entities, player, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }

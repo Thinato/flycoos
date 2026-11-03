@@ -1,5 +1,6 @@
 // Assert-style checks for the engine core. Not using <cassert>: release builds define NDEBUG.
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <climits>
 #include <filesystem>
@@ -783,15 +784,16 @@ static void protection() {
 // World files: a round trip is bit-exact; truncated or corrupted files are rejected cleanly (the
 // dev preset's sanitizers check "cleanly"), and unknown sections are skipped.
 static void worldFiles() {
+    std::optional<std::vector<Marker>> fileMarks;  // the files below have a marker section
     Grid g({64, 96, 32});
     generateTerrain(g, 3);
     g.set({5, 90, 5}, Plate);  // a block generation never places
     std::string path = (std::filesystem::temp_directory_path() / "flycoos_core_test.flyw").string();
-    CHECK(saveWorld(path.c_str(), g, 99, {}).empty());
+    CHECK(saveWorld(path.c_str(), g, 99, {}, {}).empty());
     Grid back({32, 32, 32});
     uint32_t seed = 0;
     std::vector<Instance> none;
-    CHECK(loadWorld(path.c_str(), back, seed, none).empty());
+    CHECK(loadWorld(path.c_str(), back, seed, none, fileMarks).empty());
     CHECK(back.size == g.size && back.cells == g.cells && seed == 99);
 
     std::ifstream in(path, std::ios::binary);
@@ -800,7 +802,7 @@ static void worldFiles() {
         std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes;
         Grid h({32, 32, 32});
         uint32_t s = 0;
-        std::string error = loadWorld(path.c_str(), h, s, none);
+        std::string error = loadWorld(path.c_str(), h, s, none, fileMarks);
         return error.empty() && h.cells == g.cells ? std::string("same") : error.empty() ? std::string("different") : error;
     };
     auto reseal = [](std::string bytes) {  // recompute the checksum, so the structural checks are what's tested
@@ -830,7 +832,7 @@ static void worldFiles() {
     std::filesystem::remove(path);
 
     std::filesystem::create_directories(path + "/occupied");  // the rename fails: no temp file is left behind
-    CHECK(!saveWorld(path.c_str(), g, 99, {}).empty() && !std::filesystem::exists(path + ".tmp"));
+    CHECK(!saveWorld(path.c_str(), g, 99, {}, {}).empty() && !std::filesystem::exists(path + ".tmp"));
     std::filesystem::remove_all(path);
 }
 
@@ -861,6 +863,7 @@ static EditOp randomOp(std::mt19937& rng, const Grid& g) {
 }
 
 static void editing() {
+    std::vector<Marker> marks;  // no marker edits here
     {  // every op changes voxels only inside the dirty box it reports
         Grid g = editWorld();
         EditHistory history;
@@ -895,10 +898,10 @@ static void editing() {
         for (int step = 0; step < 400; ++step) {
             int action = std::uniform_int_distribution<int>(0, 9)(rng);
             if (action < 3 && at > 0) {
-                CHECK(!undoEdit(g, history, none).empty());
+                CHECK(!undoEdit(g, history, none, marks).empty());
                 --at, ++undos;
             } else if (action < 5 && at + 1 < states.size()) {
-                CHECK(!redoEdit(g, history, none).empty());
+                CHECK(!redoEdit(g, history, none, marks).empty());
                 ++at, ++redos;
             } else if (!applyEdit(g, randomOp(rng, g), history).dirty.empty()) {
                 states.resize(++at);
@@ -907,10 +910,10 @@ static void editing() {
             CHECK(hashCells(g) == states[at]);
         }
         while (at > 0) {  // all the way back to the generated world
-            CHECK(!undoEdit(g, history, none).empty());
+            CHECK(!undoEdit(g, history, none, marks).empty());
             CHECK(hashCells(g) == states[--at]);
         }
-        CHECK(undoEdit(g, history, none).empty() && hashCells(g) == hashCells(editWorld()));
+        CHECK(undoEdit(g, history, none, marks).empty() && hashCells(g) == hashCells(editWorld()));
         CHECK(states.size() > 50 && undos > 50 && redos > 20);
     }
     {  // brushes: raise keeps the surface material on top of subsoil; lower under water keeps water
@@ -983,13 +986,14 @@ static void editing() {
 
 // The remote-command dispatcher, without sockets: JSON in, JSON out, the world and history changed.
 static void commands() {
+    std::vector<Marker> marks;
     Grid g = editWorld();
     const uint64_t original = hashCells(g);
     EditHistory h;
     GameView view;
     std::vector<Instance> instances;
     PrefabLibrary prefabs = loadPrefabs("no-such-folder");
-    auto run = [&](std::string_view request) { return runCommand(request, g, instances, h, prefabs, view); };
+    auto run = [&](std::string_view request) { return runCommand(request, g, instances, marks, h, prefabs, view); };
     auto ok = [&](const Command& c) { return c.response["ok"].get<bool>(); };
 
     Command c = run(R"({"id": 7, "cmd": "state"})");
@@ -1045,9 +1049,9 @@ static void commands() {
     // caps: a fill bigger than 128^3 (after clamping to the world) is rejected; heights stay under 4096 samples
     Grid big({256, 192, 256});
     EditHistory bh;
-    CHECK(!ok(runCommand(R"({"cmd": "fill", "args": {"min": [0, 0, 0], "max": [255, 191, 255], "material": "Air"}})", big, instances, bh, prefabs, view)));
-    CHECK(!ok(runCommand(R"({"cmd": "inspect", "args": {"min": [0, 0, 0], "max": [255, 191, 255]}})", big, instances, bh, prefabs, view)));
-    c = runCommand(R"({"cmd": "heights", "args": {"x0": -50, "z0": 0, "x1": 9999, "z1": 255}})", big, instances, bh, prefabs, view);
+    CHECK(!ok(runCommand(R"({"cmd": "fill", "args": {"min": [0, 0, 0], "max": [255, 191, 255], "material": "Air"}})", big, instances, marks, bh, prefabs, view)));
+    CHECK(!ok(runCommand(R"({"cmd": "inspect", "args": {"min": [0, 0, 0], "max": [255, 191, 255]}})", big, instances, marks, bh, prefabs, view)));
+    c = runCommand(R"({"cmd": "heights", "args": {"x0": -50, "z0": 0, "x1": 9999, "z1": 255}})", big, instances, marks, bh, prefabs, view);
     const nlohmann::json& r = c.response["result"];
     CHECK(ok(c) && r["x0"] == 0 && r["columns"].get<int>() * r["rows"].get<int>() <= 4096 && r["top_blocks"].empty());
     c = run(R"({"cmd": "inspect", "args": {"min": [0, 0, 0], "max": [3, 95, 3]}})");
@@ -1118,15 +1122,15 @@ static void commands() {
     std::string raises;
     for (int i = 0; i < 3; ++i) raises += std::format(R"({}{{"tool": "raise", "x": {}, "z": 100, "radius": 32}})", i ? "," : "", 40 + 20 * i);
     uint64_t bigBefore = hashCells(big);
-    c = runCommand(R"({"cmd": "apply", "args": {"ops": [)" + raises + "]}}", big, instances, bh, prefabs, view);
+    c = runCommand(R"({"cmd": "apply", "args": {"ops": [)" + raises + "]}}", big, instances, marks, bh, prefabs, view);
     CHECK(!ok(c) && c.response["error"].get<std::string>().contains("budget") && hashCells(big) == bigBefore && bh.undo.empty());
-    CHECK(!ok(runCommand(R"({"cmd": "path", "args": {"points": [[0, 0], [255, 255]], "width": 65}})", big, instances, bh, prefabs, view)));
-    CHECK(ok(runCommand(R"({"cmd": "apply", "args": {"ops": [)" + raises.substr(0, raises.rfind(",{")) + "]}}", big, instances, bh, prefabs, view)));
+    CHECK(!ok(runCommand(R"({"cmd": "path", "args": {"points": [[0, 0], [255, 255]], "width": 65}})", big, instances, marks, bh, prefabs, view)));
+    CHECK(ok(runCommand(R"({"cmd": "apply", "args": {"ops": [)" + raises.substr(0, raises.rfind(",{")) + "]}}", big, instances, marks, bh, prefabs, view)));
     Grid wide({256, 32, 256});
     EditHistory wh;
     auto corners = [&](int far) {
         return runCommand(std::format(R"({{"cmd": "apply", "args": {{"ops": [{{"tool": "fill", "min": [0, 0, 0], "max": [0, 0, 0], "material": "Stone"}},
-            {{"tool": "fill", "min": [{0}, 0, {0}], "max": [{0}, 0, {0}], "material": "Stone"}}]}}}})", far), wide, instances, wh, prefabs, view);
+            {{"tool": "fill", "min": [{0}, 0, {0}], "max": [{0}, 0, {0}], "material": "Stone"}}]}}}})", far), wide, instances, marks, wh, prefabs, view);
     };
     CHECK(ok(corners(223)) && !ok(corners(224)));  // 7x7 chunk columns to remesh are fine, 8x8 are too many
 
@@ -1179,8 +1183,8 @@ static void commands() {
     Grid far({1024, 64, 1024});
     std::vector<Instance> farList;
     EditHistory fh;
-    CHECK(ok(runCommand(R"({"cmd": "place", "args": {"prefab": "boulder", "x": 10, "z": 10, "y": 5}})", far, farList, fh, prefabs, view)));
-    c = runCommand(R"({"cmd": "move", "args": {"id": 1, "x": 1000, "z": 1000, "y": 5}})", far, farList, fh, prefabs, view);
+    CHECK(ok(runCommand(R"({"cmd": "place", "args": {"prefab": "boulder", "x": 10, "z": 10, "y": 5}})", far, farList, marks, fh, prefabs, view)));
+    c = runCommand(R"({"cmd": "move", "args": {"id": 1, "x": 1000, "z": 1000, "y": 5}})", far, farList, marks, fh, prefabs, view);
     CHECK(!ok(c) && c.response["error"].get<std::string>().contains("budget") && farList[0].pos.x == 10);
 }
 
@@ -1206,6 +1210,8 @@ static Instance at(const Prefab& p, glm::ivec3 pos, int rotation = 0, uint32_t s
 }
 
 static void prefabs() {
+    std::vector<Marker> marks;
+    std::optional<std::vector<Marker>> fileMarks;
     namespace fs = std::filesystem;
     {  // a good file: header, legend (any case), comments, short rows padded with keep, trailing blank lines ignored
         Prefab p{.name = "hut"};
@@ -1340,7 +1346,7 @@ static void prefabs() {
         applyEdit(g, {.tool = Tool::Fill, .min = {10, 6, 10}, .max = {10, 6, 10}, .block = Snow}, h);  // and into its room
         CHECK(!removePrefab(g, id, list, h).error && list.empty());
         CHECK(g.get({10, 5, 7}) == Stone && g.get({10, 6, 10}) == Snow && g.get({10, 7, 7}) == Air && g.get({10, 4, 10}) == Air);
-        undoEdit(g, h, list), undoEdit(g, h, list), undoEdit(g, h, list);
+        undoEdit(g, h, list, marks), undoEdit(g, h, list, marks), undoEdit(g, h, list, marks);
         CHECK(list.size() == 1 && g.get({10, 5, 7}) == Planks && g.get({10, 6, 10}) == Air);
 
         // move: one undo step, the old spot back as it was, the same id at the new spot
@@ -1350,22 +1356,22 @@ static void prefabs() {
         CHECK(!moved.error && moved.id == id && h.undo.size() == steps + 1 && list.size() == 1 && list[0].rotation == 1);
         CHECK(g.get({10, 5, 7}) == Air && g.get({40, 5, 40}) == Air && g.get({37, 5, 40}) == Planks);  // the back wall turned to -x
         uint64_t afterMove = hashCells(g);
-        CHECK(!undoEdit(g, h, list).empty() && hashCells(g) == placed && list.size() == 1 && list[0].pos.x == 10 && list[0].rotation == 0);
-        CHECK(!redoEdit(g, h, list).empty() && hashCells(g) == afterMove && list[0].pos.x == 40);
+        CHECK(!undoEdit(g, h, list, marks).empty() && hashCells(g) == placed && list.size() == 1 && list[0].pos.x == 10 && list[0].rotation == 0);
+        CHECK(!redoEdit(g, h, list, marks).empty() && hashCells(g) == afterMove && list[0].pos.x == 40);
         CHECK(movePrefab(g, cottage, 99, {40, 40}, std::nullopt, 0, list, h).error && hashCells(g) == afterMove);
         CHECK(movePrefab(g, cottage, id, {40, 40}, std::nullopt, 4, list, h).error && hashCells(g) == afterMove);
         CHECK(!removePrefab(g, id, list, h).error && list.empty());
-        CHECK(!undoEdit(g, h, list).empty() && list.size() == 1 && hashCells(g) == afterMove);
-        while (!undoEdit(g, h, list).empty()) {}
+        CHECK(!undoEdit(g, h, list, marks).empty() && list.size() == 1 && hashCells(g) == afterMove);
+        while (!undoEdit(g, h, list, marks).empty()) {}
         CHECK(hashCells(g) == original && list.empty());
-        while (!redoEdit(g, h, list).empty()) {}  // place, move, remove
+        while (!redoEdit(g, h, list, marks).empty()) {}  // place, move, remove
         CHECK(hashCells(g) == original && list.empty() && h.redo.empty() && h.undo.size() == 3);
         CHECK(placePrefab(g, cottage, at(cottage, {60, 0, 60}), std::nullopt, list, h).id == 2);  // ids are never reused
 
         const Prefab& bush = prefabNamed(lib, "bush");  // a move that would change nothing leaves everything as it was
         uint32_t b = placePrefab(g, bush, at(bush, {20, 0, 20}), std::nullopt, list, h).id;
         applyEdit(g, {.tool = Tool::Fill, .min = {1, 9, 1}, .max = {1, 9, 1}, .block = Stone}, h);
-        undoEdit(g, h, list);
+        undoEdit(g, h, list, marks);
         uint64_t before = hashCells(g);
         size_t undos = h.undo.size();
         CHECK(movePrefab(g, bush, b, {25, 25}, 0, 0, list, h).error && hashCells(g) == before && h.undo.size() == undos &&
@@ -1408,17 +1414,17 @@ static void prefabs() {
             return Instance{.id = id, .prefab = "tree", .pos = {10, 3, 10}, .params = std::move(params), .cells = {{10, 5, 10, Air, Wood}}};
         };
         std::string path = (fs::temp_directory_path() / "flycoos_crafted.flyw").string();
-        CHECK(saveWorld(path.c_str(), g, 1, {tree(1, {}), tree(2, {10}), tree(3, {1e30f, 1e30f})}).empty());
+        CHECK(saveWorld(path.c_str(), g, 1, {tree(1, {}), tree(2, {10}), tree(3, {1e30f, 1e30f})}, {}).empty());
         std::vector<Instance> loaded;
         uint32_t seed;
-        CHECK(loadWorld(path.c_str(), g, seed, loaded).empty() && loaded.size() == 3);
+        CHECK(loadWorld(path.c_str(), g, seed, loaded, fileMarks).empty() && loaded.size() == 3);
         CHECK(prefabBox(g, prefabNamed(lib, "tree"), loaded[0]).empty() && prefabBox(g, prefabNamed(lib, "tree"), loaded[2]).empty());
         GameView view;
         for (int id = 1; id <= 3; ++id) {
-            Command c = runCommand(std::format(R"({{"cmd": "move", "args": {{"id": {}, "x": 30, "z": 30}}}})", id), g, loaded, h, lib, view);
+            Command c = runCommand(std::format(R"({{"cmd": "move", "args": {{"id": {}, "x": 30, "z": 30}}}})", id), g, loaded, marks, h, lib, view);
             CHECK(!c.response["ok"].get<bool>() && c.dirty.empty());
         }
-        CHECK(runCommand(R"({"cmd": "remove", "args": {"id": 3}})", g, loaded, h, lib, view).response["ok"] == true && loaded.size() == 2);
+        CHECK(runCommand(R"({"cmd": "remove", "args": {"id": 3}})", g, loaded, marks, h, lib, view).response["ok"] == true && loaded.size() == 2);
 
         // the loader rejects what placing can't produce: ids 0 and 2^32-1, x or z of -1, too many params, cells spread too far
         Grid wide({128, 32, 128});
@@ -1429,8 +1435,8 @@ static void prefabs() {
             {Instance{.id = 1, .cells = {{0, 0, 0, Air, Stone}, {127, 0, 0, Air, Stone}}}},
         };
         for (const std::vector<Instance>& b : bad) {
-            CHECK(saveWorld(path.c_str(), wide, 1, b).empty());
-            CHECK(loadWorld(path.c_str(), wide, seed, loaded).starts_with("bad instance"));
+            CHECK(saveWorld(path.c_str(), wide, 1, b, {}).empty());
+            CHECK(loadWorld(path.c_str(), wide, seed, loaded, fileMarks).starts_with("bad instance"));
         }
         fs::remove(path);
     }
@@ -1443,11 +1449,11 @@ static void prefabs() {
         removePrefab(g, 1, list, h);
         placePrefab(g, prefabNamed(lib, "fence"), at(prefabNamed(lib, "fence"), {30, 0, 8}), std::nullopt, list, h);
         std::string path = (fs::temp_directory_path() / "flycoos_instances.flyw").string();
-        CHECK(saveWorld(path.c_str(), g, 5, list).empty());
+        CHECK(saveWorld(path.c_str(), g, 5, list, {}).empty());
         Grid back({32, 32, 32});
         uint32_t seed = 0;
         std::vector<Instance> loaded{Instance{}};
-        CHECK(loadWorld(path.c_str(), back, seed, loaded).empty() && back.cells == g.cells && loaded.size() == 2);
+        CHECK(loadWorld(path.c_str(), back, seed, loaded, fileMarks).empty() && back.cells == g.cells && loaded.size() == 2);
         for (size_t i = 0; i < loaded.size(); ++i) {
             const Instance &a = loaded[i], &b = list[i];
             CHECK(a.id == b.id && a.prefab == b.prefab && a.pos == b.pos && a.rotation == b.rotation && a.seed == b.seed &&
@@ -1473,21 +1479,327 @@ static void prefabs() {
             std::string bad = file;
             bad[i] = char(bad[i] ^ 0xA5);
             std::ofstream(path, std::ios::binary | std::ios::trunc) << reseal(bad);
-            rejected += !loadWorld(path.c_str(), back, seed, loaded).empty();
+            rejected += !loadWorld(path.c_str(), back, seed, loaded, fileMarks).empty();
         }
         CHECK(rejected > 10);
         for (size_t cut : {size_t(1), size_t(9), size_t(30)}) {
             std::string bad = file.substr(0, file.size() - 4 - cut) + file.substr(file.size() - 4);
             std::ofstream(path, std::ios::binary | std::ios::trunc) << reseal(bad);
-            CHECK(!loadWorld(path.c_str(), back, seed, loaded).empty());
+            CHECK(!loadWorld(path.c_str(), back, seed, loaded, fileMarks).empty());
         }
-        CHECK(saveWorld(path.c_str(), g, 5, {}).empty());  // no instances: no section, and loading clears the list
+        CHECK(saveWorld(path.c_str(), g, 5, {}, {}).empty());  // no instances: no section, and loading clears the list
         loaded = list;
-        CHECK(loadWorld(path.c_str(), back, seed, loaded).empty() && loaded.empty());
+        CHECK(loadWorld(path.c_str(), back, seed, loaded, fileMarks).empty() && loaded.empty());
         std::ifstream noInst(path, std::ios::binary);
         CHECK(std::string((std::istreambuf_iterator<char>(noInst)), {}).find("INST") == std::string::npos);
         fs::remove(path);
     }
+}
+
+// Story markers: validation, one undo step per edit (markers and NPC spawns stay consistent), files
+// (round trip, older files, hostile data), commands, regions and spawns.
+static void markers() {
+    Grid g = meadow();  // grass top at y = 3 (feet at 4), pond at x >= 32
+    auto marker = [](MarkerKind kind, const char* name, glm::vec3 pos, float radius) {
+        return Marker{.kind = kind, .name = name, .pos = pos, .radius = radius};
+    };
+    Marker poi = marker(MarkerKind::Poi, "Old Well", {10.5f, 4, 10.5f}, 16);
+    CHECK(!checkMarker(g, poi));
+    CHECK(!checkMarker(g, marker(MarkerKind::Region, "Gr\xC3\xBCnwald \xE2\x9B\xB0 \xF0\x9F\x8C\xB2", {0, 0, 63.9f}, 512)));  // UTF-8, edges
+    CHECK(!checkMarker(g, marker(MarkerKind::Poi, std::string(48, 'a').c_str(), {1, 16, 1}, 0)));
+    for (auto [field, bad] : std::initializer_list<std::pair<int, float>>{
+             {0, NAN}, {0, -0.1f}, {0, 64}, {1, -1}, {1, 16.5f}, {2, INFINITY}, {3, NAN}, {3, -1}, {3, 513}}) {
+        Marker m = poi;
+        (field < 3 ? m.pos[field] : m.radius) = bad;
+        CHECK(checkMarker(g, m));
+    }
+    for (const char* name : {"", "\xC3", "\xC0\x80", "\xED\xA0\x80", "\xF4\x90\x80\x80", "a\nb", "a\x7F", "\xC2\x85", "\xFF"}) {
+        Marker m = poi;
+        m.name = name;
+        CHECK(checkMarker(g, m));
+    }
+    Marker bad = poi;
+    bad.name = std::string(49, 'a');
+    CHECK(checkMarker(g, bad));
+    bad = poi, bad.kind = MarkerKind(9);
+    CHECK(checkMarker(g, bad));
+    bad = poi, bad.entity = EntityKind(4);
+    CHECK(checkMarker(g, bad));
+    bad = poi, bad.count = 0;
+    CHECK(checkMarker(g, bad));
+    bad = poi, bad.count = kMaxSpawnCount + 1;
+    CHECK(checkMarker(g, bad));
+    Marker anon = marker(MarkerKind::Spawn, "", {5.5f, 4, 5.5f}, 6);  // spawns and the player spawn may be unnamed
+    CHECK(!checkMarker(g, anon));
+
+    // Regions: the smallest one containing the point wins.
+    std::vector<Marker> list = {marker(MarkerKind::Region, "Vale", {20, 4, 20}, 30), marker(MarkerKind::Region, "Hamlet", {25, 4, 20}, 8),
+                                marker(MarkerKind::Poi, "Stone", {20, 4, 20}, 2)};
+    CHECK(regionAt(list, {26, 4, 21}) == &list[1] && regionAt(list, {10, 4, 20}) == &list[0]);
+    CHECK(regionAt(list, {60, 4, 60}) == nullptr && regionAt({}, {1, 1, 1}) == nullptr);
+
+    // Edits and undo: markers and the NPCs of spawn markers move together.
+    list.clear();
+    EditHistory h;
+    std::vector<Instance> none;
+    std::vector<Entity> npcs;
+    auto sync = [&] { syncSpawns(npcs, g, list, 1, {16, 4, 16}); };
+    Marker boars = marker(MarkerKind::Spawn, "Boar Den", {10.5f, 4, 20.5f}, 6);
+    boars.entity = EntityKind::Boar;
+    boars.count = 3;
+    EditResult r = putMarker(g, list, h, boars);
+    CHECK(!r.error && r.id == 1 && r.dirty.lo == glm::ivec3(10, 4, 20) && list.size() == 1 && h.undo.size() == 1);
+    sync();
+    CHECK(npcs.size() == 3);
+    for (const Entity& e : npcs) {
+        CHECK(e.kind == EntityKind::Boar && e.spawn.id == 1 && e.wanderRadius == 6 && e.home == e.body.pos);
+        CHECK(glm::distance(e.home, boars.pos) < 4 && e.home.y == 4 && !overlapsSolid(g, e.home));
+    }
+    CHECK(npcs[0].home == boars.pos);
+    r = putMarker(g, list, h, poi);
+    CHECK(r.id == 2);
+    damage(npcs[1], 5);
+    sync();  // the boars' marker didn't change: same entities
+    CHECK(npcs.size() == 3 && npcs[1].body.health == 95);
+    Marker moved = list[0];
+    moved.pos = {20.5f, 4, 40.5f};
+    moved.count = 5;
+    CHECK(!putMarker(g, list, h, moved).error && h.undo.size() == 3);
+    CHECK(!putMarker(g, list, h, moved).error && h.undo.size() == 3);  // no change: no undo step
+    sync();
+    CHECK(npcs.size() == 5 && npcs[0].home == moved.pos && npcs[1].body.health == npcs[1].type().stats.stamina * 10);
+    CHECK(!undoEdit(g, h, none, list).empty() && list[0].pos == boars.pos && list[0].count == 3);
+    sync();
+    CHECK(npcs.size() == 3 && npcs[0].home == boars.pos);
+    CHECK(!redoEdit(g, h, none, list).empty());
+    sync();
+    CHECK(npcs.size() == 5 && npcs[0].home == moved.pos);
+    r = removeMarker(g, list, h, 1);
+    CHECK(!r.error && list.size() == 1 && list[0].id == 2);
+    sync();
+    CHECK(npcs.empty());
+    undoEdit(g, h, none, list);
+    sync();
+    CHECK(list.size() == 2 && list[0].id == 1 && npcs.size() == 5);
+    CHECK(removeMarker(g, list, h, 77).error && putMarker(g, list, h, Marker{.id = 77, .name = "x", .pos = {1, 4, 1}}).error);
+    CHECK(putMarker(g, list, h, bad).error && list.size() == 2);
+    // Ids come after the highest one an undo or redo could bring back; the player spawn is unique.
+    undoEdit(g, h, none, list), undoEdit(g, h, none, list);  // the move and the poi: id 2 is only in the redo stack now
+    Marker start = marker(MarkerKind::PlayerSpawn, "", {40.5f, 4, 8.5f}, 0);
+    CHECK(playerSpawn(g, list) == findSpawn(g));
+    r = putMarker(g, list, h, start);
+    CHECK(!r.error && r.id == 3 && playerSpawn(g, list) == start.pos);
+    CHECK(putMarker(g, list, h, start).error);  // a second one
+    start.id = r.id, start.pos.x = 5.5f;
+    CHECK(!putMarker(g, list, h, start).error && playerSpawn(g, list).x == 5.5f);  // moving it is fine
+    std::vector<Marker> full(kMaxMarkers, poi);
+    for (size_t i = 0; i < full.size(); ++i) full[i].id = uint32_t(i + 1);
+    EditHistory fh;
+    CHECK(putMarker(g, full, fh, poi).error && full.size() == kMaxMarkers);
+    std::vector<Marker> last = {poi};
+    last[0].id = UINT32_MAX - 1;
+    CHECK(putMarker(g, last, fh, poi).error && last.size() == 1);  // ids never reach 2^32-1 or wrap to 0
+
+    // Respawning: a spawn marker's dead NPC comes back at its home by the marker; the player respawns
+    // at the player spawn (main.cpp uses playerSpawn).
+    sync();
+    Entity& boar = npcs[0];
+    std::mt19937 rng(1);
+    Player far;
+    far.pos = {60, 4, 60};
+    damage(boar, 1000);
+    boar.body.pos = {20, 4, 12};  // died elsewhere
+    for (int i = 0; i < 31 * 60; ++i) updateCombat(far, npcs, 1 / 60.0f, rng);
+    CHECK(boar.body.alive() && boar.body.pos == boars.pos);
+
+    // Files: a round trip keeps every field; older files have no marker section; hostile sections fail cleanly.
+    std::string path = (std::filesystem::temp_directory_path() / "flycoos_markers_test.flyw").string();
+    std::optional<std::vector<Marker>> loaded;
+    std::vector<Instance> instances;
+    uint32_t seed = 0;
+    Grid fg({64, 32, 64});  // world files need whole chunks
+    fg.set({1, 2, 3}, Stone);
+    CHECK(saveWorld(path.c_str(), fg, 5, {}, list).empty());
+    Grid back({32, 32, 32});
+    CHECK(loadWorld(path.c_str(), back, seed, instances, loaded).empty() && loaded && *loaded == list);
+    CHECK(saveWorld(path.c_str(), fg, 5, {}, {}).empty() && loadWorld(path.c_str(), back, seed, instances, loaded).empty() && loaded &&
+          loaded->empty());  // an empty section: the world has no markers (not "an older file")
+    std::ifstream in(path, std::ios::binary);
+    const std::string file((std::istreambuf_iterator<char>(in)), {});
+    in.close();
+    size_t at = file.rfind("MARK");
+    auto seal = [&](std::string payload) {  // this file with the given MARK payload (empty: no section)
+        std::string bytes = file.substr(0, at);
+        if (!payload.empty()) {
+            bytes += "MARK";
+            for (int i = 0; i < 8; ++i) bytes += char(uint64_t(payload.size()) >> (8 * i));
+            bytes += payload;
+        }
+        uint32_t hash = 2166136261u;
+        for (char c : bytes) hash = (hash ^ uint8_t(c)) * 16777619u;
+        for (int i = 0; i < 4; ++i) bytes += char(hash >> (8 * i));
+        std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes;
+        return loadWorld(path.c_str(), back, seed, instances, loaded);
+    };
+    CHECK(seal("").empty() && !loaded && back.cells == fg.cells);  // an older file
+    auto u32 = [](uint32_t v) { return std::string{char(v), char(v >> 8), char(v >> 16), char(v >> 24)}; };
+    auto f32 = [&](float v) { return u32(std::bit_cast<uint32_t>(v)); };
+    // One marker: id, kind, name, x, y, z, radius, entity, count.
+    auto one = [&](uint32_t id, uint8_t kind, std::string name, glm::vec3 p, float radius, uint8_t entity, uint8_t count) {
+        return u32(id) + char(kind) + char(name.size()) + name + f32(p.x) + f32(p.y) + f32(p.z) + f32(radius) + char(entity) + char(count);
+    };
+    std::string good = one(4, 2, "Well", {10.5f, 4, 10.5f}, 8, 1, 1);
+    CHECK(seal(u32(1) + good).empty() && loaded && loaded->size() == 1 && (*loaded)[0].name == "Well");
+    for (const std::string& hostile : {
+             u32(1) + one(4, 7, "Well", {10, 4, 10}, 8, 1, 1),            // unknown kind
+             u32(1) + one(4, 1, "Den", {10, 4, 10}, 8, 9, 1),             // unknown entity
+             u32(1) + one(4, 1, "Den", {10, 4, 10}, 8, 3, 200),           // huge count
+             u32(1) + one(4, 1, "Den", {10, 4, 10}, 8, 3, 0),             // no count
+             u32(1) + one(4, 2, "Well", {NAN, 4, 10}, 8, 1, 1),           // NaN
+             u32(1) + one(4, 2, "Well", {10, 4, 10}, INFINITY, 1, 1),     // infinite radius
+             u32(1) + one(4, 2, "Well", {10, 4, 9000}, 8, 1, 1),          // outside the world
+             u32(1) + one(0, 2, "Well", {10, 4, 10}, 8, 1, 1),            // id 0
+             u32(1) + one(UINT32_MAX, 2, "Well", {10, 4, 10}, 8, 1, 1),   // id 2^32-1
+             u32(1) + one(4, 2, std::string(200, 'w'), {10, 4, 10}, 8, 1, 1),  // name too long
+             u32(1) + one(4, 2, "W\xC3\x28ll", {10, 4, 10}, 8, 1, 1),     // invalid UTF-8
+             u32(2) + good + good,                                         // ids not ascending
+             u32(2) + one(1, 0, "", {1, 4, 1}, 0, 1, 1) + one(2, 0, "", {2, 4, 2}, 0, 1, 1),  // two player spawns
+             u32(5000) + good,                                             // too many
+             u32(2) + good,                                                // truncated
+             u32(1) + good + "x",                                          // trailing bytes
+             u32(1) + good.substr(0, 9),                                   // cut inside the name
+         }) {
+        std::string error = seal(hostile);
+        CHECK(!error.empty() && (error.contains("marker") || error.contains("truncated")));
+    }
+
+    // Older worlds: the default markers spawn the NPCs spawnEntities always did, names included.
+    Grid w = editWorld();
+    std::vector<Marker> defaults = defaultMarkers(w, 9);
+    std::vector<Entity> before = spawnEntities(w, findSpawn(w), 9), after;
+    syncSpawns(after, w, defaults, 9, findSpawn(w));
+    CHECK(defaults.size() == 4 && after.size() == before.size());
+    for (size_t i = 0; i < std::min(before.size(), after.size()); ++i)
+        CHECK(after[i].kind == before[i].kind && after[i].home == before[i].home && after[i].name == before[i].name &&
+              after[i].body.yaw == before[i].body.yaw && after[i].wanderRadius == before[i].type().wanderRadius);
+    for (const Marker& m : defaults) CHECK(!checkMarker(w, m) && m.kind == MarkerKind::Spawn && m.count == 1);
+
+    // Commands: one undo step each, validated, listed, drawn on the map.
+    Grid cg = meadow();
+    std::vector<Marker> marks;
+    EditHistory ch;
+    PrefabLibrary lib = loadPrefabs("no-such-folder");
+    GameView view;
+    auto run = [&](std::string_view request) { return runCommand(request, cg, instances, marks, ch, lib, view); };
+    auto ok = [&](const Command& c) { return c.response["ok"].get<bool>(); };
+    Command c = run(R"({"cmd": "mark", "args": {"kind": "poi", "name": "Old Well", "x": 10, "z": 12}})");
+    CHECK(ok(c) && c.response["result"]["marker"]["id"] == 1 && c.response["result"]["marker"]["y"] == 3 && marks.size() == 1);
+    CHECK(marks[0].pos == glm::vec3(10.5f, 4, 12.5f) && marks[0].radius == 16 && !c.dirty.empty() && ch.undo.size() == 1);
+    c = run(R"({"cmd": "mark", "args": {"kind": "spawn", "name": "Bandit Camp", "x": 20, "z": 20, "y": 5, "entity": "bandit", "count": 4, "radius": 7}})");
+    CHECK(ok(c) && marks.size() == 2 && marks[1].entity == EntityKind::Bandit && marks[1].count == 4 && marks[1].pos.y == 6);
+    c = run(R"({"cmd": "mark", "args": {"kind": "region", "name": "Meadow", "x": 16, "z": 16, "radius": 30}})");
+    CHECK(ok(c) && run(R"({"cmd": "mark", "args": {"kind": "player_spawn", "x": 5, "z": 5}})").response["ok"] == true);
+    CHECK(run(R"({"cmd": "state"})").response["result"]["markers"] == 4);
+    c = run(R"({"cmd": "edit_marker", "args": {"id": 2, "x": 24, "count": 2}})");
+    CHECK(ok(c) && marks[1].pos == glm::vec3(24.5f, 4, 20.5f) && marks[1].count == 2 && marks[1].name == "Bandit Camp");
+    CHECK(ok(run(R"({"cmd": "edit_marker", "args": {"id": 1, "name": "Dry Well"}})")) && marks[0].name == "Dry Well");
+    CHECK(ch.undo.size() == 6);
+    c = run(R"({"cmd": "markers", "args": {"kind": "spawn"}})");
+    CHECK(ok(c) && c.response["result"]["count"] == 1 && c.response["result"]["markers"][0]["entity"] == "bandit");
+    c = run(R"({"cmd": "markers", "args": {"x0": 0, "z0": 0, "x1": 9, "z1": 9}})");  // the well is outside, the region reaches in
+    CHECK(ok(c) && c.response["result"]["count"] == 2);
+    c = run(R"({"cmd": "map", "args": {"x0": 0, "z0": 0, "x1": 63, "z1": 63}})");
+    CHECK(ok(c) && c.response["result"]["markers"].size() == 4);
+    if (ok(c)) std::filesystem::remove(c.response["result"]["path"].get<std::string>());
+    for (const char* hostile : {
+             R"({"cmd": "mark", "args": {"kind": "castle", "name": "x", "x": 1, "z": 1}})",
+             R"({"cmd": "mark", "args": {"kind": "spawn", "x": 1, "z": 1}})",
+             R"({"cmd": "mark", "args": {"kind": "spawn", "x": 1, "z": 1, "entity": "dragon"}})",
+             R"({"cmd": "mark", "args": {"kind": "spawn", "x": 1, "z": 1, "entity": "boar", "count": 9}})",
+             R"({"cmd": "mark", "args": {"kind": "poi", "name": "x", "x": 1, "z": 1, "entity": "boar"}})",
+             R"({"cmd": "mark", "args": {"kind": "poi", "x": 1, "z": 1}})",
+             R"({"cmd": "mark", "args": {"kind": "poi", "name": "x", "x": 64, "z": 1}})",
+             R"({"cmd": "mark", "args": {"kind": "poi", "name": "x", "x": 1, "z": 1, "y": 99}})",
+             R"({"cmd": "mark", "args": {"kind": "poi", "name": "x", "x": 1, "z": 1, "radius": 1e300}})",
+             R"({"cmd": "mark", "args": {"kind": "poi", "name": "x", "x": 1e400, "z": 1}})",
+             R"({"cmd": "mark", "args": {"kind": "poi", "name": "a\u0000b", "x": 1, "z": 1}})",
+             R"({"cmd": "mark", "args": {"kind": "poi", "name": "0123456789012345678901234567890123456789012345678", "x": 1, "z": 1}})",
+             R"({"cmd": "mark", "args": {"kind": "poi", "name": 7, "x": 1, "z": 1}})",
+             R"({"cmd": "mark", "args": {"kind": "player_spawn", "x": 9, "z": 9}})",
+             R"({"cmd": "edit_marker", "args": {"id": 0, "name": "x"}})",
+             R"({"cmd": "edit_marker", "args": {"id": 99, "name": "x"}})",
+             R"({"cmd": "edit_marker", "args": {"id": 4294967296, "name": "x"}})",
+             R"({"cmd": "edit_marker", "args": {"id": 1, "name": ""}})",
+             R"({"cmd": "edit_marker", "args": {"id": 1, "count": 2}})",
+             R"({"cmd": "unmark", "args": {"id": 99}})",
+             R"({"cmd": "markers", "args": {"kind": "boss"}})",
+         }) {
+        c = run(hostile);
+        CHECK(!ok(c) && c.dirty.empty());
+    }
+    CHECK(marks.size() == 4 && ch.undo.size() == 6);
+    c = run(R"({"cmd": "unmark", "args": {"id": 2}})");
+    CHECK(ok(c) && marks.size() == 3 && ch.undo.size() == 7);
+    CHECK(ok(run(R"({"cmd": "undo"})")) && marks.size() == 4 && marks[1].count == 2);
+    CHECK(ok(run(R"({"cmd": "undo"})")) && marks[0].name == "Old Well");
+    CHECK(!ok(run(R"({"cmd": "edit_marker", "args": {"id": 1.5, "name": "x"}})")) && !ok(run(R"({"cmd": "unmark", "args": {"id": 1.9}})")));
+    CHECK(marks.size() == 4 && marks[0].name == "Old Well");  // whole ids only: 1.9 isn't 1
+
+    // Review fixes. Names: no bidi overrides or zero-width characters.
+    for (const char* name : {"a\xE2\x80\xAE" "b", "a\xE2\x80\x8B" "b", "a\xE2\x81\xA6" "b", "\xEF\xBB\xBF" "a", "a\xE2\x80\x8F" "b"}) {
+        Marker m = poi;
+        m.name = name;
+        CHECK(checkMarker(g, m));
+    }
+    // All spawn markers together make at most kMaxSpawnedNpcs NPCs; replacing a marker's count counts it once.
+    {
+        std::vector<Marker> spawns;
+        EditHistory sh;
+        Marker den = anon;
+        den.entity = EntityKind::Boar, den.count = kMaxSpawnCount;
+        for (int i = 0; i < kMaxSpawnedNpcs / kMaxSpawnCount; ++i) CHECK(!putMarker(g, spawns, sh, den).error);
+        CHECK(putMarker(g, spawns, sh, den).error && spawns.size() == size_t(kMaxSpawnedNpcs / kMaxSpawnCount));
+        Marker again = spawns[0];
+        again.pos.x = 7.5f;
+        CHECK(!putMarker(g, spawns, sh, again).error);  // same count, moved: fine at the cap
+        again.count = 1;
+        CHECK(!putMarker(g, spawns, sh, again).error && !putMarker(g, spawns, sh, Marker{.kind = MarkerKind::Spawn, .pos = {3.5f, 4, 3.5f}, .count = 7}).error);
+        std::string payload = u32(kMaxSpawnedNpcs / kMaxSpawnCount + 1);  // a file over the cap
+        for (uint32_t id = 1; id <= uint32_t(kMaxSpawnedNpcs / kMaxSpawnCount + 1); ++id) payload += one(id, 1, "", {10.5f, 4, 10.5f}, 6, 2, 8);
+        CHECK(seal(payload).contains("NPCs"));
+        size_t last = one(1, 1, "", {}, 0, 0, 0).size();  // one marker fewer: exactly at the cap
+        CHECK(seal(payload.substr(0, payload.size() - last).replace(0, 4, u32(kMaxSpawnedNpcs / kMaxSpawnCount))).empty());
+    }
+    std::filesystem::remove(path);
+    // Spawns inside terrain: the player and NPCs come out on top instead of being stuck.
+    {
+        Grid t = meadow();
+        for (int y = 4; y < 9; ++y) t.set({10, y, 10}, Stone);  // a pillar over the marker
+        std::vector<Marker> ms = {marker(MarkerKind::PlayerSpawn, "", {10.5f, 4, 10.5f}, 0), marker(MarkerKind::Spawn, "", {10.5f, 4, 10.5f}, 3)};
+        ms[0].id = 1, ms[1].id = 2;
+        glm::vec3 p = playerSpawn(t, ms);
+        CHECK(p.y == 9 && !overlapsSolid(t, p));
+        std::vector<Entity> es;
+        syncSpawns(es, t, ms, 1, p);
+        CHECK(es.size() == 1 && es[0].body.pos.y == 9 && !overlapsSolid(t, es[0].body.pos));
+        for (int y = 9; y < 12; ++y) t.set({10, y, 10}, Stone);  // built over since: freed on the next update
+        Player far;
+        far.pos = {60, 4, 60};
+        updateEntities(es, t, far, 1 / 60.0f);
+        CHECK(!overlapsSolid(t, es[0].body.pos));
+        ms[1].name = "Renamed";
+        syncSpawns(es, t, ms, 1, p);
+        CHECK(es[0].spawn.name == "Renamed" && es[0].body.pos.y >= 12);  // a rename doesn't respawn
+    }
+    // mark's default ground is under a tree's canopy, not on it.
+    cg.set({5, 4, 5}, Wood), cg.set({5, 5, 5}, Wood), cg.set({5, 6, 5}, Leaves), cg.set({5, 8, 5}, Leaves);
+    c = run(R"({"cmd": "mark", "args": {"kind": "poi", "name": "Shade", "x": 5, "z": 5}})");
+    CHECK(ok(c) && c.response["result"]["marker"]["y"] == 3);
+    // The map lists at most 500 markers.
+    for (int i = 0; i < 520; ++i) putMarker(cg, marks, ch, marker(MarkerKind::Poi, "p", {float(i % 64) + 0.5f, 4, float(i / 64) + 0.5f}, 4));
+    c = run(R"({"cmd": "map", "args": {"x0": 0, "z0": 0, "x1": 63, "z1": 63}})");
+    CHECK(ok(c) && marks.size() > 500 && c.response["result"]["markers"].size() == 500);
+    if (ok(c)) std::filesystem::remove(c.response["result"]["path"].get<std::string>());
 }
 
 static void raycasting() {
@@ -1545,6 +1857,7 @@ int main() {
     editing();
     commands();
     prefabs();
+    markers();
     raycasting();
     if (failures) std::println(stderr, "{} check(s) failed", failures);
     else std::println("all checks passed");

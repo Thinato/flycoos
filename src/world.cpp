@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <string_view>
 #include <thread>
 
 #include <FastNoiseLite.h>
@@ -219,10 +220,55 @@ glm::vec3 findSpawn(const Grid& g, glm::ivec2 near) {
     return {cx + 0.5f, float(g.size.y), cz + 0.5f};
 }
 
+// UTF-8 without control characters, bidi overrides or zero-width characters (which could hide or
+// reorder a name's text); overlong forms and surrogates are invalid too.
+static bool validName(std::string_view s) {
+    for (size_t i = 0; i < s.size();) {
+        auto c = uint8_t(s[i]);
+        int n = c < 0x80 ? 0 : c >= 0xC2 && c <= 0xDF ? 1 : (c & 0xF0) == 0xE0 ? 2 : c >= 0xF0 && c <= 0xF4 ? 3 : -1;
+        if (n < 0 || c < 0x20 || c == 0x7F || s.size() - i <= size_t(n)) return false;
+        uint32_t cp = n ? c & (0x3F >> n) : c;
+        for (int k = 1; k <= n; ++k) {
+            auto t = uint8_t(s[i + size_t(k)]);
+            if ((t & 0xC0) != 0x80) return false;
+            cp = cp << 6 | (t & 0x3F);
+        }
+        if ((cp >= 0x80 && cp < 0xA0) || (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) ||
+            (cp >= 0x2066 && cp <= 0x2069) || cp == 0xFEFF || (n == 2 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) ||
+            (n == 3 && (cp < 0x10000 || cp > 0x10FFFF)))
+            return false;
+        i += size_t(n) + 1;
+    }
+    return true;
+}
+
+const char* checkMarker(const Grid& g, const Marker& m) {
+    if (m.kind >= MarkerKind::Count) return "unknown marker kind";
+    if (m.entity >= EntityKind::Count) return "unknown entity kind";
+    if (m.count < 1 || m.count > kMaxSpawnCount) return "count out of range (1..8)";
+    if (m.name.size() > kMaxMarkerName) return "name longer than 48 bytes";
+    if (!validName(m.name)) return "name must be UTF-8 text without control, bidi or zero-width characters";
+    if (m.name.empty() && (m.kind == MarkerKind::Poi || m.kind == MarkerKind::Region)) return "a poi or region needs a name";
+    if (!(m.pos.x >= 0 && m.pos.x < float(g.size.x) && m.pos.z >= 0 && m.pos.z < float(g.size.z) && m.pos.y >= 0 &&
+          m.pos.y <= float(g.size.y)))
+        return "position outside the world";  // NaN fails every comparison
+    if (!(m.radius >= 0 && m.radius <= kMaxMarkerRadius)) return "radius out of range (0..512)";
+    return nullptr;
+}
+
+const Marker* regionAt(const std::vector<Marker>& markers, glm::vec3 p) {
+    const Marker* best = nullptr;
+    for (const Marker& m : markers)
+        if (m.kind == MarkerKind::Region && glm::distance(glm::vec2(p.x, p.z), glm::vec2(m.pos.x, m.pos.z)) <= m.radius &&
+            (!best || m.radius < best->radius))
+            best = &m;
+    return best;
+}
+
 // World file layout (little-endian):
 //   "FLYW" | u32 version | i32 size x, y, z | u32 seed
 //   sections, each: char tag[4] | u64 bytes | payload. Unknown tags are skipped, which leaves room
-//     for later sections (story markers) without a version bump.
+//     for later sections without a version bump.
 //   u32 FNV-1a of every byte before it: any corruption is rejected instead of loading a wrong world.
 // "VOXL" section: per 32^3 chunk (in chunkOrigin order): u32 bytes, then runs of
 //   (u8 block, LEB128 count - 1) over the chunk's voxels, x fastest, then z, then y. Terrain is
@@ -294,7 +340,8 @@ static bool decodeChunk(Grid& g, glm::ivec3 o, const uint8_t* p, const uint8_t* 
     return i == kChunkVoxels;
 }
 
-std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances) {
+std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances,
+                      const std::vector<Marker>& markers) {
     if (g.size % kChunk != glm::ivec3(0)) return "world size is not a multiple of the chunk size";
     glm::ivec3 counts = g.size / kChunk;
     int n = counts.x * counts.y * counts.z;
@@ -339,6 +386,20 @@ std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std:
         }
         endSection();
     }
+    out.insert(out.end(), {'M', 'A', 'R', 'K'});  // always: an empty one means "no markers", a missing one "older file"
+    sizeAt = out.size();
+    put(out, 0, 8);
+    put(out, markers.size(), 4);
+    for (const Marker& m : markers) {
+        put(out, m.id, 4);
+        put(out, uint8_t(m.kind), 1);
+        put(out, m.name.size(), 1);
+        out.insert(out.end(), m.name.begin(), m.name.end());
+        for (float f : {m.pos.x, m.pos.y, m.pos.z, m.radius}) put(out, std::bit_cast<uint32_t>(f), 4);
+        put(out, uint8_t(m.entity), 1);
+        put(out, uint32_t(m.count), 1);
+    }
+    endSection();
     put(out, fnv1a(out.data(), out.size()), 4);
 
     // Write a temp file and rename it over the target, so a failed save never destroys the last good one.
@@ -409,7 +470,45 @@ static std::string readInstances(const uint8_t* p, const uint8_t* end, glm::ivec
     return p == end ? std::string() : "instance section size mismatch";
 }
 
-std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances) {
+// Reads the MARK payload [p, end) into `out`; returns why it's malformed, or "".
+static std::string readMarkers(const uint8_t* p, const uint8_t* end, const Grid& g, std::vector<Marker>& out) {
+    bool truncated = false;
+    auto take = [&](int64_t bytes) -> uint64_t {  // a little-endian number, or 0 past the end
+        if (end - p < bytes) return truncated = true, p = end, 0;
+        p += bytes;
+        return get(p - bytes, int(bytes));
+    };
+    uint64_t count = take(4);
+    int npcs = 0;
+    if (count > kMaxMarkers) return std::format("more than {} markers", kMaxMarkers);
+    for (uint64_t i = 0; i < count && !truncated; ++i) {
+        Marker m;
+        m.id = uint32_t(take(4));
+        m.kind = MarkerKind(take(1));
+        uint64_t nameBytes = take(1);
+        if (end - p < int64_t(nameBytes)) return "truncated markers";
+        m.name.assign(p, p + nameBytes);
+        p += nameBytes;
+        float f[4];
+        for (float& v : f) v = std::bit_cast<float>(uint32_t(take(4)));
+        m.pos = {f[0], f[1], f[2]};
+        m.radius = f[3];
+        m.entity = EntityKind(take(1));
+        m.count = int(take(1));
+        if (truncated) break;
+        bool secondPlayerSpawn = m.kind == MarkerKind::PlayerSpawn && std::ranges::find(out, MarkerKind::PlayerSpawn, &Marker::kind) != out.end();
+        if (m.id == 0 || m.id == UINT32_MAX || (!out.empty() && m.id <= out.back().id) || checkMarker(g, m) || secondPlayerSpawn)
+            return std::format("bad marker {}", m.id);
+        if (m.kind == MarkerKind::Spawn && (npcs += m.count) > kMaxSpawnedNpcs)
+            return std::format("spawn markers make more than {} NPCs", kMaxSpawnedNpcs);
+        out.push_back(std::move(m));
+    }
+    if (truncated) return "truncated markers";
+    return p == end ? std::string() : "marker section size mismatch";
+}
+
+std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances,
+                      std::optional<std::vector<Marker>>& markers) {
     std::error_code ec;
     uintmax_t fileBytes = std::filesystem::file_size(path, ec);
     std::ifstream f(path, std::ios::binary);
@@ -430,6 +529,7 @@ std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Ins
     seed = uint32_t(get(p + 20, 4));
     if (g.size != size) g = Grid(size);
     instances.clear();
+    markers.reset();
 
     bool voxels = false;
     for (p += kHeader; p < end;) {
@@ -457,6 +557,8 @@ std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Ins
             voxels = true;
         } else if (std::memcmp(tag, "INST", 4) == 0) {
             if (std::string error = readInstances(p, next, size, instances); !error.empty()) return error;
+        } else if (std::memcmp(tag, "MARK", 4) == 0) {
+            if (std::string error = readMarkers(p, next, g, markers.emplace()); !error.empty()) return error;
         }
         p = next;
     }

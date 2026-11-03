@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -126,8 +127,49 @@ constexpr size_t kMaxInstanceCells = size_t(8) << 20;  // of all instances toget
 constexpr size_t kMaxInstanceParams = 8;
 constexpr int kMaxInstanceExtent = 96;  // the cells of one instance span at most this per axis
 
-// World files (.flyw): the whole grid, its seed and the prefab instances (sorted by id), in one
-// versioned file; see docs/ARCHITECTURE.md. Both return an empty string on success, else why it
-// failed. A rejected load leaves `g` and `instances` unspecified.
-std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances);
-std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances);
+// NPC kinds (their traits are in entity.cpp). Saved in spawn markers: only append.
+enum class EntityKind : uint8_t { TrainingDummy, Villager, Boar, Bandit, Count };
+inline constexpr const char* kEntityKindNames[] = {"dummy", "villager", "boar", "bandit"};
+
+// Story markers: authored places in the world (see docs/ARCHITECTURE.md, "Markers"). Saved in world
+// files: only append kinds.
+enum class MarkerKind : uint8_t {
+    PlayerSpawn,  // where the player starts and gets back up (at most one; none: findSpawn)
+    Spawn,        // `count` NPCs of kind `entity`; they wander within `radius` and respawn here
+    Poi,          // a named point; its label shows while the player is within `radius`
+    Region,       // a named circle (x, z, radius); entering it shows its name
+    Count
+};
+inline constexpr const char* kMarkerKindNames[] = {"player_spawn", "spawn", "poi", "region"};
+
+struct Marker {
+    uint32_t id = 0;
+    MarkerKind kind = MarkerKind::Poi;
+    std::string name;  // UTF-8, at most kMaxMarkerName bytes, no control, bidi or zero-width characters
+    glm::vec3 pos{};   // feet position: y is the top of the ground voxel it stands on
+    float radius = 0;
+    EntityKind entity = EntityKind::Villager;  // spawn
+    int count = 1;                             // spawn
+    bool operator==(const Marker&) const = default;
+};
+
+// Caps, enforced when adding, editing and loading.
+constexpr size_t kMaxMarkers = 4096;
+constexpr size_t kMaxMarkerName = 48;  // bytes
+constexpr int kMaxSpawnCount = 8;
+constexpr int kMaxSpawnedNpcs = 256;  // the counts of all spawn markers together: every NPC is simulated each frame
+constexpr float kMaxMarkerRadius = 512;
+
+// Why the marker is invalid (ignoring its id and the other markers), or nullptr.
+const char* checkMarker(const Grid& g, const Marker& m);
+// The smallest region containing `p` (x, z), or nullptr: the innermost one when they nest.
+const Marker* regionAt(const std::vector<Marker>& markers, glm::vec3 p);
+
+// World files (.flyw): the whole grid, its seed, the prefab instances and the markers (both sorted
+// by id), in one versioned file; see docs/ARCHITECTURE.md. Both return an empty string on success,
+// else why it failed. A file without a marker section (older ones) loads `markers` as nullopt. A
+// rejected load leaves `g`, `instances` and `markers` unspecified.
+std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances,
+                      const std::vector<Marker>& markers);
+std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances,
+                      std::optional<std::vector<Marker>>& markers);

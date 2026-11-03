@@ -42,8 +42,8 @@ struct Command {
 };
 
 // `prefabs` is rescanned by the prefabs command.
-Command runCommand(std::string_view request, Grid& world, std::vector<Instance>& instances, EditHistory& history,
-                   PrefabLibrary& prefabs, const GameView& view);
+Command runCommand(std::string_view request, Grid& world, std::vector<Instance>& instances, std::vector<Marker>& markers,
+                   EditHistory& history, PrefabLibrary& prefabs, const GameView& view);
 
 // Writes an RGB8 image to a new PNG in the system temp folder and returns its absolute path, or ""
 // on failure.

@@ -16,6 +16,7 @@ unsigned uiColor(float r, float g, float b, float a) {
 namespace {
 
 constexpr float kNameplateRange = 40;  // blocks from the camera
+constexpr float kRegionSeconds = 4;    // how long a region's name shows after entering it
 
 void shadowText(ImDrawList* dl, ImVec2 pos, ImU32 color, float alpha, const char* text) {
     dl->AddText(ImVec2(pos.x + 1, pos.y + 1), uiColor(0, 0, 0, 0.8f * alpha), text);
@@ -127,4 +128,29 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     std::snprintf(hp, sizeof hp, "%d / %d", int(std::ceil(player.health)), maxHealth(player.stats));
     ImVec2 hs = ImGui::CalcTextSize(hp);
     shadowText(dl, ImVec2(center.x - hs.x / 2, center.y - hs.y / 2), uiColor(1, 1, 1), 1, hp);
+}
+
+void drawPlaces(const glm::mat4& view, float fovY, const Player& player, const std::vector<Marker>& markers,
+                const Marker* region, float regionSeconds) {
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    ImVec2 screen = ImGui::GetIO().DisplaySize;
+    if (screen.x <= 0 || screen.y <= 0) return;
+    glm::mat4 viewProj = glm::perspectiveRH_ZO(fovY, screen.x / screen.y, 0.1f, 1000.0f) * view;
+    for (const Marker& m : markers) {
+        if (m.kind != MarkerKind::Poi) continue;
+        float d = glm::distance(glm::vec2(player.pos.x, player.pos.z), glm::vec2(m.pos.x, m.pos.z));
+        float alpha = std::clamp((m.radius - d) / std::max(2.0f, m.radius / 4), 0.0f, 1.0f);
+        glm::vec4 clip = viewProj * glm::vec4(m.pos + glm::vec3(0, 3, 0), 1);
+        if (alpha <= 0 || clip.w < 0.1f) continue;
+        ImVec2 size = ImGui::CalcTextSize(m.name.c_str());
+        ImVec2 p((clip.x / clip.w * 0.5f + 0.5f) * screen.x - size.x / 2, (0.5f - clip.y / clip.w * 0.5f) * screen.y - size.y);
+        shadowText(dl, p, uiColor(1, 0.9f, 0.6f, alpha), alpha, m.name.c_str());
+    }
+    if (!region || regionSeconds >= kRegionSeconds) return;
+    float alpha = std::min({1.0f, regionSeconds / 0.5f, kRegionSeconds - regionSeconds});  // fades in, then out over the last second
+    float size = ImGui::GetFontSize() * 2;
+    ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, region->name.c_str());
+    ImVec2 at(screen.x / 2 - ts.x / 2, screen.y * 0.16f);
+    dl->AddText(ImGui::GetFont(), size, ImVec2(at.x + 2, at.y + 2), uiColor(0, 0, 0, 0.8f * alpha), region->name.c_str());
+    dl->AddText(ImGui::GetFont(), size, at, uiColor(1, 0.95f, 0.8f, alpha), region->name.c_str());
 }
