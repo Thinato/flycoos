@@ -33,7 +33,8 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances |
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
-| `src/mesher.h/.cpp` | Greedy mesher with per-corner AO (`meshRegion`), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
+| `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`), `fillLight` (whole world) and `relight` (the columns around an edit; returns the box whose light changed), `lightCost`/`emission` per block |
+| `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
 | `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (stats, health, swing and damage timers, `Inventory`); walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits and temper (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), wander and chase AI, talking, damage both ways, loot |
@@ -42,9 +43,9 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, poi labels and the region name (`drawPlaces`) |
-| `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, uploads of the core's chunk and model meshes, render targets, frustum culling, day/night lighting, screenshots |
+| `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, the world's `Light` (filled by `uploadWorld`, relit by `updateWorld`), uploads of the core's chunk and model meshes, render targets, frustum culling, day/night lighting, screenshots |
 | `src/text.h` | `validName`: UTF-8 display text without control, bidi or zero-width characters (marker names and lines, item names) |
-| `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh and remesh times), for the debug and editor UIs without `renderer.h` |
+| `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh, light and remesh times, light memory), for the debug and editor UIs without `renderer.h` |
 | `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
 | `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Data, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor) into `SimInput`, orbit camera, main loop around `step`, remote commands, benchmark stats |
@@ -313,18 +314,47 @@ remesh path and screen.
   A game that answers `catalog` with an error (an older build) isn't asked again. The catalog fetch
   never changes a tool call's own result. Lines that aren't UTF-8 JSON get -32700, non-objects and requests without a method -32600.
 
+## Voxel light (`light.h`, ADR-019)
+
+Two channels of 0..15 per voxel, stored as one byte `sky << 4 | block`:
+
+- **Sky light** is 15 in every voxel with only air above it up to the world top. From there it
+  spreads in all six directions, losing `lightCost` per voxel entered: 1 for air and leaves, 2 for
+  water; everything else stops it. Only air passes the full 15 straight down, so the ground under
+  a canopy, inside a house or at a lake bed is lit by what spreads in sideways.
+- **Block light** floods the same way from emitters: `Ember` emits 13 (its own voxel holds 13).
+- **Storage:** `Light` keeps one entry per 32³ chunk: a single `fill` value, or a 32 KiB array once
+  its voxels differ. Open sky and solid ground cost nothing; the story world needs 47 MiB in 1,515
+  of its 6,144 chunks (a dense grid would be 192 MiB). A relight that makes a chunk uniform again
+  frees its array. Outside the volume reads as open sky.
+- **Filling** (`relightColumns`, behind both entry points) works on a set of whole columns: find
+  each column's sky top (one past its highest non-air voxel, scanning layers top-down in parallel),
+  rewrite the columns' voxels as 15 above the top and 0 below (plus emission), in parallel per
+  chunk, then flood from seeds in waves, raising a neighbour's channel to `value - cost` when that
+  is brighter. Seeds are emitters, open-sky voxels beside a column that is dark at their height,
+  the voxel above a leaf or water top, and the lit voxels of the columns just outside the set.
+  Raising only moves values toward the exact result (the brightest path), so order doesn't matter.
+- **After an edit** `relight(box)` refills the columns within 15 of the box (all heights, since
+  sky light falls any distance): light from anywhere farther changes by at least 16 on the way, so
+  it can't reach, and the unchanged light just outside seeds the border. That replaces the usual
+  BFS add plus two-phase removal with one code path, and is exact: `core_test` checks random edits
+  across chunk borders against a full fill. It returns the box of voxels whose light changed, which
+  `updateWorld` adds to the remesh, so no stale light seams remain. Small edits relight in
+  ~1.1–1.5 ms; a 64×10×64 fill in ~4.6 ms; clearing 200×4×200 in ~23 ms.
+
 ## Meshing (`meshRegion`)
 
 Per region (a 32³ chunk, or a whole character part):
 
 1. Skip the region if it is all air.
 2. For each of the 6 face directions, sweep slices along the face axis. Build a 2D mask of visible
-   faces, keyed by `block | AO << 8`. A face is visible if the neighbour isn't opaque. Water faces
-   are visible only against air.
+   faces, keyed by `block | AO << 8 | light << 17`. A face is visible if the neighbour isn't opaque.
+   Water faces are visible only against air. The light is the `Light` value of that neighbour (the
+   voxel in front of the face); without a `Light` (character parts) every face is under open sky.
 3. **AO** per face corner is the classic 3-sample rule (`side1 && side2 ? 0 : 3 - (side1 + side2 + corner)`),
    sampled in the cell outside the face.
 4. **Greedy merge**: grow rectangles along u, then v, while the key is identical. Faces with different
-   AO never merge, so AO stays exact.
+   AO or light never merge, so both stay exact (light costs ~5% more quads in the story world).
 5. Opaque and water quads go to separate lists, so water can be drawn in its own blended pass.
 
 Neighbours are read from the full `Grid`, so chunk borders produce no internal faces and AO is
@@ -337,13 +367,13 @@ Defined in `src/mesher.h`, decoded in `voxel_vs`:
 
 ```
 a (uint32):  x:6 | y:6 | z:6 | (w-1):6 | (h-1):6 | unused:2      position relative to region origin
-b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
+b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (block:4, sky:4) | unused:5
 ```
 
 - Faces: `0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z, 5 -Z`. A face on axis `a` spans `u = (a+1)%3` (width) and
   `v = (a+2)%3` (height). For positive faces `u × v = normal`, so corners 0→1→2→3 =
   (0,0),(1,0),(1,1),(0,1) wind counter-clockwise when seen from outside.
-- AO values run from 0 (dark) to 3 (lit).
+- AO values run from 0 (dark) to 3 (lit). Light is the byte `Light` stores, `sky << 4 | block`.
 
 ## Rendering
 
@@ -357,8 +387,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   It flips the triangle diagonal when AO is anisotropic and reverses winding for negative faces.
 - **Chunk slots and edits:** every chunk (empty ones too) owns a slot `{first, count, capacity}` in
   each world buffer; `uploadWorld` packs them back to back and leaves ~1/8 + 64k quads of headroom at
-  the end. After an edit, `updateWorld(dirty)` remeshes only the chunks overlapping the dirty box
-  grown by 1 voxel (faces and AO read neighbours), in parallel. A chunk's new quads overwrite its
+  the end. After an edit, `updateWorld(dirty)` relights the columns around it (`relight`, below)
+  and remeshes only the chunks overlapping the dirty box and the box whose light changed, grown by
+  1 voxel (faces, AO and light read neighbours), in parallel. A chunk's new quads overwrite its
   slot if they fit; otherwise it gets a new slot with 25% spare at the end of the buffer. All writes
   of one edit go through one transfer buffer and copy pass. When the headroom runs out, every slot is
   repacked from the CPU copy of the meshes (no remeshing). See ADR-012.
@@ -380,10 +411,11 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   3. Debug UI (when open): a second pass draws ImGui into `resolved_`.
   4. Blit `resolved_` to the swapchain. Owning the final image is what makes `--screenshot` possible.
 - **Debug views:** `Frame.debug.x` selects shaded, greedy quads (color per merged quad), chunks
-  (color per 32³ cell), AO only, or normals. The branch is on a uniform, so it's coherent. The quad
-  index rides in the high 24 bits of the existing flat `blockAndQuad` output rather than a new
-  one: on Apple's tile-based GPUs every extra vertex output costs bandwidth, and two extra outputs
-  measured ~15% slower frames.
+  (color per 32³ cell), AO only, normals, or light levels (sky blue-white, block orange;
+  `--view light`). The branch is on a uniform, so it's coherent. The quad's light and index ride in
+  the existing flat `blockAndQuad` output (block id bits 0-4, light 5-12, quad index 13-31) rather
+  than new ones: on Apple's tile-based GPUs every extra vertex output costs bandwidth, and two extra
+  outputs measured ~15% slower frames.
 - **Color:** the swapchain is `SDR_LINEAR` (sRGB format), so all lighting is in linear space. The
   palette is sRGB in `kPalette` and converted at upload. Output goes through an ACES filmic tonemap.
 - **Shading:** a directional light (sun by day, moon by night) plus a hemispheric sky/ground
@@ -393,8 +425,23 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   `light()` first shades albedo toward `Frame.shadowTint.rgb` by `shadowTint.a * (1 - o)`, so corners
   get a cooler, deeper hue before lighting and fog; ambient is multiplied by `o`, the sun by half as
   much. The CPU fades the tint to 30% at night (moonlight is already blue). Both uniforms come from
-  `RenderSettings` (debug UI Render tab, Lighting); off sends the old linear curve and no tint. A
-  future sky-visibility term multiplies into `o` at the top of `light()`.
+  `RenderSettings` (debug UI Render tab, Lighting); off sends the old linear curve and no tint.
+- **Voxel light (ADR-019):** each quad carries the sky and block light of the voxel in front of it
+  (models: one value sampled where they stand, sent in the Draw uniforms' `hashOffset.w`). `light()`
+  maps a level through `curve(l) = x / (f - (f-1) x)`, `x = l/15` (`Frame.lightParams.y`, default
+  2), and:
+  - multiplies `curve(sky)` into `o`, so ambient and the cool tint follow sky visibility: roofed
+    interiors, barrows and the ground under canopies go dark and cool;
+  - fades sun/moon diffuse in over sky light `sunGate..1` (`smoothstep`, default 0.6), the stand-in
+    for shadows;
+  - adds `emberColor × curve(block)` on the untinted albedo, independent of the time of day, faded
+    out where the sky's light is brighter (`1 - 0.5 × luma(sky lit) / luma(ember lit)`), so embers
+    glow at night and in dark rooms but don't tint sunlit ground;
+  - adds a small `darkAmbient × (1 - curve(sky))` so unlit voxels aren't black.
+  Day/night stays a uniform change: stored light never depends on the time. The Render tab's
+  Lighting section toggles voxel light (off = everything under open sky, the old look) and tunes the
+  gate, falloff, ember color and strength and the dark ambient; it shows the light memory and the
+  last relight time.
   Exponential-squared fog blends to the sky color in the view direction, so the horizon matches the
   sky.
 - **Water:** the top surface is lowered by 0.12, with Fresnel sky reflection and a sun specular
@@ -651,9 +698,10 @@ derives the following from the sun height:
 | Metric | Value |
 |---|---|
 | World generation | ~0.15–0.2 s |
+| Light fill (`fillLight`, story world) | ~0.16–0.20 s; 47 MiB of light arrays in 1,515 of 6,144 chunks |
 | Meshing + upload | ~0.35–1.1 s |
 | World file save / load (2.8 MB) | ~22 ms / ~13 ms |
-| One brush stroke: edit + remesh + upload | ~1–3 ms |
+| One brush stroke: edit + relight + remesh + upload | ~2–4 ms (relight ~1.1–1.5 ms; a 200×4×200 clear ~23 ms) |
 | Remote screenshot (offscreen render + readback) | ~8–20 ms (960×540 to 1600×900) |
 | Command server when idle | one atomic load per frame |
 | GPU memory for world quads | ~14 MB |
@@ -674,5 +722,7 @@ derives the following from the sun height:
 | Overlapping instances can leave orphaned voxels when removed oldest first | Track which instance owns each voxel |
 | One draw call per chunk | `SDL_DrawGPUPrimitivesIndirect` with a GPU-culled draw list |
 | MSL-only shaders (macOS) | HLSL/Slang + SDL_shadercross for SPIR-V/DXIL (M1) |
-| No shadows | Cascaded shadow map for sun/moon (M1) |
+| No shadows: sun light is gated by sky light, which has no direction (wrong under overhangs at low sun) | Cascaded shadow map for sun/moon (M1) |
+| Stepped per-face light (one value per quad, Minecraft's "smooth lighting off"); models get one value | Player-centred RG8 3D light texture sampled per fragment, or per-corner light in a third quad word |
+| Relighting recomputes whole columns (all 192 heights) around an edit | BFS add / two-phase removal on the stored light if edits get big or frequent |
 | Absolute world-space float positions (jitter far from the origin) | Camera-relative rendering: subtract the camera's chunk origin on the CPU (needed for M1 streaming) |

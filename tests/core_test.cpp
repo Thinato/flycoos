@@ -18,6 +18,7 @@
 #include "defs.h"
 #include "edit.h"
 #include "entity.h"
+#include "light.h"
 #include "mesher.h"
 #include "prefab.h"
 #include "session.h"
@@ -2816,6 +2817,145 @@ static void dataFiles() {
     fs::remove_all(dir);
 }
 
+// Voxel light (light.h): sky fill, ember falloff, relight after edits (incremental == full fill,
+// across chunk borders), light in the quads and the remesh covering where light changed.
+static bool sameLight(const Light& a, const Light& b) {
+    for (int y = 0; y < a.size.y; ++y)
+        for (int z = 0; z < a.size.z; ++z)
+            for (int x = 0; x < a.size.x; ++x)
+                if (a.get({x, y, z}) != b.get({x, y, z})) return false;
+    return true;
+}
+
+static void lighting() {
+    Grid g({16, 16, 16});
+    for (int z = 0; z < 16; ++z)
+        for (int x = 0; x < 16; ++x)
+            for (int y = 0; y < 4; ++y) g.set({x, y, z}, Stone);  // ground top at y = 4
+    Light l;
+    fillLight(g, l);
+    CHECK(l.get({5, 4, 5}) == 0xF0 && l.get({5, 15, 5}) == 0xF0);  // open sky: 15, no block light
+    CHECK(l.get({5, 2, 5}) == 0);                                     // inside the ground
+    CHECK(l.get({-1, 4, 5}) == 0xF0 && l.allocated() == 1);          // outside: open sky
+
+    // An 8x8 roof at y = 8 over x, z in [4, 11]: below it, 15 minus the steps to the nearest open column.
+    for (int z = 4; z <= 11; ++z)
+        for (int x = 4; x <= 11; ++x) g.set({x, 8, z}, Stone);
+    Box roof{{4, 8, 4}, {11, 8, 11}};
+    Box changed = relight(g, l, roof);
+    CHECK(skyLight(l.get({7, 5, 7})) == 11 && skyLight(l.get({4, 4, 4})) == 14 && skyLight(l.get({7, 9, 7})) == 15);
+    CHECK(!changed.empty() && changed.lo.y == 4 && changed.hi.y == 8);  // the air under the roof and the roof
+    Light fresh;
+    fillLight(g, fresh);
+    CHECK(sameLight(l, fresh));
+
+    // An ember under the roof floods block light, -1 per block; removing it restores the darkness.
+    g.set({7, 4, 7}, Ember);
+    relight(g, l, {{7, 4, 7}, {7, 4, 7}});
+    CHECK(blockLight(l.get({7, 4, 7})) == emission(Ember) && blockLight(l.get({8, 4, 7})) == emission(Ember) - 1);
+    CHECK(blockLight(l.get({10, 4, 7})) == emission(Ember) - 3 && blockLight(l.get({7, 7, 9})) == emission(Ember) - 5);
+    CHECK(blockLight(l.get({7, 9, 7})) == 0);  // the roof stops it (around the roof is 15 steps or more)
+    CHECK(skyLight(l.get({7, 4, 7})) == 0);    // an ember is opaque: no sky light in it
+    g.set({7, 4, 7}, Air);
+    relight(g, l, {{7, 4, 7}, {7, 4, 7}});
+    CHECK(blockLight(l.get({10, 4, 7})) == 0 && skyLight(l.get({7, 4, 7})) == 11);
+    g.set({7, 8, 7}, Air);  // a hole in the roof: open sky falls straight down through it
+    relight(g, l, {{7, 8, 7}, {7, 8, 7}});
+    CHECK(skyLight(l.get({7, 4, 7})) == 15 && skyLight(l.get({8, 4, 7})) == 14);
+    fillLight(g, fresh);
+    CHECK(sameLight(l, fresh));
+
+    // Leaves and water pass light at a cost of 1 and 2 per block, but only air passes open sky down for free.
+    {
+        Grid w({8, 16, 8});
+        for (int z = 0; z < 8; ++z)
+            for (int x = 0; x < 8; ++x) {
+                w.set({x, 0, z}, Stone);
+                for (int y = 1; y < 12; ++y) w.set({x, y, z}, x < 4 ? Leaves : Water);
+            }
+        Light wl;
+        fillLight(w, wl);
+        CHECK(skyLight(wl.get({1, 11, 1})) == 14 && skyLight(wl.get({1, 9, 1})) == 12);  // leaves
+        CHECK(skyLight(wl.get({6, 11, 6})) == 13 && skyLight(wl.get({6, 9, 6})) == 9);   // water
+    }
+
+    {  // light from outside the relit columns comes back in through their border
+        Grid w({64, 8, 4});
+        for (int z = 0; z < 4; ++z)
+            for (int x = 0; x < 64; ++x) w.set({x, 0, z}, Stone), w.set({x, 3, z}, Stone);
+        w.set({10, 1, 1}, Ember);
+        Light wl, full;
+        fillLight(w, wl);
+        w.set({30, 1, 1}, Stone);  // relights x in [15, 45]; the ember at x = 10 still reaches x = 15
+        relight(w, wl, {{30, 1, 1}, {30, 1, 1}});
+        fillLight(w, full);
+        CHECK(blockLight(wl.get({15, 1, 1})) == emission(Ember) - 5 && sameLight(wl, full));
+    }
+
+    // Packing: light round-trips through the quad.
+    for (QuadInfo q : {QuadInfo{{3, 4, 5}, 2, 3, 2, {3, 3, 2, 1}, Planks, 9, 13}, QuadInfo{{0, 0, 0}, 32, 32, 5, {0, 0, 0, 0}, Water, 0, 0},
+                       QuadInfo{{31, 31, 31}, 1, 1, 1, {3, 3, 3, 3}, Ember, 15, 15}})
+        CHECK(unpack(pack(q)) == q);
+    {  // the mesher takes each face's light from the voxel in front of it
+        Mesh m = meshRegion(g, {0, 0, 0}, g.size, &l);
+        bool found = false;
+        for (Quad q : m.opaque) {
+            QuadInfo i = unpack(q);
+            if (i.face != 2 || i.pos.y != 3 || i.pos.x > 9 || i.pos.x + i.w <= 9 || i.pos.z > 5 || i.pos.z + i.h <= 5) continue;
+            found = true;
+            CHECK(i.sky == skyLight(l.get({9, 4, 5})) && i.sky < 15 && i.glow == 0);
+        }
+        CHECK(found);
+        CHECK(meshRegion(g, {0, 0, 0}, g.size).opaque != m.opaque);  // without light: all open sky
+    }
+
+    // The seed-7 world chunkMeshes pins, lit. Random edits across the
+    // chunk borders relight to exactly a full fill, and remeshing the edit plus the changed light
+    // matches meshing from scratch (no seams).
+    Grid t({64, 128, 64});
+    generateTerrain(t, 7);
+    Light tl;
+    fillLight(t, tl);
+    std::vector<Mesh> meshes = meshChunks(t, &tl);
+    size_t opaque = 0, water = 0;
+    for (const Mesh& m : meshes) opaque += m.opaque.size(), water += m.water.size();
+    int shaded = 0;
+    for (const Mesh& m : meshes)
+        for (Quad q : m.opaque) shaded += unpack(q).sky < kMaxLight;
+    // The same count as unlit: the 116 faces under trees were already split by AO and height. (The
+    // story world, with houses and the barrow, goes from 1772666 to 1863601 opaque quads, +5.1%.)
+    CHECK(opaque == 7632 && water == 7 && shaded == 116);
+    std::mt19937 rng(11);
+    for (int i = 0; i < 8; ++i) {
+        glm::ivec3 lo(int(rng() % 8) + 26, int(rng() % 40) + 30, int(rng() % 8) + 26);  // around the x = z = 32 borders
+        glm::ivec3 hi = lo + glm::ivec3(int(rng() % 9), int(rng() % 3), int(rng() % 9));
+        Block b = std::array{Stone, Air, Ember, Leaves, Water}[rng() % 5];
+        for (int y = lo.y; y <= hi.y; ++y)
+            for (int z = lo.z; z <= hi.z; ++z)
+                for (int x = lo.x; x <= hi.x; ++x) t.set({x, y, z}, b);
+        std::vector<uint8_t> before;
+        for (int y = 0; y < t.size.y; ++y)
+            for (int z = 0; z < t.size.z; ++z)
+                for (int x = 0; x < t.size.x; ++x) before.push_back(tl.get({x, y, z}));
+        Box lit = relight(t, tl, {lo, hi});
+        fillLight(t, fresh);
+        CHECK(sameLight(tl, fresh));
+        bool inside = true;  // every voxel whose light changed is in the returned box
+        for (int y = 0, k = 0; y < t.size.y; ++y)
+            for (int z = 0; z < t.size.z; ++z)
+                for (int x = 0; x < t.size.x; ++x, ++k)
+                    if (before[size_t(k)] != tl.get({x, y, z}))
+                        inside &= !lit.empty() && glm::all(glm::greaterThanEqual(glm::ivec3(x, y, z), lit.lo)) &&
+                                  glm::all(glm::lessThanEqual(glm::ivec3(x, y, z), lit.hi));
+        CHECK(inside);
+        remeshChunks(t, lit.empty() ? lo : glm::min(lo, lit.lo), lit.empty() ? hi : glm::max(hi, lit.hi), meshes, &tl);
+        std::vector<Mesh> scratch = meshChunks(t, &tl);
+        bool same = true;
+        for (size_t c = 0; c < scratch.size(); ++c) same &= scratch[c].opaque == meshes[c].opaque && scratch[c].water == meshes[c].water;
+        CHECK(same);
+    }
+}
+
 int main() {
     {  // every test reads the shipped item definitions, as the game does
         Defs shipped;
@@ -2830,6 +2970,7 @@ int main() {
     meshing();
     chunkMeshes();
     packing();
+    lighting();
     physics();
     entities();
     combat();

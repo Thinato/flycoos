@@ -7,6 +7,7 @@
 #include <glm/glm.hpp>
 
 #include "edit.h"
+#include "light.h"
 #include "mesher.h"
 #include "model.h"
 #include "render_stats.h"
@@ -27,7 +28,7 @@ struct FrameParams {
 };
 
 // Debug-view switches (debug UI "Render" tab).
-enum ViewMode { ViewShaded, ViewQuads, ViewChunks, ViewAO, ViewNormals, ViewModeCount };  // = Frame.debug.x
+enum ViewMode { ViewShaded, ViewQuads, ViewChunks, ViewAO, ViewNormals, ViewLight, ViewModeCount };  // = Frame.debug.x
 struct RenderSettings {
     int viewMode = ViewShaded;
     bool wireframe = false;  // quad edges drawn over the scene
@@ -39,6 +40,14 @@ struct RenderSettings {
     glm::vec4 aoCurve{0.35f, 0.62f, 0.82f, 1.0f};
     glm::vec3 tintColor{0.55f, 0.70f, 1.0f};
     float tintStrength = 0.8f;
+    // Voxel light (light.h): ambient and occlusion scale by curve(sky), sun diffuse fades in over
+    // sky visibility sunGate..1, embers add emberColor (sRGB) * emberStrength * curve(block).
+    bool voxelLight = true;  // off: everything under open sky, no ember light (A/B)
+    float sunGate = 0.6f;
+    float lightFalloff = 2;  // curve(l) = x / (f - (f-1) x), x = l/15: 1 linear, higher darker
+    glm::vec3 emberColor{1.0f, 0.8f, 0.6f};
+    float emberStrength = 1.5f;
+    float darkAmbient = 0.03f;  // ambient left where no light reaches
 };
 
 class Renderer {
@@ -49,9 +58,10 @@ public:
     ~Renderer();
 
     bool init(SDL_Window* window, bool vsync);
-    void uploadWorld(const Grid& world);  // meshes every chunk (meshChunks) and uploads
-    // After an edit: remeshes (remeshChunks) and re-uploads only the chunks overlapping `dirty` grown
-    // by one voxel (faces and AO look at neighbours).
+    void uploadWorld(const Grid& world);  // lights (fillLight), meshes every chunk (meshChunks) and uploads
+    // After an edit: relights around `dirty`, then remeshes (remeshChunks) and re-uploads only the
+    // chunks overlapping `dirty` and the voxels whose light changed, grown by one voxel (faces and AO
+    // look at neighbours).
     void updateWorld(const Grid& world, const Box& dirty);
     void uploadModels();  // character and NPC models
     // Draws one frame, then the debug UI (if any) on top. With screenshotPath set, also writes
@@ -103,5 +113,6 @@ private:
     uint32_t targetW_ = 0, targetH_ = 0;
     std::vector<ChunkDraw> chunks_;  // every chunk, empty ones too, in chunkOrigin order
     std::vector<Mesh> meshes_;       // CPU copy of every chunk's mesh, for repacking
+    Light light_;                    // the world's light, kept in step with it by updateWorld
     std::array<std::array<std::pair<uint32_t, uint32_t>, PartCount>, ModelCount> parts_{};  // first quad, quad count
 };

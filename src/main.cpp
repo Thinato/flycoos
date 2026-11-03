@@ -42,7 +42,7 @@ struct Options {
 };
 
 [[noreturn]] static void usage() {
-    std::println(stderr, "usage: flycoos [--world PATH] [--seed N] [--time 0..1] [--debug] [--view shaded|quads|chunks|ao|normals|wire]\n"
+    std::println(stderr, "usage: flycoos [--world PATH] [--seed N] [--time 0..1] [--debug] [--view shaded|quads|chunks|ao|normals|light|wire]\n"
                          "               [--port N | --no-serve]\n"
                          "               [--frames N [--screenshot out.bmp] [--look YAW PITCH]]");
     std::exit(2);
@@ -72,7 +72,7 @@ static Options parseArgs(int argc, char** argv) {
         } else if (a == "--no-serve") o.serve = false;
         else if (a == "--view" && hasValue) {
             std::string_view v = argv[++i];
-            constexpr std::string_view names[ViewModeCount] = {"shaded", "quads", "chunks", "ao", "normals"};
+            constexpr std::string_view names[ViewModeCount] = {"shaded", "quads", "chunks", "ao", "normals", "light"};
             auto it = std::ranges::find(names, v);
             if (v == "wire") o.render.wireframe = true;
             else if (it != std::end(names)) o.render.viewMode = int(it - std::begin(names));
@@ -108,11 +108,11 @@ static int run(SDL_Window* window, const Options& opt) {
         renderer.stats.genSeconds = double(SDL_GetTicksNS() - start) * 1e-9;
         renderer.uploadWorld(world);
         const RenderStats& s = renderer.stats;
-        std::println("world {}x{}x{} seed {} | generated {:.3f}s + meshed/uploaded {:.3f}s = {:.3f}s | "
-                     "{} opaque + {} water quads ({:.1f} MB) in {} chunks",
-                     world.size.x, world.size.y, world.size.z, game.seed, s.genSeconds, s.meshSeconds,
-                     s.genSeconds + s.meshSeconds, s.opaqueQuads, s.waterQuads,
-                     double(s.opaqueQuads + s.waterQuads) * 8 / (1 << 20), s.chunksTotal);
+        std::println("world {}x{}x{} seed {} | generated {:.3f}s + lit {:.3f}s + meshed/uploaded {:.3f}s = {:.3f}s | "
+                     "{} opaque + {} water quads ({:.1f} MB) in {} chunks, light {:.1f} MiB",
+                     world.size.x, world.size.y, world.size.z, game.seed, s.genSeconds, s.lightSeconds, s.meshSeconds,
+                     s.genSeconds + s.lightSeconds + s.meshSeconds, s.opaqueQuads, s.waterQuads,
+                     double(s.opaqueQuads + s.waterQuads) * 8 / (1 << 20), s.chunksTotal, double(s.lightBytes) / (1 << 20));
     };
     Editor editor;
     editor.path = opt.world ? opt.world : "worlds/world.flyw";
@@ -132,11 +132,11 @@ static int run(SDL_Window* window, const Options& opt) {
         game.seed = worldSeed;
         renderer.uploadWorld(world);
         const RenderStats& s = renderer.stats;
-        std::println("world {} ({:.1f} MB, {}x{}x{}, seed {}) loaded {:.3f}s + meshed/uploaded {:.3f}s | "
-                     "{} opaque + {} water quads in {} chunks, {} prefab instances, {} markers",
+        std::println("world {} ({:.1f} MB, {}x{}x{}, seed {}) loaded {:.3f}s + lit {:.3f}s + meshed/uploaded {:.3f}s | "
+                     "{} opaque + {} water quads in {} chunks, light {:.1f} MiB, {} prefab instances, {} markers",
                      opt.world, double(std::filesystem::file_size(opt.world, ec)) / (1 << 20), world.size.x,
-                     world.size.y, world.size.z, worldSeed, loadSeconds, s.meshSeconds, s.opaqueQuads, s.waterQuads,
-                     s.chunksTotal, instances.size(), markers.size());
+                     world.size.y, world.size.z, worldSeed, loadSeconds, s.lightSeconds, s.meshSeconds, s.opaqueQuads,
+                     s.waterQuads, s.chunksTotal, double(s.lightBytes) / (1 << 20), instances.size(), markers.size());
     } else {
         buildWorld();
         markers = defaultMarkers(world, worldSeed);

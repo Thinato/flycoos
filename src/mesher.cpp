@@ -7,7 +7,7 @@ Quad pack(const QuadInfo& q) {
     for (int c = 0; c < 4; ++c) ao |= uint32_t(q.ao[c]) << (2 * c);
     return {uint32_t(q.pos.x) | uint32_t(q.pos.y) << 6 | uint32_t(q.pos.z) << 12 |
                 uint32_t(q.w - 1) << 18 | uint32_t(q.h - 1) << 24,
-            uint32_t(q.face) | ao << 3 | uint32_t(q.block) << 11};
+            uint32_t(q.face) | ao << 3 | uint32_t(q.block) << 11 | uint32_t(q.sky << 4 | q.glow) << 19};
 }
 
 QuadInfo unpack(Quad q) {
@@ -18,6 +18,8 @@ QuadInfo unpack(Quad q) {
     r.face = int(q.b & 7);
     for (int c = 0; c < 4; ++c) r.ao[c] = int(q.b >> (3 + 2 * c) & 3);
     r.block = Block(q.b >> 11 & 255);
+    r.sky = int(q.b >> 23 & 15);
+    r.glow = int(q.b >> 19 & 15);
     return r;
 }
 
@@ -35,7 +37,7 @@ static uint32_t faceAO(const Grid& g, glm::ivec3 q, glm::ivec3 U, glm::ivec3 V) 
     return packed;
 }
 
-Mesh meshRegion(const Grid& g, glm::ivec3 o, glm::ivec3 e) {
+Mesh meshRegion(const Grid& g, glm::ivec3 o, glm::ivec3 e, const Light* light) {
     assert(e.x <= 32 && e.y <= 32 && e.z <= 32);  // 6-bit packed fields
     Mesh mesh;
     bool empty = true;
@@ -44,7 +46,7 @@ Mesh meshRegion(const Grid& g, glm::ivec3 o, glm::ivec3 e) {
             for (int x = 0; x < e.x && empty; ++x) empty = g.get(o + glm::ivec3(x, y, z)) == Air;
     if (empty) return mesh;
 
-    std::vector<uint32_t> mask;  // per (u,v): 0 = no face, else 1<<16 | ao<<8 | block
+    std::vector<uint32_t> mask;  // per (u,v): 0 = no face, else light<<17 | 1<<16 | ao<<8 | block
     for (int face = 0; face < 6; ++face) {
         int a = face / 2, u = (a + 1) % 3, v = (a + 2) % 3;
         glm::ivec3 n(0), U(0), V(0);
@@ -63,9 +65,10 @@ Mesh meshRegion(const Grid& g, glm::ivec3 o, glm::ivec3 e) {
                     bool visible = b == Water ? nb == Air : !isOpaque(nb);
                     if (!visible) continue;
                     uint32_t ao = b == Water ? 0xFF : faceAO(g, p + n, U, V);
-                    mask[size_t(j) * e[u] + i] = 1u << 16 | ao << 8 | b;
+                    uint32_t lit = light ? light->get(p + n) : kMaxLight << 4;
+                    mask[size_t(j) * e[u] + i] = lit << 17 | 1u << 16 | ao << 8 | b;
                 }
-            // Greedy merge: grow along u, then along v, while the key (block + AO) matches.
+            // Greedy merge: grow along u, then along v, while the key (block + AO + light) matches.
             for (int j = 0; j < e[v]; ++j)
                 for (int i = 0; i < e[u];) {
                     uint32_t key = mask[size_t(j) * e[u] + i];
@@ -83,6 +86,8 @@ Mesh meshRegion(const Grid& g, glm::ivec3 o, glm::ivec3 e) {
                     q.w = w; q.h = h; q.face = face;
                     for (int c = 0; c < 4; ++c) q.ao[c] = int(key >> (8 + 2 * c) & 3);
                     q.block = Block(key & 255);
+                    q.sky = skyLight(uint8_t(key >> 17));
+                    q.glow = blockLight(uint8_t(key >> 17));
                     (q.block == Water ? mesh.water : mesh.opaque).push_back(pack(q));
                     i += w;
                 }
@@ -91,15 +96,16 @@ Mesh meshRegion(const Grid& g, glm::ivec3 o, glm::ivec3 e) {
     return mesh;
 }
 
-std::vector<Mesh> meshChunks(const Grid& g) {
+std::vector<Mesh> meshChunks(const Grid& g, const Light* light) {
     glm::ivec3 counts = g.size / kChunk;
     int n = counts.x * counts.y * counts.z;
     std::vector<Mesh> meshes(static_cast<size_t>(n));
-    parallelFor(n, [&](int i) { meshes[size_t(i)] = meshRegion(g, chunkOrigin(g.size, i), glm::ivec3(kChunk)); });
+    parallelFor(n, [&](int i) { meshes[size_t(i)] = meshRegion(g, chunkOrigin(g.size, i), glm::ivec3(kChunk), light); });
     return meshes;
 }
 
-std::vector<size_t> remeshChunks(const Grid& g, glm::ivec3 dirtyLo, glm::ivec3 dirtyHi, std::vector<Mesh>& meshes) {
+std::vector<size_t> remeshChunks(const Grid& g, glm::ivec3 dirtyLo, glm::ivec3 dirtyHi, std::vector<Mesh>& meshes,
+                                 const Light* light) {
     glm::ivec3 lo = glm::max(dirtyLo - 1, glm::ivec3(0)) / kChunk, hi = glm::min(dirtyHi + 1, g.size - 1) / kChunk;
     glm::ivec3 counts = g.size / kChunk;
     std::vector<size_t> ids;
@@ -108,7 +114,7 @@ std::vector<size_t> remeshChunks(const Grid& g, glm::ivec3 dirtyLo, glm::ivec3 d
             for (int x = lo.x; x <= hi.x; ++x) ids.push_back(size_t(x + counts.x * (y + counts.y * z)));
     parallelFor(int(ids.size()), [&](int j) {
         size_t i = ids[size_t(j)];
-        meshes[i] = meshRegion(g, chunkOrigin(g.size, int(i)), glm::ivec3(kChunk));
+        meshes[i] = meshRegion(g, chunkOrigin(g.size, int(i)), glm::ivec3(kChunk), light);
     });
     return ids;
 }

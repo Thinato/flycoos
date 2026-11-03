@@ -246,7 +246,7 @@ unless a text field has focus.
 | `--debug` | Start with the debug window open (it's also captured by `--screenshot`) |
 | `--port N` | Command server port on 127.0.0.1 (default 47800); see "Shaping the world with Claude" |
 | `--no-serve` | No command server (benchmarks never start one) |
-| `--view MODE` | Start in a debug view: `shaded`, `quads`, `chunks`, `ao`, `normals`, or `wire` (wireframe) |
+| `--view MODE` | Start in a debug view: `shaded`, `quads`, `chunks`, `ao`, `normals`, `light` (light levels), or `wire` (wireframe) |
 
 Example benchmark at night:
 

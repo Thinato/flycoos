@@ -40,9 +40,10 @@ bool DebugUI::wantsKeyboard() const { return open && ImGui::GetIO().WantCaptureK
 bool DebugUI::wantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }
 
 static void renderTab(RenderSettings& r, const RenderStats& s) {
-    static const char* modes[ViewModeCount] = {"Shaded", "Greedy quads", "Chunks", "Ambient occlusion", "Normals"};
+    static const char* modes[ViewModeCount] = {"Shaded", "Greedy quads", "Chunks", "Ambient occlusion", "Normals", "Light levels"};
     ImGui::Combo("View", &r.viewMode, modes, ViewModeCount);
-    ImGui::SetItemTooltip("Greedy quads: one color per merged face. Chunks: one color per 32^3 chunk.");
+    ImGui::SetItemTooltip("Greedy quads: one color per merged face. Chunks: one color per 32^3 chunk.\n"
+                          "Light levels: sky light blue-white, block (ember) light orange.");
     ImGui::Checkbox("Wireframe (quad edges)", &r.wireframe);
 
     ImGui::SeparatorText("Layers");
@@ -73,6 +74,20 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
     ImGui::ColorEdit3("Shadow tint", &r.tintColor.x);
     ImGui::SliderFloat("Tint strength", &r.tintStrength, 0, 1, "%.2f");
     ImGui::EndDisabled();
+    ImGui::Checkbox("Voxel light", &r.voxelLight);
+    ImGui::SetItemTooltip("Sky and ember light per face. Off: everything under open sky, embers dark.");
+    ImGui::BeginDisabled(!r.voxelLight);
+    ImGui::SliderFloat("Sun gate", &r.sunGate, 0, 0.99f, "%.2f");
+    ImGui::SetItemTooltip("Sun light fades in as sky light goes from this fraction to full (no shadow map).");
+    ImGui::SliderFloat("Falloff", &r.lightFalloff, 1, 6, "%.1f");
+    ImGui::SetItemTooltip("Light level curve: 1 linear, higher drops faster away from the light.");
+    ImGui::ColorEdit3("Ember color", &r.emberColor.x);
+    ImGui::SliderFloat("Ember strength", &r.emberStrength, 0, 4, "%.2f");
+    ImGui::SliderFloat("Dark ambient", &r.darkAmbient, 0, 0.2f, "%.3f");
+    ImGui::SetItemTooltip("Light left where neither sky nor embers reach.");
+    ImGui::EndDisabled();
+    ImGui::Text("Light %.1f MiB in %d chunks, filled in %.2f s; last relight %.2f ms", double(s.lightBytes) / (1 << 20),
+                s.lightChunks, s.lightSeconds, s.relightMs);
 
     ImGui::SeparatorText("This frame");
     ImGui::Text("Chunks drawn   %d / %d", s.chunksDrawn, s.chunksTotal);

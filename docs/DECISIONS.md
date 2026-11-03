@@ -476,3 +476,62 @@
     the startup and the debug UI set it.
   - Reordering records changes nothing; deleting one leaves a gap that fails loading instead of
     shifting ids.
+
+## ADR-019: Voxel light: stored sky and block nibbles, relit by whole columns, one value per quad
+
+- **Status:** accepted (2026-11-03)
+- **Context:** `light()` had hemisphere ambient × AO plus sun N·L and no shadow or sky-visibility
+  term, so a roofed cottage or the barrow at noon was lit like an open field, and `Ember` (barrow
+  torches, campfires, hearths) lit nothing at night. The research notes
+  (`docs/research/notes/voxel_lighting.md`) point to Minecraft-style flood-fill light and left the
+  memory, fill time and quad-count costs unmeasured.
+- **Decision:**
+  - Two 0..15 channels per voxel (`light.h`): sky light (15 with only air above, spreading at a
+    cost of 1 per voxel of air or leaves and 2 of water; only air passes 15 straight down) and
+    block light (`Ember` emits 13, same costs). Light never depends on the time of day; the shader
+    scales it, so day/night stays a uniform change with no remesh.
+  - **Stored**, one byte per voxel in lazily allocated 32³ chunk arrays (a chunk with one value
+    holds just that value). Measured on the story world: 47.3 MiB in 1,515 of 6,144 chunks
+    (dense: 192 MiB), filled in 0.16–0.20 s on all cores, ~19 MiB transient peak.
+  - **Relit by whole columns**: an edit recomputes the columns within 15 of it, every height, from
+    the voxels, seeded by the unchanged light around them. Farther light changes by ≥ 16 on the way,
+    so the result is exact (tested against a full fill), and the fill and the update are one code
+    path with no removal bookkeeping. It returns the box whose light changed; `updateWorld`
+    remeshes it with the edit. Small edits relight in ~1.1–1.5 ms.
+  - The mesher packs the light of the voxel in front of each face into 8 of `Quad.b`'s 13 free bits
+    and keys the greedy merge on it. AO stays per vertex, the quad stays 8 bytes, and the light
+    reaches the fragment shader inside the existing flat output (block id now 5 bits): no new
+    varyings. Models get one light value per instance from where they stand.
+  - Shader: `o = AO × curve(sky)` scales ambient and the cool tint; sun/moon diffuse fades in over
+    sky light 0.6..1 (`smoothstep`), the shadow stand-in; ember light adds `emberColor ×
+    curve(block)` on the untinted albedo, faded where the sky's light is brighter, so it glows at
+    night and indoors without tinting sunlit ground (a per-channel max of the two turned firelit
+    floors purple). Defaults were picked by screenshot A/B; the Render tab tunes all of them.
+  - Perf A/B (story world, fixed look, 4 alternating runs): opaque quads 1,772,666 → 1,863,601
+    (+5.1%), mean frame 1.88 → 1.99 ms (+6%), p99 2.73 → 2.86 ms, process RSS +~60 MiB. The old
+    shader on the new meshes runs as fast as the new one, so the cost is the extra quads, not the
+    shading.
+- **Alternatives considered:**
+  - Recomputing light at mesh time per chunk with a 15-voxel halo (Veloren): no storage, but each
+    chunk floods (32+30)³, ~7.3× its volume, the full mesh would take several times longer, and an
+    edit must remesh every chunk within 15 (up to 27) to avoid seams.
+  - BFS add plus two-phase removal on stored light (Minecraft, the 0fps article): touches only the
+    lit voxels, but two algorithms and their edge cases (opaque placement as removal, sky columns)
+    for edits that already take milliseconds to remesh.
+  - A dense light grid: simplest indexing, but another 192 MiB.
+  - Smooth per-corner light: 32 more bits per quad (a third word) or a player-centred 3D light
+    texture sampled per fragment. Stepped light reads fine on blocks; the texture is the upgrade.
+  - Shadowless point lights in a uniform array: no remesh, but they leak through walls.
+  - Additive ember light (the plan's first sketch): sunlit stone around a shrine turned pink.
+- **Consequences:**
+  - Interiors, the barrow, cave mouths and the ground under trees are darker and cooler by day; the
+    village's hearths glow through windows at night.
+  - Sun light has no direction: under an overhang at low sun the gate is wrong. A shadow map
+    replaces the gate, not the sky light.
+  - Light is derived data, never saved: loading or generating a world fills it, and every edit path
+    (brushes, fill, prefabs, markers, undo/redo, remote commands) reaches it through
+    `Renderer::updateWorld`.
+  - Light lives in the renderer today because only meshing reads it; gameplay that needs it (spawn
+    rules by darkness) moves it next to the grid.
+  - Changing `lightCost`, `emission` or the curve changes meshes and screenshots; `core_test` pins
+    the falloff and the lit seed-7 quad count.

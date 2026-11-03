@@ -20,14 +20,16 @@ struct Frame {
     float4 ambientSky;
     float4 ambientGround;
     float4 fog;           // x density, y night factor (0..1), z sun disk visibility, w sea surface y
-    float4 debug;         // x view mode: 0 shaded, 1 greedy quads, 2 chunks, 3 AO, 4 normals
+    float4 debug;         // x view mode: 0 shaded, 1 greedy quads, 2 chunks, 3 AO, 4 normals, 5 light
     float4 aoCurve;       // ambient factor for AO levels 0..3 (applied per vertex)
     float4 shadowTint;    // rgb multiplier occluded albedo shades toward, a strength (weaker at night)
+    float4 lightParams;   // voxel light: x sun gate, y falloff, z dark ambient, w on (else all open sky)
+    float4 emberColor;    // rgb block light color (linear, times strength)
     float4 palette[32];
 };
 struct Draw {
     float4x4 model;
-    float4 hashOffset;    // shifts the per-voxel color jitter so chunks/parts don't repeat
+    float4 hashOffset;    // xyz shift the per-voxel color jitter so chunks/parts don't repeat; w models: light + 1
     uint4 firstQuad;      // x: index of this draw's first quad in the storage buffer
 };
 
@@ -37,8 +39,9 @@ struct VOut {
     float3 voxelPos;
     float3 normal;
     float ao;  // aoCurve value: 1 open, lower in corners
-    // block id in bits 0-7, quad index in bits 8-31 (for the greedy-quads debug view). Packed into
-    // one output because every extra vertex output costs bandwidth on tile-based GPUs (~15% here).
+    // block id in bits 0-4, the quad's light (sky << 4 | block) in bits 5-12, quad index in bits
+    // 13-31 (for the greedy-quads debug view). Packed into one output because every extra vertex
+    // output costs bandwidth on tile-based GPUs (~15% here).
     uint blockAndQuad [[flat]];
 };
 
@@ -58,6 +61,7 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     float3 p = float3(q.x & 63, (q.x >> 6) & 63, (q.x >> 12) & 63);
     float w = float(((q.x >> 18) & 63) + 1), h = float(((q.x >> 24) & 63) + 1);
     uint face = q.y & 7, block = (q.y >> 11) & 255;
+    uint lit = d.hashOffset.w > 0.0 ? uint(d.hashOffset.w) - 1 : (q.y >> 19) & 255;  // models: the light where they stand
     float ao[4] = {float((q.y >> 3) & 3), float((q.y >> 5) & 3), float((q.y >> 7) & 3), float((q.y >> 9) & 3)};
 
     uint axis = face >> 1, ua = (axis + 1) % 3, va = (axis + 2) % 3;
@@ -79,7 +83,7 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     out.voxelPos = local - kNormals[face] * 0.5 + d.hashOffset.xyz;
     out.normal = normalize((d.model * float4(kNormals[face], 0.0)).xyz);
     out.ao = f.aoCurve[uint(ao[c])];
-    out.blockAndQuad = block | (d.firstQuad.x + vid / 6) << 8;  // ponytail: quad index wraps past 16.7M quads (debug color only)
+    out.blockAndQuad = block | lit << 5 | (d.firstQuad.x + vid / 6) << 13;  // ponytail: quad index wraps past 512K quads (debug color only)
     return out;
 }
 
@@ -114,17 +118,38 @@ static float rawAO(constant Frame& f, float o) {
     return saturate((o - f.aoCurve.x) / max(1.0 - f.aoCurve.x, 1e-4));
 }
 
+// Brightness of a light level 0..15: x / (f - (f-1) x), x = level / 15 (f = 1 is linear).
+static float lightCurve(constant Frame& f, uint level) {
+    float x = float(level) / 15.0, k = f.lightParams.y;
+    return x / (k - (k - 1.0) * x);
+}
+
+static uint voxelLight(constant Frame& f, VOut in) {
+    return f.lightParams.w > 0.0 ? (in.blockAndQuad >> 5) & 255u : 0xF0u;
+}
+
 static float3 light(constant Frame& f, VOut in, float3 albedo) {
     float3 n = normalize(in.normal);
-    float o = in.ao;  // occlusion, 1 = open
-    // Occluded albedo shifts toward a cool tint before lighting, so light still sets the value and
-    // corners read as a deeper hue instead of grey.
-    albedo = mix(albedo, albedo * f.shadowTint.rgb, f.shadowTint.a * (1.0 - o));
-    float diffuse = saturate(dot(n, f.lightDir.xyz));
+    uint lit = voxelLight(f, in);
+    float sky = lightCurve(f, lit >> 4), glow = lightCurve(f, lit & 15u);
+    float o = in.ao * sky;  // occlusion: AO times how much sky the voxel in front sees, 1 = open
+    // Occluded albedo shifts toward a cool tint under sky light, so light still sets the value and
+    // corners and interiors read as a deeper hue instead of grey. Ember light sees the plain albedo.
+    float3 tinted = mix(albedo, albedo * f.shadowTint.rgb, f.shadowTint.a * (1.0 - o));
+    // No shadow map: direct light needs a view of the sky (fades in over sky light sunGate..1).
+    float diffuse = saturate(dot(n, f.lightDir.xyz)) * smoothstep(f.lightParams.x, 1.0, float(lit >> 4) / 15.0);
     float3 hemi = mix(f.ambientGround.rgb, f.ambientSky.rgb, n.y * 0.5 + 0.5);
     // Direct light is occluded half as much as ambient (0.5 at the fully occluded curve end).
-    float sunAO = mix(0.5, 1.0, rawAO(f, o));
-    return albedo * (hemi * o + f.lightColor.rgb * diffuse * sunAO);
+    float sunAO = mix(0.5, 1.0, rawAO(f, in.ao));
+    float3 skyLit = tinted * (hemi * o + f.lightColor.rgb * diffuse * sunAO);
+    // Ember light ignores the time of day, so embers glow the same at night. It fades out where the
+    // sky's light is brighter (gone at twice as bright; a soft form of Minecraft's max of sky and
+    // block light), so it doesn't tint sunlit ground; a per-channel max would turn blue sky light
+    // plus orange firelight purple. The dark floor keeps unlit voxels from going black.
+    float3 emberLit = albedo * f.emberColor.rgb * glow * in.ao;
+    constexpr float3 kLuma = float3(0.2126, 0.7152, 0.0722);
+    float emberShare = saturate(1.0 - 0.5 * dot(skyLit, kLuma) / max(dot(emberLit, kLuma), 1e-4));
+    return skyLit + emberLit * emberShare + albedo * f.lightParams.z * (1.0 - sky) * in.ao;
 }
 
 // Distinct, fairly bright color per id (PCG hash).
@@ -135,16 +160,24 @@ static float3 idColor(uint n) {
     return float3(n & 255u, (n >> 8) & 255u, (n >> 16) & 255u) / 255.0 * 0.75 + 0.25;
 }
 
+// Light levels debug view (display values): sky blue-white, block orange, shaded a little by facing.
+static float3 lightLevels(VOut in) {
+    uint lit = (in.blockAndQuad >> 5) & 255u;
+    float3 c = float(lit >> 4) / 15.0 * float3(0.55, 0.7, 1.0) + float(lit & 15u) / 15.0 * float3(1.0, 0.5, 0.1);
+    return pow(saturate(c * (0.8 + 0.2 * normalize(in.normal).y)), 2.2);
+}
+
 fragment float4 voxel_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
     uint mode = uint(f.debug.x);
     // Unlit debug views are written as display values: the sRGB target would otherwise brighten them.
     if (mode == 3) return float4(float3(pow(mix(0.05, 1.0, rawAO(f, in.ao)), 2.2)), 1.0);  // raw AO, independent of the curve
     if (mode == 4) return float4(pow(normalize(in.normal) * 0.5 + 0.5, 2.2), 1.0);  // normals as color
+    if (mode == 5) return float4(lightLevels(in), 1.0);
     float3 albedo;
     if (mode == 0) {  // normal path; `mode` is uniform, so this branch is coherent and cheap
-        albedo = f.palette[in.blockAndQuad & 255u].rgb * (0.9 + 0.2 * hash3(floor(in.voxelPos)));
+        albedo = f.palette[in.blockAndQuad & 31u].rgb * (0.9 + 0.2 * hash3(floor(in.voxelPos)));
     } else if (mode == 1) {  // greedy quads
-        albedo = idColor(in.blockAndQuad >> 8);
+        albedo = idColor(in.blockAndQuad >> 13);
     } else {  // chunks: 32^3 cell containing the surface (nudged inside along the normal)
         uint3 cell = uint3(int3(floor((in.worldPos - in.normal * 0.01) / 32.0)));
         albedo = idColor(cell.x * 73856093u ^ cell.y * 19349663u ^ cell.z * 83492791u);
@@ -157,10 +190,11 @@ fragment float4 wire_fs(VOut in [[stage_in]]) {
 }
 
 fragment float4 water_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
+    if (uint(f.debug.x) == 5) return float4(lightLevels(in), 0.85);
     float3 n = normalize(in.normal);
     float3 v = normalize(in.worldPos - f.eye.xyz);
     float fresnel = pow(1.0 - saturate(dot(-v, n)), 4.0);
-    float3 color = mix(light(f, in, f.palette[in.blockAndQuad & 255u].rgb), skyColor(f, reflect(v, n)), fresnel * 0.7);
+    float3 color = mix(light(f, in, f.palette[in.blockAndQuad & 31u].rgb), skyColor(f, reflect(v, n)), fresnel * 0.7);
     float spec = pow(saturate(dot(reflect(v, n), f.lightDir.xyz)), 120.0);
     color += f.lightColor.rgb * spec * 0.6;
     return float4(tonemap(applyFog(f, color, in.worldPos)), mix(0.78, 0.95, fresnel));

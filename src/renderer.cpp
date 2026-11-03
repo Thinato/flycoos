@@ -22,6 +22,8 @@ struct FrameUniforms {
     glm::vec4 eye, sunDir, lightDir, lightColor, skyZenith, skyHorizon, ambientSky, ambientGround, fog;
     glm::vec4 debug;  // x: ViewMode
     glm::vec4 aoCurve, shadowTint;
+    glm::vec4 lightParams;  // x sun gate, y light falloff, z dark ambient, w voxel light on
+    glm::vec4 emberColor;   // rgb linear, times strength
     glm::vec4 palette[32];
 };
 struct DrawUniforms {
@@ -29,9 +31,9 @@ struct DrawUniforms {
     glm::vec4 hashOffset;
     glm::uvec4 firstQuad;  // x used
 };
-static_assert(sizeof(FrameUniforms) == 2 * 64 + 12 * 16 + 32 * 16);
+static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 32 * 16);
 static_assert(sizeof(DrawUniforms) == 64 + 16 + 16);
-static_assert(BlockCount <= 32);
+static_assert(BlockCount <= 32);  // also: shaders/world.metal packs block ids into 5 bits
 
 glm::vec3 lin(glm::vec3 srgb) { return glm::pow(srgb, glm::vec3(2.2f)); }
 
@@ -246,8 +248,13 @@ void Renderer::write(const void* data, uint32_t bytes, const std::vector<Upload>
 
 void Renderer::uploadWorld(const Grid& world) {
     uint64_t start = SDL_GetTicksNS();
+    fillLight(world, light_);
+    stats.lightSeconds = double(SDL_GetTicksNS() - start) * 1e-9;
+    stats.lightBytes = light_.bytes();
+    stats.lightChunks = light_.allocated();
+    start = SDL_GetTicksNS();
     meshes_ = {};  // free the old world's meshes before building the new ones
-    meshes_ = meshChunks(world);
+    meshes_ = meshChunks(world, &light_);
     chunks_.assign(meshes_.size(), {});
     for (size_t i = 0; i < chunks_.size(); ++i) chunks_[i].origin = chunkOrigin(world.size, int(i));
     packWorld();
@@ -277,7 +284,12 @@ void Renderer::packWorld() {
 void Renderer::updateWorld(const Grid& world, const Box& dirty) {
     if (dirty.empty()) return;
     uint64_t start = SDL_GetTicksNS();
-    std::vector<size_t> ids = remeshChunks(world, dirty.lo, dirty.hi, meshes_);
+    Box lit = relight(world, light_, dirty);
+    stats.relightMs = double(SDL_GetTicksNS() - start) * 1e-6;
+    stats.lightBytes = light_.bytes();
+    stats.lightChunks = light_.allocated();
+    glm::ivec3 lo = lit.empty() ? dirty.lo : glm::min(dirty.lo, lit.lo), hi = lit.empty() ? dirty.hi : glm::max(dirty.hi, lit.hi);
+    std::vector<size_t> ids = remeshChunks(world, lo, hi, meshes_, &light_);
 
     // A chunk's new quads overwrite its slot when they fit. Otherwise they move to a new slot with
     // spare room at the end of the buffer; once that headroom is used up, everything is repacked.
@@ -379,6 +391,8 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     } else {
         u.aoCurve = {0.35f, 0.35f + 0.65f / 3, 0.35f + 1.3f / 3, 1};  // the old linear AO, no tint (A/B)
     }
+    u.lightParams = {settings.sunGate, settings.lightFalloff, settings.darkAmbient, settings.voxelLight};
+    u.emberColor = glm::vec4(lin(settings.emberColor) * settings.emberStrength, 0);
     for (int b = 0; b < BlockCount; ++b)
         u.palette[b] = glm::vec4(lin({kPalette[b][0], kPalette[b][1], kPalette[b][2]}), 1);
     SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
@@ -437,11 +451,17 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     };
     auto drawModels = [&] {
         SDL_BindGPUVertexStorageBuffers(pass, 0, &models_, 1);
-        for (const ModelInstance& inst : frame.models)
+        for (const ModelInstance& inst : frame.models) {
+            glm::vec3 center(0);  // of the parts' origins: inside the body, so in the air it stands in
+            for (const glm::mat4& m : inst.pose) center += glm::vec3(m[3]) / float(PartCount);
+            glm::ivec3 at(glm::floor(center));  // and the voxel above, in case the center is in a step
+            uint8_t a = light_.get(at), b = light_.get(at + glm::ivec3(0, 1, 0));
+            float lit = float(std::max(skyLight(a), skyLight(b)) << 4 | std::max(blockLight(a), blockLight(b))) + 1;
             for (size_t p = 0; p < PartCount; ++p) {
                 auto [first, count] = parts_[size_t(inst.parts[p])][p];
-                if (count) draw({inst.pose[p], glm::vec4(float(p) * 37), glm::uvec4(first, 0, 0, 0)}, count);
+                if (count) draw({inst.pose[p], glm::vec4(glm::vec3(float(p) * 37), lit), glm::uvec4(first, 0, 0, 0)}, count);
             }
+        }
     };
 
     SDL_BindGPUGraphicsPipeline(pass, opaque_);

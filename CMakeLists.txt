@@ -42,7 +42,7 @@ target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURC
 target_link_libraries(imgui PUBLIC SDL3::SDL3)
 
 # Engine core: no GPU code, so it is unit-testable.
-add_library(flycoos_core STATIC src/world.cpp src/story.cpp src/mesher.cpp src/model.cpp src/player.cpp src/entity.cpp src/item.cpp src/edit.cpp
+add_library(flycoos_core STATIC src/world.cpp src/story.cpp src/light.cpp src/mesher.cpp src/model.cpp src/player.cpp src/entity.cpp src/item.cpp src/edit.cpp
   src/commands.cpp src/prefab.cpp src/session.cpp src/defs.cpp)
 target_include_directories(flycoos_core PUBLIC src)
 target_include_directories(flycoos_core SYSTEM PUBLIC ${glm_SOURCE_DIR} ${json_SOURCE_DIR}/single_include)
