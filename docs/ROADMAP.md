@@ -27,10 +27,17 @@ reach them.
 - Armor: worn gear reduces damage taken by armor / (armor + K x attacker level), K tunable in the
   debug window; an Iron armor set (helm, cuirass, gauntlets, greaves, sabatons) that shows on the
   character
+- World editor groundwork: world files (save/load), an in-game editor (Tab) with terrain brushes,
+  fill box and undo/redo, and incremental remeshing of edited chunks
+- Shaping the world with Claude: a localhost command server in the game and a dependency-free MCP
+  bridge (brushes, roads/paths, undo, save, offscreen screenshots, top-down maps, height queries,
+  camera goto), with an MCP log and edit highlights in the Editor panel
 
 ## M1: A living world
 
-- Infinite world: chunk streaming around the player and background meshing (job system)
+- A hand-authored story world: the fixed-size 1024×192×1024 world, generated once and then shaped
+  in the in-game editor, replaces an infinite streamed one. Prefabs and story markers in the world
+  file; remote editing commands so Claude can shape it too
 - Biomes (grassland, desert, tundra, swamp), rivers, caves; LOD for distant terrain
 - Shadow maps for sun and moon; clouds; wind-animated foliage
 - Ambient audio (wind, birds by day, crickets by night) and footsteps

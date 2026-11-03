@@ -2,25 +2,35 @@
 
 Milestone 0 is about 1,200 lines of C++ (including tests) and 160 lines of MSL. It has two layers:
 
-- **`flycoos_core`** (static library: `world`, `mesher`, `player`): pure CPU code with no GPU or SDL
-  dependency, unit-tested by `tests/core_test.cpp`.
-- **`flycoos`** (executable: `main`, `renderer` + `shaders/world.metal`): platform, input, camera
-  and GPU.
+- **`flycoos_core`** (static library: `world`, `mesher`, `player`, `entity`, `item`, `edit`, `commands`): pure CPU
+  code with no GPU or SDL dependency, unit-tested by `tests/core_test.cpp`.
+- **`flycoos`** (executable: `main`, `renderer` + `shaders/world.metal`, `server`): platform, input,
+  camera, GPU and the command server.
+- **`tools/flycoos_mcp.py`**: the MCP server Claude Code starts; it forwards tool calls to the game.
 
 ```
-main.cpp ──► generateTerrain() ──► Grid (1024×192×1024 bytes)
-   │                                  │
-   │                       Renderer::uploadWorld()
-   │                          └─ parallelFor(chunks) ─► meshRegion() ─► packed quads ─► GPU storage buffers
+main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024×192×1024 bytes)
+   │                                                     │
+   │                                          Renderer::uploadWorld()
+   │                                             └─ parallelFor(chunks) ─► meshRegion() ─► packed quads ─► GPU storage buffers
    │
-   └─ loop: events ─► Input ─► updatePlayer() ─► posePlayer() ─► camera ─► Renderer::render()
+   ├─ loop: events ─► Input ─► updatePlayer() ─► posePlayer() ─► camera ─► Renderer::render()
+   │
+   ├─ editor (Tab): raycast() ─► applyEdit() / undoEdit() / redoEdit() ─► dirty Box ─► Renderer::updateWorld()
+   │                saveWorld() on Ctrl+S
+   │
+   └─ CommandServer::take() ─► runCommand() ─► same edits/undo ─► updateWorld(); save, snapshot, goto
+            ▲ socket thread, 127.0.0.1:47800 ◄── tools/flycoos_mcp.py (stdio MCP) ◄── Claude Code
 ```
 
 ## Modules
 
 | File | Responsibility |
 |---|---|
-| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, trees and rocks, `findSpawn` |
+| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, trees and rocks, `findSpawn`, world files (`saveWorld`/`loadWorld`) |
+| `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit`; `raycast` (voxel DDA); `groundTop` |
+| `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
+| `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO, `Quad` packing/unpacking |
 | `src/player.h/.cpp` | Walking-body physics and collision (player and NPCs), character models (`buildPart`), procedural animation (`poseModel`) |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits and temper, spawning, wander and chase AI, talking, damage both ways, loot |
@@ -28,8 +38,9 @@ main.cpp ──► generateTerrain() ──► Grid (1024×192×1024 bytes)
 | `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, buffer uploads, render targets, frustum culling, day/night lighting, screenshots |
+| `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box) |
 | `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
-| `src/main.cpp` | CLI options, window, input routing (game vs. debug UI), orbit camera, main loop, benchmark stats |
+| `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor), orbit camera, main loop, remote commands, benchmark stats |
 | `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs` |
 
 ## World
@@ -56,6 +67,115 @@ main.cpp ──► generateTerrain() ──► Grid (1024×192×1024 bytes)
     0.6%. On rocky land most are tapering spires 10–23 blocks tall; the rest are half-buried boulders.
 - The world is deterministic per seed (tested). `core_test` also checks that forests and rocks exist
   and that a 96×96-column plain with no trees or rocks exists. Generation takes ~0.15 s on an M4.
+
+## World files (`saveWorld` / `loadWorld`)
+
+One file per world, e.g. `worlds/story.flyw`, little-endian:
+
+```
+"FLYW" | u32 version (1) | i32 size x, y, z | u32 seed
+sections: char tag[4] | u64 bytes | payload      (unknown tags are skipped)
+u32 FNV-1a checksum of every byte before it
+```
+
+- The `VOXL` section holds every 32³ chunk (in `chunkOrigin` order: x, then y, then z), each as
+  `u32 bytes` + runs of `(u8 block, LEB128 count − 1)` over its voxels, x fastest, then z, then y.
+  Terrain is mostly horizontal layers, so whole layers of stone or air become single runs: the
+  1024×192×1024 world is ~2.8 MB (vs 192 MiB in memory). Chunks encode and decode in parallel.
+- Later content (prefab instances, story markers) gets its own sections; old readers skip them, so
+  adding one needs no version bump.
+- Loading rejects, with a message, anything that doesn't parse exactly: wrong magic or version,
+  checksum mismatch (any corruption or truncation), bad sizes, block ids or run lengths. A
+  `--world` file that exists but fails to load stops the game rather than generating a world that a
+  save would then write over it.
+- Saving writes `PATH.tmp` and renames it over `PATH`, so a failed save never destroys the last
+  good file.
+- Real world (seed 1337): save 22 ms, load 13 ms, 2.78 MB.
+
+## Editing (`applyEdit`)
+
+`EditOp` is plain data (tool, box corners, column center, radius, strength, height, block), so the
+in-game editor and remote commands share one entry point:
+
+1. Validate: unknown tool or block, radius > 32, strength outside 1..64, Flatten height outside the
+   world, Paint with a non-solid block, or a Fill box over 128³ voxels (requested size, before
+   clipping) are rejected with an error string and change nothing. The caps keep one op to a few
+   milliseconds.
+2. Snapshot the op's reach (the Fill box, or the brush's columns at full height) clipped to the world.
+3. Apply. Brushes work per column on its ground top, the highest opaque voxel, weighted by a
+   falloff that is 1 at the center. Raise/Lower add/remove `strength × falloff` blocks, with a
+   stable per-column dither so repeated strokes build slopes instead of terraces. Raised ground
+   gets the column's surface block on top and its subsoil (grass → dirt, snow → stone) below;
+   lowered ground gets the old surface block on its new top. Smooth moves toward the 5×5 average
+   height, Flatten toward a height, both by at most `strength`. Paint sets the top voxel.
+4. Diff the snapshot against the grid. The bounding box of the changes is the **dirty box**
+   (empty means nothing changed: no undo record). The undo record is the snapshot cropped to it.
+5. Push the record (at most 256 records and 256 MB of cells; the oldest drop off, the newest always
+   stays) and clear the redo stack. With `join`, the
+   snapshot is added as one more part of the last record instead: a remote command's ops (`apply`,
+   `path`) form one undo step.
+
+Undo and redo swap a record's cells with the grid's, part by part (the last part first when
+undoing), and move it to the other stack, so both directions restore bit-exact. Trees and rocks are just voxels: brushes treat them as terrain (raising
+under a canopy raises the canopy). Water is never created or drained: lowering a column whose top is
+under water fills the removed cells with water, lowering dry land leaves a dry pit even below sea
+level, and raising pushes ground up through water.
+
+`raycast` is an Amanatides–Woo DDA through the grid that returns the first opaque voxel and the
+face it entered through (water is passed through). The editor casts it from the camera through
+the screen center.
+
+## Command server and MCP bridge
+
+Claude edits the world through the running game, so its edits share the user's undo history,
+remesh path and screen.
+
+- **Protocol:** newline-delimited JSON over TCP on 127.0.0.1 (port 47800, `--port`, `--no-serve`;
+  never in benchmark mode). Request `{"id", "cmd", "args"}`, response `{"id", "ok": true, "result"}`
+  or `{"id", "ok": false, "error"}`. One client at a time, any number in sequence; one with no
+  complete line for 5 s is dropped. No authentication: localhost only, a development tool. A line
+  that doesn't start with `{` closes the connection, so a browser's cross-origin POST dies at its
+  HTTP request line and its body never runs. Responses are serialized with invalid UTF-8 replaced,
+  and error texts have non-ASCII bytes replaced (parse errors quote the raw input).
+- **Threading:** `CommandServer` owns one thread that only does socket I/O (`poll` with a 100 ms
+  timeout, so shutdown never hangs). It puts each request line in a one-slot mailbox and waits; the
+  main thread checks the mailbox once per frame (one atomic load when idle), right after the
+  frame's own editor input and before drawing. It runs the command, then `reply` wakes the thread,
+  which writes the response and reads the next line. So commands run strictly in order, one per
+  frame, on the main thread, with no locking of the world.
+- **Dispatcher:** `runCommand` (core library, unit-tested without sockets or GPU) parses and
+  validates arguments (types, ranges, materials by name, centers inside the world, fill and
+  inspect boxes clamped to it and capped at 128³), refuses JSON nested deeper than 64 levels while
+  parsing (copying and dumping a deep tree recurse), checks every op with `checkEdit` and the
+  command's work budget before applying any, and applies them with `join` so one command is one
+  undo step. The budget is an estimate of main-thread time, at most 50 ms: 20 ns per voxel of a
+  brush's `editBox` (its full columns, walked with a 1 MB stride), 1 ns per fill voxel, and 0.8 ms
+  per chunk column of the command's bounding box (the game remeshes all of it; a world-spanning box
+  took ~0.3 s). The weights are measured worst cases (M1 Pro, release); the worst accepted command
+  in an adversarial run took 27 ms including the remesh. A 5-wide road fits 160–400 blocks. `save` copies only go to a `.flyw` directly in `worlds/` or the
+  world file's folder, after resolving `..` and symlinks. It returns the
+  response plus what only the game can do: the dirty box to remesh and flash, a save request, a
+  screenshot camera, a goto target. Errors change nothing.
+- **`path`:** samples the polyline every half brush radius, takes the ground height under each
+  sample (ignoring trees), averages it over ±(16 + width) blocks along the path (or uses a fixed
+  height), subtracts `depth`, and emits Flatten discs at full strength, then Paint discs.
+- **`map` and `heights`:** column tops come from a layer-by-layer scan from the top down (rows are
+  contiguous in x, so it's cache-friendly), on every `step`-th column. `map` colors each column by its
+  top block (kPalette in sRGB), shades by slope toward the north-west light and by height, tints
+  water by depth, draws grid lines with 3×5 pixel digits, and writes a PNG with stb_image_write.
+- **Screenshot:** `Renderer::snapshot` draws the scene (`drawScene`, the same code as the window's
+  frame, with its own culling and without the UI) into offscreen color/MSAA/depth textures of the
+  requested size, downloads the resolved image and waits on a fence. The window's targets, culling
+  freeze and stats are untouched; the player and NPC models are the current frame's. It blocks the
+  main thread for the render (~8–20 ms at 960×540–1600×900).
+- **Feedback in the game:** each command adds a line (with its time, red if rejected) to the
+  Editor panel's MCP log, and an edit's dirty box flashes for 3 s. `goto` moves the editor flight
+  only if Follow Claude is on.
+- **MCP bridge:** `tools/flycoos_mcp.py` is a dependency-free stdio MCP server (initialize, ping,
+  tools/list, tools/call; protocol 2025-06-18, accepting the client's version if it knows it). Each
+  tool is one game command over a fresh connection; `screenshot` and `map` return the PNG as image
+  content, read only from `$TMPDIR/flycoos` (where the game writes them and deletes them after an
+  hour). Lines that aren't UTF-8 JSON get -32700, non-objects and requests without a method -32600.
 
 ## Meshing (`meshRegion`)
 
@@ -94,11 +214,20 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
 - **API:** SDL3 GPU on the Metal backend. MSL is compiled at runtime from `shaders/world.metal`
   (copied next to the binary at build time).
 - **Vertex pulling:** there are no vertex buffers. Each chunk draws `6 × quadCount` vertices
-  from a single storage buffer holding every world quad. The chunk's first quad index arrives in its
+  from a single storage buffer holding every world quad (one for opaque, one for water). The chunk's first quad index arrives in its
   Draw uniforms (`firstQuad`), and draws always use `first_vertex = 0`, because SDL_gpu.h
   documents `first_vertex` + `vertex_id` as non-portable.
   `voxel_vs` reads `quads[firstQuad + vertex_id / 6]` and takes the corner from `vertex_id % 6`.
   It flips the triangle diagonal when AO is anisotropic and reverses winding for negative faces.
+- **Chunk slots and edits:** every chunk (empty ones too) owns a slot `{first, count, capacity}` in
+  each world buffer; `uploadWorld` packs them back to back and leaves ~1/8 + 64k quads of headroom at
+  the end. After an edit, `updateWorld(dirty)` remeshes only the chunks overlapping the dirty box
+  grown by 1 voxel (faces and AO read neighbours), in parallel. A chunk's new quads overwrite its
+  slot if they fit; otherwise it gets a new slot with 25% spare at the end of the buffer. All writes
+  of one edit go through one transfer buffer and copy pass. When the headroom runs out, every slot is
+  repacked from the CPU copy of the meshes (no remeshing). See ADR-012.
+  Measured (M4, release): an edit touching 1–8 chunks applies and re-uploads in 1–2 ms, a radius-32
+  brush (18 chunks) in ~2.7 ms; 400 random brushes averaged 2.7 ms with one repack, worst ~10 ms.
 - **Per-draw data:** one 96-byte uniform push per chunk (`model` matrix, color-jitter offset,
   `firstQuad`). Frame data (matrices, lighting, 32-entry palette) is pushed once per frame to
   vertex and fragment slot 0. The projection is built from the swapchain size inside `render()`.
@@ -308,7 +437,11 @@ derives the following from the sun height:
 | Metric | Value |
 |---|---|
 | World generation | ~0.15–0.2 s |
-| Meshing + upload | ~1.1 s |
+| Meshing + upload | ~0.35–1.1 s |
+| World file save / load (2.8 MB) | ~22 ms / ~13 ms |
+| One brush stroke: edit + remesh + upload | ~1–3 ms |
+| Remote screenshot (offscreen render + readback) | ~8–20 ms (960×540 to 1600×900) |
+| Command server when idle | one atomic load per frame |
 | GPU memory for world quads | ~14 MB |
 | Mean frame time (benchmark, vsync off) | ~2–3 ms |
 
@@ -316,8 +449,11 @@ derives the following from the sun height:
 
 | Ceiling | Upgrade path |
 |---|---|
-| Fixed-size world (192 MiB dense grid), meshed once at startup | Chunk streaming + per-chunk remesh jobs (M1) |
-| Opaque meshes rebuilt as a whole; no block editing | Per-chunk buffer sub-allocation |
+| Fixed-size world (192 MiB dense grid) | Deliberate: the story world is hand-authored at this size (M1) |
+| Edits remesh on the main thread (1–3 ms, ~10 ms with a repack) | Background remesh jobs if brushes grow |
+| Each held-brush application is its own undo step | Group a stroke into one record (`applyEdit`'s `join`) |
+| One remote command per frame; the window must not be minimized | Drain several per frame if Claude batches |
+| A long remote `path` (and its undo) remeshes its whole bounding box | Remesh per op / record part |
 | One draw call per chunk | `SDL_DrawGPUPrimitivesIndirect` with a GPU-culled draw list |
 | MSL-only shaders (macOS) | HLSL/Slang + SDL_shadercross for SPIR-V/DXIL (M1) |
 | No shadows | Cascaded shadow map for sun/moon (M1) |

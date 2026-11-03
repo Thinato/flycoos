@@ -54,10 +54,88 @@ GPU debug layer.
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
 | `.` | Open/close the debug window |
-| Esc | Close the open windows, otherwise quit |
+| Tab | Enter/leave the world editor (see below) |
+| Esc | Close the open windows, otherwise quit (asks twice with unsaved world edits) |
 
 In the Character and Bags windows, drag items between slots and right-click to equip or unequip.
 The mouse cursor is free while any window is open.
+
+## World editor
+
+The running game is the world editor. Start it on a world file:
+
+```sh
+./build/release/flycoos --world worlds/story.flyw   # loads the file, or generates from --seed if it doesn't exist yet
+```
+
+Tab enters editor mode: you fly with noclip, NPCs and combat pause, and a crosshair marks where the
+brush lands (the ray from the camera through the screen center, past your character). A ring shows
+the brush on the ground. Fly up to aim farther away.
+
+| Input | Action |
+|---|---|
+| Left mouse | Apply the brush at the crosshair (hold: 8 times a second). Fill box: click two corners |
+| 1–6 | Tool: Raise, Lower, Smooth, Flatten, Paint, Fill box |
+| `[` `]` | Brush radius |
+| Q | Free the cursor to use the Editor panel (tool, radius, strength, height, material); Q again to aim |
+| Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y | Undo / redo (Cmd works too) |
+| Ctrl+S | Save to the `--world` file (`worlds/world.flyw` without `--world`) |
+
+- **Raise / Lower** add or remove blocks on top of each column, most at the center. Raised ground
+  keeps its surface material on top with subsoil (dirt under grass) below.
+- **Smooth** pulls columns toward their neighbours' average height; **Flatten** pulls them toward a
+  height, taken from where each stroke starts. Strength caps the blocks moved per application.
+- **Paint** recolors the surface; **Fill box** sets a box of voxels (Air clears).
+- Brushes act on each column's highest solid voxel, so trees and rocks are treated as terrain.
+  They never create or drain water: lowering a lakebed keeps it under water, lowering dry land
+  makes a dry pit even below sea level.
+- The Editor panel shows undo depth, unsaved changes and when you last saved, plus debug numbers
+  (aimed voxel, last op time and size, remesh time).
+
+`worlds/` isn't git-ignored: the story world is meant to be committed. A world file is ~3 MB.
+
+## Shaping the world with Claude (MCP)
+
+The game runs a small command server, and `tools/flycoos_mcp.py` turns it into an MCP server, so
+Claude Code can edit the world while you watch and edit alongside it.
+
+```sh
+./build/release/flycoos --world worlds/story.flyw   # 1. start the game (it listens on 127.0.0.1:47800)
+claude                                              # 2. in this repo: .mcp.json registers the "flycoos" MCP server
+```
+
+The bridge needs only `python3` (no packages). Claude Code asks once to allow the project's MCP
+server. If the game isn't running, the tools say how to start it.
+
+| Tool | What it does |
+|---|---|
+| `state` | World file, size, seed, unsaved flag, undo/redo depth, player and camera, editor mode, time of day |
+| `raise` `lower` `smooth` `flatten` `paint` | The editor's brushes at a column `x`, `z` with `radius`, `strength`, `height` (flatten), `material` (paint) |
+| `fill` | Set a box (`min`, `max`, at most 128³) to a material; Air clears, Water makes water |
+| `apply` | Up to 256 of the ops above in one call (within one command's work budget, see below) |
+| `path` | A road or river bed along `[x, z]` points: `width`, `follow_terrain` (graded) or a fixed `height`, `depth`, `material` |
+| `undo` `redo` | One shared history: Claude's edits and yours undo in order, each command is one step |
+| `save` | Save to the world file, or a copy to `path` (a `.flyw` in `worlds/` or the world file's folder) |
+| `screenshot` | Render a view from `position` + `look_at` (or `yaw`/`pitch`), up to 1600×900, optional `fov` and `time`; your view isn't touched |
+| `map` | Top-down PNG of a region: surface colors, hillshade, water depth, labelled grid |
+| `heights` | A region's ground heights as numbers (≤ 4096 samples) and a histogram of top blocks |
+| `inspect` | Block counts in a box |
+| `goto` | Fly your camera (editor mode) to a point, facing `look_at`, if **Follow Claude** is on |
+
+Every command shows in the Editor panel's **MCP** section (last 20, with timings; rejected ones in
+red), and each edit's box flashes in the world for 3 seconds. **Follow Claude** (on by default) lets
+`goto` move your camera.
+
+Safety: the server listens on 127.0.0.1 only and has no authentication. Any program on this machine
+can edit the open world while the game runs; it's a development tool. `--no-serve` turns it off,
+`--port N` moves it (set `FLYCOOS_PORT` for the bridge to match). A web page can't drive it: a line
+that isn't a JSON object (such as an HTTP request line) closes the connection before anything runs.
+`save` only writes `.flyw` files directly in `worlds/` or next to the open world file. Requests nested
+deeper than 64 levels are refused, and one edit command has a work budget (an estimated 50 ms of
+game time: big brushes and a wide spread cost most; e.g. a 5-wide road of 160–400 blocks) so it
+can't stall the game: split bigger jobs. A client that sends no complete line for 5 s is dropped. Commands wait while
+the window is minimized. `python3 tools/test_mcp.py [--binary build/dev/flycoos]` runs an end-to-end
+check (it opens the game on a scratch world, on a free port).
 
 ## Debug window
 
@@ -78,12 +156,15 @@ unless a text field has focus.
 
 | Flag | Meaning |
 |---|---|
+| `--world PATH` | World file: load it if it exists, otherwise generate from `--seed`; the editor saves here |
 | `--seed N` | World seed (default 1337) |
 | `--time T` | Start time of day, 0..1 (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset) |
 | `--frames N` | Benchmark: the player walks a circle and the camera orbits; exits after N frames and prints frame-time stats. Vsync is off. |
 | `--screenshot out.bmp` | With `--frames`: save the last frame as a BMP |
 | `--look YAW PITCH` | With `--frames`: fixed camera angles in degrees instead of the orbit (yaw 0 looks toward −Z, −90 toward +X; negative pitch looks up) |
 | `--debug` | Start with the debug window open (it's also captured by `--screenshot`) |
+| `--port N` | Command server port on 127.0.0.1 (default 47800); see "Shaping the world with Claude" |
+| `--no-serve` | No command server (benchmarks never start one) |
 | `--view MODE` | Start in a debug view: `shaded`, `quads`, `chunks`, `ao`, `normals`, or `wire` (wireframe) |
 
 Example benchmark at night:
@@ -95,7 +176,10 @@ Example benchmark at night:
 ## Layout
 
 ```
-src/world.*      voxel grid, region-based terrain (forest / rocky / plains), trees + rocks, parallelFor
+src/world.*      voxel grid, region-based terrain (forest / rocky / plains), trees + rocks, parallelFor, world files
+src/edit.*       world edits (fill, raise, lower, smooth, flatten, paint) with undo/redo, voxel raycast
+src/commands.*   remote commands: JSON request -> edits, queries, top-down map PNG (no sockets, unit-tested)
+src/server.*     localhost command server thread (newline-delimited JSON)
 src/mesher.*     greedy mesher with ambient occlusion -> 8-byte packed quads
 src/player.*     movement physics (+ fly/noclip tuning), camera collision, character models, procedural animation
 src/stats.h      the five attributes and the stats derived from them
@@ -105,7 +189,10 @@ src/inventory_ui.*  Character (C) and Bags (B) windows
 src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
 src/debug_ui.*   Dear ImGui debug window (toggle with .)
-src/main.cpp     window, input, camera, main loop, benchmark mode
+src/editor_ui.*  Editor panel, crosshair and brush preview (Tab)
+src/main.cpp     window, input, camera, main loop, benchmark mode, runs remote commands
+tools/           flycoos_mcp.py (MCP server bridging Claude Code to the game), test_mcp.py (end-to-end check)
 shaders/         world.metal (voxel, water, sky), compiled at runtime
-tests/           core_test.cpp: mesher, packing, physics, flight, camera, combat, NPC fights and loot, inventory, generation checks
+tests/           core_test.cpp: mesher, packing, physics, flight, camera, combat, NPC fights and loot, inventory, generation,
+                 world files, edits and undo, remote commands, raycast checks
 ```

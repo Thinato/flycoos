@@ -1,11 +1,12 @@
 #pragma once
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
 
-// Block ids double as palette indices (see kPalette in renderer.cpp).
+// Block ids double as palette indices (kPalette below).
 // Water's id is also hard-coded as kWater in shaders/world.metal.
 enum Block : uint8_t { Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water,
                        Skin, Tunic, Belt, Boots, Hair, Eye, Rock,
@@ -15,6 +16,42 @@ enum Block : uint8_t { Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water,
                        Plate, BlockCount };               // armor
 
 inline bool isOpaque(Block b) { return b != Air && b != Water; }
+
+inline constexpr const char* kBlockNames[BlockCount] = {
+    "Air", "Grass", "Dirt", "Stone", "Sand", "Snow", "Wood", "Leaves", "Water", "Skin", "Tunic", "Belt", "Boots", "Hair",
+    "Eye", "Rock", "Robe", "DarkHair", "Straw", "Burlap", "Steel", "Iron", "Hide", "Tusk", "Snout", "Hood", "Leather", "Plate"};
+
+// Block colors in sRGB, indexed by Block. The renderer converts them to linear; the map command uses them as is.
+inline constexpr float kPalette[BlockCount][3] = {
+    {0, 0, 0},              // Air
+    {0.36f, 0.62f, 0.24f},  // Grass
+    {0.47f, 0.33f, 0.20f},  // Dirt
+    {0.50f, 0.50f, 0.52f},  // Stone
+    {0.80f, 0.72f, 0.48f},  // Sand
+    {0.95f, 0.96f, 1.00f},  // Snow
+    {0.42f, 0.28f, 0.15f},  // Wood
+    {0.20f, 0.48f, 0.18f},  // Leaves
+    {0.08f, 0.30f, 0.55f},  // Water
+    {0.93f, 0.74f, 0.58f},  // Skin
+    {0.25f, 0.45f, 0.72f},  // Tunic
+    {0.35f, 0.22f, 0.12f},  // Belt
+    {0.28f, 0.18f, 0.12f},  // Boots
+    {0.80f, 0.45f, 0.20f},  // Hair
+    {0.08f, 0.08f, 0.10f},  // Eye
+    {0.52f, 0.50f, 0.47f},  // Rock
+    {0.42f, 0.52f, 0.30f},  // Robe
+    {0.25f, 0.17f, 0.12f},  // DarkHair
+    {0.86f, 0.74f, 0.40f},  // Straw
+    {0.66f, 0.55f, 0.38f},  // Burlap
+    {0.78f, 0.80f, 0.84f},  // Steel
+    {0.30f, 0.30f, 0.33f},  // Iron
+    {0.36f, 0.25f, 0.18f},  // Hide
+    {0.92f, 0.88f, 0.76f},  // Tusk
+    {0.78f, 0.52f, 0.50f},  // Snout
+    {0.42f, 0.12f, 0.10f},  // Hood
+    {0.45f, 0.32f, 0.20f},  // Leather
+    {0.50f, 0.52f, 0.56f},  // Plate
+};
 
 constexpr int kChunk = 32;
 constexpr glm::ivec3 kWorldSize{1024, 192, 1024};  // ponytail: dense grid (192 MiB); chunk streaming in M1
@@ -36,6 +73,12 @@ struct Grid {
     void set(glm::ivec3 p, Block b) { if (inside(p)) cells[index(p)] = b; }
 };
 
+// Origin of chunk i of a grid of `size` (chunks numbered x fastest, then y, then z).
+inline glm::ivec3 chunkOrigin(glm::ivec3 size, int i) {
+    glm::ivec3 n = size / kChunk;
+    return glm::ivec3{i % n.x, i / n.x % n.y, i / (n.x * n.y)} * kChunk;
+}
+
 // Runs fn(0..count-1) across all hardware threads.
 void parallelFor(int count, const std::function<void(int)>& fn);
 
@@ -44,3 +87,8 @@ void generateTerrain(Grid& world, uint32_t seed);
 // Feet position on the grass column nearest `near` (default: the world center).
 glm::vec3 findSpawn(const Grid& world);
 glm::vec3 findSpawn(const Grid& world, glm::ivec2 near);
+
+// World files (.flyw): the whole grid plus its seed, in one versioned file; see docs/ARCHITECTURE.md.
+// Both return an empty string on success, else why it failed. A rejected load leaves `g` unspecified.
+std::string saveWorld(const char* path, const Grid& g, uint32_t seed);
+std::string loadWorld(const char* path, Grid& g, uint32_t& seed);

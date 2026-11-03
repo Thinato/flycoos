@@ -1,8 +1,15 @@
 // Assert-style checks for the engine core. Not using <cassert>: release builds define NDEBUG.
 #include <algorithm>
+#include <chrono>
+#include <climits>
+#include <filesystem>
+#include <fstream>
 #include <numbers>
 #include <print>
+#include <string_view>
 
+#include "commands.h"
+#include "edit.h"
 #include "entity.h"
 #include "mesher.h"
 
@@ -763,6 +770,393 @@ static void protection() {
     CHECK(partModels(ModelBoar, player.inv)[Torso] == ModelBoar);
 }
 
+// World files: a round trip is bit-exact; truncated or corrupted files are rejected cleanly (the
+// dev preset's sanitizers check "cleanly"), and unknown sections are skipped.
+static void worldFiles() {
+    Grid g({64, 96, 32});
+    generateTerrain(g, 3);
+    g.set({5, 90, 5}, Plate);  // a block generation never places
+    std::string path = (std::filesystem::temp_directory_path() / "flycoos_core_test.flyw").string();
+    CHECK(saveWorld(path.c_str(), g, 99).empty());
+    Grid back({32, 32, 32});
+    uint32_t seed = 0;
+    CHECK(loadWorld(path.c_str(), back, seed).empty());
+    CHECK(back.size == g.size && back.cells == g.cells && seed == 99);
+
+    std::ifstream in(path, std::ios::binary);
+    const std::string file((std::istreambuf_iterator<char>(in)), {});
+    auto load = [&](const std::string& bytes) {
+        std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes;
+        Grid h({32, 32, 32});
+        uint32_t s = 0;
+        std::string error = loadWorld(path.c_str(), h, s);
+        return error.empty() && h.cells == g.cells ? std::string("same") : error.empty() ? std::string("different") : error;
+    };
+    auto reseal = [](std::string bytes) {  // recompute the checksum, so the structural checks are what's tested
+        uint32_t h = 2166136261u;
+        for (size_t i = 0; i + 4 < bytes.size(); ++i) h = (h ^ uint8_t(bytes[i])) * 16777619u;
+        for (int i = 0; i < 4; ++i) bytes[bytes.size() - 4 + size_t(i)] = char(h >> (8 * i));
+        return bytes;
+    };
+    CHECK(load(file) == "same");
+    for (size_t n : {size_t(0), size_t(3), size_t(24), size_t(28), file.size() / 2, file.size() - 1})
+        CHECK(load(file.substr(0, n)) != "same" && load(file.substr(0, n)) != "different");
+    for (size_t i = 0; i < file.size(); i += 5) {
+        std::string bad = file;
+        bad[i] = char(bad[i] ^ 0x5A);
+        CHECK(load(bad) != "same" && load(bad) != "different");  // the checksum catches every flip
+        load(reseal(bad));  // past the checksum: may load a different world, but must not crash or overrun
+    }
+    for (size_t cut : {size_t(1), size_t(5), size_t(40)}) {  // a short voxel section, checksum intact
+        std::string bad = file.substr(0, file.size() - 4 - cut) + file.substr(file.size() - 4);
+        CHECK(load(reseal(bad)) != "same" && load(reseal(bad)) != "different");
+    }
+    std::string future = file;
+    future[4] = 2;
+    CHECK(load(reseal(future)).starts_with("unsupported version"));
+    std::string extra = file.substr(0, file.size() - 4) + std::string("STRY\x03\0\0\0\0\0\0\0abc", 15) + "....";
+    CHECK(load(reseal(extra)) == "same");  // later sections (story markers, prefabs) don't break old readers
+    std::filesystem::remove(path);
+
+    std::filesystem::create_directories(path + "/occupied");  // the rename fails: no temp file is left behind
+    CHECK(!saveWorld(path.c_str(), g, 99).empty() && !std::filesystem::exists(path + ".tmp"));
+    std::filesystem::remove_all(path);
+}
+
+// Terrain with hills, trees and water in a 64x96x64 grid.
+static Grid editWorld() {
+    Grid g({64, 96, 64});
+    generateTerrain(g, 11);
+    return g;
+}
+
+static uint64_t hashCells(const Grid& g) {
+    return std::hash<std::string_view>{}(std::string_view(reinterpret_cast<const char*>(g.cells.data()), g.cells.size()));
+}
+
+static EditOp randomOp(std::mt19937& rng, const Grid& g) {
+    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    constexpr Block kBlocks[] = {Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water, Rock};
+    EditOp op;
+    op.tool = Tool(pick(0, int(Tool::Count) - 1));
+    op.center = {pick(-8, g.size.x + 8), pick(-8, g.size.z + 8)};
+    op.radius = pick(0, 12);
+    op.strength = pick(1, 8);
+    op.height = pick(0, g.size.y - 1);
+    op.block = kBlocks[pick(op.tool == Tool::Paint ? 1 : 0, op.tool == Tool::Paint ? 7 : 9)];
+    op.min = {pick(-4, g.size.x), pick(0, g.size.y), pick(-4, g.size.z)};
+    op.max = op.min + glm::ivec3(pick(-6, 6), pick(-6, 6), pick(-6, 6));
+    return op;
+}
+
+static void editing() {
+    {  // every op changes voxels only inside the dirty box it reports
+        Grid g = editWorld();
+        EditHistory history;
+        std::mt19937 rng(21);
+        int changed = 0;
+        for (int i = 0; i < 60; ++i) {
+            std::vector<Block> before = g.cells;
+            EditResult r = applyEdit(g, randomOp(rng, g), history);
+            CHECK(!r.error);
+            changed += !r.dirty.empty();
+            bool outside = false;
+            for (int y = 0; y < g.size.y; ++y)
+                for (int z = 0; z < g.size.z; ++z)
+                    for (int x = 0; x < g.size.x; ++x) {
+                        glm::ivec3 p{x, y, z};
+                        bool in = !r.dirty.empty() && glm::all(glm::greaterThanEqual(p, r.dirty.lo)) &&
+                                  glm::all(glm::lessThanEqual(p, r.dirty.hi));
+                        outside |= !in && g.cells[g.index(p)] != before[g.index(p)];
+                    }
+            CHECK(!outside);
+        }
+        CHECK(changed > 30);
+    }
+    {  // seeded fuzz: random ops, undos and redos always match the recorded states bit for bit
+        Grid g = editWorld();
+        EditHistory history;
+        std::mt19937 rng(7);
+        std::vector<uint64_t> states{hashCells(g)};  // timeline; states[at] is the current world
+        size_t at = 0;
+        int undos = 0, redos = 0;
+        for (int step = 0; step < 400; ++step) {
+            int action = std::uniform_int_distribution<int>(0, 9)(rng);
+            if (action < 3 && at > 0) {
+                CHECK(!undoEdit(g, history).empty());
+                --at, ++undos;
+            } else if (action < 5 && at + 1 < states.size()) {
+                CHECK(!redoEdit(g, history).empty());
+                ++at, ++redos;
+            } else if (!applyEdit(g, randomOp(rng, g), history).dirty.empty()) {
+                states.resize(++at);
+                states.push_back(hashCells(g));
+            }
+            CHECK(hashCells(g) == states[at]);
+        }
+        while (at > 0) {  // all the way back to the generated world
+            CHECK(!undoEdit(g, history).empty());
+            CHECK(hashCells(g) == states[--at]);
+        }
+        CHECK(undoEdit(g, history).empty() && hashCells(g) == hashCells(editWorld()));
+        CHECK(states.size() > 50 && undos > 50 && redos > 20);
+    }
+    {  // brushes: raise keeps the surface material on top of subsoil; lower under water keeps water
+        Grid g({32, 16, 32});
+        for (int z = 0; z < 32; ++z)
+            for (int x = 0; x < 32; ++x) {
+                for (int y = 0; y < 6; ++y) g.set({x, y, z}, y == 5 ? Grass : Dirt);
+                if (x >= 16) g.set({x, 5, z}, Sand), g.set({x, 6, z}, Water), g.set({x, 7, z}, Water);
+            }
+        EditHistory h;
+        EditOp raise{.tool = Tool::Raise, .center = {8, 8}, .radius = 2, .strength = 3};
+        CHECK(applyEdit(g, raise, h).dirty.hi.y == 8);
+        CHECK(groundTop(g, 8, 8) == 8 && g.get({8, 8, 8}) == Grass && g.get({8, 5, 8}) == Dirt && g.get({8, 7, 8}) == Dirt);
+        CHECK(groundTop(g, 8, 11) == 5);  // outside the radius
+        EditOp lower{.tool = Tool::Lower, .center = {24, 8}, .radius = 0, .strength = 2};
+        CHECK(!applyEdit(g, lower, h).dirty.empty());
+        CHECK(groundTop(g, 24, 8) == 3 && g.get({24, 3, 8}) == Sand && g.get({24, 4, 8}) == Water && g.get({24, 5, 8}) == Water);
+        EditOp flatten{.tool = Tool::Flatten, .center = {8, 8}, .radius = 4, .strength = 64, .height = 10};
+        applyEdit(g, flatten, h);
+        for (int dz = -4; dz <= 4; ++dz)
+            for (int dx = -4; dx <= 4; ++dx)
+                CHECK(dx * dx + dz * dz > 16 || groundTop(g, 8 + dx, 8 + dz) == 10);
+        EditOp paint{.tool = Tool::Paint, .center = {8, 8}, .radius = 1, .block = Snow};
+        applyEdit(g, paint, h);
+        CHECK(g.get({8, 10, 8}) == Snow && g.get({8, 9, 8}) == Dirt && g.get({8, 10, 10}) == Grass);
+        EditOp smooth{.tool = Tool::Smooth, .center = {8, 8}, .radius = 8, .strength = 64};
+        applyEdit(g, smooth, h);
+        CHECK(groundTop(g, 8, 8) == 10 && groundTop(g, 12, 8) < 10 && groundTop(g, 12, 8) > 5);  // the plateau's rim slumps
+        EditOp clear{.tool = Tool::Fill, .min = {0, 0, 0}, .max = {3, 15, 3}, .block = Air};
+        CHECK(applyEdit(g, clear, h).dirty.size() == glm::ivec3(4, 6, 4));  // only what was solid
+        CHECK(groundTop(g, 2, 2) == -1);
+        CHECK(applyEdit(g, clear, h).dirty.empty());  // nothing left to change: no undo record
+    }
+    {  // caps and bad input are rejected without touching the world or the history
+        Grid g = editWorld();
+        uint64_t before = hashCells(g);
+        EditHistory h;
+        const EditOp bad[] = {
+            {.tool = Tool::Raise, .radius = kMaxBrushRadius + 1},
+            {.tool = Tool::Raise, .radius = -1},
+            {.tool = Tool::Lower, .strength = 0},
+            {.tool = Tool::Lower, .strength = kMaxStrength + 1},
+            {.tool = Tool::Flatten, .height = g.size.y},
+            {.tool = Tool::Paint, .block = Water},
+            {.tool = Tool::Raise, .center = {INT_MAX, 0}},
+            {.tool = Tool::Fill, .min = {0, 0, 0}, .max = {128, 127, 127}},  // one voxel over 128^3
+            {.tool = Tool::Fill, .min = {INT_MIN, 0, 0}, .max = {INT_MAX, 0, 0}},
+            {.tool = Tool::Fill, .block = BlockCount},
+            {.tool = Tool::Count},
+        };
+        for (const EditOp& op : bad) CHECK(applyEdit(g, op, h).error);
+        CHECK(hashCells(g) == before && h.undo.empty());
+        CHECK(!applyEdit(g, {.tool = Tool::Fill, .min = {0, 0, 0}, .max = {127, 127, 127}, .block = Stone}, h).error);
+        CHECK(!applyEdit(g, {.tool = Tool::Raise, .radius = kMaxBrushRadius}, h).error);
+        for (int i = 0; i < int(kMaxUndo) + 20; ++i)
+            applyEdit(g, {.tool = Tool::Fill, .min = {i % 64, 90, 0}, .max = {i % 64, 90, 0}, .block = i / 64 % 2 ? Stone : Dirt}, h);
+        CHECK(h.undo.size() == kMaxUndo);
+    }
+    {  // undo memory is capped too: the oldest steps are dropped
+        Grid g({128, 128, 128});
+        EditHistory h;
+        size_t fit = kMaxUndoBytes / g.cells.size();  // whole-grid fills that fit
+        for (size_t i = 0; i < fit + 3; ++i)
+            applyEdit(g, {.tool = Tool::Fill, .min = {0, 0, 0}, .max = {127, 127, 127}, .block = i % 2 ? Air : Stone}, h);
+        size_t total = 0;
+        for (const EditRecord& r : h.undo) total += r.bytes;
+        CHECK(h.undo.size() == fit && total == fit * g.cells.size());
+    }
+}
+
+// The remote-command dispatcher, without sockets: JSON in, JSON out, the world and history changed.
+static void commands() {
+    Grid g = editWorld();
+    const uint64_t original = hashCells(g);
+    EditHistory h;
+    GameView view;
+    auto run = [&](std::string_view request) { return runCommand(request, g, h, view); };
+    auto ok = [&](const Command& c) { return c.response["ok"].get<bool>(); };
+
+    Command c = run(R"({"id": 7, "cmd": "state"})");
+    CHECK(ok(c) && c.response["id"] == 7 && c.response["result"]["size"][1] == 96 && c.response["result"]["undo_steps"] == 0);
+
+    int before = groundTop(g, 20, 20);
+    c = run(R"({"id": "r", "cmd": "raise", "args": {"x": 20, "z": 20, "radius": 4, "strength": 5}})");
+    CHECK(ok(c) && c.response["id"] == "r" && c.response["result"]["changed"] == true && !c.dirty.empty());
+    CHECK(groundTop(g, 20, 20) == before + 5 && h.undo.size() == 1);
+    c = run(R"({"cmd": "heights", "args": {"x0": 20, "z0": 20, "x1": 20, "z1": 20}})");
+    CHECK(ok(c) && c.response["result"]["heights"][0][0] == before + 5);
+
+    // apply and path: many ops, one undo step; undo brings back exactly what was there
+    uint64_t raised = hashCells(g);
+    c = run(R"({"cmd": "apply", "args": {"ops": [
+        {"tool": "flatten", "x": 40, "z": 40, "radius": 6, "height": 50},
+        {"tool": "paint", "x": 40, "z": 40, "radius": 3, "material": "snow"},
+        {"tool": "fill", "min": [10, 60, 10], "max": [12.0, 62, 12], "material": "Stone"}]}})");
+    CHECK(ok(c) && c.response["result"]["ops"] == 3 && h.undo.size() == 2 && h.undo.back().parts.size() == 3);
+    CHECK(groundTop(g, 40, 40) == 50 && g.get({40, 50, 40}) == Snow && g.get({11, 61, 11}) == Stone);
+    c = run(R"({"cmd": "path", "args": {"points": [[5, 30], [60, 34], [60, 60]], "width": 5, "material": "Dirt"}})");
+    CHECK(ok(c) && c.response["result"]["ops"].get<int>() > 20 && h.undo.size() == 3);
+    CHECK(g.get({60, groundTop(g, 60, 45), 45}) == Dirt);
+    CHECK(ok(run(R"({"cmd": "undo"})")) && ok(run(R"({"cmd": "undo"})")) && hashCells(g) == raised && h.redo.size() == 2);
+    CHECK(ok(run(R"({"cmd": "redo"})")) && groundTop(g, 40, 40) == 50 && h.undo.size() == 2);
+    c = run(R"({"cmd": "undo"})");
+    CHECK(c.response["result"]["changed"] == true && !c.dirty.empty());
+    run(R"({"cmd": "undo"})");
+    CHECK(hashCells(g) == original && h.undo.empty() && run(R"({"cmd": "undo"})").response["result"]["changed"] == false);
+
+    // bad requests and args are errors that change nothing
+    for (std::string_view bad : {
+             R"(not json)", R"([1, 2])", R"({"cmd": "explode"})", R"({"cmd": "raise", "args": []})",
+             R"({"cmd": "raise", "args": {"x": 20}})",                                // no z
+             R"({"cmd": "raise", "args": {"x": 20, "z": 20, "radius": 99}})",         // over the brush cap
+             R"({"cmd": "lower", "args": {"x": 2000, "z": 20}})",                     // outside the world
+             R"({"cmd": "flatten", "args": {"x": 20, "z": 20, "height": "high"}})",
+             R"({"cmd": "paint", "args": {"x": 20, "z": 20, "material": "Water"}})",  // paint needs a solid block
+             R"({"cmd": "fill", "args": {"min": [0, 0, 0], "max": [63, 95, 63], "material": "Lava"}})",
+             R"({"cmd": "fill", "args": {"min": [0, 0, 0], "max": [1e300, 0, 0], "material": "Air"}})",
+             R"({"cmd": "apply", "args": {"ops": [{"tool": "raise", "x": 1, "z": 1}, {"tool": "lower", "x": 1}]}})",
+             R"({"cmd": "path", "args": {"points": [[1, 1]]}})",
+             R"({"cmd": "inspect", "args": {"min": [0, 0, 0], "max": [1, 1]}})",
+             R"({"cmd": "screenshot", "args": {"position": [1, 2, 3], "look_at": [1, 2, 3]}})",
+             R"({"cmd": "screenshot", "args": {"position": [1, 2, 3], "yaw": 0, "width": 4000}})"}) {
+        c = run(bad);
+        CHECK(!ok(c) && c.response["error"].is_string() && c.dirty.empty() && !c.shot);
+    }
+    CHECK(hashCells(g) == original && h.undo.empty());
+    c = run(R"({"id": 3, "cmd": "apply", "args": {"ops": [{"tool": "raise", "x": 1, "z": 1}, {"tool": "lower", "x": 1}]}})");
+    CHECK(c.response["id"] == 3 && c.response["error"].get<std::string>().starts_with("op 1:"));
+
+    // caps: a fill bigger than 128^3 (after clamping to the world) is rejected; heights stay under 4096 samples
+    Grid big({256, 192, 256});
+    EditHistory bh;
+    CHECK(!ok(runCommand(R"({"cmd": "fill", "args": {"min": [0, 0, 0], "max": [255, 191, 255], "material": "Air"}})", big, bh, view)));
+    CHECK(!ok(runCommand(R"({"cmd": "inspect", "args": {"min": [0, 0, 0], "max": [255, 191, 255]}})", big, bh, view)));
+    c = runCommand(R"({"cmd": "heights", "args": {"x0": -50, "z0": 0, "x1": 9999, "z1": 255}})", big, bh, view);
+    const nlohmann::json& r = c.response["result"];
+    CHECK(ok(c) && r["x0"] == 0 && r["columns"].get<int>() * r["rows"].get<int>() <= 4096 && r["top_blocks"].empty());
+    c = run(R"({"cmd": "inspect", "args": {"min": [0, 0, 0], "max": [3, 95, 3]}})");
+    int64_t total = 0;
+    for (auto& [name, n] : c.response["result"]["blocks"].items()) total += n.get<int64_t>();
+    CHECK(ok(c) && total == 4 * 96 * 4 && c.response["result"]["volume"] == total);
+
+    // map writes a PNG; screenshot, goto and save hand their work to the game as data
+    std::filesystem::path stale = std::filesystem::temp_directory_path() / "flycoos" / "stale.png";
+    std::filesystem::create_directories(stale.parent_path());
+    std::ofstream(stale) << "x";
+    std::filesystem::last_write_time(stale, std::filesystem::file_time_type::clock::now() - std::chrono::hours(2));
+    c = run(R"({"cmd": "map", "args": {"x0": 0, "z0": 0, "x1": 63, "z1": 63, "grid": 16}})");
+    std::string png = c.response["result"].value("path", "");
+    CHECK(!std::filesystem::exists(stale));  // PNGs older than an hour are cleaned up
+    std::ifstream file(png, std::ios::binary);
+    char magic[8] = {};
+    file.read(magic, 8);
+    CHECK(ok(c) && c.response["result"]["width"] == 1024 && std::string_view(magic + 1, 3) == "PNG");
+    std::filesystem::remove(png);
+    c = run(R"({"cmd": "screenshot", "args": {"position": [10, 80, 10], "look_at": [32, 40, 32], "width": 640, "height": 360}})");
+    CHECK(ok(c) && c.shot && c.shot->eye == glm::vec3(10, 80, 10) && c.shot->width == 640 && c.shot->timeOfDay == view.timeOfDay);
+    c = run(R"({"cmd": "screenshot", "args": {"position": [10, 80, 10], "yaw": 90, "pitch": 0}})");
+    CHECK(ok(c) && glm::length(c.shot->target - c.shot->eye - glm::vec3(-1, 0, 0)) < 1e-5f);  // yaw 90 looks toward -X
+    c = run(R"({"cmd": "goto", "args": {"position": [30, 70, 30], "look_at": [40, 40, 40]}})");
+    CHECK(ok(c) && c.go && c.go->lookAt && c.go->pos == glm::vec3(30, 70, 30));
+    CHECK(hashCells(g) == original);
+
+    // a copy only goes to a .flyw file directly in worlds/ or next to the world file
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "flycoos_save_test", outside = fs::temp_directory_path() / "flycoos_outside.flyw";
+    fs::create_directories(dir);
+    std::ofstream(outside) << "x";
+    std::error_code ec;
+    fs::create_symlink(outside, dir / "link.flyw", ec);
+    view.path = (dir / "w.flyw").string();
+    auto save = [&](const std::string& path) { return run(nlohmann::json{{"cmd", "save"}, {"args", {{"path", path}}}}.dump()); };
+    CHECK(run(R"({"cmd": "save"})").save == "");
+    CHECK(save((dir / "copy.flyw").string()).save == fs::weakly_canonical(dir / "copy.flyw").string());
+    CHECK(save("worlds/copy.flyw").save == fs::weakly_canonical("worlds/copy.flyw").string());  // from the working folder
+    for (const std::string& bad : {(dir / "copy.txt").string(), (dir / ".." / "x.flyw").string(), (dir / "sub" / "x.flyw").string(),
+                                   (dir / "link.flyw").string(), std::string("/etc/x.flyw"), std::string("worlds/../x.flyw"),
+                                   std::string("worlds/x\0.flyw", 14)}) {
+        c = save(bad);
+        CHECK(!ok(c) && !c.save);
+    }
+    fs::remove_all(dir);
+    fs::remove(outside);
+    view.path.clear();
+
+    // hostile input: invalid UTF-8 still gives a response that serializes; deep nesting is refused
+    for (std::string_view bad : {"\xc3", "{\"cmd\": \"state\", \xff}", "{\"cmd\": \"x\xff\"}"}) {
+        c = run(bad);
+        std::string line;
+        try {
+            line = c.response.dump();
+        } catch (const std::exception&) {
+        }
+        CHECK(!ok(c) && line.contains("\"ok\":false"));
+    }
+    std::string deep = R"({"id": 1, "cmd": "state", "args": {"a": )" + std::string(100000, '[') + std::string(100000, ']') + "}}";
+    c = run(deep);
+    CHECK(!ok(c) && c.response["error"].get<std::string>().contains("nested"));
+    CHECK(!ok(run(deep.substr(0, 100000))));  // unclosed
+    CHECK(ok(run(R"({"cmd": "state", "args": {"a": )" + std::string(32, '[') + std::string(32, ']') + "}}")));
+
+    // work budget: too many big brushes, or edits spread too wide, are refused before anything changes
+    std::string raises;
+    for (int i = 0; i < 3; ++i) raises += std::format(R"({}{{"tool": "raise", "x": {}, "z": 100, "radius": 32}})", i ? "," : "", 40 + 20 * i);
+    uint64_t bigBefore = hashCells(big);
+    c = runCommand(R"({"cmd": "apply", "args": {"ops": [)" + raises + "]}}", big, bh, view);
+    CHECK(!ok(c) && c.response["error"].get<std::string>().contains("budget") && hashCells(big) == bigBefore && bh.undo.empty());
+    CHECK(!ok(runCommand(R"({"cmd": "path", "args": {"points": [[0, 0], [255, 255]], "width": 65}})", big, bh, view)));
+    CHECK(ok(runCommand(R"({"cmd": "apply", "args": {"ops": [)" + raises.substr(0, raises.rfind(",{")) + "]}}", big, bh, view)));
+    Grid wide({256, 32, 256});
+    EditHistory wh;
+    auto corners = [&](int far) {
+        return runCommand(std::format(R"({{"cmd": "apply", "args": {{"ops": [{{"tool": "fill", "min": [0, 0, 0], "max": [0, 0, 0], "material": "Stone"}},
+            {{"tool": "fill", "min": [{0}, 0, {0}], "max": [{0}, 0, {0}], "material": "Stone"}}]}}}})", far), wide, wh, view);
+    };
+    CHECK(ok(corners(223)) && !ok(corners(224)));  // 7x7 chunk columns to remesh are fine, 8x8 are too many
+}
+
+static void raycasting() {
+    Grid g = flatWorld(3);  // ground top y = 3, wall at x = 10 up to y = 6
+    auto hit = raycast(g, {8.5f, 10, 8.5f}, {0, -1, 0}, 100);
+    CHECK(hit && hit->cell == glm::ivec3(8, 3, 8) && hit->normal == glm::ivec3(0, 1, 0) && std::abs(hit->distance - 6) < 1e-4f);
+    hit = raycast(g, {2.5f, 5.5f, 8.5f}, {1, 0, 0}, 100);
+    CHECK(hit && hit->cell == glm::ivec3(10, 5, 8) && hit->normal == glm::ivec3(-1, 0, 0) && std::abs(hit->distance - 7.5f) < 1e-4f);
+    hit = raycast(g, {14.5f, 5.5f, 8.5f}, {-1, 0, 0}, 100);
+    CHECK(hit && hit->cell == glm::ivec3(10, 5, 8) && hit->normal == glm::ivec3(1, 0, 0));
+    CHECK(!raycast(g, {2.5f, 5.5f, 8.5f}, {1, 0, 0}, 7.4f));  // out of range
+    CHECK(!raycast(g, {8.5f, 10, 8.5f}, {0, 1, 0}, 100));     // sky
+    hit = raycast(g, {8.5f, 2.5f, 8.5f}, {0, 1, 0}, 100);     // starts inside the ground
+    CHECK(hit && hit->cell == glm::ivec3(8, 2, 8) && hit->normal == glm::ivec3(0) && hit->distance == 0);
+    Grid m = meadow();  // water is passed through
+    hit = raycast(m, {40.5f, 8, 40.5f}, {0, -1, 0}, 100);
+    CHECK(hit && hit->cell == glm::ivec3(40, 2, 40) && hit->normal == glm::ivec3(0, 1, 0));
+
+    // Random rays agree with a fine-stepped march, and land on the face they report.
+    Grid w = editWorld();
+    std::mt19937 rng(3);
+    std::uniform_real_distribution<float> u(0, 1);
+    int hits = 0;
+    for (int i = 0; i < 150; ++i) {
+        glm::vec3 from{u(rng) * 64, 60 + u(rng) * 30, u(rng) * 64};
+        if (isOpaque(w.get(glm::ivec3(glm::floor(from))))) continue;
+        glm::vec3 dir = glm::normalize(glm::vec3(u(rng) - 0.5f, -u(rng), u(rng) - 0.5f));
+        auto r = raycast(w, from, dir, 120);
+        float t = 0;
+        while (t < 120 && !isOpaque(w.get(glm::ivec3(glm::floor(from + dir * t))))) t += 0.002f;
+        CHECK(bool(r) == (t < 120));
+        if (!r) continue;
+        ++hits;
+        CHECK(r->cell == glm::ivec3(glm::floor(from + dir * t)) || std::abs(r->distance - t) < 0.01f);  // grazing an edge
+        glm::vec3 p = from + dir * r->distance;
+        int a = r->normal.x ? 0 : r->normal.y ? 1 : 2;
+        CHECK(std::abs(p[a] - float(r->cell[a] + (r->normal[a] > 0))) < 2e-3f);
+        CHECK(!isOpaque(w.get(r->cell + r->normal)));
+    }
+    CHECK(hits > 50);
+}
+
 int main() {
     meshing();
     packing();
@@ -774,6 +1168,10 @@ int main() {
     protection();
     generation();
     regions();
+    worldFiles();
+    editing();
+    commands();
+    raycasting();
     if (failures) std::println(stderr, "{} check(s) failed", failures);
     else std::println("all checks passed");
     return failures ? 1 : 0;

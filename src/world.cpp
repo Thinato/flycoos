@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <format>
+#include <fstream>
 #include <thread>
 
 #include <FastNoiseLite.h>
@@ -166,4 +170,171 @@ glm::vec3 findSpawn(const Grid& g, glm::ivec2 near) {
                 if (y >= 0 && g.get({x, y, z}) == Grass) return {x + 0.5f, y + 1.0f, z + 0.5f};
             }
     return {cx + 0.5f, float(g.size.y), cz + 0.5f};
+}
+
+// World file layout (little-endian):
+//   "FLYW" | u32 version | i32 size x, y, z | u32 seed
+//   sections, each: char tag[4] | u64 bytes | payload. Unknown tags are skipped, which leaves room
+//     for later sections (prefab instances, story markers) without a version bump.
+//   u32 FNV-1a of every byte before it: any corruption is rejected instead of loading a wrong world.
+// "VOXL" section: per 32^3 chunk (in chunkOrigin order): u32 bytes, then runs of
+//   (u8 block, LEB128 count - 1) over the chunk's voxels, x fastest, then z, then y. Terrain is
+//   mostly horizontal layers, so whole layers of stone or air collapse into single runs.
+constexpr uint32_t kWorldFileVersion = 1;
+constexpr int kChunkVoxels = kChunk * kChunk * kChunk;
+
+static uint32_t fnv1a(const uint8_t* p, size_t n) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; ++i) h = (h ^ p[i]) * 16777619u;
+    return h;
+}
+
+static void put(std::vector<uint8_t>& out, uint64_t v, int bytes) {
+    for (int i = 0; i < bytes; ++i) out.push_back(uint8_t(v >> (8 * i)));
+}
+
+static uint64_t get(const uint8_t* p, int bytes) {
+    uint64_t v = 0;
+    for (int i = 0; i < bytes; ++i) v |= uint64_t(p[i]) << (8 * i);
+    return v;
+}
+
+static std::vector<uint8_t> encodeChunk(const Grid& g, glm::ivec3 o) {
+    std::vector<uint8_t> out;
+    Block run = Air;
+    int count = 0;
+    auto flush = [&] {
+        out.push_back(run);
+        uint32_t n = uint32_t(count - 1);
+        for (; n >= 128; n >>= 7) out.push_back(uint8_t(n | 128));
+        out.push_back(uint8_t(n));
+    };
+    for (int y = 0; y < kChunk; ++y)
+        for (int z = 0; z < kChunk; ++z) {
+            const Block* row = &g.cells[g.index(o + glm::ivec3(0, y, z))];
+            for (int x = 0; x < kChunk; ++x) {
+                if (count && row[x] == run) { ++count; continue; }
+                if (count) flush();
+                run = row[x];
+                count = 1;
+            }
+        }
+    flush();
+    return out;
+}
+
+static bool decodeChunk(Grid& g, glm::ivec3 o, const uint8_t* p, const uint8_t* end) {
+    int i = 0;  // voxel index within the chunk
+    while (p < end) {
+        Block b = Block(*p++);
+        int count = 0;
+        for (int shift = 0;; shift += 7) {
+            if (p == end || shift > 14) return false;  // 15 bits cover 32^3 voxels
+            count |= (*p & 127) << shift;
+            if (!(*p++ & 128)) break;
+        }
+        ++count;
+        if (b >= BlockCount || count > kChunkVoxels - i) return false;
+        for (int stop = i + count; i < stop;) {  // fill row by row
+            int x = i % kChunk, n = std::min(stop - i, kChunk - x);
+            std::fill_n(&g.cells[g.index(o + glm::ivec3(x, i / (kChunk * kChunk), i / kChunk % kChunk))], n, b);
+            i += n;
+        }
+    }
+    return i == kChunkVoxels;
+}
+
+std::string saveWorld(const char* path, const Grid& g, uint32_t seed) {
+    if (g.size % kChunk != glm::ivec3(0)) return "world size is not a multiple of the chunk size";
+    glm::ivec3 counts = g.size / kChunk;
+    int n = counts.x * counts.y * counts.z;
+    std::vector<std::vector<uint8_t>> chunks(static_cast<size_t>(n));
+    parallelFor(n, [&](int i) { chunks[size_t(i)] = encodeChunk(g, chunkOrigin(g.size, i)); });
+
+    std::vector<uint8_t> out{'F', 'L', 'Y', 'W'};
+    put(out, kWorldFileVersion, 4);
+    for (int a = 0; a < 3; ++a) put(out, uint32_t(g.size[a]), 4);
+    put(out, seed, 4);
+    out.insert(out.end(), {'V', 'O', 'X', 'L'});
+    size_t sizeAt = out.size();
+    put(out, 0, 8);
+    for (const std::vector<uint8_t>& c : chunks) {
+        put(out, c.size(), 4);
+        out.insert(out.end(), c.begin(), c.end());
+    }
+    uint64_t sectionBytes = out.size() - sizeAt - 8;
+    for (int i = 0; i < 8; ++i) out[sizeAt + size_t(i)] = uint8_t(sectionBytes >> (8 * i));
+    put(out, fnv1a(out.data(), out.size()), 4);
+
+    // Write a temp file and rename it over the target, so a failed save never destroys the last good one.
+    std::filesystem::path target(path), tmp = target;
+    tmp += ".tmp";
+    std::error_code ec;
+    if (target.has_parent_path()) std::filesystem::create_directories(target.parent_path(), ec);
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        f.write(reinterpret_cast<const char*>(out.data()), std::streamsize(out.size()));
+        if (!f.flush()) {
+            std::filesystem::remove(tmp, ec);
+            return std::format("cannot write {}", tmp.string());
+        }
+    }
+    std::filesystem::rename(tmp, target, ec);
+    if (ec) {
+        std::string error = std::format("cannot replace {}: {}", target.string(), ec.message());
+        std::filesystem::remove(tmp, ec);
+        return error;
+    }
+    return {};
+}
+
+std::string loadWorld(const char* path, Grid& g, uint32_t& seed) {
+    std::error_code ec;
+    uintmax_t fileBytes = std::filesystem::file_size(path, ec);
+    std::ifstream f(path, std::ios::binary);
+    if (ec || !f) return "cannot open the file";
+    std::vector<uint8_t> data(fileBytes);
+    if (!f.read(reinterpret_cast<char*>(data.data()), std::streamsize(fileBytes))) return "cannot read the file";
+
+    constexpr size_t kHeader = 24;
+    if (data.size() < kHeader + 4 || std::memcmp(data.data(), "FLYW", 4) != 0) return "not a flycoos world file";
+    const uint8_t *p = data.data(), *end = p + data.size() - 4;
+    if (fnv1a(p, data.size() - 4) != get(end, 4)) return "corrupt or truncated (checksum mismatch)";
+    if (uint32_t version = uint32_t(get(p + 4, 4)); version != kWorldFileVersion)
+        return std::format("unsupported version {} (this build reads {})", version, kWorldFileVersion);
+    glm::ivec3 size{int32_t(get(p + 8, 4)), int32_t(get(p + 12, 4)), int32_t(get(p + 16, 4))};
+    if (glm::any(glm::lessThan(size, glm::ivec3(kChunk))) || glm::any(glm::greaterThan(size, glm::ivec3(4096))) ||
+        size % kChunk != glm::ivec3(0) || int64_t(size.x) * size.y * size.z > int64_t(1) << 30)
+        return std::format("bad world size {}x{}x{}", size.x, size.y, size.z);
+    seed = uint32_t(get(p + 20, 4));
+    if (g.size != size) g = Grid(size);
+
+    bool voxels = false;
+    for (p += kHeader; p < end;) {
+        if (end - p < 12) return "truncated section header";
+        const uint8_t* tag = p;
+        uint64_t bytes = get(p + 4, 8);
+        p += 12;
+        if (bytes > uint64_t(end - p)) return "truncated section";
+        const uint8_t* next = p + bytes;
+        if (std::memcmp(tag, "VOXL", 4) == 0) {
+            glm::ivec3 counts = size / kChunk;
+            int n = counts.x * counts.y * counts.z;
+            std::vector<std::pair<const uint8_t*, const uint8_t*>> spans(static_cast<size_t>(n));
+            for (auto& [from, to] : spans) {
+                if (next - p < 4 || uint64_t(next - p - 4) < get(p, 4)) return "truncated chunk";
+                from = p + 4;
+                to = p = from + get(p, 4);
+            }
+            if (p != next) return "voxel section size mismatch";
+            std::atomic<bool> ok{true};
+            parallelFor(n, [&](int i) {
+                if (!decodeChunk(g, chunkOrigin(size, i), spans[size_t(i)].first, spans[size_t(i)].second)) ok = false;
+            });
+            if (!ok) return "corrupt chunk data";
+            voxels = true;
+        }
+        p = next;
+    }
+    return voxels ? std::string() : "no voxel section";
 }

@@ -16,38 +16,6 @@
 
 namespace {
 
-// Block colors in sRGB, indexed by Block. Converted to linear when uploaded.
-constexpr float kPalette[BlockCount][3] = {
-    {0, 0, 0},              // Air
-    {0.36f, 0.62f, 0.24f},  // Grass
-    {0.47f, 0.33f, 0.20f},  // Dirt
-    {0.50f, 0.50f, 0.52f},  // Stone
-    {0.80f, 0.72f, 0.48f},  // Sand
-    {0.95f, 0.96f, 1.00f},  // Snow
-    {0.42f, 0.28f, 0.15f},  // Wood
-    {0.20f, 0.48f, 0.18f},  // Leaves
-    {0.08f, 0.30f, 0.55f},  // Water
-    {0.93f, 0.74f, 0.58f},  // Skin
-    {0.25f, 0.45f, 0.72f},  // Tunic
-    {0.35f, 0.22f, 0.12f},  // Belt
-    {0.28f, 0.18f, 0.12f},  // Boots
-    {0.80f, 0.45f, 0.20f},  // Hair
-    {0.08f, 0.08f, 0.10f},  // Eye
-    {0.52f, 0.50f, 0.47f},  // Rock
-    {0.42f, 0.52f, 0.30f},  // Robe
-    {0.25f, 0.17f, 0.12f},  // DarkHair
-    {0.86f, 0.74f, 0.40f},  // Straw
-    {0.66f, 0.55f, 0.38f},  // Burlap
-    {0.78f, 0.80f, 0.84f},  // Steel
-    {0.30f, 0.30f, 0.33f},  // Iron
-    {0.36f, 0.25f, 0.18f},  // Hide
-    {0.92f, 0.88f, 0.76f},  // Tusk
-    {0.78f, 0.52f, 0.50f},  // Snout
-    {0.42f, 0.12f, 0.10f},  // Hood
-    {0.45f, 0.32f, 0.20f},  // Leather
-    {0.50f, 0.52f, 0.56f},  // Plate
-};
-
 // Must match struct Frame / Draw in shaders/world.metal.
 struct FrameUniforms {
     glm::mat4 viewProj, invViewProj;
@@ -115,7 +83,7 @@ Renderer::~Renderer() {
     if (!device_) return;
     SDL_WaitForGPUIdle(device_);
     for (auto* p : {sky_, opaque_, water_, wire_}) if (p) SDL_ReleaseGPUGraphicsPipeline(device_, p);
-    for (auto* b : {worldOpaque_, worldWater_, models_}) if (b) SDL_ReleaseGPUBuffer(device_, b);
+    for (auto* b : {world_[0], world_[1], models_}) if (b) SDL_ReleaseGPUBuffer(device_, b);
     for (auto* t : {msaaColor_, depth_, resolved_}) if (t) SDL_ReleaseGPUTexture(device_, t);
     SDL_ReleaseWindowFromGPUDevice(device_, window_);
     SDL_DestroyGPUDevice(device_);
@@ -230,70 +198,131 @@ SDL_GPUGraphicsPipeline* Renderer::pipeline(SDL_GPUShader* vs, SDL_GPUShader* fs
     return SDL_CreateGPUGraphicsPipeline(device_, &info);
 }
 
-SDL_GPUBuffer* Renderer::upload(const void* data, uint32_t dataBytes) {
-    uint32_t bytes = std::max<uint32_t>(dataBytes, sizeof(Quad));  // zero-sized buffers are invalid
+SDL_GPUBuffer* Renderer::upload(const void* data, uint32_t dataBytes, uint32_t capacity) {
     SDL_GPUBufferCreateInfo bi{};
     bi.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
-    bi.size = bytes;
+    bi.size = std::max({dataBytes, capacity, uint32_t(sizeof(Quad))});  // zero-sized buffers are invalid
     SDL_GPUBuffer* buffer = SDL_CreateGPUBuffer(device_, &bi);
+    if (!buffer) {
+        std::println(stderr, "buffer allocation of {} bytes failed: {}", bi.size, SDL_GetError());
+        std::exit(1);
+    }
+    if (dataBytes) write(data, dataBytes, {{buffer, 0, 0, dataBytes}});
+    return buffer;
+}
+
+// Stages `data` in one transfer buffer and copies pieces of it into GPU buffers. Command buffers
+// submitted later see the new contents; frames already submitted keep drawing the old ones.
+void Renderer::write(const void* data, uint32_t bytes, const std::vector<Upload>& uploads) {
     SDL_GPUTransferBufferCreateInfo ti{};
     ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     ti.size = bytes;
     SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device_, &ti);
-    if (!buffer || !transfer) {
-        std::println(stderr, "buffer allocation of {} bytes failed: {}", bytes, SDL_GetError());
+    void* mapped = transfer ? SDL_MapGPUTransferBuffer(device_, transfer, false) : nullptr;
+    SDL_GPUCommandBuffer* cmd = mapped ? SDL_AcquireGPUCommandBuffer(device_) : nullptr;
+    if (!cmd) {
+        std::println(stderr, "upload of {} bytes failed: {}", bytes, SDL_GetError());
         std::exit(1);
     }
-    auto* mapped = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(device_, transfer, false));
-    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
-    if (!mapped || !cmd) {
-        std::println(stderr, "upload failed: {}", SDL_GetError());
-        std::exit(1);
-    }
-    if (dataBytes) std::memcpy(mapped, data, dataBytes);
-    std::memset(mapped + dataBytes, 0, bytes - dataBytes);
+    std::memcpy(mapped, data, bytes);
     SDL_UnmapGPUTransferBuffer(device_, transfer);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
-    SDL_GPUTransferBufferLocation src{};
-    src.transfer_buffer = transfer;
-    SDL_GPUBufferRegion dst{};
-    dst.buffer = buffer;
-    dst.size = bytes;
-    SDL_UploadToGPUBuffer(copy, &src, &dst, false);
+    for (const Upload& u : uploads) {
+        SDL_GPUTransferBufferLocation src{};
+        src.transfer_buffer = transfer;
+        src.offset = u.from;
+        SDL_GPUBufferRegion dst{};
+        dst.buffer = u.buffer;
+        dst.offset = u.offset;
+        dst.size = u.bytes;
+        SDL_UploadToGPUBuffer(copy, &src, &dst, false);
+    }
     SDL_EndGPUCopyPass(copy);
     SDL_SubmitGPUCommandBuffer(cmd);
     SDL_ReleaseGPUTransferBuffer(device_, transfer);
-    return buffer;
 }
 
 void Renderer::uploadWorld(const Grid& world) {
     uint64_t start = SDL_GetTicksNS();
     glm::ivec3 counts = world.size / kChunk;
     int n = counts.x * counts.y * counts.z;
-    std::vector<Mesh> meshes(static_cast<size_t>(n));
-    auto chunkOrigin = [&](int i) {
-        return glm::ivec3{i % counts.x, i / counts.x % counts.y, i / (counts.x * counts.y)} * kChunk;
-    };
-    parallelFor(n, [&](int i) { meshes[size_t(i)] = meshRegion(world, chunkOrigin(i), glm::ivec3(kChunk)); });
-
-    std::vector<Quad> opaque, water;
-    chunks_.clear();
-    for (int i = 0; i < n; ++i) {
-        const Mesh& m = meshes[size_t(i)];
-        if (m.opaque.empty() && m.water.empty()) continue;
-        chunks_.push_back({chunkOrigin(i), uint32_t(opaque.size()), uint32_t(m.opaque.size()),
-                           uint32_t(water.size()), uint32_t(m.water.size())});
-        opaque.insert(opaque.end(), m.opaque.begin(), m.opaque.end());
-        water.insert(water.end(), m.water.begin(), m.water.end());
-    }
-    for (auto* b : {worldOpaque_, worldWater_}) if (b) SDL_ReleaseGPUBuffer(device_, b);
-    worldOpaque_ = upload(opaque.data(), uint32_t(opaque.size() * sizeof(Quad)));
-    worldWater_ = upload(water.data(), uint32_t(water.size() * sizeof(Quad)));
-    stats.opaqueQuads = opaque.size();
-    stats.waterQuads = water.size();
-    stats.chunksTotal = int(chunks_.size());
+    meshes_.assign(static_cast<size_t>(n), {});
+    chunks_.assign(static_cast<size_t>(n), {});
+    parallelFor(n, [&](int i) {
+        chunks_[size_t(i)].origin = chunkOrigin(world.size, i);
+        meshes_[size_t(i)] = meshRegion(world, chunks_[size_t(i)].origin, glm::ivec3(kChunk));
+    });
+    packWorld();
     stats.meshSeconds = double(SDL_GetTicksNS() - start) * 1e-9;
+}
+
+// Lays every chunk's quads out back to back in fresh buffers, with headroom at the end for chunks
+// that outgrow their slot after edits.
+void Renderer::packWorld() {
+    stats.chunksTotal = 0;
+    for (size_t k = 0; k < 2; ++k) {
+        std::vector<Quad> all;
+        for (size_t i = 0; i < chunks_.size(); ++i) {
+            const std::vector<Quad>& q = k ? meshes_[i].water : meshes_[i].opaque;
+            chunks_[i].slot[k] = {uint32_t(all.size()), uint32_t(q.size()), uint32_t(q.size())};
+            all.insert(all.end(), q.begin(), q.end());
+            stats.chunksTotal += k == 0 && !(meshes_[i].opaque.empty() && meshes_[i].water.empty());
+        }
+        worldUsed_[k] = uint32_t(all.size());
+        worldCap_[k] = worldUsed_[k] + worldUsed_[k] / 8 + 65536;  // ~2 MB of headroom for the opaque world
+        if (world_[k]) SDL_ReleaseGPUBuffer(device_, world_[k]);  // SDL frees it once in-flight frames are done
+        world_[k] = upload(all.data(), uint32_t(all.size() * sizeof(Quad)), worldCap_[k] * uint32_t(sizeof(Quad)));
+        (k ? stats.waterQuads : stats.opaqueQuads) = all.size();
+    }
+}
+
+void Renderer::updateWorld(const Grid& world, const Box& dirty) {
+    if (dirty.empty()) return;
+    uint64_t start = SDL_GetTicksNS();
+    glm::ivec3 lo = glm::max(dirty.lo - 1, glm::ivec3(0)) / kChunk, hi = glm::min(dirty.hi + 1, world.size - 1) / kChunk;
+    glm::ivec3 counts = world.size / kChunk;
+    std::vector<size_t> ids;
+    for (int z = lo.z; z <= hi.z; ++z)
+        for (int y = lo.y; y <= hi.y; ++y)
+            for (int x = lo.x; x <= hi.x; ++x) ids.push_back(size_t(x + counts.x * (y + counts.y * z)));
+    parallelFor(int(ids.size()), [&](int j) {
+        size_t i = ids[size_t(j)];
+        meshes_[i] = meshRegion(world, chunks_[i].origin, glm::ivec3(kChunk));
+    });
+
+    // A chunk's new quads overwrite its slot when they fit. Otherwise they move to a new slot with
+    // spare room at the end of the buffer; once that headroom is used up, everything is repacked.
+    std::vector<Quad> staged;
+    std::vector<Upload> uploads;
+    bool repack = false;
+    for (size_t i : ids)
+        for (size_t k = 0; k < 2; ++k) {
+            const std::vector<Quad>& q = k ? meshes_[i].water : meshes_[i].opaque;
+            Slot& slot = chunks_[i].slot[k];
+            (k ? stats.waterQuads : stats.opaqueQuads) += q.size() - slot.count;  // unsigned wrap-around nets out
+            if (q.size() > slot.cap) {
+                uint32_t cap = uint32_t(q.size() + q.size() / 4 + 64);
+                repack |= worldUsed_[k] + cap > worldCap_[k];
+                slot = {worldUsed_[k], 0, cap};
+                worldUsed_[k] += cap;
+            }
+            slot.count = uint32_t(q.size());
+            if (q.empty()) continue;
+            uploads.push_back({world_[k], uint32_t(slot.first * sizeof(Quad)), uint32_t(staged.size() * sizeof(Quad)),
+                               uint32_t(q.size() * sizeof(Quad))});
+            staged.insert(staged.end(), q.begin(), q.end());
+        }
+    if (repack) {  // rebuilds every slot from meshes_, which already holds the new meshes
+        packWorld();
+        ++stats.repacks;
+    } else {
+        if (!staged.empty()) write(staged.data(), uint32_t(staged.size() * sizeof(Quad)), uploads);
+        stats.chunksTotal = 0;
+        for (const ChunkDraw& c : chunks_) stats.chunksTotal += c.slot[0].count || c.slot[1].count;
+    }
+    stats.chunksRemeshed = int(ids.size());
+    stats.remeshMs = double(SDL_GetTicksNS() - start) * 1e-6;
 }
 
 void Renderer::uploadModels() {
@@ -309,27 +338,29 @@ void Renderer::uploadModels() {
     models_ = upload(quads.data(), uint32_t(quads.size() * sizeof(Quad)));
 }
 
+SDL_GPUTexture* Renderer::texture(SDL_GPUTextureFormat format, SDL_GPUTextureUsageFlags usage, SDL_GPUSampleCount samples,
+                                  uint32_t w, uint32_t h) {
+    SDL_GPUTextureCreateInfo info{};
+    info.type = SDL_GPU_TEXTURETYPE_2D;
+    info.format = format;
+    info.usage = usage;
+    info.width = w;
+    info.height = h;
+    info.layer_count_or_depth = 1;
+    info.num_levels = 1;
+    info.sample_count = samples;
+    return SDL_CreateGPUTexture(device_, &info);
+}
+
 bool Renderer::ensureTargets(uint32_t w, uint32_t h) {
     if (w == targetW_ && h == targetH_) return true;
     for (auto* t : {msaaColor_, depth_, resolved_}) if (t) SDL_ReleaseGPUTexture(device_, t);
-    auto make = [&](SDL_GPUTextureFormat format, SDL_GPUTextureUsageFlags usage, SDL_GPUSampleCount samples) {
-        SDL_GPUTextureCreateInfo info{};
-        info.type = SDL_GPU_TEXTURETYPE_2D;
-        info.format = format;
-        info.usage = usage;
-        info.width = w;
-        info.height = h;
-        info.layer_count_or_depth = 1;
-        info.num_levels = 1;
-        info.sample_count = samples;
-        return SDL_CreateGPUTexture(device_, &info);
-    };
     // Scene renders into our own (MSAA) targets and resolves into `resolved_`, which is
     // blitted to the swapchain. Owning the final image lets us read it back for screenshots.
-    resolved_ = make(colorFormat_, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, SDL_GPU_SAMPLECOUNT_1);
+    resolved_ = texture(colorFormat_, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, SDL_GPU_SAMPLECOUNT_1, w, h);
     msaaColor_ = samples_ == SDL_GPU_SAMPLECOUNT_1 ? nullptr
-                                                   : make(colorFormat_, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, samples_);
-    depth_ = make(SDL_GPU_TEXTUREFORMAT_D32_FLOAT, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, samples_);
+                                                   : texture(colorFormat_, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, samples_, w, h);
+    depth_ = texture(SDL_GPU_TEXTUREFORMAT_D32_FLOAT, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, samples_, w, h);
     if (!resolved_ || !depth_ || (samples_ != SDL_GPU_SAMPLECOUNT_1 && !msaaColor_)) {
         std::println(stderr, "render target creation ({}x{}) failed: {}", w, h, SDL_GetError());
         targetW_ = targetH_ = 0;
@@ -338,6 +369,99 @@ bool Renderer::ensureTargets(uint32_t w, uint32_t h) {
     targetW_ = w;
     targetH_ = h;
     return true;
+}
+
+// Sky, world, models and water from `frame` into the given targets (no MSAA target: draws straight
+// into `resolved`). `onScreen`: the window's frame, which may use the frozen cull view.
+void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, const RenderSettings& settings,
+                         SDL_GPUTexture* msaa, SDL_GPUTexture* resolved, SDL_GPUTexture* depthTexture, uint32_t w,
+                         uint32_t h, bool onScreen) {
+    FrameUniforms u{};
+    glm::mat4 proj = glm::perspectiveRH_ZO(frame.fovY, float(w) / float(h), 0.1f, 1000.0f);
+    u.viewProj = proj * frame.view;
+    u.invViewProj = glm::inverse(u.viewProj);
+    u.eye = glm::vec4(frame.eye, 0);
+    ambience(frame.timeOfDay, u);
+    if (!settings.fog) u.fog.x = 0;
+    u.debug = {float(settings.viewMode), 0, 0, 0};
+    for (int b = 0; b < BlockCount; ++b)
+        u.palette[b] = glm::vec4(lin({kPalette[b][0], kPalette[b][1], kPalette[b][2]}), 1);
+    SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
+    SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);
+
+    SDL_GPUColorTargetInfo color{};
+    color.clear_color = {0.03f, 0.03f, 0.04f, 1};  // visible only with the sky off
+    color.load_op = SDL_GPU_LOADOP_CLEAR;
+    if (msaa) {
+        color.texture = msaa;
+        color.store_op = SDL_GPU_STOREOP_RESOLVE;
+        color.resolve_texture = resolved;
+    } else {
+        color.texture = resolved;
+        color.store_op = SDL_GPU_STOREOP_STORE;
+    }
+    SDL_GPUDepthStencilTargetInfo depth{};
+    depth.texture = depthTexture;
+    depth.clear_depth = 1;
+    depth.load_op = SDL_GPU_LOADOP_CLEAR;
+    depth.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+    depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &depth);
+
+    if (settings.sky) {
+        SDL_BindGPUGraphicsPipeline(pass, sky_);
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    }
+
+    // Cull chunks once; the same visible list serves every pass. A frozen cull keeps using the
+    // view from when it was frozen (on screen only).
+    if (onScreen && !settings.freezeCulling) cullViewProj_ = u.viewProj;
+    const glm::mat4& cull = onScreen ? cullViewProj_ : u.viewProj;
+    std::vector<const ChunkDraw*> visible;
+    for (const ChunkDraw& c : chunks_)
+        if ((c.slot[0].count || c.slot[1].count) &&
+            (!settings.frustumCulling || inFrustum(cull, glm::vec3(c.origin), glm::vec3(c.origin + kChunk))))
+            visible.push_back(&c);
+    stats.chunksDrawn = int(visible.size());
+    stats.quadsDrawn = 0;
+    stats.drawCalls = 0;
+
+    auto draw = [&](const DrawUniforms& d, uint32_t count) {
+        SDL_PushGPUVertexUniformData(cmd, 1, &d, sizeof d);
+        SDL_DrawGPUPrimitives(pass, count * 6, 1, 0, 0);
+        stats.quadsDrawn += count;
+        ++stats.drawCalls;
+    };
+    auto drawChunks = [&](size_t k) {  // 0 opaque, 1 water
+        SDL_BindGPUVertexStorageBuffers(pass, 0, &world_[k], 1);
+        for (const ChunkDraw* c : visible)
+            if (const Slot& s = c->slot[k]; s.count)
+                draw({glm::translate(glm::mat4(1), glm::vec3(c->origin)), glm::vec4(glm::vec3(c->origin), 0),
+                      glm::uvec4(s.first, 0, 0, 0)}, s.count);
+    };
+    auto drawModels = [&] {
+        SDL_BindGPUVertexStorageBuffers(pass, 0, &models_, 1);
+        for (const ModelInstance& inst : frame.models)
+            for (size_t p = 0; p < PartCount; ++p) {
+                auto [first, count] = parts_[size_t(inst.parts[p])][p];
+                if (count) draw({inst.pose[p], glm::vec4(float(p) * 37), glm::uvec4(first, 0, 0, 0)}, count);
+            }
+    };
+
+    SDL_BindGPUGraphicsPipeline(pass, opaque_);
+    drawChunks(0);
+    if (settings.character) drawModels();
+    if (settings.wireframe) {  // quad edges on top: shows how the greedy mesher merged faces
+        SDL_BindGPUGraphicsPipeline(pass, wire_);
+        drawChunks(0);
+        if (settings.character) drawModels();
+    }
+    if (settings.water) {
+        SDL_BindGPUGraphicsPipeline(pass, water_);
+        drawChunks(1);
+    }
+    SDL_EndGPURenderPass(pass);
 }
 
 bool Renderer::render(const FrameParams& frame, const RenderSettings& settings, ImDrawData* ui,
@@ -363,93 +487,7 @@ bool Renderer::render(const FrameParams& frame, const RenderSettings& settings, 
         return false;
     }
 
-    FrameUniforms u{};
-    glm::mat4 proj = glm::perspectiveRH_ZO(frame.fovY, float(w) / float(h), 0.1f, 1000.0f);
-    u.viewProj = proj * frame.view;
-    u.invViewProj = glm::inverse(u.viewProj);
-    u.eye = glm::vec4(frame.eye, 0);
-    ambience(frame.timeOfDay, u);
-    if (!settings.fog) u.fog.x = 0;
-    u.debug = {float(settings.viewMode), 0, 0, 0};
-    for (int b = 0; b < BlockCount; ++b)
-        u.palette[b] = glm::vec4(lin({kPalette[b][0], kPalette[b][1], kPalette[b][2]}), 1);
-    SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
-    SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);
-
-    SDL_GPUColorTargetInfo color{};
-    color.clear_color = {0.03f, 0.03f, 0.04f, 1};  // visible only with the sky off
-    color.load_op = SDL_GPU_LOADOP_CLEAR;
-    if (msaaColor_) {
-        color.texture = msaaColor_;
-        color.store_op = SDL_GPU_STOREOP_RESOLVE;
-        color.resolve_texture = resolved_;
-    } else {
-        color.texture = resolved_;
-        color.store_op = SDL_GPU_STOREOP_STORE;
-    }
-    SDL_GPUDepthStencilTargetInfo depth{};
-    depth.texture = depth_;
-    depth.clear_depth = 1;
-    depth.load_op = SDL_GPU_LOADOP_CLEAR;
-    depth.store_op = SDL_GPU_STOREOP_DONT_CARE;
-    depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-    depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &depth);
-
-    if (settings.sky) {
-        SDL_BindGPUGraphicsPipeline(pass, sky_);
-        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
-    }
-
-    // Cull chunks once; the same visible list serves every pass. A frozen cull keeps using the
-    // view from when it was frozen.
-    if (!settings.freezeCulling) cullViewProj_ = u.viewProj;
-    std::vector<const ChunkDraw*> visible;
-    for (const ChunkDraw& c : chunks_)
-        if (!settings.frustumCulling || inFrustum(cullViewProj_, glm::vec3(c.origin), glm::vec3(c.origin + kChunk)))
-            visible.push_back(&c);
-    stats.chunksDrawn = int(visible.size());
-    stats.quadsDrawn = 0;
-    stats.drawCalls = 0;
-
-    auto draw = [&](const DrawUniforms& d, uint32_t count) {
-        SDL_PushGPUVertexUniformData(cmd, 1, &d, sizeof d);
-        SDL_DrawGPUPrimitives(pass, count * 6, 1, 0, 0);
-        stats.quadsDrawn += count;
-        ++stats.drawCalls;
-    };
-    auto drawChunks = [&](SDL_GPUBuffer* buffer, bool waterPass) {
-        SDL_BindGPUVertexStorageBuffers(pass, 0, &buffer, 1);
-        for (const ChunkDraw* c : visible) {
-            uint32_t first = waterPass ? c->waterFirst : c->opaqueFirst;
-            uint32_t count = waterPass ? c->waterCount : c->opaqueCount;
-            if (count)
-                draw({glm::translate(glm::mat4(1), glm::vec3(c->origin)), glm::vec4(glm::vec3(c->origin), 0),
-                      glm::uvec4(first, 0, 0, 0)}, count);
-        }
-    };
-    auto drawModels = [&] {
-        SDL_BindGPUVertexStorageBuffers(pass, 0, &models_, 1);
-        for (const ModelInstance& inst : frame.models)
-            for (size_t p = 0; p < PartCount; ++p) {
-                auto [first, count] = parts_[size_t(inst.parts[p])][p];
-                if (count) draw({inst.pose[p], glm::vec4(float(p) * 37), glm::uvec4(first, 0, 0, 0)}, count);
-            }
-    };
-
-    SDL_BindGPUGraphicsPipeline(pass, opaque_);
-    drawChunks(worldOpaque_, false);
-    if (settings.character) drawModels();
-    if (settings.wireframe) {  // quad edges on top: shows how the greedy mesher merged faces
-        SDL_BindGPUGraphicsPipeline(pass, wire_);
-        drawChunks(worldOpaque_, false);
-        if (settings.character) drawModels();
-    }
-    if (settings.water) {
-        SDL_BindGPUGraphicsPipeline(pass, water_);
-        drawChunks(worldWater_, true);
-    }
-    SDL_EndGPURenderPass(pass);
+    drawScene(cmd, frame, settings, msaaColor_, resolved_, depth_, w, h, true);
 
     if (ui && ui->TotalVtxCount > 0) {  // HUD and debug UI go into `resolved_` too, so screenshots include them
         ImGui_ImplSDLGPU3_PrepareDrawData(ui, cmd);  // uploads; must happen outside a render pass
@@ -477,21 +515,22 @@ bool Renderer::render(const FrameParams& frame, const RenderSettings& settings, 
     return SDL_SubmitGPUCommandBuffer(cmd);
 }
 
-bool Renderer::saveScreenshot(SDL_GPUCommandBuffer* cmd, const char* path) {
+// Copies the texture into `rgba` (bytes R, G, B, A), submitting `cmd` and waiting for the GPU.
+bool Renderer::readPixels(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* texture, uint32_t w, uint32_t h,
+                          std::vector<uint8_t>& rgba) {
     SDL_GPUTransferBufferCreateInfo ti{};
     ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
-    ti.size = targetW_ * targetH_ * 4;
+    ti.size = w * h * 4;
     SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device_, &ti);
     if (!transfer) {
-        std::println(stderr, "screenshot failed: {}", SDL_GetError());
         SDL_SubmitGPUCommandBuffer(cmd);
         return false;
     }
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion src{};
-    src.texture = resolved_;
-    src.w = targetW_;
-    src.h = targetH_;
+    src.texture = texture;
+    src.w = w;
+    src.h = h;
     src.d = 1;
     SDL_GPUTextureTransferInfo dst{};
     dst.transfer_buffer = transfer;
@@ -504,18 +543,48 @@ bool Renderer::saveScreenshot(SDL_GPUCommandBuffer* cmd, const char* path) {
     } else {
         SDL_WaitForGPUIdle(device_);
     }
+    const uint8_t* pixels = static_cast<const uint8_t*>(SDL_MapGPUTransferBuffer(device_, transfer, false));
+    if (pixels) {
+        rgba.assign(pixels, pixels + ti.size);
+        SDL_UnmapGPUTransferBuffer(device_, transfer);
+        if (colorFormat_ == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM || colorFormat_ == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB)
+            for (size_t i = 0; i < rgba.size(); i += 4) std::swap(rgba[i], rgba[i + 2]);
+    }
+    SDL_ReleaseGPUTransferBuffer(device_, transfer);
+    return pixels;
+}
 
-    bool bgra = colorFormat_ == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM ||
-                colorFormat_ == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB;
-    void* pixels = SDL_MapGPUTransferBuffer(device_, transfer, false);
-    SDL_Surface* surface = !pixels ? nullptr : SDL_CreateSurfaceFrom(int(targetW_), int(targetH_),
-                                                 bgra ? SDL_PIXELFORMAT_ARGB8888 : SDL_PIXELFORMAT_ABGR8888,
-                                                 pixels, int(targetW_ * 4));
+bool Renderer::snapshot(const FrameParams& frame, const RenderSettings& settings, uint32_t w, uint32_t h,
+                        std::vector<uint8_t>& rgb) {
+    SDL_GPUTexture* resolved = texture(colorFormat_, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, SDL_GPU_SAMPLECOUNT_1, w, h);
+    SDL_GPUTexture* msaa = samples_ == SDL_GPU_SAMPLECOUNT_1 ? nullptr : texture(colorFormat_, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, samples_, w, h);
+    SDL_GPUTexture* depth = texture(SDL_GPU_TEXTUREFORMAT_D32_FLOAT, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, samples_, w, h);
+    SDL_GPUCommandBuffer* cmd = resolved && depth && (msaa || samples_ == SDL_GPU_SAMPLECOUNT_1) ? SDL_AcquireGPUCommandBuffer(device_) : nullptr;
+    std::vector<uint8_t> rgba;
+    bool ok = false;
+    if (cmd) {
+        RenderStats onScreen = stats;  // the stats describe the window's frame
+        drawScene(cmd, frame, settings, msaa, resolved, depth, w, h, false);
+        stats = onScreen;
+        ok = readPixels(cmd, resolved, w, h, rgba);
+    }
+    for (auto* t : {resolved, msaa, depth}) if (t) SDL_ReleaseGPUTexture(device_, t);
+    if (!ok) {
+        std::println(stderr, "snapshot ({}x{}) failed: {}", w, h, SDL_GetError());
+        return false;
+    }
+    rgb.resize(size_t(w) * h * 3);
+    for (size_t i = 0; i < size_t(w) * h; ++i) std::copy_n(&rgba[i * 4], 3, &rgb[i * 3]);
+    return true;
+}
+
+bool Renderer::saveScreenshot(SDL_GPUCommandBuffer* cmd, const char* path) {
+    std::vector<uint8_t> rgba;
+    SDL_Surface* surface = !readPixels(cmd, resolved_, targetW_, targetH_, rgba) ? nullptr
+        : SDL_CreateSurfaceFrom(int(targetW_), int(targetH_), SDL_PIXELFORMAT_ABGR8888, rgba.data(), int(targetW_ * 4));
     bool ok = surface && SDL_SaveBMP(surface, path);
     if (!ok) std::println(stderr, "screenshot failed: {}", SDL_GetError());
     else std::println("screenshot saved to {}", path);
     SDL_DestroySurface(surface);
-    if (pixels) SDL_UnmapGPUTransferBuffer(device_, transfer);
-    SDL_ReleaseGPUTransferBuffer(device_, transfer);
     return ok;
 }

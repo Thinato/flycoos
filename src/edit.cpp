@@ -1,0 +1,211 @@
+#include "edit.h"
+
+#include <algorithm>
+#include <climits>
+#include <cmath>
+
+int groundTop(const Grid& g, int x, int z) {
+    for (int y = g.size.y - 1; y >= 0; --y)
+        if (isOpaque(g.get({x, y, z}))) return y;
+    return -1;
+}
+
+namespace {
+
+// Calls fn(index in g of the row's first voxel, row number) for each x-row of b (inside g), z then y.
+template <class Fn> void rows(const Grid& g, Box b, Fn fn) {
+    size_t r = 0;
+    for (int y = b.lo.y; y <= b.hi.y; ++y)
+        for (int z = b.lo.z; z <= b.hi.z; ++z) fn(g.index({b.lo.x, y, z}), r++);
+}
+
+std::vector<Block> read(const Grid& g, Box b) {
+    size_t w = size_t(b.size().x);
+    std::vector<Block> cells(w * size_t(b.size().y) * size_t(b.size().z));
+    rows(g, b, [&](size_t i, size_t r) { std::copy_n(&g.cells[i], w, &cells[r * w]); });
+    return cells;
+}
+
+// What a column's surface turns into when it's buried, as generation layers it.
+Block subsoil(Block surface) { return surface == Grass ? Dirt : surface == Snow ? Stone : surface; }
+
+// Moves a column's ground top to `to`, keeping its surface material on top.
+void setColumnTop(Grid& g, int x, int z, int to) {
+    int top = groundTop(g, x, z);
+    if (top < 0) return;
+    to = std::clamp(to, 0, g.size.y - 1);
+    Block surface = g.get({x, top, z});
+    if (to > top) {
+        for (int y = top; y < to; ++y) g.set({x, y, z}, subsoil(surface));
+        g.set({x, to, z}, surface);
+    } else if (to < top) {
+        Block fill = g.get({x, top + 1, z}) == Water ? Water : Air;  // a lakebed stays under water
+        for (int y = to + 1; y <= top; ++y) g.set({x, y, z}, fill);
+        if (isOpaque(g.get({x, to, z}))) g.set({x, to, z}, surface);
+    }
+}
+
+// Brush weight: 1 at the center, easing to 0 just past `radius` columns away.
+float falloff(int dx, int dz, int radius) {
+    float r = float(radius) + 0.5f, t = float(dx * dx + dz * dz) / (r * r);
+    return t >= 1 ? 0 : (1 - t) * (1 - t);
+}
+
+// Stable per column and height, in [0, 1): turns fractional raise/lower amounts into smooth slopes
+// over repeated strokes instead of terraces.
+float dither(int x, int z, int y) {
+    uint32_t h = uint32_t(x) * 0x27d4eb2du ^ uint32_t(z) * 0x165667b1u ^ uint32_t(y) * 0x9e3779b9u;
+    h ^= h >> 15;
+    h *= 0x85ebca6bu;
+    h ^= h >> 13;
+    return float(h >> 8) / 16777216.0f;
+}
+
+void brush(Grid& g, const EditOp& op, Box box) {
+    const int m = op.radius + 2, side = 2 * m + 1;  // Smooth averages over 5x5 columns
+    std::vector<int> heights;  // Smooth: ground tops before the edit, so the order of columns doesn't matter
+    if (op.tool == Tool::Smooth)
+        for (int dz = -m; dz <= m; ++dz)
+            for (int dx = -m; dx <= m; ++dx) heights.push_back(groundTop(g, op.center.x + dx, op.center.y + dz));
+
+    for (int z = box.lo.z; z <= box.hi.z; ++z)
+        for (int x = box.lo.x; x <= box.hi.x; ++x) {
+            int dx = x - op.center.x, dz = z - op.center.y, top = groundTop(g, x, z);
+            float w = falloff(dx, dz, op.radius);
+            if (w <= 0 || top < 0) continue;
+            int to = top;
+            switch (op.tool) {
+            case Tool::Raise: to = top + int(float(op.strength) * w + dither(x, z, top)); break;
+            case Tool::Lower: to = top - int(float(op.strength) * w + dither(x, z, top)); break;
+            case Tool::Flatten: to = top + std::clamp(op.height - top, -op.strength, op.strength); break;
+            case Tool::Smooth: {
+                float sum = 0;
+                int n = 0;
+                for (int j = -2; j <= 2; ++j)
+                    for (int i = -2; i <= 2; ++i)
+                        if (int h = heights[size_t(dz + j + m) * size_t(side) + size_t(dx + i + m)]; h >= 0) sum += float(h), ++n;
+                to = top + std::clamp(int(std::lround((sum / float(n) - float(top)) * w)), -op.strength, op.strength);
+                break;
+            }
+            case Tool::Paint: g.set({x, top, z}, op.block); continue;
+            default: break;
+            }
+            setColumnTop(g, x, z, to);
+        }
+}
+
+// Swaps the record's cells with the grid's (the last edit first when undoing) and moves it to the
+// other stack.
+Box swapRecord(Grid& g, std::vector<EditRecord>& from, std::vector<EditRecord>& to, bool undo) {
+    if (from.empty()) return {};
+    EditRecord rec = std::move(from.back());
+    from.pop_back();
+    for (const EditRecord::Part& p : rec.parts)
+        if (!g.inside(p.box.lo) || !g.inside(p.box.hi)) return {};  // stale (the world was replaced)
+    Box all{glm::ivec3(INT_MAX), glm::ivec3(INT_MIN)};
+    for (size_t k = 0; k < rec.parts.size(); ++k) {
+        EditRecord::Part& p = rec.parts[undo ? rec.parts.size() - 1 - k : k];
+        size_t w = size_t(p.box.size().x);
+        rows(g, p.box, [&](size_t i, size_t r) { std::swap_ranges(&p.cells[r * w], &p.cells[r * w] + w, &g.cells[i]); });
+        all = {glm::min(all.lo, p.box.lo), glm::max(all.hi, p.box.hi)};
+    }
+    to.push_back(std::move(rec));
+    return all;
+}
+
+}  // namespace
+
+const char* checkEdit(const Grid& g, const EditOp& op) {
+    if (op.tool >= Tool::Count) return "unknown tool";
+    if (op.block >= BlockCount) return "unknown block";
+    if (op.tool == Tool::Fill) {
+        int64_t volume = 1;
+        for (int a = 0; a < 3; ++a)  // checked per axis so huge corners can't overflow
+            if ((volume *= std::abs(int64_t(op.max[a]) - op.min[a]) + 1) > kMaxEditVolume) return "fill box too large";
+        return nullptr;
+    }
+    if (op.radius < 0 || op.radius > kMaxBrushRadius) return "radius out of range";
+    if (op.strength < 1 || op.strength > kMaxStrength) return "strength out of range";
+    if (glm::any(glm::greaterThan(op.center, glm::ivec2(1 << 24))) || glm::any(glm::lessThan(op.center, glm::ivec2(-(1 << 24)))))
+        return "center out of range";  // keeps center +- radius from overflowing
+    if (op.tool == Tool::Flatten && (op.height < 0 || op.height >= g.size.y)) return "height out of range";
+    if (op.tool == Tool::Paint && !isOpaque(op.block)) return "paint needs a solid block";
+    return nullptr;
+}
+
+Box editBox(const Grid& g, const EditOp& op) {
+    Box box;
+    if (op.tool == Tool::Fill) box = {glm::min(op.min, op.max), glm::max(op.min, op.max)};
+    else box = {glm::ivec3(op.center.x - op.radius, 0, op.center.y - op.radius),
+                glm::ivec3(op.center.x + op.radius, g.size.y - 1, op.center.y + op.radius)};
+    return {glm::max(box.lo, glm::ivec3(0)), glm::min(box.hi, g.size - 1)};
+}
+
+EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join) {
+    if (const char* error = checkEdit(g, op)) return {{}, error};
+    Box box = editBox(g, op);
+    if (box.empty()) return {};
+
+    std::vector<Block> before = read(g, box);
+    if (op.tool == Tool::Fill) rows(g, box, [&](size_t i, size_t) { std::fill_n(&g.cells[i], box.size().x, op.block); });
+    else brush(g, op, box);
+
+    // The dirty box is the bounding box of what actually changed, so remeshing and undo stay small.
+    Box dirty{glm::ivec3(INT_MAX), glm::ivec3(INT_MIN)};
+    size_t w = size_t(box.size().x);
+    rows(g, box, [&](size_t i, size_t r) {
+        const Block *old = &before[r * w], *now = &g.cells[i];
+        auto first = std::mismatch(old, old + w, now).first;
+        if (first == old + w) return;
+        int last = int(w) - 1;
+        while (old[last] == now[last]) --last;
+        int y = box.lo.y + int(r / size_t(box.size().z)), z = box.lo.z + int(r % size_t(box.size().z));
+        dirty.lo = glm::min(dirty.lo, glm::ivec3(box.lo.x + int(first - old), y, z));
+        dirty.hi = glm::max(dirty.hi, glm::ivec3(box.lo.x + last, y, z));
+    });
+    if (dirty.empty()) return {};
+
+    EditRecord::Part rec{dirty, {}};
+    rec.cells.reserve(size_t(dirty.size().x) * size_t(dirty.size().y) * size_t(dirty.size().z));
+    for (int y = dirty.lo.y; y <= dirty.hi.y; ++y)
+        for (int z = dirty.lo.z; z <= dirty.hi.z; ++z) {
+            const Block* row = &before[(size_t(y - box.lo.y) * size_t(box.size().z) + size_t(z - box.lo.z)) * w +
+                                       size_t(dirty.lo.x - box.lo.x)];
+            rec.cells.insert(rec.cells.end(), row, row + dirty.size().x);
+        }
+    history.redo.clear();
+    if (!join || history.undo.empty()) history.undo.emplace_back();
+    history.undo.back().bytes += rec.cells.size();
+    history.undo.back().parts.push_back(std::move(rec));
+    size_t total = 0;
+    for (const EditRecord& r : history.undo) total += r.bytes;
+    while (history.undo.size() > kMaxUndo || (total > kMaxUndoBytes && history.undo.size() > 1)) {
+        total -= history.undo.front().bytes;
+        history.undo.erase(history.undo.begin());
+    }
+    return {dirty};
+}
+
+Box undoEdit(Grid& g, EditHistory& history) { return swapRecord(g, history.undo, history.redo, true); }
+Box redoEdit(Grid& g, EditHistory& history) { return swapRecord(g, history.redo, history.undo, false); }
+
+std::optional<RayHit> raycast(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDistance) {
+    glm::ivec3 cell(glm::floor(from)), step(0), normal(0);
+    glm::vec3 next(INFINITY), delta(INFINITY);  // ray distance to the next cell boundary, and between boundaries
+    for (int a = 0; a < 3; ++a) {
+        step[a] = dir[a] > 0 ? 1 : -1;
+        if (dir[a] == 0) continue;
+        delta[a] = std::abs(1 / dir[a]);
+        next[a] = (dir[a] > 0 ? float(cell[a] + 1) - from[a] : from[a] - float(cell[a])) * delta[a];
+    }
+    for (float t = 0; t <= maxDistance;) {
+        if (isOpaque(g.get(cell))) return RayHit{cell, normal, t};
+        int a = next.x < next.y ? (next.x < next.z ? 0 : 2) : (next.y < next.z ? 1 : 2);
+        t = next[a];
+        next[a] += delta[a];
+        cell[a] += step[a];
+        normal = glm::ivec3(0);
+        normal[a] = -step[a];
+    }
+    return std::nullopt;
+}

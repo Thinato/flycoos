@@ -171,3 +171,97 @@
   - Gear still adds no attributes; when it does, health, regen and swing time must read
     base + gear stats (see ADR-008).
   - Each visible armor piece needs plated parts in a model; greaves have no part to show on.
+
+## ADR-011: World files and data-driven edits with snapshot undo
+
+- **Status:** accepted (2026-11-02)
+- **Context:** the story world is hand-authored: generated once, then sculpted in the running game
+  by the user and, later, by Claude through remote commands. Edits must persist, be undoable and
+  share one entry point.
+- **Decision:**
+  - One versioned file per world (`.flyw`): header (magic, version, size, seed), tagged sections,
+    and a trailing FNV-1a checksum. Voxels are one section of per-chunk run-length encoding with
+    varint run lengths. Unknown sections are skipped, which leaves room for prefab instances and
+    story markers. Saving goes through a temp file and a rename.
+  - Edits are plain data (`EditOp`): one function applies any op and returns the exact box of
+    changed voxels; the caller remeshes that box.
+  - Undo records are snapshots of the dirty box before the op. Undo/redo swap them with the grid.
+  - Caps (brush radius 32, strength 64, Fill 128³ voxels, 256 undo steps) keep one op to
+    milliseconds and history memory bounded.
+- **Alternatives considered:**
+  - zlib/zstd compression: a new system or built dependency for little gain; the RLE file is
+    already ~2.8 MB, and git compresses objects itself.
+  - Per-voxel undo deltas or inverse ops: smaller for sparse edits, but inverses of brushes are not
+    exact (clamping, dither, water fill); a cropped snapshot is exact by construction.
+  - Diffing the whole world for the dirty box: simple but ~200 MB of compares per op.
+- **Consequences:**
+  - The dirty box is computed by diffing the snapshot, so it is tight and correct for any op, and
+    a test can check that nothing changed outside it.
+  - A remote-command dispatcher (Phase 2) parses into `EditOp` and calls `applyEdit`, `undoEdit`,
+    `redoEdit`, `saveWorld`, then `Renderer::updateWorld(dirty)`.
+  - A corrupted or truncated file is rejected with a message; a `--world` file that doesn't load
+    stops the game instead of generating a world that a save would write over it.
+
+## ADR-012: Per-chunk slots in the world buffers for incremental remeshing
+
+- **Status:** accepted (2026-11-02)
+- **Context:** `uploadWorld` meshed and uploaded the whole world (~0.4–1.1 s). Edits need to show
+  within a few milliseconds without changing how frames are drawn.
+- **Decision:**
+  - Keep one opaque and one water storage buffer. Every chunk owns a slot (first quad, count,
+    capacity) in each; draws still pass `firstQuad` in their uniforms, so shaders and draw calls
+    are unchanged.
+  - After an edit, remesh the chunks touching the dirty box grown by 1 voxel. New quads overwrite
+    the slot when they fit, else go to a new slot (+25% spare) in headroom at the buffer's end.
+    All uploads of one edit share one transfer buffer and copy pass.
+  - When the headroom is used up, repack every slot from a CPU copy of the chunk meshes into fresh
+    buffers (~10 ms, rare).
+- **Alternatives considered:**
+  - One GPU buffer per chunk: simplest allocation, but ~2,500 storage-buffer binds per pass.
+  - A general free-list allocator: reuses holes, but more code than a rare repack.
+  - Re-uploading the whole buffer per edit: ~14 MB per brush application.
+- **Consequences:**
+  - An edit touching a few chunks applies in 1–3 ms; frame rendering is unchanged.
+  - The CPU keeps a copy of every chunk mesh (~14 MB) for repacking.
+  - The chunk list holds all chunks, empty ones too; empty ones are skipped before culling.
+
+## ADR-013: A localhost command server in the game and a dependency-free MCP bridge
+
+- **Status:** accepted (2026-11-03)
+- **Context:** the user and Claude shape the story world together: Claude (Claude Code) edits and
+  looks at the world while the user watches the running game and edits alongside it. Claude's edits
+  must land in the live world, in the user's undo history, and show up immediately.
+- **Decision:**
+  - The game listens on 127.0.0.1 (default port 47800) for newline-delimited JSON commands. A
+    background thread does only socket I/O; commands run on the main thread at one point of the
+    frame, through the same `applyEdit`/`undoEdit`/`updateWorld` path as the editor. One command
+    (including `apply` and `path`) is one undo step (`applyEdit`'s `join`).
+  - The dispatcher (`runCommand`) is core-library code: JSON in, JSON out, plus the work only the
+    game can do (remesh box, save, screenshot camera, goto) returned as data. Tests run it without
+    sockets or a GPU.
+  - `tools/flycoos_mcp.py` is a stdio MCP server in plain Python (no packages): it implements the
+    JSON-RPC subset that tools need and maps each tool to one game command. `.mcp.json` registers it.
+  - nlohmann/json 3.12.0 and stb_image_write (pinned commit) are added as header-only dependencies
+    the ADR-005 way.
+- **Alternatives considered:**
+  - MCP inside the game (stdio or HTTP transport): Claude Code would start and own the game process
+    over stdio, so the user couldn't launch, restart or keep it across Claude sessions; an HTTP MCP
+    transport means sessions, SSE and protocol upgrades in C++. A socket plus a 250-line bridge keeps
+    the game's side to one small line protocol that any script can drive.
+  - The official MCP Python SDK: a pip install and a virtualenv for every user, for four methods.
+  - Running commands on the server thread with a world lock: the renderer, the editor and the
+    simulation would all need the lock; one handoff per frame needs none.
+  - A screenshot of the window: shows the HUD and moves the user's camera; an offscreen pass doesn't.
+- **Consequences:**
+  - No authentication: anything on the machine can edit the open world while the game runs. It's a
+    development tool, bound to localhost only, and `--no-serve` turns it off.
+  - Web pages are the remaining remote reach (a cross-origin `text/plain` POST needs no preflight),
+    so the server closes a connection at the first line that isn't a JSON object, and `save` writes
+    only `.flyw` files in `worlds/` or the world file's folder.
+  - Hostile input must not take the game down with unsaved edits: invalid UTF-8 is replaced when
+    serializing, nesting is capped at 64 levels, every exception becomes an error response, and one
+    edit command has a work budget (≲50 ms). Undo history is capped at 256 MB as well as 256 steps.
+    A silent client is dropped after 5 s so it can't hold the single slot.
+  - At most one command per frame (~120 per second), and none while the window is minimized.
+  - The idle cost per frame is one atomic load; a screenshot stalls the frame for its render.
+

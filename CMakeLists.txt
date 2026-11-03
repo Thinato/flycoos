@@ -23,7 +23,15 @@ FetchContent_Declare(imgui
   URL https://github.com/ocornut/imgui/archive/refs/tags/v1.93.0.tar.gz
   URL_HASH SHA256=f7bf6bc76e5d79d40d751096663e6c5d18daf08129dd52e7f7b09e4251c8eeee
   SOURCE_SUBDIR _headers_only DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-FetchContent_MakeAvailable(glm fastnoiselite imgui)
+FetchContent_Declare(json
+  URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+  URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
+  SOURCE_SUBDIR _headers_only DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_Declare(stb
+  URL https://github.com/nothings/stb/archive/d14d46f6b44456eb88beac58cba833a4135d4c89.tar.gz
+  URL_HASH SHA256=1b59a668a789a28a8fd4e01ff1413eec7eaeb28688bafdc66ec7068f4e7095e1
+  SOURCE_SUBDIR _headers_only DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(glm fastnoiselite imgui json stb)
 
 # Dear ImGui (debug UI) with its SDL3 platform and SDL_GPU renderer backends.
 add_library(imgui STATIC
@@ -34,13 +42,16 @@ target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURC
 target_link_libraries(imgui PUBLIC SDL3::SDL3)
 
 # Engine core: no GPU code, so it is unit-testable.
-add_library(flycoos_core STATIC src/world.cpp src/mesher.cpp src/player.cpp src/entity.cpp src/item.cpp)
+add_library(flycoos_core STATIC src/world.cpp src/mesher.cpp src/player.cpp src/entity.cpp src/item.cpp src/edit.cpp
+  src/commands.cpp)
 target_include_directories(flycoos_core PUBLIC src)
-target_include_directories(flycoos_core SYSTEM PUBLIC ${glm_SOURCE_DIR})
+target_include_directories(flycoos_core SYSTEM PUBLIC ${glm_SOURCE_DIR} ${json_SOURCE_DIR}/single_include)
+target_include_directories(flycoos_core SYSTEM PRIVATE ${stb_SOURCE_DIR})
 target_include_directories(flycoos_core SYSTEM PRIVATE ${fastnoiselite_SOURCE_DIR}/Cpp)
 target_compile_options(flycoos_core PUBLIC $<IF:$<CXX_COMPILER_ID:MSVC>,/W4,-Wall -Wextra>)
 
-add_executable(flycoos src/main.cpp src/renderer.cpp src/debug_ui.cpp src/hud.cpp src/inventory_ui.cpp)
+add_executable(flycoos src/main.cpp src/renderer.cpp src/debug_ui.cpp src/hud.cpp src/inventory_ui.cpp src/editor_ui.cpp
+  src/server.cpp)
 target_link_libraries(flycoos PRIVATE flycoos_core imgui SDL3::SDL3)
 
 # MSL shaders are compiled at runtime by Metal; ship them next to the binary.
