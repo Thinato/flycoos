@@ -51,5 +51,5 @@ The village also has two generic villagers (#2), a training dummy (#1) and boars
 ## Follow-ups
 - A quest/journal system ("bring Hakon's helm to Torvald").
 - Night-only spawns for the ghouls.
-- Light from Ember blocks.
-- A trinket slot for the Bone Charm.
+- Light from Ember blocks (done: ADR-019).
+- A trinket slot for the Bone Charm (done: ADR-022, +2 spirit).

@@ -99,7 +99,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
 
         const EntityType& t = e.type();
         char label[96];
-        std::snprintf(label, sizeof label, "Lv %d  %s", e.level, e.displayName().c_str());
+        std::snprintf(label, sizeof label, "Lv %d  %s", e.body.level, e.displayName().c_str());
         ImVec2 size = ImGui::CalcTextSize(label);
         // Names: red attacks on sight, amber can be attacked, green friendly. Attackable ones have red health.
         ImU32 nameColor = t.temper == Temper::Aggressive ? uiColor(1, 0.35f, 0.3f, alpha)
@@ -107,7 +107,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
                                                          : uiColor(0.6f, 1, 0.6f, alpha);
         ImU32 healthColor = t.attackable ? uiColor(0.85f, 0.2f, 0.15f, alpha) : uiColor(0.3f, 0.8f, 0.3f, alpha);
         shadowText(dl, ImVec2(p.x - size.x / 2, p.y - line - 6), nameColor, alpha, label);
-        bar(dl, p, ImVec2(90, 7), e.body.health / float(std::max(1, maxHealth(e.body.stats))), healthColor, alpha);
+        bar(dl, p, ImVec2(90, 7), e.body.health / float(maxHealth(sheet(e.body))), healthColor, alpha);
         if (!speech && &e == target) hint(dl, p, alpha, e);
     }
 
@@ -125,10 +125,10 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
 
     // Player health, bottom center.
     ImVec2 center(screen.x / 2, screen.y - 40);
-    bar(dl, center, ImVec2(280, 16), player.health / float(std::max(1, maxHealth(player.stats))),
-        uiColor(0.8f, 0.15f, 0.12f), 1);
+    int most = maxHealth(sheet(player));
+    bar(dl, center, ImVec2(280, 16), player.health / float(most), uiColor(0.8f, 0.15f, 0.12f), 1);
     char hp[32];
-    std::snprintf(hp, sizeof hp, "%d / %d", int(std::ceil(player.health)), maxHealth(player.stats));
+    std::snprintf(hp, sizeof hp, "%d / %d", int(std::ceil(player.health)), most);
     ImVec2 hs = ImGui::CalcTextSize(hp);
     shadowText(dl, ImVec2(center.x - hs.x / 2, center.y - hs.y / 2), uiColor(1, 1, 1), 1, hp);
 }

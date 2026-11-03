@@ -468,7 +468,7 @@ json catalogJson() {
     json kinds = json::array(), materials = json::array(), solid = json::array();
     for (size_t k = 0; k < d.creatures.size(); ++k) {
         const EntityType& t = d.creatures[k];
-        json e = {{"id", d.creatureIds[k]}, {"name", t.name ? json(t.name) : json()}, {"level", t.level}, {"health", maxHealth(t.stats)},
+        json e = {{"id", d.creatureIds[k]}, {"name", t.name ? json(t.name) : json()}, {"level", t.level}, {"health", maxHealth(compute(t.stats, itemType(t.weapon).mods))},
                   {"temper", kTemperNames[int(t.temper)]}, {"attackable", t.attackable}, {"talks", t.talks},
                   {"wander_radius", t.wanderRadius}, {"chase_speed", t.chaseSpeed}, {"aggro_range", t.aggroRange}};
         if (t.weapon) e["weapon"] = itemType(t.weapon).name;

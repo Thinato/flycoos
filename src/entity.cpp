@@ -87,13 +87,13 @@ Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 fa
     e.rng.seed(rngSeed);
     const EntityType& t = e.type();
     e.name = t.name ? t.name : kNames[e.rng() % std::size(kNames)];
-    e.level = t.level;
     e.wanderRadius = t.wanderRadius;
     e.body.stats = t.stats;
-    e.body.health = float(maxHealth(t.stats));
+    e.body.level = t.level;
     e.body.tuning.walkSpeed = 2;  // a stroll
     e.body.tuning.runSpeed = t.chaseSpeed;
     e.body.inv.equipped[SlotMainHand] = t.weapon;
+    e.body.health = float(maxHealth(sheet(e.body)));
     e.body.breathPhase = kTau * rand01(e.rng);
     glm::vec2 toFace = xz(face) - xz(pos);
     if (glm::length(toFace) > 0.01f) e.body.yaw = std::atan2(toFace.x, toFace.y);
@@ -268,7 +268,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             else if (!target.alive()) setState(e, AiState::Return, "target_down");
             else if (targetFromHome >= t.leashRadius) setState(e, AiState::Return, "target_left_leash");
             else if (e.lostTime >= t.giveUpSeconds) setState(e, AiState::Return, "lost_target");
-            else if (e.body.health < t.fleeHealth * float(maxHealth(e.body.stats))) setState(e, AiState::Flee, "low_health");
+            else if (e.body.health < t.fleeHealth * float(maxHealth(sheet(e.body)))) setState(e, AiState::Flee, "low_health");
             else if (inReach && e.stateTime >= t.cooldown && startPunch(e.body, dir, t.windup)) setState(e, AiState::Windup, "in_reach");
             else {
                 if (walkable(g, e.body.pos, dir, target.pos)) {
@@ -304,7 +304,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             if (glm::length(toHome) <= std::max(e.wanderRadius, 1.0f)) {
                 // Heals only after walking back: one that gives up at home (hit from beyond the leash)
                 // arrives in the same update, with stateTime still 0, and keeps its wounds.
-                if (e.stateTime > 0) e.body.health = float(maxHealth(e.body.stats));
+                if (e.stateTime > 0) e.body.health = float(maxHealth(sheet(e.body)));
                 e.calmTimer = t.reaggroCooldown;
                 setState(e, AiState::Wander, "home");
                 continue;
@@ -428,7 +428,7 @@ bool damage(Entity& e, int amount) {
 bool startPunch(Player& b, glm::vec2 aim, float windup) {
     if (!b.alive() || b.swingTimer > 0) return false;
     b.swingWeapon = b.inv.equipped[SlotMainHand];
-    b.swingTimer += swingTime(b.stats, weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
+    b.swingTimer += swingTime(sheet(b), weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
     b.punchLength = std::min(windup / kPunchImpact, b.swingTimer);
     b.punchTime = 0;
     b.punchRight = !b.punchRight;
@@ -464,9 +464,10 @@ static void tick(Player& b, float dt) {
     b.punchTime += dt;
     b.hitTime += dt;
     b.combatTimer = std::max(0.0f, b.combatTimer - dt);
+    StatSheet s = sheet(b);
     if (!b.alive()) b.deadTime += dt;
-    else if (b.combatTimer == 0) b.health += healthRegen(b.stats) * dt;
-    b.health = std::min(b.health, float(maxHealth(b.stats)));
+    else if (b.combatTimer == 0) b.health += healthRegen(s) * dt;
+    b.health = std::min(b.health, float(maxHealth(s)));
 }
 
 // True once per swing, at its impact frame. A swing dies with its swinger.
@@ -477,25 +478,28 @@ static bool lands(Player& b) {
     return true;
 }
 
-// A swing's damage after the victim's armor, which depends on the attacker's level.
-static int roll(const Player& b, int level, const Player& victim, float armorK, std::mt19937& rng) {
-    return mitigate(rollDamage(b.stats, weaponAttack(b.swingWeapon), rng), armor(victim.inv), level, armorK);
+int resolveHit(const Combatant& attacker, const Combatant& defender, const Attack& attack, const HitContext& ctx) {
+    StatSheet a = sheet(attacker), d = sheet(defender);
+    float hit = float(rollDamage(a, attack, ctx.rng)) * a[Stat::Damage];
+    return mitigate(hit, d[Stat::Armor], attacker.level, ctx.armorK, d[Stat::DamageTaken]);
 }
 
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK) {
+    HitContext ctx{rng, armorK};
     tick(player, dt);
-    if (lands(player)) {  // the player has no level yet: 1
+    if (lands(player)) {
         Entity* target = punchTarget(entities, player);
-        if (target && damage(*target, roll(player, 1, target->body, armorK, rng))) player.combatTimer = kCombatSeconds;
+        if (target && damage(*target, resolveHit(player, target->body, weaponAttack(player.swingWeapon), ctx)))
+            player.combatTimer = kCombatSeconds;
     }
     for (Entity& e : entities) {
         tick(e.body, dt);
-        if (lands(e.body) && inReach(e.body, player.pos) && hurt(player, roll(e.body, e.level, player, armorK, rng)))
+        if (lands(e.body) && inReach(e.body, player.pos) && hurt(player, resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), ctx)))
             e.body.combatTimer = kCombatSeconds;
         if (!e.body.alive() && e.body.deadTime >= e.type().respawnSeconds) {  // back home, fully healed
             e.body.teleport(e.home);
             e.body.vel = {};
-            e.body.health = float(maxHealth(e.body.stats));
+            e.body.health = float(maxHealth(sheet(e.body)));
             e.body.deadTime = 0;
             e.body.combatTimer = 0;
             e.loot = NoItem;

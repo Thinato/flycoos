@@ -98,7 +98,7 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
 // Health, the five attributes and what derives from them; shared by the Player and Entities tabs.
 static void attributes(Player& b, bool fights) {
     Stats& s = b.stats;
-    ImGui::SliderFloat("Health", &b.health, 0, float(maxHealth(s)), "%.0f");
+    ImGui::SliderFloat("Health", &b.health, 0, float(maxHealth(sheet(b))), "%.0f");
     ImGui::SliderInt("Stamina", &s.stamina, 1, 100);
     ImGui::SetItemTooltip("+%d max health per point", kHealthPerStamina);
     ImGui::SliderInt("Strength", &s.strength, 0, 100);
@@ -109,11 +109,12 @@ static void attributes(Player& b, bool fights) {
     ImGui::SetItemTooltip("Unused until magic");
     ImGui::SliderInt("Spirit", &s.spirit, 0, 100);
     ImGui::SetItemTooltip("+%.1f health per second out of combat per point", kRegenPerSpirit);
-    ImGui::Text("Max health %d, regen %.1f/s out of combat", maxHealth(s), healthRegen(s));
+    StatSheet total = sheet(b);
+    ImGui::Text("Max health %d, regen %.1f/s out of combat", maxHealth(total), healthRegen(total));
     if (fights) {
         const Attack& a = mainAttack(b.inv);
-        float swing = swingTime(s, a);
-        int lo = a.minDamage + strengthBonus(s, a), hi = a.maxDamage + strengthBonus(s, a);
+        float swing = swingTime(total, a);
+        int lo = hitBeforeArmor(total, a, a.minDamage), hi = hitBeforeArmor(total, a, a.maxDamage);
         ItemId weapon = b.inv.equipped[SlotMainHand];
         ImGui::Text("%s %d-%d every %.2f s (%.1f damage/s)", weapon ? itemType(weapon).name : "Punch", lo, hi, swing,
                     float(lo + hi) / 2 / swing);
@@ -124,14 +125,40 @@ static void attributes(Player& b, bool fights) {
     else ImGui::TextDisabled("Out of combat");
 }
 
+// The stat pipeline (ADR-022): each stat's base and final value, and every modifier with its source.
+static void statSheet(const Combatant& b) {
+    StatSheet base = compute(b.stats), total = sheet(b);
+    if (ImGui::BeginTable("sheet", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+        for (const char* h : {"stat", "base", "final"}) ImGui::TableSetupColumn(h);
+        ImGui::TableHeadersRow();
+        for (size_t i = 0; i < size_t(Stat::Count); ++i) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(), ImGui::TextUnformatted(kStatIds[i]);
+            ImGui::TableNextColumn(), ImGui::Text("%.4g", double(base.v[i]));
+            ImGui::TableNextColumn(), ImGui::Text("%.4g", double(total.v[i]));
+        }
+        ImGui::EndTable();
+    }
+    static const char* const kKinds[] = {"flat", "increased", "more"};
+    std::vector<Modifier> mods = collect(b);
+    if (mods.empty()) ImGui::TextDisabled("No modifiers");
+    for (const Modifier& m : mods)
+        ImGui::BulletText("%s: %s %s %+g", m.source, kStatIds[size_t(m.stat)], kKinds[size_t(m.kind)], double(m.value));
+    ImGui::TextDisabled("final = (base + flat) x (1 + increased) x (1 + more)...");
+}
+
 static void playerTab(Player& p, float& armorK, DebugActions& actions, const char* region) {
     attributes(p, true);
+    ImGui::SliderInt("Level", &p.level, 1, 60);
+    ImGui::SetItemTooltip("The attacker level of the player's hits in armor reduction (1 until progression).");
+    ImGui::SeparatorText("Stat sheet");
+    statSheet(p);
     ImGui::SeparatorText("Armor");
     ImGui::SliderFloat("Armor K", &armorK, 1, 200, "%.0f");
     ImGui::SetItemTooltip("Damage reduction = armor / (armor + K x attacker level).\n"
                           "K is the armor that halves a level 1 attacker's damage.");
-    int a = armor(p.inv);
-    ImGui::Text("Armor %d: -%.1f%% damage vs level 1, -%.1f%% vs level 2", a,
+    float a = sheet(p)[Stat::Armor];
+    ImGui::Text("Armor %.0f: -%.1f%% damage vs level 1, -%.1f%% vs level 2", double(a),
                 armorReduction(a, 1, armorK) * 100, armorReduction(a, 2, armorK) * 100);
     ImGui::SeparatorText("Body");
     if (glm::vec3 at = p.pos; ImGui::DragFloat3("Position", &at.x, 0.25f)) p.teleport(at);
@@ -163,7 +190,7 @@ static void entitiesTab(std::vector<Entity>& entities, const Player& player, Deb
         Entity& e = entities[i];
         const EntityType& t = e.type();
         char title[96];
-        std::snprintf(title, sizeof title, "%s  (Lv %d)###entity%zu", e.displayName().c_str(), e.level, i);
+        std::snprintf(title, sizeof title, "%s  (Lv %d)###entity%zu", e.displayName().c_str(), e.body.level, i);
         if (!ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) continue;
         ImGui::PushID(int(i));
         attributes(e.body, false);
@@ -241,8 +268,8 @@ static void dataTab(std::string& status) {
     if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
     const Defs& d = defs();
     ImGui::SeparatorText("Items (data/items.json)");
-    if (ImGui::BeginTable("items", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
-        for (const char* h : {"save", "id", "slot", "damage / speed", "bag / armor"}) ImGui::TableSetupColumn(h);
+    if (ImGui::BeginTable("items", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+        for (const char* h : {"save", "id", "slot", "damage / speed", "bag / armor", "mods"}) ImGui::TableSetupColumn(h);
         ImGui::TableHeadersRow();
         for (size_t i = 1; i < d.items.size(); ++i) {
             const ItemType& t = d.items[i];
@@ -255,6 +282,10 @@ static void dataTab(std::string& status) {
             if (t.attack.speed > 0) ImGui::Text("%d-%d / %.2f", t.attack.minDamage, t.attack.maxDamage, t.attack.speed);
             ImGui::TableNextColumn();
             if (t.bagSlots || t.armor) ImGui::Text("%d / %d", t.bagSlots, t.armor);
+            ImGui::TableNextColumn();
+            for (const Modifier& m : t.mods)
+                ImGui::Text("%s %+g%s", kStatIds[size_t(m.stat)], double(m.kind == ModKind::Flat ? m.value : m.value * 100),
+                            m.kind == ModKind::Flat ? "" : m.kind == ModKind::Increased ? "% increased" : "% more");
         }
         ImGui::EndTable();
     }
@@ -268,7 +299,7 @@ static void dataTab(std::string& status) {
             ImGui::TableNextColumn(), ImGui::Text("%zu", k);
             ImGui::TableNextColumn(), ImGui::TextUnformatted(d.creatureIds[k].c_str());
             ImGui::SetItemTooltip("%s", t.name ? t.name : "(a random villager name)");
-            ImGui::TableNextColumn(), ImGui::Text("%d / %d", t.level, maxHealth(t.stats));
+            ImGui::TableNextColumn(), ImGui::Text("%d / %d", t.level, maxHealth(compute(t.stats, itemType(t.weapon).mods)));
             ImGui::TableNextColumn(), ImGui::TextUnformatted(kTemperNames[int(t.temper)]);
             ImGui::TableNextColumn(), ImGui::TextUnformatted(t.weapon ? itemType(t.weapon).name : "-");
             ImGui::TableNextColumn();

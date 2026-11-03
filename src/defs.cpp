@@ -6,6 +6,7 @@
 #include <fstream>
 #include <limits>
 #include <set>
+#include <span>
 #include <stdexcept>
 
 #include <nlohmann/json.hpp>
@@ -24,6 +25,12 @@ struct Bad : std::runtime_error {
 
 constexpr double kRequired = std::numeric_limits<double>::quiet_NaN();  // a number field's default: none
 constexpr size_t kMaxCopyDepth = 16;
+
+std::string oneOf(std::span<const char* const> ids) {
+    std::string out = "must be one of";
+    for (size_t i = 0; i < ids.size(); ++i) out += (i ? ", " : " ") + std::string(ids[i]);
+    return out;
+}
 
 bool snakeCase(const std::string& s) {
     return !s.empty() && s.size() <= 48 && s[0] >= 'a' && s[0] <= 'z' &&
@@ -152,7 +159,7 @@ struct SaveIds {
 
 // ---- Items.
 
-constexpr const char* kSlotIds[] = {"head", "chest", "hands", "legs", "feet", "main_hand", "off_hand", "bag", "none"};  // EquipSlot order
+constexpr const char* kSlotIds[] = {"head", "chest", "hands", "legs", "feet", "main_hand", "off_hand", "trinket", "bag", "none"};  // EquipSlot order
 static_assert(std::size(kSlotIds) == SlotNone + 1);
 
 // The ids code names (ItemId constants) and the records they must be.
@@ -167,14 +174,14 @@ void loadItems(const File& f, Defs& d) {
     SaveIds saves;
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
-        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor"});
+        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods"});
         size_t save = saves.claim(r);
-        ItemType t{nullptr, SlotNone, {0, 0, 0}, 0, 0};
+        ItemType t{nullptr, SlotNone, {0, 0, 0}, 0, 0, {}};
         std::string name = r.text("name");
         if (r.fields.contains("slot")) {
             const json& v = r.fields["slot"];
             auto s = std::ranges::find(kSlotIds, v.is_string() ? v.get<std::string>() : "");
-            if (s == std::end(kSlotIds)) throw r.fail("slot", "must be one of head, chest, hands, legs, feet, main_hand, off_hand, bag, none");
+            if (s == std::end(kSlotIds)) throw r.fail("slot", oneOf(kSlotIds));
             t.slot = EquipSlot(s - std::begin(kSlotIds));
         }
         if (r.fields.contains("attack")) {
@@ -190,6 +197,28 @@ void loadItems(const File& f, Defs& d) {
         if (t.slot == SlotBag) t.bagSlots = int(r.number(r.fields, "bag_slots", 1, 32));
         else if (r.fields.contains("bag_slots")) throw r.fail("bag_slots", "only bag items have bag slots");
         t.armor = int(r.number(r.fields, "armor", 0, 1000, 0));
+        if (r.fields.contains("mods")) {  // [{"stat": "spirit", "flat": 2}, ...]: what wearing it adds (ADR-022)
+            const json& ms = r.fields["mods"];
+            if (!ms.is_array() || ms.size() > 8) throw r.fail("mods", "must be an array of at most 8 {stat, flat|increased|more}");
+            if (!ms.empty() && t.slot >= EquipCount) throw r.fail("mods", "only items worn in an equip slot have mods");
+            for (size_t j = 0; j < ms.size(); ++j) {
+                const json& m = ms[j];
+                std::string field = std::format("mods[{}]", j);
+                if (!m.is_object()) throw r.fail(field, "must be an object {stat, flat|increased|more}");
+                for (const auto& [k, v] : m.items())
+                    if (k != "stat" && k != "flat" && k != "increased" && k != "more") throw r.fail(field + "." + k, "unknown field");
+                auto stat = std::ranges::find(kStatIds, m.contains("stat") && m["stat"].is_string() ? m["stat"].get<std::string>() : "");
+                if (stat == std::end(kStatIds))
+                    throw r.fail(field + ".stat", oneOf(kStatIds));
+                if (m.contains("flat") + m.contains("increased") + m.contains("more") != 1)
+                    throw r.fail(field, "needs exactly one of flat, increased, more");
+                ModKind kind = m.contains("flat") ? ModKind::Flat : m.contains("increased") ? ModKind::Increased : ModKind::More;
+                bool flat = kind == ModKind::Flat;  // flat: points; increased and more: fractions (0.1 = 10%)
+                double value = r.number(m, field + (flat ? ".flat" : kind == ModKind::Increased ? ".increased" : ".more"),
+                                        flat ? -1000 : -1, flat ? 1000 : 10, kRequired, false);
+                t.mods.push_back({Stat(stat - std::begin(kStatIds)), kind, float(value)});
+            }
+        }
         if (d.items.size() <= save) d.items.resize(save + 1), d.itemIds.resize(save + 1), d.itemNames.resize(save + 1);
         d.items[save] = t;
         d.itemIds[save] = r.id();
@@ -279,7 +308,7 @@ void loadCreatures(const File& f, Defs& d) {
         t.giveUpSeconds = float(r.number(r.fields, "give_up_seconds", 0.5, 60, 5, false));
         t.windup = float(r.number(r.fields, "attack_windup", 0.05, 2, kSwingWindup, false));
         // The swing's impact comes at most kPunchImpact into it (startPunch), so a longer windup would be cut short.
-        float swing = swingTime(t.stats, t.weapon ? d.items[t.weapon].attack : kPunch);
+        float swing = swingTime(compute(t.stats, d.items[t.weapon].mods), t.weapon ? d.items[t.weapon].attack : kPunch);
         if (t.temper != Temper::Harmless && t.windup >= kPunchImpact * swing)
             throw r.fail("attack_windup", std::format("{} s must be less than {} x its swing time ({:.3f} s)", t.windup, kPunchImpact, swing));
         t.recover = float(r.number(r.fields, "attack_recover", 0, 2, 0.2, false));

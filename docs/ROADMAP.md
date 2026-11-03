@@ -89,7 +89,7 @@ Not yet scheduled into a milestone; see docs/STORY.md for where Act 1 needs each
 - [ ] Dynamic lighting: Ember/torches/campfires emit light at night; dark interiors (barrow)
 - [ ] Occlusion-based color ramping (ambient occlusion that darkens and shifts block colors)
 - [ ] Time-of-day spawns (e.g. ghouls only at night)
-- [ ] Trinket slot (Bone Charm), and gear attributes on top of base stats
+- [x] Trinket slot (Bone Charm), and gear attributes on top of base stats (stat pipeline, ADR-022)
 - [ ] Bigger block palette (the renderer's 32 colors are full; needs a shader change + perf A/B)
 - [x] Editor: `flatten` under tree canopies spreads Leaves; `fill` over MCP only takes natural
       blocks; prefab-placed markers (a camp that brings its own bandits) (ADR-021)

@@ -340,7 +340,7 @@ static int run(SDL_Window* window, const Options& opt) {
             if (benchmark) {
                 double t = session.elapsed + kTick;  // after this tick
                 in.move = {std::sin(t * 0.4), std::cos(t * 0.4)};  // walk a circle
-                player.health = float(maxHealth(player.stats));  // a passing fight mustn't change the benchmark's path
+                player.health = float(maxHealth(sheet(player)));  // a passing fight mustn't change the benchmark's path
             }
             sim.attack = punchHeld || punchQueued;
             sim.interact = interactQueued;

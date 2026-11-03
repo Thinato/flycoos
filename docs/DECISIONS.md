@@ -96,7 +96,8 @@
 
 ## ADR-007: Classless WoW-style attributes
 
-- **Status:** accepted (2026-11-02)
+- **Status:** accepted (2026-11-02); amended by ADR-022 (gear and later talents add modifiers on top
+  of the attributes; the formulas take the computed stat sheet)
 - **Context:** combat needs stats, and the game has no classes.
 - **Decision:**
   - Five attributes (stamina, strength, agility, intellect, spirit); everything else derives from
@@ -114,7 +115,8 @@
 
 ## ADR-008: Inventory as bags of fixed slots
 
-- **Status:** accepted (2026-11-02)
+- **Status:** accepted (2026-11-02); amended by ADR-022 (a Trinket equip slot; gear adds attributes,
+  and health, regen and swing time read base + gear)
 - **Context:** the player needs an inventory that can grow, and equipment that changes combat.
 - **Decision:**
   - A 12-slot backpack that is always there, plus 4 bag slots; each equipped bag adds its own
@@ -151,7 +153,8 @@
 
 ## ADR-010: Armor as flat mitigation by attacker level
 
-- **Status:** accepted (2026-11-02)
+- **Status:** accepted (2026-11-02); amended by ADR-022 (armor is a flat modifier in the stat
+  pipeline, applied in `resolveHit`; the player has a level, 1 for now)
 - **Context:** worn gear should protect the player, more for some pieces than others, and
   protection should matter less against stronger enemies.
 - **Decision:**
@@ -664,3 +667,70 @@
   - A move over the work budget has to be a remove and a place, which makes the instance's markers
     afresh from the file (new ids, hand edits lost).
   - Model-color blocks (Skin, Eye...) can now be placed in the world; they are plain colors there.
+
+## ADR-022: A stat pipeline of modifiers, and one function that resolves every hit
+
+- **Status:** accepted (2026-11-03); amends ADR-007, ADR-008 and ADR-010
+- **Context:** gear could only add armor: health, regen and swing time read `Combatant::stats`
+  directly in six places, so an attribute on an item would have been ignored by some of them (the
+  debt ADR-008 and ADR-010 noted). Talents and buffs (refactor step 11) need the same hook, and
+  the damage formula was split between `roll()` in `entity.cpp` and `mitigate()`, with the player's
+  attacker level hard-coded to 1. The Bone Charm, the barrow ghouls' drop, did nothing.
+- **Decision:**
+  - A body's final stats are a `StatSheet` from a pure `compute(base, span<const Modifier>)`
+    (`stats.h`): per stat `(base + Σflat) × (1 + Σincreased) × Π(1 + more)`, never below 0.
+    `Modifier {stat, kind, value, source}`; increased and more are fractions (0.1 = 10%), and a
+    more factor below −100% counts as −100%. Every value is capped at 10⁶ so the integer consumers
+    can't overflow; haste alone may go down to −0.9 (a slow, at most 10× the swing time). Two
+    +50% increased give ×2.0, two +50% more give ×2.25 (Path of Exile's rule, not Unreal GAS's
+    summed multipliers). The sheet holds the five attributes and the derived stats: max health
+    (from final stamina), damage (a hit multiplier, 1 = none), haste (from final agility), regen
+    (from final spirit), armor (0 + gear) and damage taken (a multiplier on hits received). A
+    derived stat starts from the final attributes, then takes its own modifiers.
+  - `collect(combatant)` rebuilds the modifier list from the equipped items on every call: each
+    item's `armor` as a flat Armor modifier, then its `mods`, sourced by the item's name. Talents
+    and buffs will append theirs there. Because the list is rebuilt, unequipping needs no undo
+    code and restores the base exactly. `sheet(c) = compute(c.stats, collect(c))`, uncached (a
+    handful of modifiers per body; add a dirty flag only if profiling asks).
+  - Everything that read the base reads the sheet: max health (HUD, the regen cap, respawns, the
+    Return heal, fleeing), regen, swing time, and both UIs. Creature listings (the Data tab, the
+    MCP `catalog`) and the loader's windup check use the base plus the creature's weapon mods. The `Stats` overloads of `maxHealth`,
+    `swingTime`, `strengthBonus` and `rollDamage` remain for creature types and tests: they are
+    the sheet of the base alone.
+  - One `resolveHit(attacker, defender, attack, ctx)` (`entity.cpp`) for every swing that lands,
+    in the order it always had: the attack's roll, plus round(strength × attack speed), × the
+    attacker's damage, less `armorReduction(armor, attacker level)`, × the defender's damage
+    taken, rounded once, at least 1; 0 only when the hit before armor is 0 (nothing rolled, or a
+    damage multiplier of 0). `HitContext` carries the RNG
+    and K, and is where conditional effects ("vs beasts", "below 30% health") will be read, not in
+    the sheet. Debug damage still bypasses it.
+  - `level` moved from `Entity` to `Combatant`, so the player has one (1, a debug slider) and it
+    feeds `resolveHit`; NPCs take their kind's.
+  - Items may have `"mods": [{"stat": "spirit", "flat": 2}]` in `items.json`: up to 8, each a
+    known stat id and exactly one of `flat` (−1000..1000), `increased` or `more` (−1..10), on
+    items worn in an equip slot only; anything else fails loading with file, record and field.
+  - A Trinket equip slot, appended after Off Hand. Equip slots aren't saved anywhere yet (data files
+    name them, and there is no player save), so `SlotBag` and `SlotNone` moved up one; the
+    characterization test was re-pinned on purpose. Once a save stores them they're append-only.
+  - The Bone Charm is the first trinket: +2 spirit (regen 1 → 2 per second). No other shipped item
+    has mods yet, so every pinned replay and the Act 1 balance means are unchanged.
+- **Alternatives considered:**
+  - Caching the sheet behind a dirty flag set by equip, level-up and buffs: a stale-cache bug class
+    for no measured cost.
+  - Applying gear imperatively (add on equip, subtract on unequip): drifts with percentages and
+    rounding, and every source needs its own undo.
+  - Rounding at each step of `resolveHit`: double rounding biases small hits; the float flows
+    through and rounds once, which is exactly the old result when every multiplier is 1. Without
+    modifiers every step adds 0 or multiplies by 1, so the sheet reproduces the old swing time,
+    regen and health; the replays pin that bit-for-bit for the shipped agility, spirit and
+    stamina values.
+  - Keeping `armor(inv)` beside the sheet: two answers to "how much armor" once talents raise it.
+- **Consequences:**
+  - Stat effects are data: a JSON edit and Reload defs. A new derived stat is an enum value, its
+    base in `compute` and a consumer.
+  - Armor and max health are floats in the sheet; consumers round (`maxHealth` ≥ 1).
+  - When the player levels (step 11), its level pierces NPC armor through `resolveHit`, and gear
+    armor per tier has to grow about linearly with level to keep the reduction constant; the
+    debug Level slider shows the effect today.
+  - The debug Player tab shows the sheet: every stat's base and final value, and each modifier with
+    its source. The Character window shows final attributes with what gear adds in green.

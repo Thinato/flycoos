@@ -19,7 +19,7 @@ void respawnPlayer(Session& s) {
     Player& p = s.player;
     p.teleport(playerSpawn(s.world, s.markers));
     p.vel = {};
-    p.health = float(maxHealth(p.stats));
+    p.health = float(maxHealth(sheet(p)));
     p.deadTime = 0;
     p.combatTimer = 0;
 }

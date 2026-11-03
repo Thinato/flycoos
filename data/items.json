@@ -9,5 +9,5 @@
   {"id": "iron_greaves", "save_id": 8, "name": "Iron Greaves", "slot": "legs", "armor": 10},
   {"id": "iron_sabatons", "save_id": 9, "name": "Iron Sabatons", "slot": "feet", "armor": 5},
   {"id": "wolf_pelt", "save_id": 10, "name": "Wolf Pelt"},
-  {"id": "bone_charm", "save_id": 11, "name": "Bone Charm"}
+  {"id": "bone_charm", "save_id": 11, "name": "Bone Charm", "slot": "trinket", "mods": [{"stat": "spirit", "flat": 2}]}
 ]

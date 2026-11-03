@@ -109,6 +109,13 @@ void tooltip(ItemId id, SlotRef where) {
     if (t.slot == SlotBag) ImGui::Text("%d slot bag", t.bagSlots);
     else if (t.slot < EquipCount) ImGui::TextDisabled("%s", kSlotNames[t.slot]);
     if (t.armor) ImGui::Text("%d Armor", t.armor);
+    ImGui::PushStyleColor(ImGuiCol_Text, uiColor(0.4f, 0.9f, 0.4f));
+    for (const Modifier& m : t.mods) {
+        const char* stat = kStatNames[size_t(m.stat)];
+        if (m.kind == ModKind::Flat) ImGui::Text("%+g %s", double(m.value), stat);
+        else ImGui::Text("%+.0f%% %s%s", double(m.value) * 100, m.kind == ModKind::More ? "more " : "", stat);
+    }
+    ImGui::PopStyleColor();
     const Attack& a = t.attack;
     if (a.speed > 0) {
         ImGui::Text("%d - %d damage    Speed %.2f", a.minDamage, a.maxDamage, a.speed);
@@ -164,32 +171,44 @@ void statRow(const char* name, const char* tip, const char* fmt, auto... args) {
     if (tip) ImGui::SetItemTooltip("%s", tip);
 }
 
+// A stat's final value, then in green (or red) what gear adds to (or takes from) its base.
+void gearRow(const char* name, const char* tip, const char* fmt, const StatSheet& s, const StatSheet& base, Stat stat) {
+    statRow(name, tip, fmt, double(s[stat]));
+    if (float gear = s[stat] - base[stat]; std::abs(gear) > 0.01f) {
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, gear > 0 ? uiColor(0.4f, 0.9f, 0.4f) : uiColor(0.95f, 0.4f, 0.35f));
+        ImGui::Text("(%+g)", double(gear));
+        ImGui::PopStyleColor();
+    }
+}
+
 void attributes(const Player& p, float armorK) {
-    const Stats& s = p.stats;
+    StatSheet s = sheet(p), base = compute(p.stats);
     const Attack& a = mainAttack(p.inv);
     float swing = swingTime(s, a);
-    int lo = a.minDamage + strengthBonus(s, a), hi = a.maxDamage + strengthBonus(s, a);
+    int lo = hitBeforeArmor(s, a, a.minDamage), hi = hitBeforeArmor(s, a, a.maxDamage);
     char tip[96];
     if (!ImGui::BeginTable("attributes", 2, ImGuiTableFlags_SizingFixedFit)) return;
     statRow("Health", nullptr, "%d / %d", int(std::ceil(p.health)), maxHealth(s));
     std::snprintf(tip, sizeof tip, "+%d max health per point", kHealthPerStamina);
-    statRow("Stamina", tip, "%d", s.stamina);
-    statRow("Strength", "Adds strength x weapon speed to every hit", "%d", s.strength);
+    gearRow("Stamina", tip, "%.0f", s, base, Stat::Stamina);
+    gearRow("Strength", "Adds strength x weapon speed to every hit", "%.0f", s, base, Stat::Strength);
     std::snprintf(tip, sizeof tip, "+%.0f%% attack speed per point", kHastePerAgility * 100);
-    statRow("Agility", tip, "%d", s.agility);
-    statRow("Intellect", "No use yet", "%d", s.intellect);
+    gearRow("Agility", tip, "%.0f", s, base, Stat::Agility);
+    gearRow("Intellect", "No use yet", "%.0f", s, base, Stat::Intellect);
     std::snprintf(tip, sizeof tip, "+%.1f health per second out of combat per point", kRegenPerSpirit);
-    statRow("Spirit", tip, "%d", s.spirit);
+    gearRow("Spirit", tip, "%.0f", s, base, Stat::Spirit);
     ImGui::TableNextRow();
     ImGui::TableNextRow();
     ItemId weapon = p.inv.equipped[SlotMainHand];
     statRow("Damage", weapon ? itemType(weapon).name : "Unarmed", "%d - %d", lo, hi);
     statRow("Attack speed", "Seconds per swing", "%.2f s", swing);
     statRow("Damage/sec", nullptr, "%.1f", float(lo + hi) / 2 / swing);
-    statRow("Regen", "Out of combat", "%.1f /s", healthRegen(s));
-    statRow("Armor", "From worn gear", "%d", armor(p.inv));
-    statRow("Damage taken", "Against a level 1 enemy, after armor. Higher levels get through more.", "-%.1f%%",
-            armorReduction(armor(p.inv), 1, armorK) * 100);
+    gearRow("Regen", "Health per second, out of combat", "%.1f /s", s, base, Stat::Regen);
+    statRow("Armor", "From worn gear", "%.0f", double(s[Stat::Armor]));
+    float taken = (1 - armorReduction(s[Stat::Armor], 1, armorK)) * s[Stat::DamageTaken];
+    statRow("Damage taken", "Against a level 1 enemy, after armor and damage taken modifiers. Higher levels get through more.",
+            "%+.1f%%", double(taken - 1) * 100);
     ImGui::EndTable();
 }
 
@@ -210,6 +229,8 @@ void characterWindow(bool& open, Player& p, float armorK) {
         slot(p.inv, {SlotRef::Equip, SlotMainHand}, kSlotNames[SlotMainHand]);
         ImGui::SameLine();
         slot(p.inv, {SlotRef::Equip, SlotOffHand}, kSlotNames[SlotOffHand]);
+        ImGui::SameLine();
+        slot(p.inv, {SlotRef::Equip, SlotTrinket}, kSlotNames[SlotTrinket]);
         ImGui::PopStyleVar();
     }
     ImGui::End();

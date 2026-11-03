@@ -35,9 +35,10 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`), `fillLight` (whole world) and `relight` (the columns around an edit; returns the box whose light changed), `lightCost`/`emission` per block |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
-| `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (stats, health, swing and damage timers, `Inventory`); walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
+| `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (base stats, level, health, swing and damage timers, `Inventory`); `collect`/`sheet` (its modifiers and final stats); walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
+| `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch` |
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
-| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), talking, damage both ways, loot |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), talking, damage both ways (`resolveHit`), loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in); `startSession` (starting gear, spawns), `step(Session&, SimInput, dt)` (one `kTick`: interaction, swing, movement, NPCs and combat, time of day, region enter, the knocked-out player's respawn) |
 | `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` (records by string id, `copy_from`, field and range checks), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
@@ -534,8 +535,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 
 ## Stats and combat
 
-- Five attributes (`Stats` in stats.h); every other stat derives from them. No classes, so no attack
-  power or other in-between step:
+- Five attributes (`Stats` in stats.h, a body's base); every other stat derives from them. No classes, so no attack
+  power or other in-between step. Gear adds modifiers on top (ADR-022, below):
 
   | Attribute | Effect |
   |---|---|
@@ -560,13 +561,27 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   Base player: stamina 10, everything else 2, so 100 health and a swing every 0.98 s.
   The weapon is fixed when a swing starts (`swingWeapon`): changing gear mid-swing affects the
   next swing, not this one.
-- **Armor** is the sum of the equipped items' armor (`armor(inv)`); items in the bags don't count.
-  Each landed hit is reduced by `armorReduction` (stats.h): `armor / (armor + K x attacker level)`,
-  capped at 80% (`kMaxArmorReduction`), rounded, never below 1. K (`kArmorK` = 40) is the armor that halves a level 1 attacker's
-  damage, and a slider in the debug Player tab (`Session::armorK`, passed to `updateCombat`).
-  The player has no level yet, so its hits count as level 1. The full Iron set (37 armor) takes
-  48% off a level 1 hit and 32% off a level 2 hit: the bandit's knife does 3–5 instead of 5–8.
-  Debug "Hit for 10" / "Kill" bypass armor. The damage number shows what landed.
+- **Stat pipeline (ADR-022):** a body's final stats are `sheet(c) = compute(c.stats, collect(c))`,
+  uncached. `collect` lists the modifiers of the equipped items (each item's armor as a flat Armor
+  modifier, then its `mods`, sourced by the item's name). `compute` does, per stat,
+  `(base + Σflat) × (1 + Σincreased) × Π(1 + more)`, kept in 0..10⁶ (haste down to −0.9, a
+  slow; a more factor below −100% counts as −100%): two +50% increased are ×2.0,
+  two +50% more ×2.25. The `StatSheet` holds the five attributes, then the derived stats computed
+  from the final attributes before their own modifiers: max health (stamina × 10), damage (a hit
+  multiplier, base 1), haste (agility × 1%), regen (spirit × 0.5), armor (base 0) and damage taken
+  (a multiplier on hits received, base 1). Max health, regen, swing time and both UIs read the
+  sheet, so unequipping restores the base exactly. The debug Player tab shows the sheet: each
+  stat's base and final value and every modifier with its source.
+- **Every landed swing goes through `resolveHit(attacker, defender, attack, ctx)`** (entity.cpp):
+  the attack's roll, + round(strength × attack speed), × the attacker's damage, less
+  `armorReduction` (stats.h): `armor / (armor + K x attacker level)` capped at 80%
+  (`kMaxArmorReduction`), × the defender's damage taken, rounded once and never below 1.
+  `HitContext` carries the damage RNG and K. K (`kArmorK` = 40) is the armor that halves a level 1
+  attacker's damage, and a slider in the debug Player tab (`Session::armorK`, passed to
+  `updateCombat`). The attacker level is `Combatant::level`: an NPC's kind's, the player's 1 for
+  now (a debug slider). The full Iron set (37 armor) takes 48% off a level 1 hit and 32% off a
+  level 2 hit: the bandit's knife does 3–5 instead of 5–8. Debug "Hit for 10" / "Kill" bypass
+  it. The damage number shows what landed.
 - Left mouse starts an attack toward where the camera looks, once the swing timer allows. Holding
   keeps swinging; a click during the cooldown is queued. Damage lands at the fist's impact frame
   (40% into a 0.35 s animation) on the nearest living, attackable entity within 2 blocks and
@@ -586,9 +601,10 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - Items are defined in `data/items.json` (ADR-018) and loaded at startup by `loadDefs` into a table
   indexed by save id: name, equip slot, weapon `Attack`, bag size, armor. A record:
   `{"id": "iron_helm", "save_id": 5, "name": "Iron Helm", "slot": "head", "armor": 6}`; optional
-  fields are `slot` (head, chest, hands, legs, feet, main_hand, off_hand, bag; default none),
+  fields are `slot` (head, chest, hands, legs, feet, main_hand, off_hand, trinket, bag; default none),
   `attack` `{min, max, speed}` (required for main_hand), `bag_slots` (required for bag), `armor`,
-  and `copy_from` (another record's id: its fields but save_id, merge-patched with the record's own,
+  `mods` (worn items only: up to 8 stat modifiers such as `{"stat": "spirit", "flat": 2}`, each a
+  stat id of `kStatIds` and exactly one of `flat`, `increased` or `more`; ADR-022), and `copy_from` (another record's id: its fields but save_id, merge-patched with the record's own,
   so objects merge and `null` removes; at most 16 deep). Any bad record stops the game with a
   message naming file, record and field. `data/` is read from the working folder, else from the
   source tree.
@@ -596,7 +612,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   renumber or reuse one). Code names an item only through the `ItemId` constants; an item that code
   must name gets one, at its save id, plus its row in `kNamedItems` (defs.cpp). Its icon (`inventory_ui.cpp`) and worn or held model
   (`model.cpp`) are code; without them it shows no icon.
-- The debug window's **Data** tab lists the loaded items and creatures and has **Reload defs**: it
+- The debug window's **Data** tab lists the loaded items (with their mods) and creatures and has **Reload defs**: it
   reloads `data/` between ticks and keeps the old definitions (showing the error) when the files
   are bad, drop an item or creature, or give a loaded save id another string id. Living NPCs keep
   the name, level, stats, wander radius, chase speed and weapon they spawned with; the other
@@ -609,22 +625,25 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Rusty Knife | Main Hand | one-handed, 3–6 damage, speed 0.75; dropped by bandits |
   | Boar Skin | – | crafting material later; dropped by boars |
   | Iron Helm / Cuirass / Gauntlets / Greaves / Sabatons | Head / Chest / Hands / Legs / Feet | 6 / 12 / 4 / 10 / 5 armor (37 for the set) |
+  | Wolf Pelt | – | crafting material later; dropped by wolves |
+  | Bone Charm | Trinket | +2 spirit (regen 1 → 2 per second); dropped by barrow ghouls |
 
   Chest and legs pieces always give more armor than any head, hands, feet or hand item; a test
   checks the whole table.
 
-- `Inventory` lives on the body (`Player::inv`): 7 equip slots (head, chest, hands, legs, feet,
-  main hand, off hand), a bar of 4 bag slots, and the item slots: the 12-slot backpack plus one
+- `Inventory` lives on the body (`Player::inv`): 8 equip slots (head, chest, hands, legs, feet,
+  main hand, off hand, trinket; not saved yet, so the trinket was appended before `SlotBag`), a bar of 4 bag slots, and the item slots: the 12-slot backpack plus one
   container per equipped bag. The player starts with a shortsword and a satchel in the backpack.
 - `moveItem` moves or swaps between any two slots when both ends accept what they'd receive: equip
   slots take their own slot's items, bag slots take bags, item slots take anything. A bag leaves the
   bar only when empty, and never into its own slots, so items are never lost. `quickMove`
   (right-click) equips from the item slots or unequips into the first free one.
-- No stacks, no item attributes (beyond armor), no dropping or destroying yet.
-- **UI:** C opens Character (equipment around an attribute sheet with damage, speed, damage per
-  second, regen, armor and its damage reduction against a level 1 enemy); B opens Bags (backpack,
+- No stacks, no dropping or destroying yet.
+- **UI:** C opens Character (equipment around an attribute sheet with final attributes, what gear
+  adds in green, damage, speed, damage per second, regen, armor and its damage reduction against a
+  level 1 enemy; the weapons and the trinket below); B opens Bags (backpack,
   each bag, the bag bar, free slots). Drag to move, right-click to equip/unequip, hover for a
-  tooltip (with armor pieces' "N Armor"). Icons are drawn with ImGui shapes. Any open window frees
+  tooltip (with armor pieces' "N Armor" and an item's mods in green). Icons are drawn with ImGui shapes. Any open window frees
   the cursor and pauses mouse look and attacks (a click queued before it opened is dropped, and a
   press that began in a window doesn't attack after it closes); the keyboard still moves the
   player. Esc closes the
@@ -632,7 +651,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 
 ## Entities
 
-- An `Entity` is a kind, a name, a level and a `Player` body (position, animation, health). Fixed
+- An `Entity` is a kind, a name and a `Player` body (position, animation, health, level). Fixed
   traits per kind are defined in `data/creatures.json` (ADR-018), loaded after the items, into a
   table indexed by save id (= `EntityKind`, from 0). A record:
   `{"id": "wolf", "save_id": 4, "name": "Wolf", "level": 1, "stats": {"stamina": 8, "strength": 2,

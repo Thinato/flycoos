@@ -2,7 +2,7 @@
 
 #include "defs.h"
 
-const char* const kSlotNames[EquipCount] = {"Head", "Chest", "Hands", "Legs", "Feet", "Main Hand", "Off Hand"};
+const char* const kSlotNames[EquipCount] = {"Head", "Chest", "Hands", "Legs", "Feet", "Main Hand", "Off Hand", "Trinket"};
 
 namespace {
 
@@ -90,12 +90,6 @@ int freeSlots(const Inventory& inv) {
     int n = 0;
     for (const auto& c : inv.containers)
         for (ItemId id : c) n += id == NoItem;
-    return n;
-}
-
-int armor(const Inventory& inv) {
-    int n = 0;
-    for (ItemId id : inv.equipped) n += itemType(id).armor;
     return n;
 }
 

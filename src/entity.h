@@ -60,8 +60,7 @@ struct AiTransition {
 struct Entity {
     EntityKind kind;
     std::string name;
-    int level = 1;
-    Player body;           // position, animation, health
+    Player body;           // position, animation, health, level
     glm::vec3 home{};      // wanderers stay near this; respawns here
     float wanderRadius = 0;  // how far from home it wanders: its kind's, or its spawn marker's radius
     Marker spawn;          // the spawn marker it came from as it was then (id 0: none); see syncSpawns
@@ -136,7 +135,17 @@ bool startPunch(Player& attacker, glm::vec2 aim, float windup = kSwingWindup);
 bool inReach(const Player& attacker, glm::vec3 target);
 // What a punch from `attacker` hits: the nearest living, attackable entity in reach.
 Entity* punchTarget(std::vector<Entity>& entities, const Player& attacker);
+// What a hit is resolved in: the damage roll's RNG and the armor balance (the K of armorReduction).
+struct HitContext {
+    std::mt19937& rng;
+    float armorK = kArmorK;
+};
+// The one damage formula (ADR-022), in this order: the attack's roll, plus the attacker's strength
+// bonus, times the attacker's damage, less the defender's armor against the attacker's level, times
+// the defender's damage taken; at least 1, unless the hit before armor is 0 (nothing rolled, or a
+// damage multiplier of 0): then 0. Reads both sheets.
+int resolveHit(const Combatant& attacker, const Combatant& defender, const Attack& attack, const HitContext& ctx);
 // Combat timers and out-of-combat regeneration for everyone; lands every swing at its impact frame
-// (the player's on entities, entities' on the player), less the victim's armor (`armorK` is the
-// K of armorReduction); brings the dead back home.
+// (the player's on entities, entities' on the player) through resolveHit (`armorK` is the K of
+// armorReduction); brings the dead back home.
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK = kArmorK);

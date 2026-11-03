@@ -317,10 +317,10 @@ static void entities() {
     CHECK(es.size() == 4);
     Entity &dummy = es[0], &villager = es[1];
 
-    CHECK(dummy.kind == EntityKind::TrainingDummy && dummy.name == "Training Dummy" && dummy.level == 1);
+    CHECK(dummy.kind == EntityKind::TrainingDummy && dummy.name == "Training Dummy" && dummy.body.level == 1);
     CHECK(dummy.body.health == 100 && maxHealth(dummy.body.stats) == 100);
     CHECK(dummy.type().attackable && !dummy.type().wanders && !dummy.type().talks);
-    CHECK(villager.kind == EntityKind::Villager && villager.level == 5 && !villager.name.empty());
+    CHECK(villager.kind == EntityKind::Villager && villager.body.level == 5 && !villager.name.empty());
     CHECK(villager.body.health == 250 && maxHealth(villager.body.stats) == 250);
     CHECK(!villager.type().attackable && villager.type().wanders && villager.type().talks);
     CHECK(spawnEntities(g, player.pos, 1)[1].name == villager.name);  // names are seeded
@@ -514,11 +514,11 @@ static void fighters() {
 
     // The boar is the player's match: level, health and unarmed damage. The bandit is a level
     // above, tougher, and fights with a knife: quicker than the sword but weaker per hit.
-    CHECK(boar.kind == EntityKind::Boar && boar.level == 1 && boar.type().temper == Temper::Passive);
+    CHECK(boar.kind == EntityKind::Boar && boar.body.level == 1 && boar.type().temper == Temper::Passive);
     CHECK(boar.body.health == player.health && maxHealth(boar.body.stats) == maxHealth(player.stats));
     CHECK(strengthBonus(boar.body.stats, kPunch) == strengthBonus(player.stats, kPunch));
     CHECK(mainAttack(boar.body.inv).minDamage == kPunch.minDamage && mainAttack(boar.body.inv).maxDamage == kPunch.maxDamage);
-    CHECK(bandit.kind == EntityKind::Bandit && bandit.level == 2 && bandit.type().temper == Temper::Aggressive);
+    CHECK(bandit.kind == EntityKind::Bandit && bandit.body.level == 2 && bandit.type().temper == Temper::Aggressive);
     CHECK(maxHealth(bandit.body.stats) > maxHealth(player.stats) && bandit.body.stats.strength > player.stats.strength);
     CHECK(bandit.body.inv.equipped[SlotMainHand] == Knife);
     const Attack &knife = itemType(Knife).attack, &sword = itemType(Shortsword).attack;
@@ -772,11 +772,11 @@ static void protection() {
     constexpr ItemId kSet[] = {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons};
     Player player;
     for (ItemId id : kSet) CHECK(giveItem(player.inv, id));
-    CHECK(giveItem(player.inv, IronHelm) && armor(player.inv) == 0);  // a spare helm stays in the bags
+    CHECK(giveItem(player.inv, IronHelm) && sheet(player)[Stat::Armor] == 0);  // a spare helm stays in the bags
     for (int i = 0; i < 5; ++i) CHECK(quickMove(player.inv, {Item, i, 0}));
-    CHECK(armor(player.inv) == 37 && player.inv.containers[0][5] == IronHelm);
-    CHECK(quickMove(player.inv, {Equip, SlotChest}) && armor(player.inv) == 25);
-    CHECK(quickMove(player.inv, {Item, 0, 0}) && armor(player.inv) == 37);
+    CHECK(sheet(player)[Stat::Armor] == 37 && player.inv.containers[0][5] == IronHelm);
+    CHECK(quickMove(player.inv, {Equip, SlotChest}) && sheet(player)[Stat::Armor] == 25);
+    CHECK(quickMove(player.inv, {Item, 0, 0}) && sheet(player)[Stat::Armor] == 37);
 
     // A bandit (level 2, knife 5-8 unarmored) hits the armored player for 3-5; with K = 1 armor
     // takes almost everything.
@@ -816,6 +816,131 @@ static void protection() {
     player.inv.equipped[SlotHead] = NoItem;
     CHECK(partModels(ModelPlayer, player.inv)[Head] == ModelPlayer);
     CHECK(partModels(ModelBoar, player.inv)[Torso] == ModelBoar);
+}
+
+// The stat pipeline (ADR-022): compute's arithmetic, collect from worn gear, the trinket slot, the
+// sheet behind regen, max health and swing time, and resolveHit's order.
+static void statSheets() {
+    namespace fs = std::filesystem;
+    auto near = [](float a, float b) { return std::abs(a - b) < 1e-3f; };
+    using enum ModKind;
+    Stats base;  // the player's: 10 2 2 2 2
+    // Increased modifiers add up, more ones multiply, and flat ones come before both.
+    Modifier inc50{Stat::Strength, Increased, 0.5f}, more50{Stat::Strength, More, 0.5f};
+    CHECK(compute(base, std::array{inc50, inc50})[Stat::Strength] == 4.0f);    // 2 x 2.0
+    CHECK(compute(base, std::array{more50, more50})[Stat::Strength] == 4.5f);  // 2 x 2.25
+    CHECK(compute(base, std::array{inc50, Modifier{Stat::Strength, Flat, 3}})[Stat::Strength] == 7.5f);  // (2 + 3) x 1.5
+    std::array mix{Modifier{Stat::Stamina, Flat, 5}, Modifier{Stat::Stamina, Increased, 0.1f},
+                   Modifier{Stat::Stamina, Increased, 0.2f}, Modifier{Stat::Stamina, More, 0.5f}};
+    CHECK(near(compute(base, mix)[Stat::Stamina], 29.25f));  // (10 + 5) x 1.3 x 1.5
+    // Derived stats start from the final attributes, then take their own modifiers.
+    CHECK(maxHealth(compute(base, std::array{Modifier{Stat::Stamina, Flat, 5}, Modifier{Stat::MaxHealth, Increased, 0.1f}})) == 165);
+    // No modifiers: the formulas of ADR-007 exactly.
+    constexpr StatSheet plain = compute(Stats{});
+    static_assert(maxHealth(plain) == 100 && plain[Stat::Damage] == 1 && plain[Stat::Armor] == 0 && plain[Stat::DamageTaken] == 1);
+    CHECK(plain[Stat::Haste] == 2 * kHastePerAgility && healthRegen(plain) == 2 * kRegenPerSpirit);
+    // Nothing goes below 0, and max health not below 1.
+    StatSheet cursed = compute(base, std::array{Modifier{Stat::Stamina, Flat, -50}, Modifier{Stat::Agility, Increased, -3}});
+    CHECK(cursed[Stat::Stamina] == 0 && maxHealth(cursed) == 1 && cursed[Stat::Agility] == 0 && swingTime(cursed, kPunch) == kPunch.speed);
+    Modifier nothing{Stat::Strength, More, -2};  // -200% more counts as -100%: two of them don't cancel out
+    CHECK(compute(base, std::array{nothing, nothing})[Stat::Strength] == 0);
+    // Haste may go negative, a slow, down to -90% (10x the swing time).
+    CHECK(near(swingTime(compute(base, std::array{Modifier{Stat::Haste, Flat, -0.5f}}), kPunch), 1 / 0.52f));
+    CHECK(near(swingTime(compute(base, std::array{Modifier{Stat::Haste, Flat, -5}}), kPunch), 10));
+    // Every stat stops at kMaxStat, so the integer consumers can't overflow.
+    Modifier huge{Stat::Stamina, More, 10};
+    StatSheet giant = compute(base, std::array{huge, huge, huge, huge, huge, huge});
+    CHECK(giant[Stat::Stamina] == kMaxStat && maxHealth(giant) == int(kMaxStat));
+
+    // Worn gear adds its armor and mods, each with its source; taking it all off restores the base exactly.
+    using enum SlotRef::Kind;
+    Player p;
+    CHECK(collect(p).empty() && sheet(p).v == compute(p.stats).v && p.level == 1);
+    for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, Shortsword, BoneCharm}) {
+        CHECK(giveItem(p.inv, id));
+        CHECK(quickMove(p.inv, {Item, 0, 0}));
+    }
+    CHECK(p.inv.equipped[SlotTrinket] == BoneCharm);  // right-click puts the charm in the trinket slot
+    std::vector<Modifier> mods = collect(p);
+    CHECK(mods.size() == 6 && std::string_view(mods[0].source) == "Iron Helm" && mods[0].stat == Stat::Armor && mods[0].value == 6);
+    CHECK(std::string_view(mods[5].source) == "Bone Charm" && mods[5].stat == Stat::Spirit && mods[5].kind == Flat);
+    StatSheet worn = sheet(p);
+    CHECK(worn[Stat::Armor] == 37 && worn[Stat::Spirit] == 4 && healthRegen(worn) == 4 * kRegenPerSpirit && maxHealth(worn) == 100);
+    for (int s = 0; s < EquipCount; ++s) quickMove(p.inv, {Equip, s});
+    CHECK(collect(p).empty() && sheet(p).v == compute(p.stats).v && freeSlots(p.inv) == kBackpackSlots - 7);
+    // The trinket slot takes trinkets only, and a trinket goes nowhere else.
+    Player q;
+    CHECK(giveItem(q.inv, BoneCharm) && giveItem(q.inv, IronHelm));
+    CHECK(!moveItem(q.inv, {Item, 0, 0}, {Equip, SlotHead}) && !moveItem(q.inv, {Item, 1, 0}, {Equip, SlotTrinket}));
+    CHECK(moveItem(q.inv, {Item, 0, 0}, {Equip, SlotTrinket}) && sheet(q)[Stat::Spirit] == 4);
+
+    // Out-of-combat regen reads the sheet: the charm doubles it.
+    std::mt19937 rng(1);
+    std::vector<Entity> nobody;
+    auto regen = [&](Player& b) {
+        b.health = 50;
+        for (int i = 0; i < 60; ++i) updateCombat(b, nobody, 1 / 60.0f, rng);
+        return b.health - 50;
+    };
+    Player bare;
+    CHECK(near(regen(bare), 1) && near(regen(q), 2));
+
+    // Test items with every kind of modifier (the shipped ones have none but the charm's).
+    fs::path dir = fs::temp_directory_path() / "flycoos_stats_test";
+    fs::create_directories(dir);
+    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json", dir / "creatures.json", fs::copy_options::overwrite_existing);
+    std::ostringstream text;
+    text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json").rdbuf();
+    std::string items = text.str();
+    items.erase(items.rfind(']'));
+    std::ofstream(dir / "items.json") << items << R"(,
+        {"id": "amulet", "save_id": 12, "name": "Amulet", "slot": "trinket",
+         "mods": [{"stat": "stamina", "flat": 5}, {"stat": "max_health", "increased": 0.1}, {"stat": "agility", "flat": 50}]},
+        {"id": "fury_gloves", "save_id": 13, "name": "Fury Gloves", "slot": "hands", "armor": 4, "mods": [{"stat": "damage", "more": 0.5}]},
+        {"id": "ward", "save_id": 14, "name": "Ward", "slot": "off_hand", "mods": [{"stat": "damage_taken", "increased": -0.5}]},
+        {"id": "plain_ward", "save_id": 15, "copy_from": "ward", "name": "Plain Ward", "mods": null},
+        {"id": "ward_copy", "save_id": 16, "copy_from": "ward", "name": "Ward Copy"}])";
+    Defs test, shipped;
+    std::string error;
+    CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
+    if (!error.empty()) std::println(stderr, "FAIL stats test data: {}", error);
+    fs::remove_all(dir);
+    if (test.items.size() != 17) return;
+    CHECK(test.items[15].mods.empty() && test.items[16].mods.size() == 1 && test.items[16].mods[0].stat == Stat::DamageTaken &&
+          test.items[16].mods[0].kind == Increased && test.items[16].mods[0].value == -0.5f);
+    setDefs(std::move(test));
+    constexpr auto kAmulet = ItemId(12), kGloves = ItemId(13), kWard = ItemId(14);
+    // Max health and swing time read the sheet; unequipping caps health at the base maximum again.
+    Player hero;
+    hero.inv.equipped[SlotTrinket] = kAmulet;
+    CHECK(maxHealth(sheet(hero)) == 165);  // (10 + 5) x 10 x 1.1
+    hero.health = 200;
+    updateCombat(hero, nobody, 1 / 60.0f, rng);
+    CHECK(hero.health == 165);
+    hero.swingTimer = 0;
+    CHECK(startPunch(hero, {0, 1}) && near(hero.swingTimer, 1 / 1.52f));  // agility 52: 52% faster
+    hero.inv.equipped[SlotTrinket] = NoItem;
+    updateCombat(hero, nobody, 1 / 60.0f, rng);
+    CHECK(hero.health == 100 && sheet(hero).v == compute(hero.stats).v);
+    // resolveHit: the roll plus strength, times the attacker's damage, less armor by the attacker's
+    // level, times the defender's damage taken, at least 1.
+    Player attacker, defender;
+    attacker.stats.strength = 0;  // the roll alone
+    constexpr Attack kEight{8, 8, 1};
+    CHECK(resolveHit(attacker, defender, kEight, {rng}) == 8);
+    attacker.inv.equipped[SlotHands] = kGloves;
+    CHECK(resolveHit(attacker, defender, kEight, {rng}) == 12);  // x 1.5; the attacker's own armor doesn't matter
+    for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons}) defender.inv.equipped[itemType(id).slot] = id;
+    attacker.level = 2;
+    CHECK(resolveHit(attacker, defender, kEight, {rng}) == 8);  // 12 x (1 - 37 / 117) = 8.2
+    CHECK(resolveHit(attacker, defender, kEight, {rng, 80}) == 10);  // a bigger K: 12 x (1 - 37 / 197) = 9.7
+    defender.inv.equipped[SlotOffHand] = kWard;
+    CHECK(resolveHit(attacker, defender, kEight, {rng}) == 4);  // 8.2 x 0.5
+    attacker.level = 1;
+    CHECK(resolveHit(attacker, defender, kEight, {rng}) == 3);  // 12 x (1 - 37 / 77) x 0.5 = 3.1: a lower level gets through less
+    CHECK(resolveHit(attacker, defender, Attack{1, 1, 1}, {rng}) == 1);  // 0.4, but a hit does at least 1
+    CHECK(resolveHit(attacker, defender, Attack{0, 0, 1}, {rng}) == 0);  // no damage rolled, no hit
+    setDefs(std::move(shipped));
 }
 
 // World files: a round trip is bit-exact; truncated or corrupted files are rejected cleanly (the
@@ -2036,7 +2161,7 @@ static void storyNpcs() {
     CHECK(typeOf(EntityKind::Wolf).chaseSpeed > 5 && typeOf(EntityKind::Ghoul).chaseSpeed < 5);  // the player walks 5, runs 9
     CHECK(typeOf(EntityKind::BanditChief).lootChance == 1);
     CHECK(std::string_view(kEntityKindNames[int(EntityKind::BanditChief)]) == "bandit_chief");
-    CHECK(itemType(WolfPelt).slot == SlotNone && itemType(BoneCharm).slot == SlotNone && std::string_view(itemType(BoneCharm).name) == "Bone Charm");
+    CHECK(itemType(WolfPelt).slot == SlotNone && itemType(BoneCharm).slot == SlotTrinket && std::string_view(itemType(BoneCharm).name) == "Bone Charm");
     // Models: distinct, every part has voxels, sized like the rig they reuse.
     for (Model m : {ModelWolf, ModelGuard, ModelChief, ModelGhoul})
         for (int p = 0; p < PartCount; ++p) {
@@ -2073,7 +2198,7 @@ static void storyNpcs() {
                 giveItem(player.inv, id);
                 quickMove(player.inv, {SlotRef::Item, 0, 0});
             }
-        CHECK(armor(player.inv) == (geared ? 37 : 0) && player.inv.equipped[SlotMainHand] == (geared ? Shortsword : NoItem));
+        CHECK(sheet(player)[Stat::Armor] == (geared ? 37 : 0) && player.inv.equipped[SlotMainHand] == (geared ? Shortsword : NoItem));
         Marker m{.id = 1, .kind = MarkerKind::Spawn, .pos = {26.5f, 4, 32.5f}, .radius = 3, .entity = kind, .count = count};
         std::vector<Entity> es;
         syncSpawns(es, g, {m}, seed, player.pos);
@@ -2117,9 +2242,11 @@ static void storyNpcs() {
     for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons}) armored.inv.equipped[itemType(id).slot] = id;
     for (auto [kind, lo, hi] : {std::tuple{EntityKind::Wolf, 2, 3}, std::tuple{EntityKind::Ghoul, 2, 5}, std::tuple{EntityKind::BanditChief, 5, 8}}) {
         const EntityType& t = typeOf(kind);
+        Player foe;
+        foe.stats = t.stats, foe.level = t.level;
         int least = 99, most = 0;
         for (int i = 0; i < 500; ++i) {
-            int d = mitigate(rollDamage(t.stats, weaponAttack(t.weapon), rng), armor(armored.inv), t.level);
+            int d = resolveHit(foe, armored, weaponAttack(t.weapon), {rng});
             least = std::min(least, d), most = std::max(most, d);
         }
         CHECK(least == lo && most == hi);
@@ -2446,15 +2573,17 @@ static void tables() {
                             {IronCuirass, 6}, {IronGauntlets, 7}, {IronGreaves, 8}, {IronSabatons, 9}, {WolfPelt, 10},
                             {BoneCharm, 11}})
         same(itemType(item).name, "id", int(item), id);
-    same("EquipSlot", "EquipCount", int(EquipCount), 7);
+    // Equip slots aren't saved (data files name them), so the Trinket slot was appended and moved
+    // SlotBag and SlotNone up one (ADR-022). Once a player save stores them they're append-only too.
+    same("EquipSlot", "EquipCount", int(EquipCount), 8);
     for (auto [slot, id, name] : {std::tuple{SlotHead, 0, "Head"}, {SlotChest, 1, "Chest"}, {SlotHands, 2, "Hands"},
                                   {SlotLegs, 3, "Legs"}, {SlotFeet, 4, "Feet"}, {SlotMainHand, 5, "Main Hand"},
-                                  {SlotOffHand, 6, "Off Hand"}}) {
+                                  {SlotOffHand, 6, "Off Hand"}, {SlotTrinket, 7, "Trinket"}}) {
         same(name, "id", int(slot), id);
         same(name, "kSlotNames", std::string_view(kSlotNames[id]), std::string_view(name));
     }
-    same("SlotBag", "id", int(SlotBag), 7);
-    same("SlotNone", "id", int(SlotNone), 8);
+    same("SlotBag", "id", int(SlotBag), 8);
+    same("SlotNone", "id", int(SlotNone), 9);
 
     struct WantType {
         const char* name; int level; Stats stats; bool attackable, wanders, talks; Model model; Temper temper;
@@ -2507,7 +2636,7 @@ static void tables() {
         {"Iron Greaves",    SlotLegs,     {0, 0, 0},     0,         10},
         {"Iron Sabatons",   SlotFeet,     {0, 0, 0},     0,         5},
         {"Wolf Pelt",       SlotNone,     {0, 0, 0},     0,         0},
-        {"Bone Charm",      SlotNone,     {0, 0, 0},     0,         0},
+        {"Bone Charm",      SlotTrinket,  {0, 0, 0},     0,         0},  // was SlotNone until ADR-022
     };
     static_assert(std::size(kWantItems) == ItemCount);
     for (int i = 0; i < ItemCount; ++i) {
@@ -2518,7 +2647,10 @@ static void tables() {
         same(row, "name", str(t.name), str(w.name));
         SAME(slot), SAME(attack.minDamage), SAME(attack.maxDamage), SAME(attack.speed), SAME(bagSlots), SAME(armor);
 #undef SAME
+        same(row, "mods.size()", t.mods.size(), size_t(i == BoneCharm));  // only the Bone Charm has stat modifiers: +2 spirit
     }
+    const std::vector<Modifier>& charm = itemType(BoneCharm).mods;
+    CHECK(charm.size() == 1 && charm[0].stat == Stat::Spirit && charm[0].kind == ModKind::Flat && charm[0].value == 2);
     same("kPunch", "attack", std::tuple{kPunch.minDamage, kPunch.maxDamage, kPunch.speed}, std::tuple{1, 4, 1.0f});
     same("itemType", "out of range", str(itemType(ItemId(200)).name), str(itemType(NoItem).name));
     CHECK(&itemType(ItemId(200)) == &itemType(NoItem));
@@ -2548,7 +2680,7 @@ static void fightReplay() {
         giveItem(player.inv, id);
         quickMove(player.inv, {SlotRef::Item, 0, 0});
     }
-    CHECK(armor(player.inv) == 37 && player.inv.equipped[SlotMainHand] == Shortsword);
+    CHECK(sheet(player)[Stat::Armor] == 37 && player.inv.equipped[SlotMainHand] == Shortsword);
     Marker m{.id = 1, .kind = MarkerKind::Spawn, .pos = {26.5f, 4, 32.5f}, .radius = 3, .entity = EntityKind::Bandit};
     std::vector<Entity> es;
     syncSpawns(es, g, {m}, 1, player.pos);
@@ -3069,6 +3201,31 @@ static void dataFiles() {
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "bag"}])", "field 'bag_slots': missing"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "bag_slots": 4}])", "field 'bag_slots': only bag items"},
              {base + R"(,{"id": "a", "save_id": 12.5, "name": "A"}])", "field 'save_id': must be an integer"},
+             // Stat modifiers (ADR-022): a known stat and exactly one of flat, increased, more, on worn items only.
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": {"stat": "spirit", "flat": 1}}])",
+              "record 11 'a': field 'mods': must be an array"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": [5]}])", "field 'mods[0]': must be an object"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": [{"stat": "luck", "flat": 1}]}])",
+              "field 'mods[0].stat': must be one of stamina"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": [{"flat": 1}]}])", "field 'mods[0].stat': must be one of"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": [{"stat": "spirit"}]}])",
+              "field 'mods[0]': needs exactly one of flat, increased, more"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": [{"stat": "spirit", "flat": 1}, {"stat": "spirit", "flat": 1, "more": 0.1}]}])",
+              "field 'mods[1]': needs exactly one of flat, increased, more"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": [{"stat": "spirit", "flat": 1, "for": 5}]}])",
+              "field 'mods[0].for': unknown field"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": [{"stat": "spirit", "flat": "2"}]}])",
+              "field 'mods[0].flat': must be a number"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": [{"stat": "spirit", "increased": 20}]}])",
+              "field 'mods[0].increased': 20 is out of range -1..10"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": [{"stat": "spirit", "more": -2}]}])",
+              "field 'mods[0].more': -2 is out of range -1..10"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "trinket", "mods": [{"stat": "armor", "flat": 5000}]}])",
+              "field 'mods[0].flat': 5000 is out of range -1000..1000"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "mods": [{"stat": "spirit", "flat": 1}]}])",
+              "field 'mods': only items worn in an equip slot have mods"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "bag", "bag_slots": 4, "mods": [{"stat": "spirit", "flat": 1}]}])",
+              "field 'mods': only items worn in an equip slot have mods"},
              {base + R"(,{"id": "Bad Id", "save_id": 12, "name": "A"}])", "record 11: field 'id': must be a snake_case string"},
              {base + R"(,{"id": "a", "save_id": 12}])", "record 11 'a': field 'name': must be 1..48 bytes of text"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A‮B"}])", "field 'name': must be 1..48 bytes of text without control"},
@@ -3366,6 +3523,7 @@ int main() {
     fighters();
     items();
     protection();
+    statSheets();
     generation();
     regions();
     worldFiles();

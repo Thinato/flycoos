@@ -45,7 +45,8 @@ struct Body {
 
 // What fights: attributes, health, the swing and damage timers, and the gear it wears and carries.
 struct Combatant {
-    Stats stats;
+    Stats stats;                           // base attributes; sheet() adds gear on top
+    int level = 1;                         // an NPC's is its kind's; the player's is 1 until progression
     float health = float(maxHealth(Stats{}));
     float combatTimer = 0;                 // > 0: in combat, no regeneration
     float swingTimer = 0;                  // > 0: the next swing isn't ready
@@ -63,6 +64,12 @@ struct Combatant {
     // What's in hand: the main hand, or what the current swing started with (swapping mid-swing waits).
     ItemId weapon() const { return punching() ? swingWeapon : inv.equipped[SlotMainHand]; }
 };
+
+// The modifiers on `c` (ADR-022): its equipped items' armor and mods, rebuilt on every call, so
+// unequipping needs no undo.
+std::vector<Modifier> collect(const Combatant& c);
+// Its final stats: base attributes plus every collected modifier. Uncached.
+inline StatSheet sheet(const Combatant& c) { return compute(c.stats, collect(c)); }
 
 // A walking, fighting character: the player, and the body of every NPC (driven by AI input instead
 // of keys).

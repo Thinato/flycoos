@@ -6,7 +6,8 @@
 #include "stats.h"
 
 // Where an item is worn. Bags go in the bag bar instead.
-enum EquipSlot : uint8_t { SlotHead, SlotChest, SlotHands, SlotLegs, SlotFeet, SlotMainHand, SlotOffHand,
+// Not saved anywhere yet (data files name slots), so appending one may shift SlotBag and SlotNone.
+enum EquipSlot : uint8_t { SlotHead, SlotChest, SlotHands, SlotLegs, SlotFeet, SlotMainHand, SlotOffHand, SlotTrinket,
                            EquipCount, SlotBag = EquipCount, SlotNone };
 extern const char* const kSlotNames[EquipCount];
 
@@ -21,6 +22,7 @@ struct ItemType {
     Attack attack;  // weapons
     int bagSlots;   // bags
     int armor;      // armor pieces; chest and legs always give the most (a test enforces it)
+    std::vector<Modifier> mods;  // what wearing it adds to the stat pipeline, besides its armor (source unset)
 };
 const ItemType& itemType(ItemId id);  // from the loaded defs (defs.h); NoItem's row when out of range
 
@@ -51,7 +53,6 @@ bool quickMove(Inventory& inv, SlotRef from);
 bool giveItem(Inventory& inv, ItemId id);  // into the first free item slot
 int itemSlots(const Inventory& inv);
 int freeSlots(const Inventory& inv);
-int armor(const Inventory& inv);  // summed over equipped items only
 
 // A weapon's attack; a punch for NoItem.
 const Attack& weaponAttack(ItemId weapon);

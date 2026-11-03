@@ -7,6 +7,19 @@
 constexpr float kStride = 1.7f;  // blocks travelled per full gait cycle
 constexpr float kEps = 1e-3f;
 
+std::vector<Modifier> collect(const Combatant& c) {
+    std::vector<Modifier> out;
+    for (ItemId id : c.inv.equipped) {
+        const ItemType& t = itemType(id);
+        if (t.armor) out.push_back({Stat::Armor, ModKind::Flat, float(t.armor), t.name});
+        for (Modifier m : t.mods) {
+            m.source = t.name;
+            out.push_back(m);
+        }
+    }
+    return out;
+}
+
 bool overlapsSolid(const Grid& g, glm::vec3 p) {
     glm::ivec3 lo(glm::floor(p - glm::vec3(kHalfWidth, 0, kHalfWidth)));
     glm::ivec3 hi(glm::floor(p + glm::vec3(kHalfWidth, kHeight, kHalfWidth)));
