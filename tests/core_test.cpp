@@ -18,6 +18,7 @@
 #include "entity.h"
 #include "mesher.h"
 #include "prefab.h"
+#include "session.h"
 
 static int failures = 0;
 #define CHECK(cond)                                                              \
@@ -2443,6 +2444,116 @@ static void boarReplay() {
         for (auto [f, who, amount] : hits) std::println(stderr, "  got {{{}, '{}', {}}}", f, who, amount);
 }
 
+// Session and step(): what main.cpp's loop did inline before, now drivable headless.
+static void session() {
+    auto make = [](uint32_t seed) {
+        Session s{.world = meadow(), .seed = seed};
+        s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}},
+                     {.id = 2, .kind = MarkerKind::Region, .name = "Pond", .pos = {48.5f, 4, 48.5f}, .radius = 6},
+                     {.id = 3, .kind = MarkerKind::Spawn, .pos = {16.5f, 4, 10.5f}, .radius = 3, .entity = EntityKind::Bandit}};
+        startSession(s);
+        return s;
+    };
+    constexpr float dt = 1 / 60.0f;
+
+    // Starting gear: a shortsword and a satchel in the backpack, nothing equipped.
+    Session s = make(1);
+    CHECK(s.player.pos == glm::vec3(10.5f, 4, 10.5f));
+    CHECK(s.player.inv.containers[0][0] == Shortsword && s.player.inv.containers[0][1] == Satchel);
+    CHECK(freeSlots(s.player.inv) == kBackpackSlots - 2);
+    CHECK(std::ranges::all_of(s.player.inv.equipped, [](ItemId id) { return id == NoItem; }));
+    CHECK(s.entities.size() == 1 && s.entities[0].kind == EntityKind::Bandit);
+    CHECK(s.rng() == std::mt19937(1)());  // the sim RNG is seeded from the world seed
+
+    // Editing: NPCs and combat pause, and no swing starts.
+    {
+        glm::vec3 banditAt = s.entities[0].body.pos;
+        SimInput edit;
+        edit.editing = edit.attack = true;
+        edit.aim = {1, 0};
+        for (int i = 0; i < 60; ++i) CHECK(!step(s, edit, dt).attacked);
+        CHECK(s.entities[0].body.pos == banditAt && !s.player.punching());
+    }
+
+    // Interact: next to a corpse that holds loot, it moves into the bags.
+    {
+        Entity& bandit = s.entities[0];
+        CHECK(damage(bandit, 1000) && !bandit.body.alive());
+        bandit.loot = Knife;  // whatever the drop roll said
+        s.player.pos = bandit.body.pos + glm::vec3(1.5f, 0, 0);
+        SimInput loot;
+        loot.interact = true;
+        step(s, loot, dt);
+        CHECK(bandit.loot == NoItem && s.player.inv.containers[0][2] == Knife);
+    }
+
+    // Time of day: speeds up with timeRate and wraps past midnight.
+    {
+        Session t{.world = Grid({4, 4, 4})};
+        t.timeOfDay = 0.9999f;
+        SimInput fast;
+        fast.timeRate = 60;
+        step(t, fast, 1);
+        CHECK(t.timeOfDay < 0.1f && std::abs(t.timeOfDay - (0.9999f + 60 / kDayLength - 1)) < 1e-4f);
+    }
+
+    // Region enter: fires once on entering (regionSince stays put while inside), clears on leaving.
+    s.entities.clear();  // no bandit in the way
+    step(s, {}, dt);
+    CHECK(s.regionId == 0);
+    s.player.pos = {47.5f, 4, 47.5f};
+    step(s, {}, dt);
+    CHECK(s.regionId == 2 && s.regionSince == s.elapsed);
+    double entered = s.regionSince;
+    for (int i = 0; i < 30; ++i) step(s, {}, dt);
+    CHECK(s.regionId == 2 && s.regionSince == entered);
+    s.player.pos = {20.5f, 4, 20.5f};
+    step(s, {}, dt);
+    CHECK(s.regionId == 0 && s.regionSince == s.elapsed);
+
+    // Knocked out: input is ignored, and after kPlayerRespawnSeconds the player is back at the
+    // player spawn with full health, once.
+    CHECK(hurt(s.player, 1000) && !s.player.alive());
+    glm::vec3 down = s.player.pos;
+    SimInput walk;
+    walk.move.move = {1, 0};
+    walk.attack = true;
+    int respawns = 0, frames = 0;
+    for (; frames < 6 * 60 && !respawns; ++frames) {
+        StepResult r = step(s, walk, dt);
+        respawns += r.respawned;
+        CHECK(r.attacked);  // a knocked-out player's click is used up
+        if (!r.respawned) CHECK(s.player.pos == down);
+    }
+    CHECK(respawns == 1 && frames > int(kPlayerRespawnSeconds * 60) - 2 && frames < int(kPlayerRespawnSeconds * 60) + 3);
+    CHECK(s.player.alive() && s.player.health == float(maxHealth(s.player.stats)) && s.player.deadTime == 0);
+    CHECK(glm::distance(glm::vec2(s.player.pos.x, s.player.pos.z), glm::vec2(10.5f, 10.5f)) < 0.2f);  // walked one step since
+    CHECK(s.player.combatTimer == 0);
+
+    // Determinism: the same seed and scripted input give the same fight, step for step.
+    auto fight = [&](uint32_t seed) {
+        Session f = make(seed);
+        std::vector<std::tuple<int, float, float, float>> trace;  // frame, player health, bandit health, player x
+        for (int frame = 0; frame < 4 * 60; ++frame) {
+            const Entity& bandit = f.entities[0];
+            glm::vec2 to{bandit.body.pos.x - f.player.pos.x, bandit.body.pos.z - f.player.pos.z};
+            SimInput in;
+            in.aim = glm::length(to) > 0 ? glm::normalize(to) : glm::vec2(1, 0);
+            in.move.move = glm::length(to) > 1.5f ? in.aim : glm::vec2(0);
+            in.attack = glm::length(to) < kPunchReach - 0.1f;
+            in.interact = frame % 60 == 0;
+            step(f, in, dt);
+            trace.emplace_back(frame, f.player.health, bandit.body.health, f.player.pos.x);
+        }
+        return std::pair{trace, f.rng()};
+    };
+    auto [a, aNext] = fight(7);
+    auto [b, bNext] = fight(7);
+    CHECK(a == b && aNext == bNext);
+    CHECK(fight(8) != fight(7));  // another seed rolls other damage
+    CHECK(std::get<2>(a.back()) < 120 && std::get<1>(a.back()) < 100);  // blows were traded: the rolls ran
+}
+
 int main() {
     meshing();
     packing();
@@ -2465,6 +2576,7 @@ int main() {
     tables();
     fightReplay();
     boarReplay();
+    session();
     if (failures) std::println(stderr, "{} check(s) failed", failures);
     else std::println("all checks passed");
     return failures ? 1 : 0;

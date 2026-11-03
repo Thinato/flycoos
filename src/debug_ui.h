@@ -6,16 +6,14 @@
 
 #include <vector>
 
-#include "entity.h"
 #include "renderer.h"
+#include "session.h"
 
 // Main-loop knobs the debug UI can change.
 struct GameSettings {
     float fovDegrees = 70, cameraDistance = 9, mouseSensitivity = 0.004f;
     bool cameraCollision = true;
     bool hud = true;  // nameplates, speech balloons, health bar
-    float timeOfDay = 0.3f, timeScale = 1;  // timeScale 0 = time paused
-    float armorK = kArmorK;  // armor balance: see armorReduction
     uint32_t seed = 1337;
 };
 
@@ -41,14 +39,14 @@ public:
     // and end). `cursor`: the mouse is free (some window is open), so ImGui may change its shape.
     void begin(float dt, bool cursor);
     // Builds the debug window when open and finishes the frame.
-    ImDrawData* end(GameSettings& game, RenderSettings& render, Player& player, std::vector<Entity>& entities,
+    ImDrawData* end(GameSettings& game, RenderSettings& render, Session& session,
                     const RenderStats& stats, DebugActions& actions);
 
     bool open = false;
     const char* region = nullptr;  // the name of the region the player is in (main sets it each frame)
 
 private:
-    void window(GameSettings& game, RenderSettings& render, Player& player, std::vector<Entity>& entities,
+    void window(GameSettings& game, RenderSettings& render, Session& session,
                 const RenderStats& stats, DebugActions& actions);
 
     std::array<float, 240> frameMs_{};

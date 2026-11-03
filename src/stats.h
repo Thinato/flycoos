@@ -35,7 +35,7 @@ inline int rollDamage(const Stats& s, const Attack& a, std::mt19937& rng) {
 
 // Armor (from worn gear) absorbs a share of each hit: armor / (armor + K x attacker level), at most
 // 80%. K is the armor that halves a level 1 attacker's damage; higher levels get through more of
-// it. The debug UI tunes K live (GameSettings::armorK).
+// it. The debug UI tunes K live (Session::armorK).
 constexpr float kArmorK = 40;
 constexpr float kMaxArmorReduction = 0.8f;
 inline float armorReduction(int armor, int attackerLevel, float k = kArmorK) {

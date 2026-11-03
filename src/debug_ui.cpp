@@ -91,15 +91,15 @@ static void attributes(Player& b, bool fights) {
     else ImGui::TextDisabled("Out of combat");
 }
 
-static void playerTab(Player& p, GameSettings& g, DebugActions& actions, const char* region) {
+static void playerTab(Player& p, float& armorK, DebugActions& actions, const char* region) {
     attributes(p, true);
     ImGui::SeparatorText("Armor");
-    ImGui::SliderFloat("Armor K", &g.armorK, 1, 200, "%.0f");
+    ImGui::SliderFloat("Armor K", &armorK, 1, 200, "%.0f");
     ImGui::SetItemTooltip("Damage reduction = armor / (armor + K x attacker level).\n"
                           "K is the armor that halves a level 1 attacker's damage.");
     int a = armor(p.inv);
     ImGui::Text("Armor %d: -%.1f%% damage vs level 1, -%.1f%% vs level 2", a,
-                armorReduction(a, 1, g.armorK) * 100, armorReduction(a, 2, g.armorK) * 100);
+                armorReduction(a, 1, armorK) * 100, armorReduction(a, 2, armorK) * 100);
     ImGui::SeparatorText("Body");
     ImGui::DragFloat3("Position", &p.pos.x, 0.25f);
     ImGui::Text("Velocity  %.2f  %.2f  %.2f  (%.2f b/s)", p.vel.x, p.vel.y, p.vel.z, glm::length(p.vel));
@@ -197,13 +197,14 @@ static void cameraTab(GameSettings& g) {
     ImGui::SliderFloat("Mouse sensitivity", &g.mouseSensitivity, 0.001f, 0.02f, "%.4f");
 }
 
-static void worldTab(GameSettings& g, const RenderStats& s, DebugActions& actions) {
-    int minutes = int(g.timeOfDay * 24 * 60);
-    ImGui::SliderFloat("Time of day", &g.timeOfDay, 0, 0.9999f, "%.3f");
+static void worldTab(GameSettings& g, Session& sim, const RenderStats& s, DebugActions& actions) {
+    int minutes = int(sim.timeOfDay * 24 * 60);
+    ImGui::SliderFloat("Time of day", &sim.timeOfDay, 0, 0.9999f, "%.3f");
     ImGui::SameLine();
     ImGui::Text("%02d:%02d", minutes / 60, minutes % 60);
-    ImGui::SliderFloat("Time speed", &g.timeScale, 0, 200, g.timeScale == 0 ? "paused" : "%.1fx",
+    ImGui::SliderFloat("Time speed", &sim.timeScale, 0, 200, sim.timeScale == 0 ? "paused" : "%.1fx",
                        ImGuiSliderFlags_Logarithmic);
+    ImGui::Text("Simulated %.1f s, seed %u (spawns, damage rolls)", sim.elapsed, sim.seed);
 
     ImGui::SeparatorText("Generation");
     ImGui::InputScalar("Seed", ImGuiDataType_U32, &g.seed);
@@ -228,17 +229,18 @@ static void statsTab(const std::array<float, 240>& frameMs, size_t frameIndex) {
     ImGui::Text("World grid  %.0f MB", double(kWorldSize.x) * kWorldSize.y * kWorldSize.z / (1 << 20));
 }
 
-void DebugUI::window(GameSettings& game, RenderSettings& render, Player& player, std::vector<Entity>& entities,
-                     const RenderStats& stats, DebugActions& actions) {
+void DebugUI::window(GameSettings& game, RenderSettings& render, Session& session, const RenderStats& stats,
+                     DebugActions& actions) {
+    Player& player = session.player;
     ImGui::SetNextWindowPos({12, 12}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize({440, 470}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Debug   ( . to toggle )", &open) && ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Render")) { renderTab(render, stats); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Player")) { playerTab(player, game, actions, region); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Player")) { playerTab(player, session.armorK, actions, region); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Items")) { itemsTab(player); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Entities")) { entitiesTab(entities, player, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Entities")) { entitiesTab(session.entities, player, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("World")) { worldTab(game, stats, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Stats")) { statsTab(frameMs_, frameIndex_); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
@@ -256,9 +258,9 @@ void DebugUI::begin(float dt, bool cursor) {
     ImGui::NewFrame();
 }
 
-ImDrawData* DebugUI::end(GameSettings& game, RenderSettings& render, Player& player, std::vector<Entity>& entities,
-                         const RenderStats& stats, DebugActions& actions) {
-    if (open) window(game, render, player, entities, stats, actions);
+ImDrawData* DebugUI::end(GameSettings& game, RenderSettings& render, Session& session, const RenderStats& stats,
+                         DebugActions& actions) {
+    if (open) window(game, render, session, stats, actions);
     ImGui::Render();
     return ImGui::GetDrawData();
 }

@@ -7,7 +7,6 @@
 #include <format>
 #include <numbers>
 #include <print>
-#include <random>
 #include <string_view>
 #include <vector>
 
@@ -17,13 +16,12 @@
 #include "commands.h"
 #include "debug_ui.h"
 #include "editor_ui.h"
-#include "entity.h"
 #include "hud.h"
 #include "inventory_ui.h"
 #include "renderer.h"
 #include "server.h"
+#include "session.h"
 
-constexpr float kDayLength = 4320;    // seconds per full day/night cycle (72 minutes)
 constexpr float kCameraRadius = 0.3f;  // camera collision box half-size; > near-plane half-diagonal
 constexpr float kBrushRate = 8;        // editor brush applications per second while the button is held
 constexpr float kEditReach = 400;      // blocks; about where fog hides the ground
@@ -92,14 +90,15 @@ static int run(SDL_Window* window, const Options& opt) {
     ui.open = opt.debug;
     GameSettings game;
     game.seed = opt.seed;
-    game.timeOfDay = opt.timeOfDay;
     RenderSettings render = opt.render;
     DebugActions actions;
 
-    Grid world(kWorldSize);
-    std::vector<Instance> instances;  // placed prefabs, saved with the world
-    std::vector<Marker> markers;      // story markers (spawns, places), saved with the world
-    uint32_t worldSeed = game.seed;  // what the world was generated from; saved with it
+    Session session{.world = Grid(kWorldSize), .seed = game.seed};
+    session.timeOfDay = opt.timeOfDay;
+    Grid& world = session.world;
+    std::vector<Instance>& instances = session.instances;
+    std::vector<Marker>& markers = session.markers;
+    uint32_t& worldSeed = session.seed;
     auto buildWorld = [&] {
         uint64_t start = SDL_GetTicksNS();
         std::ranges::fill(world.cells, Air);
@@ -157,12 +156,9 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.savedAt = double(SDL_GetTicksNS()) * 1e-9;
         return error;
     };
-    Player player;
-    player.pos = playerSpawn(world, markers);
-    giveItem(player.inv, Shortsword);
-    giveItem(player.inv, Satchel);
-    std::vector<Entity> entities;
-    syncSpawns(entities, world, markers, worldSeed, player.pos);
+    startSession(session);
+    Player& player = session.player;
+    std::vector<Entity>& entities = session.entities;
     // After an edit, undo or redo: remesh what changed, bring spawns in line with the markers and
     // keep the editor's bookkeeping.
     auto edited = [&](Box dirty, uint64_t start, const char* error) {
@@ -189,11 +185,8 @@ static int run(SDL_Window* window, const Options& opt) {
     CommandServer server;  // remote commands (the MCP bridge); runs once per frame below
     if (!benchmark && opt.serve && server.start(opt.port)) editor.server = std::format("127.0.0.1:{}", opt.port);
 
-    std::mt19937 rng(std::random_device{}());  // damage rolls
     bool punchQueued = false;  // clicked before the swing was ready
     bool pressInGame = false;  // the left button went down while no window was open
-    uint32_t regionId = 0;  // the region the player is in (0: none), since `regionSince` seconds of `elapsed`
-    double regionSince = 0;
     float camYaw = std::numbers::pi_v<float>, camPitch = 0.45f;  // behind the player
     if (opt.fixedLook) {  // degrees on the CLI; yaw 0 looks toward -Z, 90 toward -X
         camYaw = opt.lookYaw;
@@ -237,7 +230,7 @@ static int run(SDL_Window* window, const Options& opt) {
     std::vector<double> frameMs;
     frameMs.reserve(size_t(opt.frames));
     uint64_t last = SDL_GetTicksNS();
-    double elapsed = 0, titleTimer = 0;
+    double titleTimer = 0;
     for (int frame = 0;; ++frame) {
         if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) {  // don't spin or count frames while hidden
             for (SDL_Event e; SDL_WaitEventTimeout(&e, 100);)
@@ -249,9 +242,9 @@ static int run(SDL_Window* window, const Options& opt) {
         uint64_t now = SDL_GetTicksNS();
         float dt = float(double(now - last) * 1e-9);
         last = now;
-        elapsed += dt;
         if (frame > 0) frameMs.push_back(dt * 1000.0);
 
+        SimInput sim;
         for (SDL_Event e; SDL_PollEvent(&e);) {
             ui.processEvent(e);
             if (e.type == SDL_EVENT_QUIT) return 0;
@@ -271,9 +264,8 @@ static int run(SDL_Window* window, const Options& opt) {
                 } else if (e.key.key == SDLK_B) {
                     bagsOpen = !bagsOpen;
                     updateMouseMode();
-                } else if (e.key.key == SDLK_E && player.alive()) {  // loot a corpse, else talk
-                    if (Entity* corpse = lootTarget(entities, player)) takeLoot(*corpse, player.inv);
-                    else if (Entity* npc = talkTarget(entities, player)) talk(*npc);
+                } else if (e.key.key == SDLK_E) {  // loot a corpse, else talk
+                    sim.interact = true;
                 } else if (e.key.key == SDLK_TAB) {
                     setEditing(!editor.active);
                 } else if (editor.active && e.key.key == SDLK_Q) {
@@ -316,15 +308,15 @@ static int run(SDL_Window* window, const Options& opt) {
         bool gameKeys = !ui.wantsKeyboard();
         auto key = [&](SDL_Scancode k) { return gameKeys && keys[k]; };
         glm::vec2 forward{-std::sin(camYaw), -std::cos(camYaw)}, right{std::cos(camYaw), -std::sin(camYaw)};
-        Input in;
+        Input& in = sim.move;
         in.move = forward * float(key(SDL_SCANCODE_W) - key(SDL_SCANCODE_S)) +
                   right * float(key(SDL_SCANCODE_D) - key(SDL_SCANCODE_A));
         if (glm::length(in.move) > 1) in.move = glm::normalize(in.move);
         in.jump = key(SDL_SCANCODE_SPACE);
         in.run = key(SDL_SCANCODE_LSHIFT);
         in.descend = key(SDL_SCANCODE_LCTRL);
+        double elapsed = session.elapsed + dt;  // after this step
         if (benchmark) in.move = {std::sin(elapsed * 0.4), std::cos(elapsed * 0.4)};  // walk a circle
-        if (!player.alive() && !editor.active) in = {};  // knocked out
         if ((SDL_GetModState() & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) && (key(SDL_SCANCODE_Z) || key(SDL_SCANCODE_Y) || key(SDL_SCANCODE_S)))
             in = {};  // a shortcut (Ctrl+S) isn't movement
         if (benchmark) player.health = float(maxHealth(player.stats));  // a passing fight mustn't change the benchmark's path
@@ -332,17 +324,15 @@ static int run(SDL_Window* window, const Options& opt) {
         // A press that began in a window (e.g. a drag) doesn't attack once the window closes.
         if (menus()) punchQueued = pressInGame = false;
         bool punchHeld = pressInGame && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK);
-        if (!editor.active && (punchHeld || punchQueued) && (startPunch(player, forward) || !player.alive())) punchQueued = false;
-        updatePlayer(player, world, in, dt);
-        if (!editor.active) {
-            updateEntities(entities, world, player, dt);
-            separate(player, world, entities);
-            updateCombat(player, entities, dt, rng, game.armorK);
-        }
+        sim.aim = forward;
+        sim.attack = punchHeld || punchQueued;
+        sim.editing = editor.active;
+        sim.timeRate = benchmark ? 0 : key(SDL_SCANCODE_T) ? 60.0f : 1.0f;
+        StepResult stepped = step(session, sim, dt);
+        if (stepped.attacked) punchQueued = false;
+        if (stepped.respawned) camTarget = player.pos + glm::vec3(0, 1.4f, 0);
 
         if (benchmark && !opt.fixedLook) camYaw -= dt * 0.5f;  // counter-orbit so the benchmark sees the player from all sides
-        else if (!benchmark)
-            game.timeOfDay = std::fmod(game.timeOfDay + dt / kDayLength * game.timeScale * (key(SDL_SCANCODE_T) ? 60.0f : 1.0f), 1.0f);
 
         // Third-person orbit camera. A camera-sized box is marched out from the player; the camera
         // snaps in when terrain is in the way and eases back out so it doesn't pop.
@@ -357,7 +347,7 @@ static int run(SDL_Window* window, const Options& opt) {
         fp.eye = camTarget + offset * camDist;
         fp.view = glm::lookAtRH(fp.eye, camTarget, glm::vec3(0, 1, 0));
         fp.fovY = glm::radians(game.fovDegrees);
-        fp.timeOfDay = game.timeOfDay;
+        fp.timeOfDay = session.timeOfDay;
 
         // Editor: LMB applies the brush where the crosshair (the screen center) meets the ground.
         std::optional<RayHit> aim;
@@ -438,7 +428,7 @@ static int run(SDL_Window* window, const Options& opt) {
         if (std::optional<std::string> request = server.take()) {
             uint64_t start = SDL_GetTicksNS();
             GameView view{editor.path, worldSeed, editor.unsaved, editor.active, editor.follow, player.pos, fp.eye,
-                          glm::degrees(camYaw), glm::degrees(camPitch), game.fovDegrees, game.timeOfDay};
+                          glm::degrees(camYaw), glm::degrees(camPitch), game.fovDegrees, session.timeOfDay};
             Command c = runCommand(*request, world, instances, markers, editor.history, editor.prefabs, view);
             nlohmann::json& response = c.response;
             if (!c.dirty.empty()) {
@@ -478,21 +468,21 @@ static int run(SDL_Window* window, const Options& opt) {
         // follow it (an undo, Claude); a removed one is deselected.
         if (auto it = std::ranges::find(markers, editor.marked, &Marker::id); it == markers.end()) editor.marked = 0;
         else if (*it != editor.markedWas) selectMarker(*it);
-        const Marker* region = regionAt(markers, player.pos);  // its name shows for a few seconds on entering
-        if (uint32_t id = region ? region->id : 0; id != regionId) regionId = id, regionSince = elapsed;
+        auto inRegion = std::ranges::find(markers, session.regionId, &Marker::id);  // still there after the command?
+        const Marker* region = session.regionId && inRegion != markers.end() ? &*inRegion : nullptr;
         ui.region = region ? region->name.c_str() : nullptr;
         bool wasOpen = menus();
         ui.begin(dt, wasOpen);
         if (game.hud) {
             const Entity* target = lootTarget(entities, player);
             drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player));
-            drawPlaces(fp.view, fp.fovY, player, markers, region, float(elapsed - regionSince));
+            drawPlaces(fp.view, fp.fovY, player, markers, region, float(session.elapsed - session.regionSince));
         }
         drawEditorOverlay(fp.view, fp.fovY, fp.eye, world, instances, markers, editor, aim);
-        characterWindow(characterOpen, player, game.armorK);
+        characterWindow(characterOpen, player, session.armorK);
         bagsWindow(bagsOpen, player);
         editorWindow(editor, instances, markers, aim, s, editorActions);
-        ImDrawData* uiDraw = ui.end(game, render, player, entities, s, actions);
+        ImDrawData* uiDraw = ui.end(game, render, session, s, actions);
         if (menus() != wasOpen) updateMouseMode();  // closed with a window's X button
         bool lastFrame = benchmark && frame + 1 >= opt.frames;
         if (!renderer.render(fp, render, uiDraw, lastFrame ? opt.screenshot : nullptr)) return 1;
@@ -541,17 +531,14 @@ static int run(SDL_Window* window, const Options& opt) {
             editor.history = {};  // its records belong to the old world
             instances.clear();
             markers = defaultMarkers(world, worldSeed);
+            session.rng.seed(worldSeed);
             editor.marked = 0;
             ++editor.edits;
             editor.corner.reset();
             editor.unsaved = true;
         }
-        if (actions.regenerate || actions.respawn || player.deadTime >= kPlayerRespawnSeconds) {
-            player.pos = playerSpawn(world, markers);
-            player.vel = {};
-            player.health = float(maxHealth(player.stats));
-            player.deadTime = 0;
-            player.combatTimer = 0;
+        if (actions.regenerate || actions.respawn) {
+            respawnPlayer(session);
             camTarget = player.pos + glm::vec3(0, 1.4f, 0);
         }
         if (actions.regenerate || actions.respawnEntities) {
@@ -563,7 +550,7 @@ static int run(SDL_Window* window, const Options& opt) {
         titleTimer += dt;
         if (titleTimer > 0.5) {
             titleTimer = 0;
-            int minutes = int(game.timeOfDay * 24 * 60);
+            int minutes = int(session.timeOfDay * 24 * 60);
             char title[224];
             std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack | E = talk/loot | C = character | B = bags | . = debug | Tab = editor",
                           dt * 1000.0, 1.0 / std::max(dt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);

@@ -35,13 +35,14 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO, `Quad` packing/unpacking |
 | `src/player.h/.cpp` | Walking-body physics and collision (player and NPCs), character models (`buildPart`), procedural animation (`poseModel`) |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits and temper, spawning (`syncSpawns` from spawn markers, `defaultMarkers`), wander and chase AI, talking, damage both ways, loot |
+| `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in); `startSession` (starting gear, spawns), `step(Session&, SimInput, dt)` (interaction, swing, movement, NPCs and combat, time of day, region enter, the knocked-out player's respawn) |
 | `src/item.h/.cpp` | Item table, `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, poi labels and the region name (`drawPlaces`) |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, buffer uploads, render targets, frustum culling, day/night lighting, screenshots |
 | `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
 | `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
-| `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor), orbit camera, main loop, remote commands, benchmark stats |
+| `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor) into `SimInput`, orbit camera, main loop around `step`, remote commands, benchmark stats |
 | `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs` |
 
 ## World
@@ -454,7 +455,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
 - **Armor** is the sum of the equipped items' armor (`armor(inv)`); items in the bags don't count.
   Each landed hit is reduced by `armorReduction` (stats.h): `armor / (armor + K x attacker level)`,
   capped at 80% (`kMaxArmorReduction`), rounded, never below 1. K (`kArmorK` = 40) is the armor that halves a level 1 attacker's
-  damage, and a slider in the debug Player tab (`GameSettings::armorK`, passed to `updateCombat`).
+  damage, and a slider in the debug Player tab (`Session::armorK`, passed to `updateCombat`).
   The player has no level yet, so its hits count as level 1. The full Iron set (37 armor) takes
   48% off a level 1 hit and 32% off a level 2 hit: the bandit's knife does 3–5 instead of 5–8.
   Debug "Hit for 10" / "Kill" bypass armor. The damage number shows what landed.
