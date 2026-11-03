@@ -12,7 +12,7 @@
 struct ImDrawData;
 
 struct ModelInstance {
-    Model model;
+    std::array<Model, PartCount> parts;  // the model each part is drawn from (worn armor swaps some)
     std::array<glm::mat4, PartCount> pose;
 };
 

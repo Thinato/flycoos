@@ -91,8 +91,15 @@ static void attributes(Player& b, bool fights) {
     else ImGui::TextDisabled("Out of combat");
 }
 
-static void playerTab(Player& p, DebugActions& actions) {
+static void playerTab(Player& p, GameSettings& g, DebugActions& actions) {
     attributes(p, true);
+    ImGui::SeparatorText("Armor");
+    ImGui::SliderFloat("Armor K", &g.armorK, 1, 200, "%.0f");
+    ImGui::SetItemTooltip("Damage reduction = armor / (armor + K x attacker level).\n"
+                          "K is the armor that halves a level 1 attacker's damage.");
+    int a = armor(p.inv);
+    ImGui::Text("Armor %d: -%.1f%% damage vs level 1, -%.1f%% vs level 2", a,
+                armorReduction(a, 1, g.armorK) * 100, armorReduction(a, 2, g.armorK) * 100);
     ImGui::SeparatorText("Body");
     ImGui::DragFloat3("Position", &p.pos.x, 0.25f);
     ImGui::Text("Velocity  %.2f  %.2f  %.2f  (%.2f b/s)", p.vel.x, p.vel.y, p.vel.z, glm::length(p.vel));
@@ -166,6 +173,8 @@ static void itemsTab(Player& p) {
         ImGui::SameLine();
         ImGui::TextUnformatted(itemType(ItemId(id)).name);
     }
+    if (ImGui::Button("Give Iron set"))
+        for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons}) giveItem(inv, id);
     ImGui::EndDisabled();
     ImGui::SeparatorText("Equipped");
     for (int s = 0; s < EquipCount; ++s)
@@ -223,7 +232,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Player& player,
     ImGui::SetNextWindowSize({440, 470}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Debug   ( . to toggle )", &open) && ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Render")) { renderTab(render, stats); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Player")) { playerTab(player, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Player")) { playerTab(player, game, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Items")) { itemsTab(player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Entities")) { entitiesTab(entities, player, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }

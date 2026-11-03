@@ -17,6 +17,7 @@ constexpr int kColumns = 6;  // item slots per row in the bags window
 void icon(ImDrawList* dl, ItemId id, ImVec2 lo, float s) {
     auto at = [&](float x, float y) { return ImVec2(lo.x + x * s, lo.y + y * s); };
     ImU32 steel = uiColor(0.78f, 0.80f, 0.84f), iron = uiColor(0.30f, 0.30f, 0.33f), leather = uiColor(0.35f, 0.22f, 0.12f);
+    ImU32 plate = uiColor(0.50f, 0.52f, 0.56f);
     switch (id) {
     case Shortsword:
         dl->AddLine(at(0.32f, 0.68f), at(0.86f, 0.14f), steel, s * 0.12f);   // blade
@@ -45,6 +46,39 @@ void icon(ImDrawList* dl, ItemId id, ImVec2 lo, float s) {
         dl->AddLine(at(0.5f, 0.2f), at(0.5f, 0.8f), ridge, s * 0.07f);
         break;
     }
+    // Iron armor: plates (the Plate block's color), steel trim.
+    case IronHelm:
+        dl->AddRectFilled(at(0.2f, 0.2f), at(0.8f, 0.84f), plate, s * 0.26f, ImDrawFlags_RoundCornersTop);
+        dl->AddRectFilled(at(0.34f, 0.48f), at(0.66f, 0.74f), uiColor(0.93f, 0.74f, 0.58f));  // the face
+        dl->AddLine(at(0.22f, 0.44f), at(0.78f, 0.44f), steel, s * 0.06f);                   // brow
+        dl->AddLine(at(0.5f, 0.14f), at(0.5f, 0.42f), steel, s * 0.08f);                     // crest
+        break;
+    case IronCuirass:
+        dl->AddRectFilled(at(0.26f, 0.22f), at(0.74f, 0.86f), plate, s * 0.08f);
+        dl->AddRectFilled(at(0.12f, 0.2f), at(0.4f, 0.36f), steel, s * 0.06f);  // shoulders
+        dl->AddRectFilled(at(0.6f, 0.2f), at(0.88f, 0.36f), steel, s * 0.06f);
+        dl->AddLine(at(0.5f, 0.36f), at(0.5f, 0.8f), steel, s * 0.06f);         // ridge
+        break;
+    case IronGauntlets:
+        for (float x : {0.12f, 0.54f}) {
+            dl->AddRectFilled(at(x, 0.5f), at(x + 0.34f, 0.84f), plate, s * 0.04f);     // cuff
+            dl->AddRectFilled(at(x, 0.18f), at(x + 0.34f, 0.48f), plate, s * 0.08f);    // fist
+            dl->AddLine(at(x + 0.03f, 0.24f), at(x + 0.31f, 0.24f), steel, s * 0.07f); // knuckles
+        }
+        break;
+    case IronGreaves:
+        for (float x : {0.2f, 0.56f}) {
+            dl->AddRectFilled(at(x, 0.14f), at(x + 0.24f, 0.88f), plate, s * 0.06f);
+            dl->AddCircleFilled(at(x + 0.12f, 0.42f), s * 0.08f, steel);  // knee
+        }
+        break;
+    case IronSabatons:
+        for (float x : {0.1f, 0.54f}) {
+            dl->AddRectFilled(at(x, 0.3f), at(x + 0.18f, 0.78f), plate, s * 0.04f);         // shin
+            dl->AddRectFilled(at(x, 0.62f), at(x + 0.34f, 0.8f), plate, s * 0.04f);         // foot
+            dl->AddRectFilled(at(x + 0.26f, 0.62f), at(x + 0.36f, 0.8f), steel, s * 0.04f); // toe cap
+        }
+        break;
     default: break;
     }
 }
@@ -55,6 +89,7 @@ void tooltip(ItemId id, SlotRef where) {
     ImGui::TextUnformatted(t.name);
     if (t.slot == SlotBag) ImGui::Text("%d slot bag", t.bagSlots);
     else if (t.slot < EquipCount) ImGui::TextDisabled("%s", kSlotNames[t.slot]);
+    if (t.armor) ImGui::Text("%d Armor", t.armor);
     const Attack& a = t.attack;
     if (a.speed > 0) {
         ImGui::Text("%d - %d damage    Speed %.2f", a.minDamage, a.maxDamage, a.speed);
@@ -110,7 +145,7 @@ void statRow(const char* name, const char* tip, const char* fmt, auto... args) {
     if (tip) ImGui::SetItemTooltip("%s", tip);
 }
 
-void attributes(const Player& p) {
+void attributes(const Player& p, float armorK) {
     const Stats& s = p.stats;
     const Attack& a = mainAttack(p.inv);
     float swing = swingTime(s, a);
@@ -133,12 +168,15 @@ void attributes(const Player& p) {
     statRow("Attack speed", "Seconds per swing", "%.2f s", swing);
     statRow("Damage/sec", nullptr, "%.1f", float(lo + hi) / 2 / swing);
     statRow("Regen", "Out of combat", "%.1f /s", healthRegen(s));
+    statRow("Armor", "From worn gear", "%d", armor(p.inv));
+    statRow("Damage taken", "Against a level 1 enemy, after armor. Higher levels get through more.", "-%.1f%%",
+            armorReduction(armor(p.inv), 1, armorK) * 100);
     ImGui::EndTable();
 }
 
 }  // namespace
 
-void characterWindow(bool& open, Player& p) {
+void characterWindow(bool& open, Player& p, float armorK) {
     if (!open) return;
     ImGui::SetNextWindowPos({40, 140}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Character   ( C )", &open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse)) {
@@ -148,7 +186,7 @@ void characterWindow(bool& open, Player& p) {
         ImGui::EndGroup();
         ImGui::SameLine(0, 18);
         ImGui::BeginGroup();
-        attributes(p);
+        attributes(p, armorK);
         ImGui::EndGroup();
         slot(p.inv, {SlotRef::Equip, SlotMainHand}, kSlotNames[SlotMainHand]);
         ImGui::SameLine();

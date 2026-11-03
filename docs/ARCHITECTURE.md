@@ -145,7 +145,11 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   head; never animated). All parts of all models live in one GPU buffer; each frame draws a list of
   `ModelInstance`s. Held items are models too: `ModelSword` has voxels only in its first slot, and
   `poseModel` returns its pose (gripped in the right hand) through the `held` output. Empty parts
-  are skipped at draw time.
+  are skipped at draw time. Worn armor is a model too: `ModelIronArmor` has plated versions of the
+  humanoid parts (helm with a face opening, cuirass, gauntlets, sabatons; plate is its own `Plate`
+  palette color, since `Iron` reads black in shade) at the same sizes. Each `ModelInstance` names
+  the model per part (`partModels`), so a worn piece swaps in the part it covers without changing
+  the pose. The rig has no legs, so greaves don't show.
 - **Tuning and flight:** walk/run/jump speed, gravity, fly and noclip live in `Player::tuning`, so
   the debug UI edits them live. Flight ignores gravity (Space rises, Ctrl sinks, Shift is 2.5×) and
   still collides; noclip moves straight through terrain.
@@ -180,6 +184,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   | Agility | +1% physical attack speed per point (haste: swing time = speed / (1 + 1% x agility)) |
   | Intellect | unused until magic |
   | Spirit | +0.5 health per second, out of combat only |
+  | Armor (from gear) | damage taken x (1 − min(80%, armor / (armor + K x attacker level))), at least 1; K = 40 |
 
 - `speed` in the damage formula is the attack's *base* speed (WoW's weapon speed), not the hasted
   swing time. Slow attacks hit harder per swing, and agility only adds damage per second.
@@ -195,6 +200,13 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   Base player: stamina 10, everything else 2, so 100 health and a swing every 0.98 s.
   The weapon is fixed when a swing starts (`swingWeapon`): changing gear mid-swing affects the
   next swing, not this one.
+- **Armor** is the sum of the equipped items' armor (`armor(inv)`); items in the bags don't count.
+  Each landed hit is reduced by `armorReduction` (stats.h): `armor / (armor + K x attacker level)`,
+  capped at 80% (`kMaxArmorReduction`), rounded, never below 1. K (`kArmorK` = 40) is the armor that halves a level 1 attacker's
+  damage, and a slider in the debug Player tab (`GameSettings::armorK`, passed to `updateCombat`).
+  The player has no level yet, so its hits count as level 1. The full Iron set (37 armor) takes
+  48% off a level 1 hit and 32% off a level 2 hit: the bandit's knife does 3–5 instead of 5–8.
+  Debug "Hit for 10" / "Kill" bypass armor. The damage number shows what landed.
 - Left mouse starts an attack toward where the camera looks, once the swing timer allows. Holding
   keeps swinging; a click during the cooldown is queued. Damage lands at the fist's impact frame
   (40% into a 0.35 s animation) on the nearest living, attackable entity within 2 blocks and
@@ -211,7 +223,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
 
 ## Items and inventory
 
-- Items are ids into one table (`kItems` in item.cpp): name, equip slot, weapon `Attack`, bag size.
+- Items are ids into one table (`kItems` in item.cpp): name, equip slot, weapon `Attack`, bag size,
+  armor.
 
   | Item | Slot | Notes |
   |---|---|---|
@@ -219,6 +232,10 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   | Canvas Satchel | Bag | +6 item slots |
   | Rusty Knife | Main Hand | one-handed, 3–6 damage, speed 0.75; dropped by bandits |
   | Boar Skin | – | crafting material later; dropped by boars |
+  | Iron Helm / Cuirass / Gauntlets / Greaves / Sabatons | Head / Chest / Hands / Legs / Feet | 6 / 12 / 4 / 10 / 5 armor (37 for the set) |
+
+  Chest and legs pieces always give more armor than any head, hands, feet or hand item; a test
+  checks the whole table.
 
 - `Inventory` lives on the body (`Player::inv`): 7 equip slots (head, chest, hands, legs, feet,
   main hand, off hand), a bar of 4 bag slots, and the item slots: the 12-slot backpack plus one
@@ -227,10 +244,11 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   slots take their own slot's items, bag slots take bags, item slots take anything. A bag leaves the
   bar only when empty, and never into its own slots, so items are never lost. `quickMove`
   (right-click) equips from the item slots or unequips into the first free one.
-- No stacks, no item attributes, no dropping or destroying yet.
+- No stacks, no item attributes (beyond armor), no dropping or destroying yet.
 - **UI:** C opens Character (equipment around an attribute sheet with damage, speed, damage per
-  second and regen); B opens Bags (backpack, each bag, the bag bar, free slots). Drag to move, right-click
-  to equip/unequip, hover for a tooltip. Icons are drawn with ImGui shapes. Any open window frees
+  second, regen, armor and its damage reduction against a level 1 enemy); B opens Bags (backpack,
+  each bag, the bag bar, free slots). Drag to move, right-click to equip/unequip, hover for a
+  tooltip (with armor pieces' "N Armor"). Icons are drawn with ImGui shapes. Any open window frees
   the cursor and pauses mouse look and attacks (a click queued before it opened is dropped, and a
   press that began in a window doesn't attack after it closes); the keyboard still moves the
   player. Esc closes the

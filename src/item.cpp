@@ -5,12 +5,17 @@ const char* const kSlotNames[EquipCount] = {"Head", "Chest", "Hands", "Legs", "F
 namespace {
 
 constexpr ItemType kItems[ItemCount] = {
-    // name              slot          attack         bag slots
-    {"",                 SlotNone,     {0, 0, 0},     0},
-    {"Iron Shortsword",  SlotMainHand, {6, 10, 1.0f}, 0},
-    {"Canvas Satchel",   SlotBag,      {0, 0, 0},     6},
-    {"Rusty Knife",      SlotMainHand, {3, 6, 0.75f}, 0},
-    {"Boar Skin",        SlotNone,     {0, 0, 0},     0},
+    // name              slot          attack         bag slots  armor
+    {"",                 SlotNone,     {0, 0, 0},     0,         0},
+    {"Iron Shortsword",  SlotMainHand, {6, 10, 1.0f}, 0,         0},
+    {"Canvas Satchel",   SlotBag,      {0, 0, 0},     6,         0},
+    {"Rusty Knife",      SlotMainHand, {3, 6, 0.75f}, 0,         0},
+    {"Boar Skin",        SlotNone,     {0, 0, 0},     0,         0},
+    {"Iron Helm",        SlotHead,     {0, 0, 0},     0,         6},
+    {"Iron Cuirass",     SlotChest,    {0, 0, 0},     0,         12},
+    {"Iron Gauntlets",   SlotHands,    {0, 0, 0},     0,         4},
+    {"Iron Greaves",     SlotLegs,     {0, 0, 0},     0,         10},
+    {"Iron Sabatons",    SlotFeet,     {0, 0, 0},     0,         5},
 };
 
 bool bagEmpty(const Inventory& inv, int bar) {
@@ -94,6 +99,12 @@ int freeSlots(const Inventory& inv) {
     int n = 0;
     for (const auto& c : inv.containers)
         for (ItemId id : c) n += id == NoItem;
+    return n;
+}
+
+int armor(const Inventory& inv) {
+    int n = 0;
+    for (ItemId id : inv.equipped) n += itemType(id).armor;
     return n;
 }
 

@@ -15,6 +15,7 @@ struct GameSettings {
     bool cameraCollision = true;
     bool hud = true;  // nameplates, speech balloons, health bar
     float timeOfDay = 0.3f, timeScale = 1;  // timeScale 0 = time paused
+    float armorK = kArmorK;  // armor balance: see armorReduction
     uint32_t seed = 1337;
 };
 

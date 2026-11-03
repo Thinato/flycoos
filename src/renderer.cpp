@@ -45,6 +45,7 @@ constexpr float kPalette[BlockCount][3] = {
     {0.78f, 0.52f, 0.50f},  // Snout
     {0.42f, 0.12f, 0.10f},  // Hood
     {0.45f, 0.32f, 0.20f},  // Leather
+    {0.50f, 0.52f, 0.56f},  // Plate
 };
 
 // Must match struct Frame / Draw in shaders/world.metal.
@@ -431,7 +432,7 @@ bool Renderer::render(const FrameParams& frame, const RenderSettings& settings, 
         SDL_BindGPUVertexStorageBuffers(pass, 0, &models_, 1);
         for (const ModelInstance& inst : frame.models)
             for (size_t p = 0; p < PartCount; ++p) {
-                auto [first, count] = parts_[size_t(inst.model)][p];
+                auto [first, count] = parts_[size_t(inst.parts[p])][p];
                 if (count) draw({inst.pose[p], glm::vec4(float(p) * 37), glm::uvec4(first, 0, 0, 0)}, count);
             }
     };

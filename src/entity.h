@@ -84,5 +84,6 @@ bool inReach(const Player& attacker, glm::vec3 target);
 // What a punch from `attacker` hits: the nearest living, attackable entity in reach.
 Entity* punchTarget(std::vector<Entity>& entities, const Player& attacker);
 // Combat timers and out-of-combat regeneration for everyone; lands every swing at its impact frame
-// (the player's on entities, entities' on the player); brings the dead back home.
-void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng);
+// (the player's on entities, entities' on the player), less the victim's armor (`armorK` is the
+// K of armorReduction); brings the dead back home.
+void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK = kArmorK);

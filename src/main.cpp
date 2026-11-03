@@ -192,7 +192,7 @@ static int run(SDL_Window* window, const Options& opt) {
         updatePlayer(player, world, in, dt);
         updateEntities(entities, world, player, dt);
         separate(player, world, entities);
-        updateCombat(player, entities, dt, rng);
+        updateCombat(player, entities, dt, rng, game.armorK);
 
         if (benchmark && !opt.fixedLook) camYaw -= dt * 0.5f;  // counter-orbit so the benchmark sees the player from all sides
         else if (!benchmark)
@@ -214,9 +214,10 @@ static int run(SDL_Window* window, const Options& opt) {
         fp.timeOfDay = game.timeOfDay;
         auto pushModel = [&](const Player& body, Model model) {  // with whatever it holds
             glm::mat4 held(0);
-            fp.models.push_back({model, poseModel(body, model, &held)});
+            fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held)});
             if (held == glm::mat4(0)) return;
-            ModelInstance weapon{heldModel(body.weapon()), {}};
+            ModelInstance weapon;
+            weapon.parts.fill(heldModel(body.weapon()));
             weapon.pose.fill(held);
             fp.models.push_back(weapon);
         };
@@ -229,7 +230,7 @@ static int run(SDL_Window* window, const Options& opt) {
             const Entity* target = lootTarget(entities, player);
             drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player));
         }
-        characterWindow(characterOpen, player);
+        characterWindow(characterOpen, player, game.armorK);
         bagsWindow(bagsOpen, player);
         ImDrawData* uiDraw = ui.end(game, render, player, entities, s, actions);
         if (menus() != wasOpen) updateMouseMode();  // closed with a window's X button

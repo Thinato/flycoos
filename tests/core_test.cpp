@@ -663,7 +663,7 @@ static void items() {
                 CHECK(v.equipped[size_t(s)] == NoItem || itemType(v.equipped[size_t(s)]).slot == s);
         }
     }
-    CHECK(moved > 700);  // most random pairs are two empty slots; this seed makes ~870 real moves
+    CHECK(moved > 700);  // most random pairs are two empty slots; this seed makes ~840 real moves
 
     // The sword is held only when equipped, and it points forward at the slash's impact frame.
     Player p;
@@ -686,6 +686,83 @@ static void items() {
     CHECK(held != glm::mat4(0) && weaponAttack(p.swingWeapon).maxDamage == 10);
 }
 
+static void protection() {
+    // Damage reduction = armor / (armor + K x attacker level).
+    auto near = [](float a, float b) { return std::abs(a - b) < 1e-3f; };
+    CHECK(near(armorReduction(37, 2), 37 / 117.0f) && near(armorReduction(37, 2), 0.316f));
+    CHECK(near(armorReduction(37, 1), 0.481f) && near(armorReduction(40, 1), 0.5f));  // K armor halves a level 1 hit
+    CHECK(armorReduction(0, 1) == 0 && armorReduction(37, 2, 80) < armorReduction(37, 2));  // bigger K, less reduction
+    CHECK(mitigate(8, 0, 2) == 8 && mitigate(8, 37, 2) == 5 && mitigate(5, 37, 2) == 3);
+    CHECK(mitigate(8, 37, 2, 80) == 6);
+    CHECK(mitigate(1, 1000, 1) == 1 && mitigate(3, 1000, 1, 1) == 1);  // a hit always does at least 1
+    CHECK(near(armorReduction(1000, 1, 1), 0.8f) && near(armorReduction(160, 1), 0.8f));  // capped at 80%...
+    CHECK(near(armorReduction(159, 1), 159 / 199.0f));                                   // ...only above it
+    CHECK(mitigate(50, 1000, 1, 1) == 10);
+    CHECK(mitigate(0, 37, 1) == 0);
+
+    // Chest and legs always give more armor than any other piece.
+    for (int i = 1; i < ItemCount; ++i)
+        for (int j = 1; j < ItemCount; ++j) {
+            const ItemType &big = itemType(ItemId(i)), &other = itemType(ItemId(j));
+            bool bigSlot = big.slot == SlotChest || big.slot == SlotLegs;
+            bool otherSlot = other.slot == SlotHead || other.slot == SlotHands || other.slot == SlotFeet ||
+                             other.slot == SlotMainHand || other.slot == SlotOffHand;
+            if (bigSlot && otherSlot && big.armor <= other.armor)
+                std::println(stderr, "{} must have more armor than {}", big.name, other.name);
+            CHECK(!(bigSlot && otherSlot) || big.armor > other.armor);
+        }
+
+    // Only worn pieces count.
+    using enum SlotRef::Kind;
+    constexpr ItemId kSet[] = {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons};
+    Player player;
+    for (ItemId id : kSet) CHECK(giveItem(player.inv, id));
+    CHECK(giveItem(player.inv, IronHelm) && armor(player.inv) == 0);  // a spare helm stays in the bags
+    for (int i = 0; i < 5; ++i) CHECK(quickMove(player.inv, {Item, i, 0}));
+    CHECK(armor(player.inv) == 37 && player.inv.containers[0][5] == IronHelm);
+    CHECK(quickMove(player.inv, {Equip, SlotChest}) && armor(player.inv) == 25);
+    CHECK(quickMove(player.inv, {Item, 0, 0}) && armor(player.inv) == 37);
+
+    // A bandit (level 2, knife 5-8 unarmored) hits the armored player for 3-5; with K = 1 armor
+    // takes almost everything.
+    Grid g = meadow();
+    player.pos = {20.5f, 4, 20.5f};
+    std::vector<Entity> es = spawnEntities(g, player.pos, 1);
+    Entity& bandit = es[3];
+    player.pos = bandit.body.pos + glm::vec3(-1.5f, 0, 0);
+    bandit.angry = true;
+    std::mt19937 rng(5);
+    auto hits = [&](float k) {
+        int lo = 99, hi = 0, n = 0;
+        for (int i = 0; i < 20 * 60; ++i) {
+            updateEntities(es, g, player, 1 / 60.0f);
+            updateCombat(player, es, 1 / 60.0f, rng, k);
+            if (player.hitTime == 0) {
+                lo = std::min(lo, player.lastDamage), hi = std::max(hi, player.lastDamage), ++n;
+                player.health = 100;
+            }
+        }
+        return std::array{lo, hi, n};
+    };
+    auto [lo, hi, n] = hits(kArmorK);
+    CHECK(n > 10 && lo >= 3 && hi <= 5 && hi < 8);
+    auto [lo1, hi1, n1] = hits(1);
+    CHECK(n1 > 10 && lo1 == 1 && hi1 == 2);  // tiny K hits the 80% cap: 5-8 becomes 1-2, not all 1s
+
+    // Worn pieces are drawn over the parts they cover, at the same sizes; greaves don't show.
+    auto parts = partModels(ModelPlayer, player.inv);
+    for (Part part : {Head, Torso, HandL, HandR, FootL, FootR}) {
+        CHECK(parts[part] == ModelIronArmor);
+        Grid plate = buildPart(ModelIronArmor, part);
+        CHECK(plate.size == buildPart(ModelPlayer, part).size && std::ranges::count(plate.cells, Plate) > 0);
+    }
+    Grid helm = buildPart(ModelIronArmor, Head);
+    CHECK(std::ranges::count(helm.cells, Eye) == 4);  // the face shows through
+    player.inv.equipped[SlotHead] = NoItem;
+    CHECK(partModels(ModelPlayer, player.inv)[Head] == ModelPlayer);
+    CHECK(partModels(ModelBoar, player.inv)[Torso] == ModelBoar);
+}
+
 int main() {
     meshing();
     packing();
@@ -694,6 +771,7 @@ int main() {
     combat();
     fighters();
     items();
+    protection();
     generation();
     regions();
     if (failures) std::println(stderr, "{} check(s) failed", failures);

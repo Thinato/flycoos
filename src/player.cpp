@@ -205,6 +205,35 @@ static Grid buildKnife() {  // shorter and narrower, single-edged
 
 Model heldModel(ItemId weapon) { return weapon == Knife ? ModelKnife : ModelSword; }
 
+std::array<Model, PartCount> partModels(Model model, const Inventory& inv) {
+    std::array<Model, PartCount> out;
+    out.fill(model);
+    if (model == ModelDummy || model == ModelBoar) return out;
+    auto& e = inv.equipped;
+    if (e[SlotHead] == IronHelm) out[Head] = ModelIronArmor;
+    if (e[SlotChest] == IronCuirass) out[Torso] = ModelIronArmor;
+    if (e[SlotHands] == IronGauntlets) out[HandL] = out[HandR] = ModelIronArmor;
+    if (e[SlotFeet] == IronSabatons) out[FootL] = out[FootR] = ModelIronArmor;
+    return out;
+}
+
+// Iron plate (lighter than the Iron block, which reads black in shade) with steel trim, on the
+// humanoid's part sizes so poses don't change.
+static Block armorVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
+    bool front = v.z == s.z - 1, top = v.y == s.y - 1;
+    switch (part) {
+    case Head:  // helm with a crest; the face shows through an opening in the front
+        if (front && v.y >= 2 && v.y <= 5 && v.x >= 2 && v.x <= s.x - 3)
+            return (v.y == 3 || v.y == 4) && (v.x == 2 || v.x == s.x - 3) ? Eye : Skin;
+        return (top && (v.x == 4 || v.x == 5)) || (front && v.y == 6) ? Steel : Plate;
+    case Torso:  // cuirass over the tunic's skirt: steel collar and breastplate ridge
+        if (v.y < 2) return Tunic;
+        if (v.y == 2) return Belt;
+        return top || (front && (v.x == 3 || v.x == 4)) ? Steel : Plate;
+    default: return front && top ? Steel : Plate;  // gauntlet knuckles, sabaton toe caps
+    }
+}
+
 Grid buildPart(Model model, Part part) {
     if (model == ModelSword || model == ModelKnife)
         return part != Head ? Grid({1, 1, 1}) : model == ModelSword ? buildSword() : buildKnife();
@@ -220,6 +249,8 @@ Grid buildPart(Model model, Part part) {
                     b = dummyVoxel(part, {x, y, z}, s);
                 } else if (model == ModelBoar) {
                     b = boarVoxel(Part(part), {x, y, z}, s);
+                } else if (model == ModelIronArmor) {
+                    b = armorVoxel(part, {x, y, z}, s);
                 } else if (part == Head) {
                     // Hair cap and back, sideburns; two tall eyes on the +Z (front) face. The
                     // bandit's hood is its hair, and a mask covers the lower face.

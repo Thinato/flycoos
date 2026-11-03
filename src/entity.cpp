@@ -289,17 +289,20 @@ static bool lands(Player& b) {
     return true;
 }
 
-static int roll(const Player& b, std::mt19937& rng) { return rollDamage(b.stats, weaponAttack(b.swingWeapon), rng); }
+// A swing's damage after the victim's armor, which depends on the attacker's level.
+static int roll(const Player& b, int level, const Player& victim, float armorK, std::mt19937& rng) {
+    return mitigate(rollDamage(b.stats, weaponAttack(b.swingWeapon), rng), armor(victim.inv), level, armorK);
+}
 
-void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng) {
+void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK) {
     tick(player, dt);
-    if (lands(player)) {
+    if (lands(player)) {  // the player has no level yet: 1
         Entity* target = punchTarget(entities, player);
-        if (target && damage(*target, roll(player, rng))) player.combatTimer = kCombatSeconds;
+        if (target && damage(*target, roll(player, 1, target->body, armorK, rng))) player.combatTimer = kCombatSeconds;
     }
     for (Entity& e : entities) {
         tick(e.body, dt);
-        if (lands(e.body) && inReach(e.body, player.pos) && hurt(player, roll(e.body, rng)))
+        if (lands(e.body) && inReach(e.body, player.pos) && hurt(player, roll(e.body, e.level, player, armorK, rng)))
             e.body.combatTimer = kCombatSeconds;
         if (!e.body.alive() && e.body.deadTime >= e.type().respawnSeconds) {  // back home, fully healed
             e.body.pos = e.home;

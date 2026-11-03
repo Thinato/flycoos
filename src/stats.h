@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <random>
 
@@ -30,4 +31,18 @@ inline float swingTime(const Stats& s, const Attack& a) { return a.speed / (1 + 
 inline int strengthBonus(const Stats& s, const Attack& a) { return int(std::lround(float(s.strength) * a.speed)); }
 inline int rollDamage(const Stats& s, const Attack& a, std::mt19937& rng) {
     return std::uniform_int_distribution<int>(a.minDamage, a.maxDamage)(rng) + strengthBonus(s, a);
+}
+
+// Armor (from worn gear) absorbs a share of each hit: armor / (armor + K x attacker level), at most
+// 80%. K is the armor that halves a level 1 attacker's damage; higher levels get through more of
+// it. The debug UI tunes K live (GameSettings::armorK).
+constexpr float kArmorK = 40;
+constexpr float kMaxArmorReduction = 0.8f;
+inline float armorReduction(int armor, int attackerLevel, float k = kArmorK) {
+    return armor > 0 ? std::min(kMaxArmorReduction, float(armor) / (float(armor) + k * float(attackerLevel))) : 0;
+}
+// A hit after armor; never below 1.
+inline int mitigate(int damage, int armor, int attackerLevel, float k = kArmorK) {
+    if (damage <= 0 || armor <= 0) return damage;
+    return std::max(1, int(std::lround(float(damage) * (1 - armorReduction(armor, attackerLevel, k)))));
 }

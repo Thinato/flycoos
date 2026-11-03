@@ -10,13 +10,15 @@ enum EquipSlot : uint8_t { SlotHead, SlotChest, SlotHands, SlotLegs, SlotFeet, S
                            EquipCount, SlotBag = EquipCount, SlotNone };
 extern const char* const kSlotNames[EquipCount];
 
-enum ItemId : uint8_t { NoItem, Shortsword, Satchel, Knife, BoarSkin, ItemCount };
+enum ItemId : uint8_t { NoItem, Shortsword, Satchel, Knife, BoarSkin,
+                        IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, ItemCount };
 
 struct ItemType {
     const char* name;
     EquipSlot slot;
     Attack attack;  // weapons
     int bagSlots;   // bags
+    int armor;      // armor pieces; chest and legs always give the most (a test enforces it)
 };
 const ItemType& itemType(ItemId id);
 
@@ -47,6 +49,7 @@ bool quickMove(Inventory& inv, SlotRef from);
 bool giveItem(Inventory& inv, ItemId id);  // into the first free item slot
 int itemSlots(const Inventory& inv);
 int freeSlots(const Inventory& inv);
+int armor(const Inventory& inv);  // summed over equipped items only
 
 // A weapon's attack; a punch for NoItem.
 const Attack& weaponAttack(ItemId weapon);

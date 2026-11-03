@@ -24,6 +24,9 @@ reach them.
 - Passive and aggressive NPCs: a boar that fights back once hit and a knife-wielding bandit that
   attacks on sight (aggro, chase, leash); the player can be knocked out and respawns; corpses drop
   loot (boar skin, knife) looted with E
+- Armor: worn gear reduces damage taken by armor / (armor + K x attacker level), K tunable in the
+  debug window; an Iron armor set (helm, cuirass, gauntlets, greaves, sabatons) that shows on the
+  character
 
 ## M1: A living world
 

@@ -148,3 +148,26 @@
     animation in player.cpp, as the boar has.
   - Chasing walks straight at the player: water, cliffs and walls stop it (no pathfinding).
   - Only the player can be a target; NPCs don't fight each other.
+
+## ADR-010: Armor as flat mitigation by attacker level
+
+- **Status:** accepted (2026-11-02)
+- **Context:** worn gear should protect the player, more for some pieces than others, and
+  protection should matter less against stronger enemies.
+- **Decision:**
+  - Each item has a flat armor value; a body's armor is the sum over its equipped items. Chest and
+    legs pieces always give the most (a test enforces it over the item table).
+  - A hit is reduced by `armor / (armor + K x attacker level)`, capped at 80% (rounded, at least 1
+    damage). The cap keeps stacked armor from making the player near-immune; the reduction never reaches 100%, and the same armor is worth less against higher levels without a
+    separate level-difference rule.
+  - K is one global constant (`kArmorK` = 40), tunable live from the debug UI and passed into
+    `updateCombat`, not stored in a mutable global.
+  - Armor is applied where a swing lands (`updateCombat`), so debug damage bypasses it.
+  - Armor shows on the model: worn pieces swap in plated parts per part (`ModelInstance::parts`).
+- **Consequences:**
+  - Tuning K rebalances every armor value at once.
+  - The player has no level yet and counts as level 1; NPCs wear nothing, so armor only protects
+    the player today.
+  - Gear still adds no attributes; when it does, health, regen and swing time must read
+    base + gear stats (see ADR-008).
+  - Each visible armor piece needs plated parts in a model; greaves have no part to show on.

@@ -51,7 +51,7 @@ GPU debug layer.
 | T (hold) | Fast-forward time (60×) |
 | Left mouse | Attack: sword slash with one equipped, otherwise punch (hold to keep swinging) |
 | E | Loot a nearby corpse, otherwise talk to a nearby villager |
-| C | Character: equipment and attributes |
+| C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
 | `.` | Open/close the debug window |
 | Esc | Close the open windows, otherwise quit |
@@ -67,8 +67,8 @@ unless a text field has focus.
 | Tab | What's there |
 |---|---|
 | Render | View mode (shaded, greedy quads, chunks, ambient occlusion, normals), wireframe quad edges, sky/fog/water/character toggles, frustum culling on/off or frozen, per-frame chunk/quad/draw-call counts |
-| Player | Health, the five attributes and what derives from them (max health, regen, attack damage and speed, combat state), position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
-| Items | Give any item, see what's equipped and in the bag slots, empty the inventory |
+| Player | Health, the five attributes and what derives from them (max health, regen, attack damage and speed, combat state), armor K (damage reduction = armor / (armor + K x attacker level)) with the current armor and its reduction vs level 1 and 2, position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
+| Items | Give any item or the whole Iron armor set, see what's equipped and in the bag slots, empty the inventory |
 | Entities | Every NPC: health and attributes, traits and temper, aggro/leash/chase numbers, angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, respawn NPCs near the player |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
