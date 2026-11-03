@@ -34,6 +34,11 @@ struct RenderSettings {
     bool sky = true, fog = true, water = true, character = true;
     bool frustumCulling = true;
     bool freezeCulling = false;  // keep the current visible set, then fly away to inspect it
+    // Lighting: AO levels 0..3 map through aoCurve; occluded albedo shades toward tintColor (sRGB).
+    bool occlusionRamp = true;  // off: linear AO, no tint
+    glm::vec4 aoCurve{0.35f, 0.62f, 0.82f, 1.0f};
+    glm::vec3 tintColor{0.55f, 0.70f, 1.0f};
+    float tintStrength = 0.8f;
 };
 
 class Renderer {

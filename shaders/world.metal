@@ -21,6 +21,8 @@ struct Frame {
     float4 ambientGround;
     float4 fog;           // x density, y night factor (0..1), z sun disk visibility, w sea surface y
     float4 debug;         // x view mode: 0 shaded, 1 greedy quads, 2 chunks, 3 AO, 4 normals
+    float4 aoCurve;       // ambient factor for AO levels 0..3 (applied per vertex)
+    float4 shadowTint;    // rgb multiplier occluded albedo shades toward, a strength (weaker at night)
     float4 palette[32];
 };
 struct Draw {
@@ -34,7 +36,7 @@ struct VOut {
     float3 worldPos;
     float3 voxelPos;
     float3 normal;
-    float ao;
+    float ao;  // aoCurve value: 1 open, lower in corners
     // block id in bits 0-7, quad index in bits 8-31 (for the greedy-quads debug view). Packed into
     // one output because every extra vertex output costs bandwidth on tile-based GPUs (~15% here).
     uint blockAndQuad [[flat]];
@@ -76,7 +78,7 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     out.worldPos = world.xyz;
     out.voxelPos = local - kNormals[face] * 0.5 + d.hashOffset.xyz;
     out.normal = normalize((d.model * float4(kNormals[face], 0.0)).xyz);
-    out.ao = ao[c] / 3.0;
+    out.ao = f.aoCurve[uint(ao[c])];
     out.blockAndQuad = block | (d.firstQuad.x + vid / 6) << 8;  // ponytail: quad index wraps past 16.7M quads (debug color only)
     return out;
 }
@@ -107,12 +109,22 @@ static float3 applyFog(constant Frame& f, float3 color, float3 worldPos) {
     return mix(color, skyColor(f, toPoint / dist), t);
 }
 
+// Undoes the AO curve: 0 at the fully occluded end, 1 open (the old linear AO for a linear curve).
+static float rawAO(constant Frame& f, float o) {
+    return saturate((o - f.aoCurve.x) / max(1.0 - f.aoCurve.x, 1e-4));
+}
+
 static float3 light(constant Frame& f, VOut in, float3 albedo) {
     float3 n = normalize(in.normal);
-    float ao = mix(0.35, 1.0, in.ao);
+    float o = in.ao;  // occlusion, 1 = open
+    // Occluded albedo shifts toward a cool tint before lighting, so light still sets the value and
+    // corners read as a deeper hue instead of grey.
+    albedo = mix(albedo, albedo * f.shadowTint.rgb, f.shadowTint.a * (1.0 - o));
     float diffuse = saturate(dot(n, f.lightDir.xyz));
     float3 hemi = mix(f.ambientGround.rgb, f.ambientSky.rgb, n.y * 0.5 + 0.5);
-    return albedo * (hemi * ao + f.lightColor.rgb * diffuse * mix(0.5, 1.0, in.ao));
+    // Direct light is occluded half as much as ambient (0.5 at the fully occluded curve end).
+    float sunAO = mix(0.5, 1.0, rawAO(f, o));
+    return albedo * (hemi * o + f.lightColor.rgb * diffuse * sunAO);
 }
 
 // Distinct, fairly bright color per id (PCG hash).
@@ -126,7 +138,7 @@ static float3 idColor(uint n) {
 fragment float4 voxel_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
     uint mode = uint(f.debug.x);
     // Unlit debug views are written as display values: the sRGB target would otherwise brighten them.
-    if (mode == 3) return float4(float3(pow(mix(0.05, 1.0, in.ao), 2.2)), 1.0);      // ambient occlusion only
+    if (mode == 3) return float4(float3(pow(mix(0.05, 1.0, rawAO(f, in.ao)), 2.2)), 1.0);  // raw AO, independent of the curve
     if (mode == 4) return float4(pow(normalize(in.normal) * 0.5 + 0.5, 2.2), 1.0);  // normals as color
     float3 albedo;
     if (mode == 0) {  // normal path; `mode` is uniform, so this branch is coherent and cheap

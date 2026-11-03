@@ -59,6 +59,21 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
     ImGui::Checkbox("Freeze culling", &r.freezeCulling);
     ImGui::SetItemTooltip("Keep the current visible chunk set, then move the camera to see what was culled.");
 
+    ImGui::SeparatorText("Lighting");
+    ImGui::Checkbox("Occlusion color ramp", &r.occlusionRamp);
+    ImGui::SetItemTooltip("Off: the old linear AO without the cool corner tint.");
+    ImGui::BeginDisabled(!r.occlusionRamp);
+    if (ImGui::SliderFloat4("AO curve", &r.aoCurve.x, 0, 1, "%.2f")) {
+        // Keep it monotonic (each value between its neighbours) and level 0 below 1 (the shader divides by 1 - it).
+        for (int i = 0; i < 4; ++i)
+            r.aoCurve[i] = std::clamp(r.aoCurve[i], i > 0 ? r.aoCurve[i - 1] : 0.0f, i < 3 ? r.aoCurve[i + 1] : 1.0f);
+        r.aoCurve.x = std::min(r.aoCurve.x, 0.95f);
+    }
+    ImGui::SetItemTooltip("Ambient light kept at AO level 0 (corner) .. 3 (open).");
+    ImGui::ColorEdit3("Shadow tint", &r.tintColor.x);
+    ImGui::SliderFloat("Tint strength", &r.tintStrength, 0, 1, "%.2f");
+    ImGui::EndDisabled();
+
     ImGui::SeparatorText("This frame");
     ImGui::Text("Chunks drawn   %d / %d", s.chunksDrawn, s.chunksTotal);
     ImGui::Text("Quads drawn    %zu / %zu", s.quadsDrawn, s.opaqueQuads + s.waterQuads);

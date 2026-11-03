@@ -380,6 +380,13 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   palette is sRGB in `kPalette` and converted at upload. Output goes through an ACES filmic tonemap.
 - **Shading:** a directional light (sun by day, moon by night) plus a hemispheric sky/ground
   ambient, multiplied by AO. A ±10% per-voxel brightness jitter comes from a hash of the voxel cell.
+- **Lighting (occlusion ramp):** the vertex shader maps each corner's AO level 0..3 through
+  `Frame.aoCurve` (default `0.35, 0.62, 0.82, 1`) into the existing `ao` output, giving `o` (1 = open).
+  `light()` first shades albedo toward `Frame.shadowTint.rgb` by `shadowTint.a * (1 - o)`, so corners
+  get a cooler, deeper hue before lighting and fog; ambient is multiplied by `o`, the sun by half as
+  much. The CPU fades the tint to 30% at night (moonlight is already blue). Both uniforms come from
+  `RenderSettings` (debug UI Render tab, Lighting); off sends the old linear curve and no tint. A
+  future sky-visibility term multiplies into `o` at the top of `light()`.
   Exponential-squared fog blends to the sky color in the view direction, so the horizon matches the
   sky.
 - **Water:** the top surface is lowered by 0.12, with Fresnel sky reflection and a sun specular

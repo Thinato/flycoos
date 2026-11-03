@@ -21,6 +21,7 @@ struct FrameUniforms {
     glm::mat4 viewProj, invViewProj;
     glm::vec4 eye, sunDir, lightDir, lightColor, skyZenith, skyHorizon, ambientSky, ambientGround, fog;
     glm::vec4 debug;  // x: ViewMode
+    glm::vec4 aoCurve, shadowTint;
     glm::vec4 palette[32];
 };
 struct DrawUniforms {
@@ -28,7 +29,7 @@ struct DrawUniforms {
     glm::vec4 hashOffset;
     glm::uvec4 firstQuad;  // x used
 };
-static_assert(sizeof(FrameUniforms) == 2 * 64 + 10 * 16 + 32 * 16);
+static_assert(sizeof(FrameUniforms) == 2 * 64 + 12 * 16 + 32 * 16);
 static_assert(sizeof(DrawUniforms) == 64 + 16 + 16);
 static_assert(BlockCount <= 32);
 
@@ -371,6 +372,13 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     ambience(frame.timeOfDay, u);
     if (!settings.fog) u.fog.x = 0;
     u.debug = {float(settings.viewMode), 0, 0, 0};
+    if (settings.occlusionRamp) {
+        u.aoCurve = settings.aoCurve;
+        // Moonlight is already blue, so the cool tint fades to 30% at night.
+        u.shadowTint = glm::vec4(lin(settings.tintColor), settings.tintStrength * (1 - 0.7f * u.fog.y));
+    } else {
+        u.aoCurve = {0.35f, 0.35f + 0.65f / 3, 0.35f + 1.3f / 3, 1};  // the old linear AO, no tint (A/B)
+    }
     for (int b = 0; b < BlockCount; ++b)
         u.palette[b] = glm::vec4(lin({kPalette[b][0], kPalette[b][1], kPalette[b][2]}), 1);
     SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
