@@ -5,7 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "edit.h"
+#include "prefab.h"
 
 // Remote world-editing commands (see docs/ARCHITECTURE.md, "Command server"). One request line
 // {"id", "cmd", "args"} gives one response {"id", "ok", "result" | "error"}. Edits and queries run
@@ -41,7 +41,9 @@ struct Command {
     std::optional<Goto> go;
 };
 
-Command runCommand(std::string_view request, Grid& world, EditHistory& history, const GameView& view);
+// `prefabs` is rescanned by the prefabs command.
+Command runCommand(std::string_view request, Grid& world, std::vector<Instance>& instances, EditHistory& history,
+                   PrefabLibrary& prefabs, const GameView& view);
 
 // Writes an RGB8 image to a new PNG in the system temp folder and returns its absolute path, or ""
 // on failure.

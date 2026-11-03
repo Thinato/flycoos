@@ -32,12 +32,14 @@ reach them.
 - Shaping the world with Claude: a localhost command server in the game and a dependency-free MCP
   bridge (brushes, roads/paths, undo, save, offscreen screenshots, top-down maps, height queries,
   camera goto), with an MCP log and edit highlights in the Editor panel
+- Prefabs: generated trees, pines, bushes, boulders and spires, and structures from text files
+  (cottage, tent, bandit camp, well, fence, ruin), placed as instances that can be moved and
+  removed (in-game Prefab tool and MCP tools), saved with the world
 
 ## M1: A living world
 
 - A hand-authored story world: the fixed-size 1024×192×1024 world, generated once and then shaped
-  in the in-game editor, replaces an infinite streamed one. Prefabs and story markers in the world
-  file; remote editing commands so Claude can shape it too
+  in the in-game editor, replaces an infinite streamed one. Story markers in the world file
 - Biomes (grassland, desert, tundra, swamp), rivers, caves; LOD for distant terrain
 - Shadow maps for sun and moon; clouds; wind-animated foliage
 - Ambient audio (wind, birds by day, crickets by night) and footsteps

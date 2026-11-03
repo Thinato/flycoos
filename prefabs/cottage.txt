@@ -1,0 +1,129 @@
+description: Small house: cobble foundation, plank walls, a door on +z, windows, thatch roof and a chimney
+foundation: Cobble
+# The first row of the lower layers is blank: the roof overhangs it.
+C = Cobble
+P = Planks
+W = Wood
+T = Thatch
+E = Ember
+
+layer
+
+ CCCCCCCCC
+ CPPPPPPPC
+ CPPPPPPPC
+ CPPPPPPPC
+ CPPPPPPPC
+ CPPPPPPPC
+ CCCCCCCCC
+
+
+layer
+
+ WPPPPPPPW
+ P....EC.P
+ P.......P
+ P.......P
+ P.......P
+ P.......P
+ WPPP.PPPW
+
+
+layer
+
+ WP.PPP.PW
+ P.....C.P
+ P.......P
+ .........
+ P.......P
+ P.......P
+ WP.P.P.PW
+
+
+layer
+
+ WPPPPPPPW
+ P.....C.P
+ P.......P
+ P.......P
+ P.......P
+ P.......P
+ WPPPPPPPW
+
+
+layer
+
+ WWWWWWWWW
+ W.....C.W
+ W.......W
+ W.......W
+ W.......W
+ W.......W
+ WWWWWWWWW
+
+
+layer
+TTTTTTTTTTT
+TTTTTTTTTTT
+ P.....C.P
+ P.......P
+ P.......P
+ P.......P
+ P.......P
+TTTTTTTTTTT
+TTTTTTTTTTT
+
+layer
+
+TTTTTTTTTTT
+TTTTTTTCTTT
+ P.......P
+ P.......P
+ P.......P
+TTTTTTTTTTT
+TTTTTTTTTTT
+
+
+layer
+
+
+TTTTTTTCTTT
+TTTTTTTTTTT
+ P.......P
+TTTTTTTTTTT
+TTTTTTTTTTT
+
+
+
+layer
+
+
+       C
+TTTTTTTTTTT
+TTTTTTTTTTT
+TTTTTTTTTTT
+
+
+
+
+layer
+
+
+       C
+
+TTTTTTTTTTT
+
+
+
+
+
+layer
+
+
+       C
+
+
+
+
+
+

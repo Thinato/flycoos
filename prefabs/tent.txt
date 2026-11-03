@@ -1,0 +1,44 @@
+description: Canvas ridge tent with a wooden ridge pole, opening on +z
+foundation: Dirt
+B = Burlap
+W = Wood
+
+layer
+BBBBBBB
+B.....B
+B.....B
+B.....B
+B.....B
+BB...BB
+
+layer
+ BBBBB
+ B...B
+ B...B
+ B...B
+ B...B
+ B...B
+
+layer
+  BBB
+  B.B
+  B.B
+  B.B
+  B.B
+  B.B
+
+layer
+   W
+   W
+   W
+   W
+   W
+   W
+
+layer
+   W
+
+
+
+
+   W

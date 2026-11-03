@@ -6,20 +6,23 @@
 
 #include <glm/glm.hpp>
 
-// Block ids double as palette indices (kPalette below).
+// Block ids double as palette indices (kPalette below). They are saved in world files: only append.
 // Water's id is also hard-coded as kWater in shaders/world.metal.
 enum Block : uint8_t { Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water,
                        Skin, Tunic, Belt, Boots, Hair, Eye, Rock,
                        Robe, DarkHair, Straw, Burlap,  // NPC models
                        Steel, Iron,                    // items
                        Hide, Tusk, Snout, Hood, Leather,  // boar, bandit
-                       Plate, BlockCount };               // armor
+                       Plate,                             // armor
+                       Planks, Cobble, Thatch, Ember,     // prefabs (the renderer's palette holds 32)
+                       BlockCount };
 
 inline bool isOpaque(Block b) { return b != Air && b != Water; }
 
 inline constexpr const char* kBlockNames[BlockCount] = {
     "Air", "Grass", "Dirt", "Stone", "Sand", "Snow", "Wood", "Leaves", "Water", "Skin", "Tunic", "Belt", "Boots", "Hair",
-    "Eye", "Rock", "Robe", "DarkHair", "Straw", "Burlap", "Steel", "Iron", "Hide", "Tusk", "Snout", "Hood", "Leather", "Plate"};
+    "Eye", "Rock", "Robe", "DarkHair", "Straw", "Burlap", "Steel", "Iron", "Hide", "Tusk", "Snout", "Hood", "Leather", "Plate",
+    "Planks", "Cobble", "Thatch", "Ember"};
 
 // Block colors in sRGB, indexed by Block. The renderer converts them to linear; the map command uses them as is.
 inline constexpr float kPalette[BlockCount][3] = {
@@ -51,6 +54,10 @@ inline constexpr float kPalette[BlockCount][3] = {
     {0.42f, 0.12f, 0.10f},  // Hood
     {0.45f, 0.32f, 0.20f},  // Leather
     {0.50f, 0.52f, 0.56f},  // Plate
+    {0.66f, 0.48f, 0.29f},  // Planks
+    {0.45f, 0.44f, 0.43f},  // Cobble
+    {0.56f, 0.45f, 0.26f},  // Thatch
+    {1.00f, 0.42f, 0.10f},  // Ember
 };
 
 constexpr int kChunk = 32;
@@ -84,11 +91,43 @@ void parallelFor(int count, const std::function<void(int)>& fn);
 
 void generateTerrain(Grid& world, uint32_t seed);
 
+// Natural shapes, shared by generateTerrain and the generated prefabs. Each grows on the ground
+// voxel `at`; trunks grow down to the ground on slopes, canopies only fill air, rocks overwrite.
+// Their ragged surfaces are seeded by `seed` at positions relative to `jitterOrigin` (terrain
+// passes 0; a prefab instance passes `at`, so moving it keeps its shape).
+void growTree(Grid& g, glm::ivec3 at, int trunk, float radius, uint32_t seed, glm::ivec3 jitterOrigin);
+void growRock(Grid& g, glm::ivec3 at, bool spire, float radius, int height, uint32_t seed, glm::ivec3 jitterOrigin);
+void growPine(Grid& g, glm::ivec3 at, int height, uint32_t seed, glm::ivec3 jitterOrigin);
+void growBush(Grid& g, glm::ivec3 at, float radius, uint32_t seed, glm::ivec3 jitterOrigin);
+
 // Feet position on the grass column nearest `near` (default: the world center).
 glm::vec3 findSpawn(const Grid& world);
 glm::vec3 findSpawn(const Grid& world, glm::ivec2 near);
 
-// World files (.flyw): the whole grid plus its seed, in one versioned file; see docs/ARCHITECTURE.md.
-// Both return an empty string on success, else why it failed. A rejected load leaves `g` unspecified.
-std::string saveWorld(const char* path, const Grid& g, uint32_t seed);
-std::string loadWorld(const char* path, Grid& g, uint32_t& seed);
+// A placed prefab (see prefab.h). Its voxels are in the grid like any others; `cells` lists every
+// voxel the placement changed, so removing it can put back what was there.
+struct Instance {
+    struct Cell {
+        uint16_t x, y, z;
+        Block before, after;
+    };
+    uint32_t id = 0;
+    std::string prefab;
+    glm::ivec3 pos{};  // the ground voxel under the footprint center; the bottom layer sits on it
+    int rotation = 0;  // quarter turns counterclockwise seen from above (structures only)
+    uint32_t seed = 0;
+    std::vector<float> params;  // generated prefabs: one value per declared parameter
+    std::vector<Cell> cells;
+};
+
+// Caps on instances, enforced when placing and loading, so memory and files stay bounded.
+constexpr size_t kMaxInstances = 10000;
+constexpr size_t kMaxInstanceCells = size_t(8) << 20;  // of all instances together (64 MB)
+constexpr size_t kMaxInstanceParams = 8;
+constexpr int kMaxInstanceExtent = 96;  // the cells of one instance span at most this per axis
+
+// World files (.flyw): the whole grid, its seed and the prefab instances (sorted by id), in one
+// versioned file; see docs/ARCHITECTURE.md. Both return an empty string on success, else why it
+// failed. A rejected load leaves `g` and `instances` unspecified.
+std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances);
+std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances);

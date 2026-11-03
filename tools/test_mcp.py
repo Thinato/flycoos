@@ -83,7 +83,8 @@ def main():
         check(init["protocolVersion"] == "2025-06-18" and "tools" in init["capabilities"], "initialize")
         bridge.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
         names = {t["name"] for t in rpc("tools/list")["tools"]}
-        check({"state", "raise", "path", "apply", "undo", "save", "screenshot", "map", "heights", "inspect", "goto"} <= names,
+        check({"state", "raise", "path", "apply", "undo", "save", "screenshot", "map", "heights", "inspect", "goto",
+               "prefabs", "place", "remove", "move", "instances"} <= names,
               f"tools/list ({len(names)} tools)")
 
         for _ in range(3000):  # the game generates its world first (~1 s release, ~1-2 min with sanitizers)
@@ -140,10 +141,49 @@ def main():
         err, r, _ = tool("undo")
         err2, r2, _ = tool("undo")
         check(not err and not err2 and r2["undo_steps"] == 0 and height() == before, "undo restores the heights")
+
+        # prefabs: a file written now is usable after a rescan; place, move, remove, undo
+        hut = os.path.join(ROOT, "prefabs", "e2e-hut.txt")
+        with open(hut, "w") as f:
+            f.write("description: e2e test hut\nfoundation: Cobble\nC = Cobble\nP = Planks\nlayer\nCCC\nCCC\nlayer\nPPP\nP.P\nP P\n")
+        with open(os.path.join(ROOT, "prefabs", "e2e-broken.txt"), "w") as f:
+            f.write("C = Cobble\nlayer\nCX\n")
+        try:
+            err, r, _ = tool("prefabs")
+            names = [p["name"] for p in r["prefabs"]] if not err else []
+            check(not err and {"tree", "pine", "bush", "boulder", "spire", "cottage", "camp", "e2e-hut"} <= set(names) and
+                  r["errors"] == ["e2e-broken.txt: line 3: 'X' is not in the legend"] and "Cobble" in r["blocks"],
+                  f"prefabs lists {len(names)} prefabs and the broken file's error")
+        finally:
+            for name in ("e2e-hut.txt", "e2e-broken.txt"):
+                os.remove(os.path.join(ROOT, "prefabs", name))
+        err, r, _ = tool("place", prefab="e2e-hut", x=x, z=z, rotation=90)
+        hut_id = r["instance"]["id"] if not err else None
+        check(not err and r["instance"]["rotation"] == 90 and r["instance"]["box"]["min"][1] == before + 1, "place a prefab written just now")
+        err, r, _ = tool("place", prefab="cottage", x=x + 12, z=z, seed=7)
+        check(not err and r["instance"]["id"] == hut_id + 1, "place the cottage")
+        err, r, _ = tool("place", prefab="tree", x=x - 12, z=z, params={"trunk": 12, "radius": 5})
+        check(not err and r["instance"]["params"] == {"trunk": 12, "radius": 5}, "place a tree with params")
+        err, msg, _ = tool("place", prefab="castle", x=x, z=z)
+        err2, msg2, _ = tool("place", prefab="tree", x=x, z=z, params={"trunk": 99})
+        check(err and "castle" in msg and err2 and "trunk" in msg2, f"bad prefab and params are tool errors ({msg2})")
+        err, r, _ = tool("move", id=hut_id, x=x, z=z + 20)
+        check(not err and r["instance"]["id"] == hut_id and r["instance"]["position"][2] == z + 20, "move keeps the id")
+        err, r, _ = tool("instances", x0=x - 2, z0=z + 18, x1=x + 2, z1=z + 22)
+        check(not err and r["count"] == 1 and r["instances"][0]["prefab"] == "e2e-hut", "instances in a region")
+        steps = tool("state")[1]["undo_steps"]
+        err, r, _ = tool("remove", id=hut_id)
+        check(not err and tool("instances")[1]["count"] == 2 and r["undo_steps"] == steps + 1, "remove")
+        tool("undo")
+        check(tool("instances")[1]["count"] == 3, "undo brings the instance back")
+        err, msg, _ = tool("remove", id=999)
+        check(err and "999" in msg, "remove an unknown id is an error")
         err, r, _ = tool("goto", position=[x, before + 20, z + 30], look_at=[x, before, z])
         check(not err and r["moved"], "goto")
         err, r, _ = tool("save")
         check(not err and os.path.getsize(opt.world) > 100_000, f"save writes {opt.world}")
+        with open(opt.world, "rb") as f:
+            check(b"INST" in f.read(), "the saved world holds the prefab instances")
         copy = os.path.join(os.path.dirname(opt.world), "e2e-copy.flyw")
         err, r, _ = tool("save", path=copy)
         check(not err and os.path.exists(copy) and os.path.getsize(copy) > 100_000, "save a copy next to the world file")

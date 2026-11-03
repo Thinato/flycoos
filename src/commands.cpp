@@ -30,6 +30,7 @@ constexpr int kMaxDepth = 64;          // JSON nesting; deeper requests are refu
 constexpr double kBudgetMs = 50, kBrushNs = 20, kFillNs = 1, kColumnMs = 0.8;
 constexpr int kMaxPathSamples = 4096;  // brush positions per `path`
 constexpr int kMaxSamples = 4096;      // `heights` columns
+constexpr size_t kMaxListed = 500;     // `instances` entries
 constexpr int kMaxShot[2] = {1600, 900};
 constexpr Block kMaterials[] = {Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Rock, Water, Air};
 constexpr std::string_view kTools[] = {"raise", "lower", "smooth", "flatten", "paint", "fill"};
@@ -102,21 +103,27 @@ EditOp parseOp(std::string_view tool, const json& a, const Grid& g) {
     return op;
 }
 
+double volume(const Box& b) { return b.empty() ? 0 : double(b.size().x) * b.size().y * b.size().z; }
+
+// Refuses a command whose estimated main-thread time (`ms` of work plus remeshing every chunk
+// column `all` spans) is over the budget.
+void budget(double ms, const Box& all, std::string_view advice) {
+    glm::ivec3 chunks = all.empty() ? glm::ivec3(0) : all.hi / kChunk - all.lo / kChunk + 1;
+    ms += chunks.x * chunks.z * kColumnMs;
+    if (ms > kBudgetMs)
+        throw BadArgs(std::format("over the work budget of one command (~{:.0f} ms of game time, at most {:.0f}; {})", ms, kBudgetMs, advice));
+}
+
 // Applies the ops as one undo step. Every op was checked when parsed, so none is rejected halfway.
 json edit(const std::vector<EditOp>& ops, Grid& g, EditHistory& h, Box& dirty) {
     double ms = 0;
     Box all;
     for (const EditOp& op : ops) {
         Box b = editBox(g, op);
-        if (b.empty()) continue;
-        ms += double(b.size().x) * b.size().y * b.size().z * (op.tool == Tool::Fill ? kFillNs : kBrushNs) * 1e-6;
+        ms += volume(b) * (op.tool == Tool::Fill ? kFillNs : kBrushNs) * 1e-6;
         all = merge(all, b);
     }
-    glm::ivec3 chunks = all.empty() ? glm::ivec3(0) : all.hi / kChunk - all.lo / kChunk + 1;
-    ms += chunks.x * chunks.z * kColumnMs;
-    if (ms > kBudgetMs)
-        throw BadArgs(std::format("over the work budget of one command (~{:.0f} ms of game time, at most {:.0f}; big brushes and "
-                                  "a wide spread cost most): split it into smaller or nearer groups", ms, kBudgetMs));
+    budget(ms, all, "big brushes and a wide spread cost most): split it into smaller or nearer groups");
     bool joined = false;
     for (const EditOp& op : ops) {
         Box d = applyEdit(g, op, h, joined).dirty;
@@ -355,13 +362,78 @@ std::string savePath(const std::string& path, const GameView& v) {
     return p.string();
 }
 
-json run(const std::string& cmd, const json& a, Grid& g, EditHistory& h, const GameView& v, Command& out) {
+const Prefab& prefabNamed(const json& a, const PrefabLibrary& lib) {
+    std::string name = str(a, "prefab", "");
+    if (const Prefab* p = lib.find(name)) return *p;
+    throw BadArgs(std::format("unknown prefab '{}' (the prefabs command lists them and rescans prefabs/)", name));
+}
+
+int rotation(const json& a, int fallback) {  // degrees in, quarter turns out
+    int degrees = integer(a, "rotation", 0, 270, fallback * 90);
+    if (degrees % 90) throw BadArgs("'rotation' must be 0, 90, 180 or 270");
+    return degrees / 90;
+}
+
+std::vector<float> params(const json& a, const Prefab& p) {
+    json given = a.contains("params") ? a["params"] : json::object();
+    if (!given.is_object()) throw BadArgs("'params' must be an object");
+    for (const auto& [key, value] : given.items())
+        if (std::ranges::find(p.params, key, &PrefabParam::name) == p.params.end())
+            throw BadArgs(p.generated() ? std::format("'{}' has no parameter '{}' (the prefabs command lists them)", p.name, key)
+                                        : std::format("'{}' is a structure: it takes no params", p.name));
+    std::vector<float> v;
+    for (const PrefabParam& q : p.params) {
+        double d = number(given, q.name.c_str(), q.lo, q.hi, q.fallback);
+        v.push_back(float(q.whole ? std::round(d) : d));
+    }
+    return v;
+}
+
+uint32_t instanceId(const json& a, const std::vector<Instance>& list) {
+    uint32_t id = uint32_t(number(a, "id", 1, 4294967295.0));
+    if (std::ranges::find(list, id, &Instance::id) == list.end())
+        throw BadArgs(std::format("no instance {} (the instances command lists them)", id));
+    return id;
+}
+
+json instanceJson(const Instance& in, const PrefabLibrary& lib) {
+    json params = json::object();
+    const Prefab* p = lib.find(in.prefab);
+    for (size_t i = 0; i < in.params.size(); ++i)
+        params[p && i < p->params.size() ? p->params[i].name : std::to_string(i)] = in.params[i];
+    return {{"id", in.id}, {"prefab", in.prefab}, {"position", {in.pos.x, in.pos.y, in.pos.z}}, {"rotation", in.rotation * 90},
+            {"seed", in.seed}, {"params", std::move(params)}, {"box", boxJson(instanceBox(in))}, {"cells", in.cells.size()}};
+}
+
+json prefabsJson(PrefabLibrary& lib, const std::vector<Instance>& instances) {
+    lib = loadPrefabs(lib.dir);
+    json list = json::array();
+    for (const Prefab& p : lib.prefabs) {
+        json e = {{"name", p.name}, {"kind", p.generated() ? "generated" : "structure"}, {"description", p.description}};
+        if (p.generated()) {
+            e["params"] = json::array();
+            for (const PrefabParam& q : p.params)
+                e["params"].push_back({{"name", q.name}, {"min", q.lo}, {"max", q.hi}, {"default", q.fallback}, {"integer", q.whole}});
+        } else {
+            e["size"] = {p.size.x, p.size.y, p.size.z};
+            if (p.foundation != kKeep) e["foundation"] = kBlockNames[p.foundation];
+            if (p.y) e["y"] = p.y;
+        }
+        list.push_back(std::move(e));
+    }
+    std::error_code ec;
+    return {{"dir", std::filesystem::absolute(lib.dir, ec).string()}, {"prefabs", std::move(list)}, {"errors", lib.errors},
+            {"blocks", kBlockNames}, {"instances", instances.size()}};
+}
+
+json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& list, EditHistory& h, PrefabLibrary& lib,
+         const GameView& v, Command& out) {
     if (cmd == "state")
         return {{"world", v.path}, {"size", {g.size.x, g.size.y, g.size.z}}, {"seed", v.seed}, {"sea_level", kSeaLevel},
                 {"unsaved", v.unsaved}, {"undo_steps", h.undo.size()}, {"redo_steps", h.redo.size()},
                 {"player", {v.player.x, v.player.y, v.player.z}}, {"camera", {v.eye.x, v.eye.y, v.eye.z}},
                 {"camera_yaw", v.yawDegrees}, {"camera_pitch", v.pitchDegrees}, {"editor", v.editing},
-                {"follow_claude", v.follow}, {"time_of_day", v.timeOfDay}};
+                {"follow_claude", v.follow}, {"time_of_day", v.timeOfDay}, {"instances", list.size()}};
     if (std::ranges::find(kTools, cmd) != std::end(kTools)) return edit({parseOp(cmd, a, g)}, g, h, out.dirty);
     if (cmd == "apply") {
         if (!a.contains("ops") || !a["ops"].is_array() || a["ops"].empty() || a["ops"].size() > size_t(kMaxOps))
@@ -379,12 +451,70 @@ json run(const std::string& cmd, const json& a, Grid& g, EditHistory& h, const G
     }
     if (cmd == "path") return edit(pathOps(a, g), g, h, out.dirty);
     if (cmd == "undo" || cmd == "redo") {
-        out.dirty = cmd == "undo" ? undoEdit(g, h) : redoEdit(g, h);
+        out.dirty = cmd == "undo" ? undoEdit(g, h, list) : redoEdit(g, h, list);
         return {{"changed", !out.dirty.empty()}, {"box", boxJson(out.dirty)}, {"undo_steps", h.undo.size()}, {"redo_steps", h.redo.size()}};
     }
     if (cmd == "save") {
         out.save = savePath(str(a, "path", ""), v);
         return json::object();
+    }
+    if (cmd == "prefabs") return prefabsJson(lib, list);
+    if (cmd == "place") {
+        const Prefab& p = prefabNamed(a, lib);
+        Instance in;
+        in.prefab = p.name;
+        in.pos = {integer(a, "x", 0, g.size.x - 1), 0, integer(a, "z", 0, g.size.z - 1)};
+        std::optional<int> y;
+        if (a.contains("y")) y = integer(a, "y", 0, g.size.y - 1);
+        in.rotation = rotation(a, 0);
+        in.seed = uint32_t(number(a, "seed", 0, 4294967295.0, double(uint32_t(in.pos.x) * 73856093u ^ uint32_t(in.pos.z) * 19349663u)));
+        in.params = params(a, p);
+        in.pos.y = y.value_or(groundTop(g, in.pos.x, in.pos.z));
+        Box box = prefabBox(g, p, in);
+        budget(volume(box) * kBrushNs * 1e-6, box, "the prefab is too big");
+        EditResult r = placePrefab(g, p, std::move(in), y, list, h);
+        if (r.error) throw BadArgs(r.error);
+        out.dirty = r.dirty;
+        return {{"instance", instanceJson(*std::ranges::find(list, r.id, &Instance::id), lib)}, {"undo_steps", h.undo.size()}};
+    }
+    if (cmd == "remove") {
+        uint32_t id = instanceId(a, list);
+        Box box = instanceBox(*std::ranges::find(list, id, &Instance::id));
+        budget(volume(box) * kBrushNs * 1e-6, box, "the instance is too big");
+        EditResult r = removePrefab(g, id, list, h);
+        out.dirty = r.dirty;
+        return {{"removed", r.id}, {"box", boxJson(r.dirty)}, {"undo_steps", h.undo.size()}};
+    }
+    if (cmd == "move") {
+        uint32_t id = instanceId(a, list);
+        const Instance& in = *std::ranges::find(list, id, &Instance::id);
+        const Prefab* p = lib.find(in.prefab);
+        if (!p) throw BadArgs(std::format("prefab '{}' isn't loaded anymore: remove the instance instead", in.prefab));
+        Instance to = in;
+        to.pos = {integer(a, "x", 0, g.size.x - 1), 0, integer(a, "z", 0, g.size.z - 1)};
+        std::optional<int> y;
+        if (a.contains("y")) y = integer(a, "y", 0, g.size.y - 1);
+        to.rotation = rotation(a, in.rotation);
+        to.pos.y = y.value_or(groundTop(g, to.pos.x, to.pos.z));  // before the removal: close enough for the estimate
+        if (const char* error = checkPlacement(g, *p, to)) throw BadArgs(error);  // e.g. params from a file
+        Box from = instanceBox(in), box = prefabBox(g, *p, to);
+        budget((volume(from) + volume(box)) * kBrushNs * 1e-6, merge(from, box), "a far move costs most: remove it and place it again");
+        EditResult r = movePrefab(g, *p, id, {to.pos.x, to.pos.z}, y, to.rotation, list, h);
+        if (r.error) throw BadArgs(r.error);
+        out.dirty = r.dirty;
+        return {{"instance", instanceJson(*std::ranges::find(list, id, &Instance::id), lib)}, {"undo_steps", h.undo.size()}};
+    }
+    if (cmd == "instances") {
+        bool all = !a.contains("x0") && !a.contains("z0") && !a.contains("x1") && !a.contains("z1");
+        auto [lo, hi] = all ? std::pair(glm::ivec2(0), glm::ivec2(g.size.x - 1, g.size.z - 1)) : region(a, g);
+        json found = json::array();
+        size_t count = 0;
+        for (const Instance& in : list) {
+            Box b = instanceBox(in);
+            if (b.hi.x < lo.x || b.lo.x > hi.x || b.hi.z < lo.y || b.lo.z > hi.y) continue;
+            if (++count <= kMaxListed) found.push_back(instanceJson(in, lib));
+        }
+        return {{"count", count}, {"listed", found.size()}, {"instances", std::move(found)}};
     }
     if (cmd == "heights") return heights(a, g);
     if (cmd == "inspect") return inspect(a, g);
@@ -404,7 +534,8 @@ json run(const std::string& cmd, const json& a, Grid& g, EditHistory& h, const G
 
 }  // namespace
 
-Command runCommand(std::string_view request, Grid& world, EditHistory& history, const GameView& view) {
+Command runCommand(std::string_view request, Grid& world, std::vector<Instance>& instances, EditHistory& history,
+                   PrefabLibrary& prefabs, const GameView& view) {
     Command out;
     json id;
     try {
@@ -420,7 +551,7 @@ Command runCommand(std::string_view request, Grid& world, EditHistory& history, 
         std::string brief = args.dump();
         std::erase(brief, '"');
         out.summary = cmd + " " + (brief.size() > 56 ? brief.substr(0, 53) + "..." : brief);
-        out.response = {{"id", id}, {"ok", true}, {"result", run(cmd, args, world, history, view, out)}};
+        out.response = {{"id", id}, {"ok", true}, {"result", run(cmd, args, world, instances, history, prefabs, view, out)}};
     } catch (const std::exception& e) {  // bad JSON or args: thrown before anything changed
         std::string error = e.what();
         std::ranges::replace_if(error, [](unsigned char c) { return c >= 0x80; }, '?');  // parse errors quote raw bytes: keep it valid UTF-8

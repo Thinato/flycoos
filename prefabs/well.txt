@@ -1,0 +1,71 @@
+description: Stone well with water, two posts, a bucket and a little thatch roof
+foundation: Cobble
+y: -3
+C = Cobble
+~ = Water
+W = Wood
+P = Planks
+T = Thatch
+
+layer
+CCCCC
+CCCCC
+CCCCC
+CCCCC
+CCCCC
+
+layer
+CCCCC
+C~~~C
+C~~~C
+C~~~C
+CCCCC
+
+layer
+CCCCC
+C~~~C
+C~~~C
+C~~~C
+CCCCC
+
+layer
+CCCCC
+C...C
+C...C
+C...C
+CCCCC
+
+layer
+
+
+W   W
+
+
+
+layer
+
+
+W P W
+
+
+
+layer
+
+
+WWWWW
+
+
+
+layer
+
+TTTTT
+TWWWT
+TTTTT
+
+
+layer
+
+
+TTTTT
+
+

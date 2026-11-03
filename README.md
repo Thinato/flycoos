@@ -74,8 +74,10 @@ the brush on the ground. Fly up to aim farther away.
 
 | Input | Action |
 |---|---|
-| Left mouse | Apply the brush at the crosshair (hold: 8 times a second). Fill box: click two corners |
-| 1–6 | Tool: Raise, Lower, Smooth, Flatten, Paint, Fill box |
+| Left mouse | Apply the brush at the crosshair (hold: 8 times a second). Fill box: click two corners. Prefab: place, or select the prefab you aim at |
+| 1–7 | Tool: Raise, Lower, Smooth, Flatten, Paint, Fill box, Prefab |
+| R | Prefab tool: rotate the next structure a quarter turn |
+| Delete / Backspace | Remove the selected prefab instance |
 | `[` `]` | Brush radius |
 | Q | Free the cursor to use the Editor panel (tool, radius, strength, height, material); Q again to aim |
 | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y | Undo / redo (Cmd works too) |
@@ -89,6 +91,11 @@ the brush on the ground. Fly up to aim farther away.
 - Brushes act on each column's highest solid voxel, so trees and rocks are treated as terrain.
   They never create or drain water: lowering a lakebed keeps it under water, lowering dry land
   makes a dry pit even below sea level.
+- **Prefab** places a tree, rock, house, camp... (picker, params sliders, seed reroll, rotation in
+  the panel) on the aimed voxel; a box previews it. Each placement is an *instance*: clicking one of
+  its voxels selects it, Delete removes it and puts back what was there (except what you sculpted
+  over it since). The panel lists all instances with Go to and Remove buttons and any prefab file
+  that failed to load. See "Prefabs" below.
 - The Editor panel shows undo depth, unsaved changes and when you last saved, plus debug numbers
   (aimed voxel, last op time and size, remesh time).
 
@@ -121,6 +128,10 @@ server. If the game isn't running, the tools say how to start it.
 | `heights` | A region's ground heights as numbers (≤ 4096 samples) and a histogram of top blocks |
 | `inspect` | Block counts in a box |
 | `goto` | Fly your camera (editor mode) to a point, facing `look_at`, if **Follow Claude** is on |
+| `prefabs` | List the prefabs (rescans `prefabs/` first, with parse errors), their params and sizes |
+| `place` | Place a prefab at column `x`, `z` (optional ground `y`, `rotation` 0/90/180/270, `seed`, `params`); returns its instance id and box |
+| `move` `remove` | Move an instance (same id, one undo step) or remove it |
+| `instances` | The placed instances, optionally those touching a region |
 
 Every command shows in the Editor panel's **MCP** section (last 20, with timings; rejected ones in
 red), and each edit's box flashes in the world for 3 seconds. **Follow Claude** (on by default) lets
@@ -136,6 +147,40 @@ game time: big brushes and a wide spread cost most; e.g. a 5-wide road of 160–
 can't stall the game: split bigger jobs. A client that sends no complete line for 5 s is dropped. Commands wait while
 the window is minimized. `python3 tools/test_mcp.py [--binary build/dev/flycoos]` runs an end-to-end
 check (it opens the game on a scratch world, on a free port).
+
+## Prefabs
+
+Generated prefabs grow from a few parameters with the same code as the world's own decoration:
+`tree` (trunk, radius), `pine` (height), `bush` (radius), `boulder` (radius), `spire` (height,
+radius). Structures are text files in `prefabs/` (`cottage`, `tent`, `camp`, `well`, `fence`,
+`ruin`); write a new one and the `prefabs` command (or **Rescan** in the panel) picks it up. The
+file name is the prefab name. This is `prefabs/fence.txt`:
+
+```
+description: Short wooden fence segment along x, posts every 3 blocks
+foundation: Wood
+W = Wood
+P = Planks
+
+layer
+W  W  W
+layer
+WPPWPPW
+layer
+W  W  W
+```
+
+- Header: `description:`, optional `foundation: <Block>` (fills down from the bottom layer's solid
+  cells to the ground, so it sits on slopes), optional `y: N` (the bottom layer sits at ground
+  + 1 + N; `-1` sinks it one block). Legend lines `X = Block` map one character to a block name.
+- Layers go bottom to top, each starting with a line `layer`. A layer's lines are rows along +x,
+  one per z, so it reads like the top-down map. `.` is Air (clears the world's voxel), a space
+  keeps it. A blank line right after `layer` is a row of spaces; blank lines before the next
+  `layer` are ignored; `#` lines are comments. At most 64 cells per axis, 512 KB per file and
+  2 MB for the whole folder; a world holds at most 10,000 instances.
+- The footprint is centered on the placed column. Rotation turns it counterclockwise seen from
+  above (90 turns +x toward −z); by convention the front is the last row (+z).
+- Errors name the file and line (unknown block, character not in the legend, too big...).
 
 ## Debug window
 
@@ -178,6 +223,7 @@ Example benchmark at night:
 ```
 src/world.*      voxel grid, region-based terrain (forest / rocky / plains), trees + rocks, parallelFor, world files
 src/edit.*       world edits (fill, raise, lower, smooth, flatten, paint) with undo/redo, voxel raycast
+src/prefab.*     prefabs: generated ones, the structure file parser, place/move/remove of instances
 src/commands.*   remote commands: JSON request -> edits, queries, top-down map PNG (no sockets, unit-tested)
 src/server.*     localhost command server thread (newline-delimited JSON)
 src/mesher.*     greedy mesher with ambient occlusion -> 8-byte packed quads
@@ -191,8 +237,9 @@ src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/nig
 src/debug_ui.*   Dear ImGui debug window (toggle with .)
 src/editor_ui.*  Editor panel, crosshair and brush preview (Tab)
 src/main.cpp     window, input, camera, main loop, benchmark mode, runs remote commands
+prefabs/         structure prefab files (cottage, tent, camp, well, fence, ruin)
 tools/           flycoos_mcp.py (MCP server bridging Claude Code to the game), test_mcp.py (end-to-end check)
 shaders/         world.metal (voxel, water, sky), compiled at runtime
 tests/           core_test.cpp: mesher, packing, physics, flight, camera, combat, NPC fights and loot, inventory, generation,
-                 world files, edits and undo, remote commands, raycast checks
+                 world files, edits and undo, remote commands, prefabs and instances, raycast checks
 ```

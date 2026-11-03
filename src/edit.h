@@ -52,7 +52,10 @@ struct EditRecord {
         std::vector<Block> cells;  // x fastest, then z, then y
     };
     std::vector<Part> parts;  // in the order they were applied
-    size_t bytes = 0;         // cells in all parts
+    // Prefab instances the step placed, removed or moved: the id and that instance on the other side
+    // of the step (none: it doesn't exist there). Swapped with the live list like the cells.
+    std::vector<std::pair<uint32_t, std::optional<Instance>>> instances;
+    size_t bytes = 0;  // cells in all parts, plus the instances' cell lists
 };
 struct EditHistory {
     std::vector<EditRecord> undo, redo;
@@ -61,6 +64,7 @@ struct EditHistory {
 struct EditResult {
     Box dirty;                    // exactly the voxels that changed; empty if nothing did
     const char* error = nullptr;  // set when the op was rejected (nothing changed)
+    uint32_t id = 0;              // placePrefab: the instance's id
 };
 
 // Why the op would be rejected, or nullptr. applyEdit checks this first.
@@ -70,10 +74,21 @@ Box editBox(const Grid& g, const EditOp& op);
 // Applies the op. If anything changed, pushes an undo record (or, with `join`, adds to the last one)
 // and clears the redo stack; the oldest records go past kMaxUndo steps or kMaxUndoBytes.
 EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join = false);
-// Restore the boxes of the last undo/redo record exactly; return their bounding box (empty when
-// there's none).
-Box undoEdit(Grid& g, EditHistory& history);
-Box redoEdit(Grid& g, EditHistory& history);
+// Restore the boxes and instances of the last undo/redo record exactly; return their bounding box
+// (empty when there's none).
+Box undoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances);
+Box redoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances);
+
+// Building blocks for edits outside applyEdit (prefab instances):
+// a copy of the box (inside g), x fastest, then z, then y;
+std::vector<Block> readBox(const Grid& g, Box b);
+// the part of `box` that differs from its copy `before`, cropped to what changed (empty box: nothing);
+EditRecord::Part changedPart(const Grid& g, Box box, const std::vector<Block>& before);
+// push `rec` as a new undo step (or add it to the last one with `join`), clear the redo stack and
+// drop the oldest steps past the caps.
+void pushRecord(EditHistory& history, EditRecord rec, bool join);
+// The bounding box of the voxels an instance changed.
+Box instanceBox(const Instance& in);
 
 // First opaque voxel along the ray (Amanatides-Woo DDA), with the face it was entered through
 // (normal points back toward the ray; zero if `from` is inside it). Water is passed through.

@@ -97,6 +97,7 @@ static int run(SDL_Window* window, const Options& opt) {
     DebugActions actions;
 
     Grid world(kWorldSize);
+    std::vector<Instance> instances;  // placed prefabs, saved with the world
     uint32_t worldSeed = game.seed;  // what the world was generated from; saved with it
     auto buildWorld = [&] {
         uint64_t start = SDL_GetTicksNS();
@@ -114,10 +115,13 @@ static int run(SDL_Window* window, const Options& opt) {
     };
     Editor editor;
     editor.path = opt.world ? opt.world : "worlds/world.flyw";
+    editor.prefabs = loadPrefabs("prefabs");  // next to worlds/, from the working folder
+    editor.place.seed = uint32_t(SDL_rand_bits());
+    for (const std::string& error : editor.prefabs.errors) std::println(stderr, "prefab {}", error);
     std::error_code ec;
     if (opt.world && std::filesystem::exists(opt.world, ec)) {
         uint64_t start = SDL_GetTicksNS();
-        if (std::string error = loadWorld(opt.world, world, worldSeed); !error.empty()) {
+        if (std::string error = loadWorld(opt.world, world, worldSeed, instances); !error.empty()) {
             std::println(stderr, "cannot load world {}: {}", opt.world, error);
             return 1;  // never fall back to generating: the next save would overwrite the file
         }
@@ -126,10 +130,10 @@ static int run(SDL_Window* window, const Options& opt) {
         renderer.uploadWorld(world);
         const RenderStats& s = renderer.stats;
         std::println("world {} ({:.1f} MB, {}x{}x{}, seed {}) loaded {:.3f}s + meshed/uploaded {:.3f}s | "
-                     "{} opaque + {} water quads in {} chunks",
+                     "{} opaque + {} water quads in {} chunks, {} prefab instances",
                      opt.world, double(std::filesystem::file_size(opt.world, ec)) / (1 << 20), world.size.x,
                      world.size.y, world.size.z, worldSeed, loadSeconds, s.meshSeconds, s.opaqueQuads, s.waterQuads,
-                     s.chunksTotal);
+                     s.chunksTotal, instances.size());
     } else {
         buildWorld();
     }
@@ -138,7 +142,7 @@ static int run(SDL_Window* window, const Options& opt) {
 
     auto save = [&] {
         uint64_t start = SDL_GetTicksNS();
-        std::string error = saveWorld(editor.path.c_str(), world, worldSeed);
+        std::string error = saveWorld(editor.path.c_str(), world, worldSeed, instances);
         double seconds = double(SDL_GetTicksNS() - start) * 1e-9;
         editor.status = error.empty() ? std::format("Saved {:.1f} MB in {:.2f} s",
                                                     double(std::filesystem::file_size(editor.path, ec)) / (1 << 20), seconds)
@@ -155,6 +159,7 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.error = error;
         if (dirty.empty()) return;
         editor.lastDirty = dirty;
+        ++editor.edits;
         renderer.updateWorld(world, dirty);
         editor.unsaved = true;
         editor.quitArmed = false;
@@ -198,6 +203,18 @@ static int run(SDL_Window* window, const Options& opt) {
             while (overlapsSolid(world, player.pos) && player.pos.y < float(world.size.y)) player.pos.y += 1;  // not buried by an edit
         }
         updateMouseMode();
+    };
+    // Editor flight to `pos`, facing `lookAt` past the character.
+    auto flyTo = [&](glm::vec3 pos, std::optional<glm::vec3> lookAt) {
+        if (!editor.active) setEditing(true);
+        player.pos = pos;
+        player.vel = {};
+        camTarget = player.pos + glm::vec3(0, 1.4f, 0);
+        if (lookAt) {
+            glm::vec3 d = *lookAt - camTarget;
+            camYaw = std::atan2(-d.x, -d.z);
+            camPitch = std::clamp(std::atan2(-d.y, glm::length(glm::vec2(d.x, d.z))), -0.5f, 1.45f);
+        }
     };
 
     std::vector<double> frameMs;
@@ -245,9 +262,14 @@ static int run(SDL_Window* window, const Options& opt) {
                 } else if (editor.active && e.key.key == SDLK_Q) {
                     editor.cursor = !editor.cursor;
                     updateMouseMode();
-                } else if (editor.active && e.key.key >= SDLK_1 && e.key.key < SDLK_1 + int(Tool::Count)) {
-                    editor.brush.tool = Tool(e.key.key - SDLK_1);
+                } else if (editor.active && e.key.key >= SDLK_1 && e.key.key <= SDLK_1 + int(Tool::Count)) {
+                    editor.prefabTool = e.key.key == SDLK_1 + int(Tool::Count);
+                    if (!editor.prefabTool) editor.brush.tool = Tool(e.key.key - SDLK_1);
                     editor.corner.reset();
+                } else if (editor.active && editor.prefabTool && e.key.key == SDLK_R) {
+                    editor.place.rotation = (editor.place.rotation + 1) % 4;
+                } else if (editor.active && editor.prefabTool && editor.selected && (e.key.key == SDLK_DELETE || e.key.key == SDLK_BACKSPACE)) {
+                    editorActions.remove = editor.selected;
                 } else if (editor.active && (e.key.key == SDLK_LEFTBRACKET || e.key.key == SDLK_RIGHTBRACKET)) {
                     editor.brush.radius = std::clamp(editor.brush.radius + (e.key.key == SDLK_RIGHTBRACKET ? 1 : -1), 0, kMaxBrushRadius);
                 } else if (e.key.key == SDLK_ESCAPE) {
@@ -322,7 +344,26 @@ static int run(SDL_Window* window, const Options& opt) {
             aim = raycast(world, fp.eye, glm::normalize(camTarget - fp.eye), kEditReach);
             brushTimer -= dt;
             bool fire = punchQueued || (punchHeld && brushTimer <= 0 && editor.brush.tool != Tool::Fill);
-            if (fire && aim && editor.brush.tool == Tool::Fill && !editor.corner) {
+            if (editor.prefabTool && aim && (aim->cell != editor.aimedCell || editor.edits != editor.aimedEdits)) {
+                const Instance* hit = instanceAt(instances, world, aim->cell);  // scans every instance cell: cached
+                editor.aimed = hit ? hit->id : 0;
+                editor.aimedCell = aim->cell;
+                editor.aimedEdits = editor.edits;
+            }
+            if (!aim) editor.aimed = 0, editor.aimedCell = glm::ivec3(-1);
+            if (editor.prefabTool) {  // clicks only: select the aimed instance, else place one
+                const Prefab* prefab = editor.prefabs.find(editor.place.prefab);
+                if (punchQueued && editor.aimed) {
+                    editor.selected = editor.aimed;
+                } else if (punchQueued && aim && prefab) {
+                    Instance in = editor.place;
+                    in.pos = aim->cell;
+                    uint64_t start = SDL_GetTicksNS();
+                    EditResult r = placePrefab(world, *prefab, in, aim->cell.y, instances, editor.history);
+                    edited(r.dirty, start, r.error);
+                    if (!r.error) editor.selected = r.id, editor.place.seed = uint32_t(SDL_rand_bits());  // the next one differs
+                }
+            } else if (fire && aim && editor.brush.tool == Tool::Fill && !editor.corner) {
                 editor.corner = fillCell(editor, *aim);
             } else if (fire && aim) {
                 brushTimer = 1 / kBrushRate;
@@ -358,7 +399,7 @@ static int run(SDL_Window* window, const Options& opt) {
             uint64_t start = SDL_GetTicksNS();
             GameView view{editor.path, worldSeed, editor.unsaved, editor.active, editor.follow, player.pos, fp.eye,
                           glm::degrees(camYaw), glm::degrees(camPitch), game.fovDegrees, game.timeOfDay};
-            Command c = runCommand(*request, world, editor.history, view);
+            Command c = runCommand(*request, world, instances, editor.history, editor.prefabs, view);
             nlohmann::json& response = c.response;
             if (!c.dirty.empty()) {
                 edited(c.dirty, start, nullptr);
@@ -367,7 +408,7 @@ static int run(SDL_Window* window, const Options& opt) {
             }
             if (c.save) {  // to the world's file, or a copy elsewhere (which leaves the unsaved state alone)
                 std::string target = c.save->empty() ? editor.path : *c.save;
-                std::string error = c.save->empty() ? save() : saveWorld(target.c_str(), world, worldSeed);
+                std::string error = c.save->empty() ? save() : saveWorld(target.c_str(), world, worldSeed, instances);
                 if (error.empty()) response["result"]["path"] = std::filesystem::absolute(target, ec).string();
                 else response = {{"id", response["id"]}, {"ok", false}, {"error", "save failed: " + error}};
             }
@@ -386,17 +427,7 @@ static int run(SDL_Window* window, const Options& opt) {
                 if (path.empty()) response = {{"id", response["id"]}, {"ok", false}, {"error", "screenshot failed"}};
                 else response["result"] = {{"path", path}, {"width", c.shot->width}, {"height", c.shot->height}, {"render_ms", renderMs}};
             }
-            if (c.go && editor.follow) {  // fly there in editor mode, facing look_at past the character
-                if (!editor.active) setEditing(true);
-                player.pos = c.go->pos;
-                player.vel = {};
-                camTarget = player.pos + glm::vec3(0, 1.4f, 0);
-                if (c.go->lookAt) {
-                    glm::vec3 d = *c.go->lookAt - camTarget;
-                    camYaw = std::atan2(-d.x, -d.z);
-                    camPitch = std::clamp(std::atan2(-d.y, glm::length(glm::vec2(d.x, d.z))), -0.5f, 1.45f);
-                }
-            }
+            if (c.go && editor.follow) flyTo(c.go->pos, c.go->lookAt);
             if (!c.dirty.empty()) c.summary += std::format("  -> changed {}x{}x{}", c.dirty.size().x, c.dirty.size().y, c.dirty.size().z);
             editor.log.push_back({c.summary, double(SDL_GetTicksNS() - start) * 1e-6, response["ok"].get<bool>()});
             if (editor.log.size() > Editor::kLogLines) editor.log.pop_front();
@@ -409,10 +440,10 @@ static int run(SDL_Window* window, const Options& opt) {
             const Entity* target = lootTarget(entities, player);
             drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player));
         }
-        drawEditorOverlay(fp.view, fp.fovY, world, editor, aim);
+        drawEditorOverlay(fp.view, fp.fovY, world, instances, editor, aim);
         characterWindow(characterOpen, player, game.armorK);
         bagsWindow(bagsOpen, player);
-        editorWindow(editor, aim, s, editorActions);
+        editorWindow(editor, instances, aim, s, editorActions);
         ImDrawData* uiDraw = ui.end(game, render, player, entities, s, actions);
         if (menus() != wasOpen) updateMouseMode();  // closed with a window's X button
         bool lastFrame = benchmark && frame + 1 >= opt.frames;
@@ -420,13 +451,27 @@ static int run(SDL_Window* window, const Options& opt) {
 
         if (editorActions.undo || editorActions.redo) {
             uint64_t start = SDL_GetTicksNS();
-            edited(editorActions.undo ? undoEdit(world, editor.history) : redoEdit(world, editor.history), start, nullptr);
+            edited(editorActions.undo ? undoEdit(world, editor.history, instances) : redoEdit(world, editor.history, instances), start, nullptr);
+        }
+        if (editorActions.remove) {
+            uint64_t start = SDL_GetTicksNS();
+            EditResult r = removePrefab(world, editorActions.remove, instances, editor.history);
+            edited(r.dirty, start, r.error);
+        }
+        if (auto it = std::ranges::find(instances, editorActions.goTo, &Instance::id); it != instances.end()) {
+            Box b = instanceBox(*it);  // look at it from the south, above
+            glm::vec3 center = glm::vec3(b.lo + b.hi + 1) * 0.5f;
+            float size = float(std::max({b.size().x, b.size().y, b.size().z}));
+            flyTo(center + glm::vec3(0, size * 0.8f + 4, size * 1.2f + 8), center);
+            editor.selected = it->id;
         }
         if (editorActions.save) save();
         editorActions = {};
         if (actions.regenerate) {
             buildWorld();
             editor.history = {};  // its records belong to the old world
+            instances.clear();
+            ++editor.edits;
             editor.corner.reset();
             editor.unsaved = true;
         }

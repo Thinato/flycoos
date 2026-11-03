@@ -3,7 +3,7 @@
 #include <optional>
 #include <string>
 
-#include "edit.h"
+#include "prefab.h"
 #include "renderer.h"
 
 // In-game world editor (Tab): brush settings, undo history and save state. main.cpp applies the
@@ -21,6 +21,17 @@ struct Editor {
     const char* error = nullptr;  // last rejected op
     double opMs = 0;      // last applyEdit/undo/redo
     Box lastDirty;
+
+    // Prefab tool (7): LMB places `place` (its prefab, rotation, seed and params) on the aimed voxel,
+    // or selects the instance that voxel belongs to.
+    bool prefabTool = false;
+    Instance place{.prefab = "tree"};
+    PrefabLibrary prefabs;
+    uint32_t selected = 0;  // instance id, 0 = none
+    // The instance owning the aimed voxel (0 = none), recomputed when the aim or the world changes.
+    uint32_t aimed = 0;
+    glm::ivec3 aimedCell{-1};
+    uint64_t edits = 0, aimedEdits = 0;  // edits counts every change to the world (see main.cpp)
 
     // Remote commands (Claude through the MCP bridge).
     struct LogLine {
@@ -43,10 +54,13 @@ inline glm::ivec3 fillCell(const Editor& editor, const RayHit& aim) {
 
 struct EditorActions {
     bool undo = false, redo = false, save = false;
+    uint32_t remove = 0, goTo = 0;  // instance ids
 };
 
 // The Editor panel (only takes input while editor.cursor is set). Call between DebugUI::begin and end.
-void editorWindow(Editor& editor, const std::optional<RayHit>& aim, const RenderStats& stats, EditorActions& actions);
-// Crosshair, the brush ring on the terrain (or Fill's box) at `aim`, and the unsaved-quit warning.
-void drawEditorOverlay(const glm::mat4& view, float fovY, const Grid& world, const Editor& editor,
-                       const std::optional<RayHit>& aim);
+void editorWindow(Editor& editor, const std::vector<Instance>& instances, const std::optional<RayHit>& aim,
+                  const RenderStats& stats, EditorActions& actions);
+// Crosshair, the brush ring on the terrain (or Fill's box, or the prefab's box) at `aim`, the
+// selected instance's box, and the unsaved-quit warning.
+void drawEditorOverlay(const glm::mat4& view, float fovY, const Grid& world, const std::vector<Instance>& instances,
+                       const Editor& editor, const std::optional<RayHit>& aim);

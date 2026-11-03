@@ -1,0 +1,13 @@
+description: Short wooden fence segment along x, posts every 3 blocks
+foundation: Wood
+W = Wood
+P = Planks
+
+layer
+W  W  W
+
+layer
+WPPWPPW
+
+layer
+W  W  W

@@ -2,7 +2,7 @@
 
 Milestone 0 is about 1,200 lines of C++ (including tests) and 160 lines of MSL. It has two layers:
 
-- **`flycoos_core`** (static library: `world`, `mesher`, `player`, `entity`, `item`, `edit`, `commands`): pure CPU
+- **`flycoos_core`** (static library: `world`, `mesher`, `player`, `entity`, `item`, `edit`, `prefab`, `commands`): pure CPU
   code with no GPU or SDL dependency, unit-tested by `tests/core_test.cpp`.
 - **`flycoos`** (executable: `main`, `renderer` + `shaders/world.metal`, `server`): platform, input,
   camera, GPU and the command server.
@@ -27,8 +27,9 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 
 | File | Responsibility |
 |---|---|
-| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, trees and rocks, `findSpawn`, world files (`saveWorld`/`loadWorld`) |
-| `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit`; `raycast` (voxel DDA); `groundTop` |
+| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, world files (`saveWorld`/`loadWorld`) |
+| `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels and prefab instances); `raycast` (voxel DDA); `groundTop` |
+| `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances |
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO, `Quad` packing/unpacking |
@@ -82,8 +83,12 @@ u32 FNV-1a checksum of every byte before it
   `u32 bytes` + runs of `(u8 block, LEB128 count − 1)` over its voxels, x fastest, then z, then y.
   Terrain is mostly horizontal layers, so whole layers of stone or air become single runs: the
   1024×192×1024 world is ~2.8 MB (vs 192 MiB in memory). Chunks encode and decode in parallel.
-- Later content (prefab instances, story markers) gets its own sections; old readers skip them, so
-  adding one needs no version bump.
+- The `INST` section (written only when there are prefab instances) holds them sorted by id: per
+  instance `u32 id | u8 name length | name | i32 x, y, z | u8 rotation | u32 seed | u8 param count |
+  f32 params | u32 cell count | cells (u16 x, y, z | u8 before | u8 after)`. A file without it
+  loads with no instances; older builds skip it.
+- Later content (story markers) gets its own sections; old readers skip them, so adding one needs
+  no version bump.
 - Loading rejects, with a message, anything that doesn't parse exactly: wrong magic or version,
   checksum mismatch (any corruption or truncation), bad sizes, block ids or run lengths. A
   `--world` file that exists but fails to load stops the game rather than generating a world that a
@@ -125,6 +130,45 @@ level, and raising pushes ground up through water.
 face it entered through (water is passed through). The editor casts it from the camera through
 the screen center.
 
+## Prefabs and instances
+
+- **Generated prefabs** (`tree`, `pine`, `bush`, `boulder`, `spire`) call the same `grow*`
+  functions as `generateTerrain` (terrain stays bit-identical per seed; `core_test` pins hashes).
+  They work on the live grid, so their rules depend on it: trunks grow down to the first solid
+  voxel (≤ 3 below the ground), canopies and needles only fill Air, rocks overwrite. Jitter is
+  seeded by the instance's seed at positions relative to its anchor, so a moved tree keeps its
+  shape. They ignore rotation.
+- **Structures** are text files (format in the README) parsed strictly into cells (Air, a block,
+  or `kKeep`), at most 64³, with line-numbered errors. Placing writes every non-keep cell at
+  `ground + 1 + y`, rotated by quarter turns around the footprint center, then fills
+  `foundation` down under the bottom layer's solid cells to the first solid voxel (≤ 32).
+  `loadPrefabs` reads regular `.txt` files directly in `prefabs/` (no symlinks or subfolders,
+  ≤ 256 files of ≤ 512 KB, ≤ 2 MB in all, so a rescan stays a few ms) from the working folder,
+  like `worlds/`; bad files become error lines.
+- **Instances.** `placePrefab` snapshots `prefabBox` (everything the prefab may write, from its
+  params or size), stamps, and diffs: the changed voxels, with their old and new values, are the
+  instance's `cells` (8 bytes each). `removePrefab` puts back `before` only where the voxel still
+  holds `after`, so sculpting on top survives. `movePrefab` is remove + place with the same id in
+  one undo step; it builds its record in a scratch history, so a failure (the new spot would change
+  nothing) leaves the voxels and the real history untouched. Ids grow from the highest id in the
+  list and the history, so undo can't make two instances share one.
+- **Caps** (placing and loading): 10,000 instances, 8M cells in all (64 MB), 8 params, and one
+  instance's cells span at most 96 per axis (a 64³ structure plus its foundation). Loading also
+  rejects id 0 or 2³²−1; placing fails when the ids run out. Loaded params aren't checked against
+  the prefab (the loader doesn't know it); `move` and the panel check them before using them.
+- **Overlapping instances** are allowed but not tracked: removing the lower one first restores its
+  `before` values only where the upper one didn't overwrite them, and removing the upper one later
+  puts back the lower one's voxels, which then belong to no instance (orphaned voxels).
+  `instanceAt` picks the lowest id. Remove overlapping instances newest first to avoid that.
+- **Undo.** An `EditRecord` carries, besides its voxel parts, `(id, instance on the other side)`
+  pairs. Undo/redo swap them with the live list (sorted by id) the way parts swap cells, so voxels
+  and the list always move together; a record's bytes count the instances' cells toward the
+  256 MB cap. The returned box covers the instances' boxes too, so a remove whose voxels were all
+  sculpted over still marks the world unsaved.
+- **Editor:** tool 7 places `editor.place` on the aimed voxel or selects the instance owning it.
+  `instanceAt` scans every instance cell, so the result is cached until the aimed voxel changes or
+  the world is edited (`editor.edits`). The panel's instance list draws only its visible rows.
+
 ## Command server and MCP bridge
 
 Claude edits the world through the running game, so its edits share the user's undo history,
@@ -156,6 +200,11 @@ remesh path and screen.
   world file's folder, after resolving `..` and symlinks. It returns the
   response plus what only the game can do: the dirty box to remesh and flash, a save request, a
   screenshot camera, a goto target. Errors change nothing.
+- **Prefab commands:** `prefabs` rescans the folder; `place` checks the prefab, column, ground y,
+  rotation, seed and every param (range, known name) before touching anything, and is budgeted by
+  `prefabBox` (20 ns per voxel plus the remeshed chunk columns); `remove` by the instance's box;
+  `move` by the old and new boxes together (the new one at the ground before the removal: an
+  estimate), so far moves are refused with advice to remove and place again.
 - **`path`:** samples the polyline every half brush radius, takes the ground height under each
   sample (ignoring trees), averages it over ±(16 + width) blocks along the path (or uses a fixed
   height), subtracts `depth`, and emits Flatten discs at full strength, then Paint discs.
@@ -454,6 +503,9 @@ derives the following from the sun height:
 | Each held-brush application is its own undo step | Group a stroke into one record (`applyEdit`'s `join`) |
 | One remote command per frame; the window must not be minimized | Drain several per frame if Claude batches |
 | A long remote `path` (and its undo) remeshes its whole bounding box | Remesh per op / record part |
+| Far prefab moves are over the budget (one bounding box is remeshed) | The same: remesh per record part |
+| `instanceAt` scans every instance's cells (cached per aimed voxel) | A per-chunk index of instance cells if there are thousands |
+| Overlapping instances can leave orphaned voxels when removed oldest first | Track which instance owns each voxel |
 | One draw call per chunk | `SDL_DrawGPUPrimitivesIndirect` with a GPU-culled draw list |
 | MSL-only shaders (macOS) | HLSL/Slang + SDL_shadercross for SPIR-V/DXIL (M1) |
 | No shadows | Cascaded shadow map for sun/moon (M1) |

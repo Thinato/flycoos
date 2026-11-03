@@ -265,3 +265,36 @@
   - At most one command per frame (~120 per second), and none while the window is minimized.
   - The idle cost per frame is one atomic load; a screenshot stalls the frame for its render.
 
+
+## ADR-014: Prefabs as recorded instances; structures as text files
+
+- **Status:** accepted (2026-11-03)
+- **Context:** the user and Claude author a story world by hand and want ready-made trees, rocks,
+  houses and camps that can be placed, moved and removed later, by either of them, without
+  undoing everything placed since.
+- **Decision:**
+  - Two prefab sources behind one place/remove/move interface: generated prefabs call the same
+    `grow*` functions as terrain generation (so terrain stays bit-identical, pinned by a test);
+    structures are hand-writable text files in `prefabs/` (header, legend, layers; `.` clears,
+    space keeps), parsed strictly with line numbers and rescanned on demand.
+  - Placing stamps voxels into the grid and records an instance: id, prefab, anchor, rotation,
+    seed, params and every voxel it changed with its old and new value. Removing restores the old
+    value only where the voxel still holds the new one. Instances are saved in an `INST` section.
+  - Undo records carry instance changes next to their voxel parts and swap both, so one step
+    always restores voxels and the instance list together.
+  - Four blocks appended after `Plate` (Planks, Cobble, Thatch, Ember), filling the renderer's
+    32-entry palette exactly; tents use the existing Burlap as canvas.
+- **Alternatives considered:**
+  - Baking prefabs into the voxels only: no move or remove after later edits.
+  - Re-stamping instances from their definitions on load (store only the placement): smaller
+    files, but a changed prefab file or generator would silently change the world, and removal
+    couldn't know what was under it.
+  - One world-independent voxel buffer for generated prefabs too: their rules (trunks reach the
+    ground, canopies only fill air) depend on the world, and terrain would no longer be
+    bit-identical.
+  - JSON or an image format for structures: harder to write and diff by hand than a text grid.
+- **Consequences:**
+  - An instance costs 8 bytes per changed voxel in memory, in the file and in undo history.
+  - Editing a prefab file changes only later placements and moves; placed instances keep their
+    voxels and can always be removed, even when the file is gone.
+  - Another block needs a bigger palette (shader and uniform change, with a perf A/B).

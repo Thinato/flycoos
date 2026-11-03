@@ -11,8 +11,8 @@
 
 namespace {
 
-constexpr const char* kToolNames[] = {"Raise", "Lower", "Smooth", "Flatten", "Paint", "Fill box"};
-static_assert(std::size(kToolNames) == size_t(Tool::Count));
+constexpr const char* kToolNames[] = {"Raise", "Lower", "Smooth", "Flatten", "Paint", "Fill box", "Prefab"};
+static_assert(std::size(kToolNames) == size_t(Tool::Count) + 1);
 constexpr Block kMaterials[] = {Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Rock, Water, Air};  // solid ones first
 constexpr const char* kMaterialNames[] = {"Grass", "Dirt", "Stone", "Sand", "Snow", "Wood", "Leaves", "Rock", "Water", "Air (clear)"};
 constexpr int kSolidMaterials = 8;
@@ -20,9 +20,17 @@ constexpr float kFlashSeconds = 3;
 
 }  // namespace
 
-void editorWindow(Editor& ed, const std::optional<RayHit>& aim, const RenderStats& s, EditorActions& actions) {
+void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std::optional<RayHit>& aim, const RenderStats& s,
+                  EditorActions& actions) {
     EditOp& b = ed.brush;
     if (b.tool == Tool::Paint && !isOpaque(b.block)) b.block = Grass;  // Paint needs a solid block
+    const Prefab* prefab = ed.prefabs.find(ed.place.prefab);
+    if (!prefab && !ed.prefabs.prefabs.empty()) prefab = &ed.prefabs.prefabs[0];  // e.g. its file was removed
+    if (prefab && (ed.place.prefab != prefab->name || ed.place.params.size() != prefab->params.size())) {
+        ed.place.prefab = prefab->name;
+        ed.place.params.clear();
+        for (const PrefabParam& q : prefab->params) ed.place.params.push_back(q.fallback);
+    }
     if (!ed.active) return;
     // While the crosshair owns the mouse the panel is display-only, so clicks can't land in it.
     ImGui::SetNextWindowPos({ImGui::GetIO().DisplaySize.x - 12, 12}, ImGuiCond_FirstUseEver, {1, 0});
@@ -31,23 +39,53 @@ void editorWindow(Editor& ed, const std::optional<RayHit>& aim, const RenderStat
         ImGui::End();
         return;
     }
-    int tool = int(b.tool);
-    for (int t = 0; t < int(Tool::Count); ++t) {
-        if (t % 3) ImGui::SameLine();
+    int tool = ed.prefabTool ? int(Tool::Count) : int(b.tool);
+    for (int t = 0; t <= int(Tool::Count); ++t) {
+        if (t % 4) ImGui::SameLine();
         ImGui::RadioButton(kToolNames[t], &tool, t);
     }
-    b.tool = Tool(tool);
-    if (b.tool != Tool::Fill) {
+    ed.prefabTool = tool == int(Tool::Count);
+    if (!ed.prefabTool) b.tool = Tool(tool);
+    if (ed.prefabTool) {
+        if (ImGui::BeginCombo("Prefab", prefab ? prefab->name.c_str() : "none loaded")) {
+            for (const Prefab& p : ed.prefabs.prefabs)
+                if (ImGui::Selectable(p.name.c_str(), &p == prefab)) ed.place.prefab = p.name;  // params reset next frame
+            ImGui::EndCombo();
+        }
+        if (prefab) ImGui::TextDisabled("%s", prefab->description.c_str());
+        if (prefab && ed.place.params.size() == prefab->params.size()) {
+            for (size_t i = 0; i < prefab->params.size(); ++i) {
+                const PrefabParam& q = prefab->params[i];
+                float& v = ed.place.params[i];
+                if (q.whole) {
+                    int n = int(v);
+                    ImGui::SliderInt(q.name.c_str(), &n, int(q.lo), int(q.hi));
+                    v = float(n);
+                } else {
+                    ImGui::SliderFloat(q.name.c_str(), &v, q.lo, q.hi, "%.1f");
+                }
+            }
+            if (!prefab->generated())
+                ImGui::Text("%d x %d x %d, rotation %d (R)", prefab->size.x, prefab->size.z, prefab->size.y, ed.place.rotation * 90);
+        }
+        ImGui::Text("Seed %u", ed.place.seed);
+        ImGui::SameLine();
+        if (ImGui::Button("Reroll")) ed.place.seed = uint32_t(SDL_rand_bits());
+        ImGui::SameLine();
+        if (ImGui::Button("Rescan prefabs/")) ed.prefabs = loadPrefabs(ed.prefabs.dir);
+        ImGui::TextDisabled("LMB places on the aimed voxel, or selects the\nprefab you aim at; Delete removes the selection.");
+    }
+    if (!ed.prefabTool && b.tool != Tool::Fill) {
         ImGui::SliderInt("Radius", &b.radius, 0, kMaxBrushRadius);
         ImGui::SetItemTooltip("[ and ] change it too.");
         ImGui::SliderInt("Strength", &b.strength, 1, 16);
         ImGui::SetItemTooltip("Blocks per application at the center; holding the button applies 8 times a second.");
     }
-    if (b.tool == Tool::Flatten) {
+    if (!ed.prefabTool && b.tool == Tool::Flatten) {
         ImGui::SliderInt("Height", &b.height, 0, kWorldSize.y - 1);
         ImGui::SetItemTooltip("Ground height to flatten to. Each stroke takes it from where it starts.");
     }
-    if (b.tool == Tool::Paint || b.tool == Tool::Fill) {
+    if (!ed.prefabTool && (b.tool == Tool::Paint || b.tool == Tool::Fill)) {
         int count = b.tool == Tool::Fill ? int(std::size(kMaterials)) : kSolidMaterials;
         int current = int(std::ranges::find(kMaterials, b.block) - std::begin(kMaterials));
         if (ImGui::BeginCombo("Material", current < count ? kMaterialNames[current] : "?")) {
@@ -56,7 +94,7 @@ void editorWindow(Editor& ed, const std::optional<RayHit>& aim, const RenderStat
             ImGui::EndCombo();
         }
     }
-    if (b.tool == Tool::Fill) {
+    if (!ed.prefabTool && b.tool == Tool::Fill) {
         if (ed.corner) ImGui::Text("First corner %d %d %d: click the second", ed.corner->x, ed.corner->y, ed.corner->z);
         else ImGui::TextDisabled("Click two corners. Air clears the aimed voxels;\nblocks go in front of the aimed face.");
     }
@@ -74,6 +112,27 @@ void editorWindow(Editor& ed, const std::optional<RayHit>& aim, const RenderStat
     else if (ed.savedAt >= 0) ImGui::Text("Saved %.0f s ago", double(SDL_GetTicksNS()) * 1e-9 - ed.savedAt);
     else ImGui::TextDisabled("No changes");
     if (!ed.status.empty()) ImGui::TextWrapped("%s", ed.status.c_str());
+
+    ImGui::SeparatorText("Prefabs");
+    ImGui::Text("%zu instances, %zu prefabs", instances.size(), ed.prefabs.prefabs.size());
+    for (const std::string& error : ed.prefabs.errors) ImGui::TextColored({1, 0.35f, 0.3f, 1}, "%s", error.c_str());
+    if (!instances.empty() && ImGui::BeginChild("instances", {0, float(std::min<size_t>(instances.size(), 6)) * ImGui::GetFrameHeightWithSpacing()})) {
+        ImGuiListClipper clipper;  // only the visible rows
+        clipper.Begin(int(instances.size()));
+        while (clipper.Step())
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                const Instance& in = instances[size_t(i)];
+                ImGui::PushID(int(in.id));
+                if (ImGui::SmallButton("Go to")) actions.goTo = in.id;
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove")) actions.remove = in.id;
+                ImGui::SameLine();
+                ImGui::TextColored(in.id == ed.selected ? ImVec4(0.3f, 1, 0.5f, 1) : ImVec4(0.8f, 0.85f, 0.9f, 1), "#%u %s at %d %d %d",
+                                   in.id, in.prefab.c_str(), in.pos.x, in.pos.y, in.pos.z);
+                ImGui::PopID();
+            }
+    }
+    if (!instances.empty()) ImGui::EndChild();
 
     ImGui::SeparatorText("Debug");
     if (aim) ImGui::Text("Aim %d %d %d, face %d %d %d", aim->cell.x, aim->cell.y, aim->cell.z, aim->normal.x, aim->normal.y, aim->normal.z);
@@ -95,11 +154,12 @@ void editorWindow(Editor& ed, const std::optional<RayHit>& aim, const RenderStat
     ImGui::PopTextWrapPos();
     ImGui::Separator();
     ImGui::TextDisabled("%s", ed.cursor ? "Q: back to the crosshair" : "Q: cursor for this panel");
-    ImGui::TextDisabled("LMB apply (hold repeats)   1-6 tool   [ ] radius\nCtrl+Z undo   Ctrl+Shift+Z / Ctrl+Y redo   Ctrl+S save");
+    ImGui::TextDisabled("LMB apply (hold repeats)   1-7 tool   [ ] radius   R rotate prefab\nCtrl+Z undo   Ctrl+Shift+Z / Ctrl+Y redo   Ctrl+S save");
     ImGui::End();
 }
 
-void drawEditorOverlay(const glm::mat4& view, float fovY, const Grid& world, const Editor& ed, const std::optional<RayHit>& aim) {
+void drawEditorOverlay(const glm::mat4& view, float fovY, const Grid& world, const std::vector<Instance>& instances,
+                       const Editor& ed, const std::optional<RayHit>& aim) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ImVec2 screen = ImGui::GetIO().DisplaySize;
     if (screen.x <= 0 || screen.y <= 0) return;
@@ -134,9 +194,23 @@ void drawEditorOverlay(const glm::mat4& view, float fovY, const Grid& world, con
         dl->AddLine(ImVec2(c.x - 9, c.y), ImVec2(c.x + 10, c.y), color, w);
         dl->AddLine(ImVec2(c.x, c.y - 9), ImVec2(c.x, c.y + 10), color, w);
     }
+    if (auto it = std::ranges::find(instances, ed.selected, &Instance::id); it != instances.end()) {
+        Box b = instanceBox(*it);
+        drawBox(b.lo, b.hi, uiColor(0.3f, 1, 0.5f, 0.9f));
+    }
     if (!aim) return;
 
     ImU32 color = uiColor(1, 0.85f, 0.3f, 0.95f);
+    if (ed.prefabTool) {  // the box the prefab may fill (without the foundation's reach down)
+        const Prefab* p = ed.prefabs.find(ed.place.prefab);
+        Instance at = ed.place;
+        at.pos = aim->cell;
+        if (!p || checkPlacement(world, *p, at) || ed.aimed) return;
+        Box b = prefabBox(world, *p, at);
+        if (!p->generated()) b.lo.y = std::max(b.lo.y, aim->cell.y + 1 + p->y);
+        drawBox(b.lo, b.hi, color);
+        return;
+    }
     if (ed.brush.tool == Tool::Fill) {  // the box the next click fills
         drawBox(ed.corner.value_or(fillCell(ed, *aim)), fillCell(ed, *aim), color);
         return;

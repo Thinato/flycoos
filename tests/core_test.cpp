@@ -12,6 +12,7 @@
 #include "edit.h"
 #include "entity.h"
 #include "mesher.h"
+#include "prefab.h"
 
 static int failures = 0;
 #define CHECK(cond)                                                              \
@@ -208,12 +209,20 @@ static void physics() {
     }
 }
 
+// FNV-1a of every voxel: pins generated terrain bit for bit across refactors.
+static uint32_t fnv(const Grid& g) {
+    uint32_t h = 2166136261u;
+    for (Block b : g.cells) h = (h ^ b) * 16777619u;
+    return h;
+}
+
 static void generation() {
     Grid a({64, 128, 64}), b({64, 128, 64}), c({64, 128, 64});
     generateTerrain(a, 7);
     generateTerrain(b, 7);
     generateTerrain(c, 8);
     CHECK(a.cells == b.cells);
+    CHECK(fnv(a) == 0x41eabed1u);  // recorded before trees and rocks became shared prefab generators
     CHECK(a.cells != c.cells);
     glm::vec3 spawn = findSpawn(a);
     CHECK(a.get(glm::ivec3(glm::floor(spawn)) - glm::ivec3(0, 1, 0)) == Grass);
@@ -239,6 +248,7 @@ static void regions() {
             sum[size_t(z + 1) * (n + 1) + x + 1] = (tree || rock) + sum[size_t(z) * (n + 1) + x + 1] +
                                                    sum[size_t(z + 1) * (n + 1) + x] - sum[size_t(z) * (n + 1) + x];
         }
+    CHECK(fnv(g) == 0xbd6a5444u);  // forests, spires and boulders unchanged (recorded before the prefab refactor)
     CHECK(forest > n * n / 20);   // > 5% of columns under trees
     CHECK(rocky > n * n / 200);   // > 0.5% of columns with rocks
     constexpr int kOpen = 96;
@@ -777,10 +787,11 @@ static void worldFiles() {
     generateTerrain(g, 3);
     g.set({5, 90, 5}, Plate);  // a block generation never places
     std::string path = (std::filesystem::temp_directory_path() / "flycoos_core_test.flyw").string();
-    CHECK(saveWorld(path.c_str(), g, 99).empty());
+    CHECK(saveWorld(path.c_str(), g, 99, {}).empty());
     Grid back({32, 32, 32});
     uint32_t seed = 0;
-    CHECK(loadWorld(path.c_str(), back, seed).empty());
+    std::vector<Instance> none;
+    CHECK(loadWorld(path.c_str(), back, seed, none).empty());
     CHECK(back.size == g.size && back.cells == g.cells && seed == 99);
 
     std::ifstream in(path, std::ios::binary);
@@ -789,7 +800,7 @@ static void worldFiles() {
         std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes;
         Grid h({32, 32, 32});
         uint32_t s = 0;
-        std::string error = loadWorld(path.c_str(), h, s);
+        std::string error = loadWorld(path.c_str(), h, s, none);
         return error.empty() && h.cells == g.cells ? std::string("same") : error.empty() ? std::string("different") : error;
     };
     auto reseal = [](std::string bytes) {  // recompute the checksum, so the structural checks are what's tested
@@ -819,7 +830,7 @@ static void worldFiles() {
     std::filesystem::remove(path);
 
     std::filesystem::create_directories(path + "/occupied");  // the rename fails: no temp file is left behind
-    CHECK(!saveWorld(path.c_str(), g, 99).empty() && !std::filesystem::exists(path + ".tmp"));
+    CHECK(!saveWorld(path.c_str(), g, 99, {}).empty() && !std::filesystem::exists(path + ".tmp"));
     std::filesystem::remove_all(path);
 }
 
@@ -876,6 +887,7 @@ static void editing() {
     {  // seeded fuzz: random ops, undos and redos always match the recorded states bit for bit
         Grid g = editWorld();
         EditHistory history;
+        std::vector<Instance> none;
         std::mt19937 rng(7);
         std::vector<uint64_t> states{hashCells(g)};  // timeline; states[at] is the current world
         size_t at = 0;
@@ -883,10 +895,10 @@ static void editing() {
         for (int step = 0; step < 400; ++step) {
             int action = std::uniform_int_distribution<int>(0, 9)(rng);
             if (action < 3 && at > 0) {
-                CHECK(!undoEdit(g, history).empty());
+                CHECK(!undoEdit(g, history, none).empty());
                 --at, ++undos;
             } else if (action < 5 && at + 1 < states.size()) {
-                CHECK(!redoEdit(g, history).empty());
+                CHECK(!redoEdit(g, history, none).empty());
                 ++at, ++redos;
             } else if (!applyEdit(g, randomOp(rng, g), history).dirty.empty()) {
                 states.resize(++at);
@@ -895,10 +907,10 @@ static void editing() {
             CHECK(hashCells(g) == states[at]);
         }
         while (at > 0) {  // all the way back to the generated world
-            CHECK(!undoEdit(g, history).empty());
+            CHECK(!undoEdit(g, history, none).empty());
             CHECK(hashCells(g) == states[--at]);
         }
-        CHECK(undoEdit(g, history).empty() && hashCells(g) == hashCells(editWorld()));
+        CHECK(undoEdit(g, history, none).empty() && hashCells(g) == hashCells(editWorld()));
         CHECK(states.size() > 50 && undos > 50 && redos > 20);
     }
     {  // brushes: raise keeps the surface material on top of subsoil; lower under water keeps water
@@ -975,7 +987,9 @@ static void commands() {
     const uint64_t original = hashCells(g);
     EditHistory h;
     GameView view;
-    auto run = [&](std::string_view request) { return runCommand(request, g, h, view); };
+    std::vector<Instance> instances;
+    PrefabLibrary prefabs = loadPrefabs("no-such-folder");
+    auto run = [&](std::string_view request) { return runCommand(request, g, instances, h, prefabs, view); };
     auto ok = [&](const Command& c) { return c.response["ok"].get<bool>(); };
 
     Command c = run(R"({"id": 7, "cmd": "state"})");
@@ -1031,9 +1045,9 @@ static void commands() {
     // caps: a fill bigger than 128^3 (after clamping to the world) is rejected; heights stay under 4096 samples
     Grid big({256, 192, 256});
     EditHistory bh;
-    CHECK(!ok(runCommand(R"({"cmd": "fill", "args": {"min": [0, 0, 0], "max": [255, 191, 255], "material": "Air"}})", big, bh, view)));
-    CHECK(!ok(runCommand(R"({"cmd": "inspect", "args": {"min": [0, 0, 0], "max": [255, 191, 255]}})", big, bh, view)));
-    c = runCommand(R"({"cmd": "heights", "args": {"x0": -50, "z0": 0, "x1": 9999, "z1": 255}})", big, bh, view);
+    CHECK(!ok(runCommand(R"({"cmd": "fill", "args": {"min": [0, 0, 0], "max": [255, 191, 255], "material": "Air"}})", big, instances, bh, prefabs, view)));
+    CHECK(!ok(runCommand(R"({"cmd": "inspect", "args": {"min": [0, 0, 0], "max": [255, 191, 255]}})", big, instances, bh, prefabs, view)));
+    c = runCommand(R"({"cmd": "heights", "args": {"x0": -50, "z0": 0, "x1": 9999, "z1": 255}})", big, instances, bh, prefabs, view);
     const nlohmann::json& r = c.response["result"];
     CHECK(ok(c) && r["x0"] == 0 && r["columns"].get<int>() * r["rows"].get<int>() <= 4096 && r["top_blocks"].empty());
     c = run(R"({"cmd": "inspect", "args": {"min": [0, 0, 0], "max": [3, 95, 3]}})");
@@ -1104,17 +1118,376 @@ static void commands() {
     std::string raises;
     for (int i = 0; i < 3; ++i) raises += std::format(R"({}{{"tool": "raise", "x": {}, "z": 100, "radius": 32}})", i ? "," : "", 40 + 20 * i);
     uint64_t bigBefore = hashCells(big);
-    c = runCommand(R"({"cmd": "apply", "args": {"ops": [)" + raises + "]}}", big, bh, view);
+    c = runCommand(R"({"cmd": "apply", "args": {"ops": [)" + raises + "]}}", big, instances, bh, prefabs, view);
     CHECK(!ok(c) && c.response["error"].get<std::string>().contains("budget") && hashCells(big) == bigBefore && bh.undo.empty());
-    CHECK(!ok(runCommand(R"({"cmd": "path", "args": {"points": [[0, 0], [255, 255]], "width": 65}})", big, bh, view)));
-    CHECK(ok(runCommand(R"({"cmd": "apply", "args": {"ops": [)" + raises.substr(0, raises.rfind(",{")) + "]}}", big, bh, view)));
+    CHECK(!ok(runCommand(R"({"cmd": "path", "args": {"points": [[0, 0], [255, 255]], "width": 65}})", big, instances, bh, prefabs, view)));
+    CHECK(ok(runCommand(R"({"cmd": "apply", "args": {"ops": [)" + raises.substr(0, raises.rfind(",{")) + "]}}", big, instances, bh, prefabs, view)));
     Grid wide({256, 32, 256});
     EditHistory wh;
     auto corners = [&](int far) {
         return runCommand(std::format(R"({{"cmd": "apply", "args": {{"ops": [{{"tool": "fill", "min": [0, 0, 0], "max": [0, 0, 0], "material": "Stone"}},
-            {{"tool": "fill", "min": [{0}, 0, {0}], "max": [{0}, 0, {0}], "material": "Stone"}}]}}}})", far), wide, wh, view);
+            {{"tool": "fill", "min": [{0}, 0, {0}], "max": [{0}, 0, {0}], "material": "Stone"}}]}}}})", far), wide, instances, wh, prefabs, view);
     };
     CHECK(ok(corners(223)) && !ok(corners(224)));  // 7x7 chunk columns to remesh are fine, 8x8 are too many
+
+    // prefabs: list (rescanning the folder), place, move, remove, instances; each edit is one undo step
+    g = editWorld();
+    h = {};
+    instances.clear();
+    prefabs.dir = std::filesystem::path(FLYCOOS_SOURCE_DIR) / "prefabs";
+    c = run(R"({"cmd": "prefabs"})");
+    CHECK(ok(c) && c.response["result"]["prefabs"].size() == 11 && c.response["result"]["errors"].empty());
+    CHECK(c.response["result"]["prefabs"][0]["params"][0]["name"] == "trunk" && c.response["result"]["prefabs"][5].contains("size"));
+    c = run(R"({"cmd": "place", "args": {"prefab": "cottage", "x": 30, "z": 30, "rotation": 90}})");
+    CHECK(ok(c) && c.response["result"]["instance"]["id"] == 1 && c.response["result"]["instance"]["rotation"] == 90 && !c.dirty.empty());
+    c = run(R"({"cmd": "place", "args": {"prefab": "tree", "x": 12, "z": 50, "y": 60, "seed": 4000000000, "params": {"trunk": 13.4, "radius": 3.5}}})");
+    CHECK(ok(c) && c.response["result"]["instance"]["params"]["trunk"] == 13 && c.response["result"]["instance"]["seed"] == 4000000000u &&
+          c.response["result"]["instance"]["position"][1] == 60 && h.undo.size() == 2);
+    c = run(R"({"cmd": "move", "args": {"id": 1, "x": 45, "z": 20}})");
+    CHECK(ok(c) && c.response["result"]["instance"]["position"][0] == 45 && c.response["result"]["instance"]["rotation"] == 90 && h.undo.size() == 3);
+    c = run(R"({"cmd": "instances", "args": {"x0": 40, "z0": 10, "x1": 50, "z1": 30}})");
+    CHECK(ok(c) && c.response["result"]["count"] == 1 && c.response["result"]["instances"][0]["prefab"] == "cottage");
+    CHECK(run(R"({"cmd": "instances"})").response["result"]["count"] == 2 && run(R"({"cmd": "state"})").response["result"]["instances"] == 2);
+    c = run(R"({"cmd": "remove", "args": {"id": 2}})");
+    CHECK(ok(c) && c.response["result"]["removed"] == 2 && instances.size() == 1 && !c.dirty.empty());
+    CHECK(ok(run(R"({"cmd": "undo"})")) && instances.size() == 2);
+    uint64_t placedAll = hashCells(g);
+    for (std::string_view bad : {
+             R"({"cmd": "place", "args": {"prefab": "castle", "x": 10, "z": 10}})",
+             R"({"cmd": "place", "args": {"x": 10, "z": 10}})",
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 64, "z": 10}})",                              // outside the world
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": -1}})",
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "y": 96}})",
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "rotation": 45}})",
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "rotation": 360}})",
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "params": {"trunk": 99}}})",
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "params": {"height": 9}}})",   // not a tree parameter
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "params": [10]}})",
+             R"({"cmd": "place", "args": {"prefab": "cottage", "x": 10, "z": 10, "params": {"trunk": 9}}})",
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "seed": -1}})",
+             R"({"cmd": "place", "args": {"prefab": "bush", "x": 10, "z": 10, "y": 2}})",                    // buried: changes nothing
+             R"({"cmd": "remove", "args": {"id": 7}})",
+             R"({"cmd": "remove", "args": {}})",
+             R"({"cmd": "move", "args": {"id": 7, "x": 10, "z": 10}})",
+             R"({"cmd": "move", "args": {"id": 1, "x": 10, "z": 1000}})",
+             R"({"cmd": "move", "args": {"id": 1, "x": 10, "z": 10, "rotation": -90}})",
+             R"({"cmd": "instances", "args": {"x0": 1}})"}) {
+        c = run(bad);
+        CHECK(!ok(c) && c.response["error"].is_string() && c.dirty.empty());
+    }
+    CHECK(hashCells(g) == placedAll && instances.size() == 2 && h.undo.size() == 3);
+    Grid far({1024, 64, 1024});
+    std::vector<Instance> farList;
+    EditHistory fh;
+    CHECK(ok(runCommand(R"({"cmd": "place", "args": {"prefab": "boulder", "x": 10, "z": 10, "y": 5}})", far, farList, fh, prefabs, view)));
+    c = runCommand(R"({"cmd": "move", "args": {"id": 1, "x": 1000, "z": 1000, "y": 5}})", far, farList, fh, prefabs, view);
+    CHECK(!ok(c) && c.response["error"].get<std::string>().contains("budget") && farList[0].pos.x == 10);
+}
+
+static const Prefab& prefabNamed(const PrefabLibrary& lib, std::string_view name) {
+    const Prefab* p = lib.find(name);
+    CHECK(p);
+    return *p;
+}
+
+// Grass plain, 64 x 32 x 64, ground top at y = 3.
+static Grid plain() {
+    Grid g({64, 32, 64});
+    for (int z = 0; z < 64; ++z)
+        for (int x = 0; x < 64; ++x)
+            for (int y = 0; y <= 3; ++y) g.set({x, y, z}, y == 3 ? Grass : Stone);
+    return g;
+}
+
+static Instance at(const Prefab& p, glm::ivec3 pos, int rotation = 0, uint32_t seed = 5) {
+    Instance in{.prefab = p.name, .pos = pos, .rotation = rotation, .seed = seed};
+    for (const PrefabParam& q : p.params) in.params.push_back(q.fallback);
+    return in;
+}
+
+static void prefabs() {
+    namespace fs = std::filesystem;
+    {  // a good file: header, legend (any case), comments, short rows padded with keep, trailing blank lines ignored
+        Prefab p{.name = "hut"};
+        CHECK(parsePrefab("# a hut\ndescription: A hut: small\nfoundation: cobble\ny: -1\nS = stone\nw = Wood\n\nlayer\nSSS\nS.S\nlayer\n w\n\n#c\n w \n\n", p).empty());
+        CHECK(p.name == "hut" && p.description == "A hut: small" && p.foundation == Cobble && p.y == -1 && p.size == glm::ivec3(3, 2, 3));
+        CHECK(p.cells[0] == Stone && p.cells[4] == Air && p.cells[6] == kKeep && p.cells[9] == kKeep && p.cells[10] == Wood && p.cells[12] == kKeep &&
+              p.cells[13] == kKeep && p.cells[16] == Wood);
+        CHECK(!p.generated());
+    }
+    {  // every kind of error names its line
+        std::string wide = "S = Stone\nlayer\n" + std::string(65, 'S') + "\n", tall = "S = Stone\n";
+        for (int i = 0; i < 65; ++i) tall += "layer\nS\n";
+        std::pair<std::string, std::string> bad[] = {
+            {"description: x\nS = Lava\nlayer\nS\n", "line 2: unknown block 'Lava'"},
+            {"S = Stone\nlayer\nSX\n", "line 3: 'X' is not in the legend"},
+            {"S = Stone\nlayer\nS\tS\n", "line 3: tab"},
+            {"S = Stone\nS = Dirt\n", "line 2: 'S' is already in the legend"},
+            {". = Stone\n", "line 1: '.' can't be a legend character"},
+            {"colour: red\n", "line 1: unknown key 'colour'"},
+            {"what is this\n", "line 1: expected"},
+            {"foundation: Water\n", "line 1: foundation must be a solid block"},
+            {"y: 1.5\n", "line 1: y must be an integer"},
+            {"S = Stone\n\n", "line 2: no layers"},
+            {"S = Stone\nlayer\nlayer\nS\n", "line 2: empty layer"},
+            {"S = Stone\nlayer\n   \nlayer\n.\n", "line 2: empty layer"},
+            {"layer\n  \n \nlayer\n   \n x", "line 6: 'x' is not in the legend"},
+            {"S = Stone\nlayer\n  \n \n", "line 2: empty layer"},
+            {wide, "line 3: row longer than 64"},
+            {tall, "line 130: more than 64 layers"},
+        };
+        for (const auto& [text, error] : bad) {
+            Prefab p{.name = "x"};
+            std::string got = parsePrefab(text, p);
+            CHECK(got.starts_with(error));
+            if (!got.starts_with(error)) std::println(stderr, "  parse error: got '{}', want '{}'", got, error);
+        }
+        Prefab p{.name = "x"};
+        CHECK(parsePrefab("layer\n   \n", p) == "line 1: empty layer");
+        CHECK(parsePrefab("y: -2147483648\n", p).starts_with("line 1: y must be"));  // no abs(INT_MIN)
+        CHECK(parsePrefab("description: crlf\r\nS = Stone\r\nlayer\r\nSS\r\n", p).empty() && p.size == glm::ivec3(2, 1, 1) &&
+              p.description == "crlf");
+    }
+    {  // the library: generated prefabs, then regular .txt files directly in the folder; broken files are reported
+        fs::path dir = fs::temp_directory_path() / "flycoos_prefab_test";
+        fs::remove_all(dir);
+        fs::create_directories(dir / "sub");
+        std::ofstream(dir / "box.txt") << "S = Stone\nlayer\nSS\n";
+        std::ofstream(dir / "broken.txt") << "S = Stone\nlayer\nSQ\n";
+        std::ofstream(dir / "tree.txt") << "S = Stone\nlayer\nS\n";
+        std::ofstream(dir / "notes.md") << "S = Stone\nlayer\nS\n";
+        std::ofstream(dir / "sub" / "deep.txt") << "S = Stone\nlayer\nS\n";
+        std::ofstream(dir / "huge.txt") << std::string(kMaxPrefabFileBytes + 1, '#');
+        std::error_code ec;
+        fs::create_symlink(dir / "box.txt", dir / "link.txt", ec);
+        PrefabLibrary lib = loadPrefabs(dir);
+        std::vector<std::string> names;
+        for (const Prefab& p : lib.prefabs) names.push_back(p.name);
+        CHECK((names == std::vector<std::string>{"tree", "pine", "bush", "boulder", "spire", "box"}));
+        CHECK(lib.errors.size() == 3 && lib.errors[0] == "broken.txt: line 3: 'Q' is not in the legend" &&
+              lib.errors[1].starts_with("huge.txt") && lib.errors[2].starts_with("tree.txt"));
+        fs::remove_all(dir);
+        CHECK(loadPrefabs(dir).errors.size() == 1);  // a missing folder is reported, the generated prefabs remain
+        fs::create_directories(dir);
+        for (int i = 0; i < 8; ++i)  // 8 x 260 KB: the last one is over the 2 MB total
+            std::ofstream(dir / std::format("big{}.txt", i)) << "#" << std::string(260 << 10, 'x') << "\nS = Stone\nlayer\nS\n";
+        lib = loadPrefabs(dir);
+        CHECK(lib.prefabs.size() == 5 + 7 && lib.errors.size() == 1 && lib.errors[0].starts_with("big7.txt: skipped"));
+        fs::remove_all(dir);
+        PrefabLibrary shipped = loadPrefabs(fs::path(FLYCOOS_SOURCE_DIR) / "prefabs");
+        for (const std::string& e : shipped.errors) std::println(stderr, "  shipped prefab: {}", e);
+        CHECK(shipped.errors.empty());
+        for (const char* name : {"cottage", "tent", "camp", "well", "fence", "ruin"}) CHECK(shipped.find(name));
+    }
+
+    PrefabLibrary lib = loadPrefabs(fs::path(FLYCOOS_SOURCE_DIR) / "prefabs");
+    {  // rotation: an asymmetric prefab lands as four quarter turns counterclockwise seen from above (+x toward -z)
+        Prefab p{.name = "l"};
+        CHECK(parsePrefab("A = Stone\nB = Sand\nC = Snow\nD = Planks\nlayer\nABC\nD\n", p).empty());
+        const glm::ivec3 expected[4][4] = {  // where A, B, C, D land with the anchor column at (8, 8), ground y 3
+            {{7, 4, 7}, {8, 4, 7}, {9, 4, 7}, {7, 4, 8}},
+            {{7, 4, 9}, {7, 4, 8}, {7, 4, 7}, {8, 4, 9}},
+            {{9, 4, 8}, {8, 4, 8}, {7, 4, 8}, {9, 4, 7}},
+            {{8, 4, 7}, {8, 4, 8}, {8, 4, 9}, {7, 4, 7}},
+        };
+        for (int r = 0; r < 4; ++r) {
+            Grid g = plain();
+            std::vector<Instance> list;
+            EditHistory h;
+            CHECK(!placePrefab(g, p, at(p, {8, 0, 8}, r), std::nullopt, list, h).error);
+            constexpr Block kBlocks[] = {Stone, Sand, Snow, Planks};
+            for (int i = 0; i < 4; ++i) CHECK(g.get(expected[r][i]) == kBlocks[i]);
+            CHECK(list.size() == 1 && list[0].cells.size() == 4 && list[0].pos == glm::ivec3(8, 3, 8));
+        }
+    }
+    {  // every prefab: placing then removing restores the exact world; generators are deterministic per seed
+        Grid g = editWorld();
+        const uint64_t original = hashCells(g);
+        std::vector<Instance> list;
+        EditHistory h;
+        glm::ivec3 dry(findSpawn(g, {32, 30}));  // on grass, so the bush has air to grow into
+        for (const Prefab& p : lib.prefabs)
+            for (int r = 0; r < 4; ++r) {
+                EditResult placed = placePrefab(g, p, at(p, dry, r), std::nullopt, list, h);
+                CHECK(!placed.error && !placed.dirty.empty() && list.size() == 1);
+                if (placed.error) {
+                    std::println(stderr, "  {} rotation {}: {}", p.name, r, placed.error);
+                    continue;
+                }
+                Box box = prefabBox(g, p, list[0]), written = instanceBox(list[0]);
+                CHECK(glm::all(glm::greaterThanEqual(written.lo, box.lo)) && glm::all(glm::lessThanEqual(written.hi, box.hi)));
+                CHECK(!removePrefab(g, placed.id, list, h).error && list.empty());
+                if (hashCells(g) != original) std::println(stderr, "  {} rotation {} left changes behind", p.name, r);
+                CHECK(hashCells(g) == original);
+            }
+        const Prefab& tree = prefabNamed(lib, "tree");
+        Grid a = editWorld(), b = editWorld(), c = editWorld();
+        std::vector<Instance> la, lb, lc;
+        placePrefab(a, tree, at(tree, {20, 0, 20}), std::nullopt, la, h);
+        placePrefab(b, tree, at(tree, {20, 0, 20}), std::nullopt, lb, h);
+        placePrefab(c, tree, at(tree, {20, 0, 20}, 0, 6), std::nullopt, lc, h);
+        CHECK(a.cells == b.cells && a.cells != c.cells);
+    }
+    {  // remove keeps what was sculpted over the prefab; move; undo/redo restore voxels and the instance list together
+        Grid g = plain();
+        const uint64_t original = hashCells(g);
+        std::vector<Instance> list;
+        EditHistory h;
+        const Prefab& cottage = prefabNamed(lib, "cottage");
+        uint32_t id = placePrefab(g, cottage, at(cottage, {10, 0, 10}), std::nullopt, list, h).id;
+        CHECK(id == 1 && g.get({10, 5, 10}) == Air && g.get({10, 5, 7}) == Planks && g.get({10, 4, 10}) == Planks);  // room, back wall, floor
+        applyEdit(g, {.tool = Tool::Fill, .min = {8, 5, 7}, .max = {12, 5, 7}, .block = Stone}, h);  // sculpt over its wall
+        applyEdit(g, {.tool = Tool::Fill, .min = {10, 6, 10}, .max = {10, 6, 10}, .block = Snow}, h);  // and into its room
+        CHECK(!removePrefab(g, id, list, h).error && list.empty());
+        CHECK(g.get({10, 5, 7}) == Stone && g.get({10, 6, 10}) == Snow && g.get({10, 7, 7}) == Air && g.get({10, 4, 10}) == Air);
+        undoEdit(g, h, list), undoEdit(g, h, list), undoEdit(g, h, list);
+        CHECK(list.size() == 1 && g.get({10, 5, 7}) == Planks && g.get({10, 6, 10}) == Air);
+
+        // move: one undo step, the old spot back as it was, the same id at the new spot
+        uint64_t placed = hashCells(g);
+        size_t steps = h.undo.size();
+        EditResult moved = movePrefab(g, cottage, id, {40, 40}, std::nullopt, 1, list, h);
+        CHECK(!moved.error && moved.id == id && h.undo.size() == steps + 1 && list.size() == 1 && list[0].rotation == 1);
+        CHECK(g.get({10, 5, 7}) == Air && g.get({40, 5, 40}) == Air && g.get({37, 5, 40}) == Planks);  // the back wall turned to -x
+        uint64_t afterMove = hashCells(g);
+        CHECK(!undoEdit(g, h, list).empty() && hashCells(g) == placed && list.size() == 1 && list[0].pos.x == 10 && list[0].rotation == 0);
+        CHECK(!redoEdit(g, h, list).empty() && hashCells(g) == afterMove && list[0].pos.x == 40);
+        CHECK(movePrefab(g, cottage, 99, {40, 40}, std::nullopt, 0, list, h).error && hashCells(g) == afterMove);
+        CHECK(movePrefab(g, cottage, id, {40, 40}, std::nullopt, 4, list, h).error && hashCells(g) == afterMove);
+        CHECK(!removePrefab(g, id, list, h).error && list.empty());
+        CHECK(!undoEdit(g, h, list).empty() && list.size() == 1 && hashCells(g) == afterMove);
+        while (!undoEdit(g, h, list).empty()) {}
+        CHECK(hashCells(g) == original && list.empty());
+        while (!redoEdit(g, h, list).empty()) {}  // place, move, remove
+        CHECK(hashCells(g) == original && list.empty() && h.redo.empty() && h.undo.size() == 3);
+        CHECK(placePrefab(g, cottage, at(cottage, {60, 0, 60}), std::nullopt, list, h).id == 2);  // ids are never reused
+
+        const Prefab& bush = prefabNamed(lib, "bush");  // a move that would change nothing leaves everything as it was
+        uint32_t b = placePrefab(g, bush, at(bush, {20, 0, 20}), std::nullopt, list, h).id;
+        applyEdit(g, {.tool = Tool::Fill, .min = {1, 9, 1}, .max = {1, 9, 1}, .block = Stone}, h);
+        undoEdit(g, h, list);
+        uint64_t before = hashCells(g);
+        size_t undos = h.undo.size();
+        CHECK(movePrefab(g, bush, b, {25, 25}, 0, 0, list, h).error && hashCells(g) == before && h.undo.size() == undos &&
+              h.redo.size() == 1 && list.back().pos == glm::ivec3(20, 3, 20));
+    }
+    {  // placement checks
+        Grid g = plain();
+        std::vector<Instance> list;
+        EditHistory h;
+        const Prefab& tree = prefabNamed(lib, "tree");
+        Instance in = at(tree, {8, 0, 8});
+        in.params[0] = 30;
+        CHECK(placePrefab(g, tree, in, std::nullopt, list, h).error);
+        CHECK(placePrefab(g, tree, at(tree, {-1, 0, 8}), std::nullopt, list, h).error);
+        CHECK(placePrefab(g, tree, at(tree, {8, 0, 8}, 4), std::nullopt, list, h).error);
+        CHECK(placePrefab(g, prefabNamed(lib, "bush"), at(prefabNamed(lib, "bush"), {8, 0, 8}), 0, list, h).error);  // buried: changes nothing
+        CHECK(list.empty() && h.undo.empty());
+    }
+    {  // review regressions: caps, id overflow, foundation under gaps, untrusted instances from files
+        Grid g = plain();
+        const uint64_t original = hashCells(g);
+        EditHistory h;
+        const Prefab& fence = prefabNamed(lib, "fence");
+        std::vector<Instance> full(kMaxInstances, Instance{.cells = {{1, 1, 1, Air, Stone}}});
+        CHECK(placePrefab(g, fence, at(fence, {20, 0, 20}), std::nullopt, full, h).error && hashCells(g) == original);
+        std::vector<Instance> heavy{Instance{.id = 1, .cells = std::vector<Instance::Cell>(kMaxInstanceCells - 2, {1, 1, 1, Air, Stone})}};
+        CHECK(placePrefab(g, fence, at(fence, {20, 0, 20}), std::nullopt, heavy, h).error && hashCells(g) == original && heavy.size() == 1);
+        std::vector<Instance> last{Instance{.id = UINT32_MAX, .cells = {{1, 1, 1, Air, Stone}}}};
+        CHECK(placePrefab(g, fence, at(fence, {20, 0, 20}), std::nullopt, last, h).error && hashCells(g) == original && h.undo.empty());
+
+        // the fence's foundation fills under its posts only, not under the gaps between them
+        for (int x = 17; x <= 18; ++x) g.set({x, 3, 20}, Air), g.set({x, 2, 20}, Air);
+        std::vector<Instance> list;
+        CHECK(!placePrefab(g, fence, at(fence, {20, 0, 20}), 3, list, h).error);
+        CHECK(g.get({17, 4, 20}) == Wood && g.get({17, 3, 20}) == Wood && g.get({17, 2, 20}) == Wood && g.get({18, 3, 20}) == Air);
+
+        // a crafted file: tree instances with missing or absurd params load (the loader doesn't know prefabs), but
+        // move refuses them instead of reading past their params; remove still works
+        auto tree = [](uint32_t id, std::vector<float> params) {
+            return Instance{.id = id, .prefab = "tree", .pos = {10, 3, 10}, .params = std::move(params), .cells = {{10, 5, 10, Air, Wood}}};
+        };
+        std::string path = (fs::temp_directory_path() / "flycoos_crafted.flyw").string();
+        CHECK(saveWorld(path.c_str(), g, 1, {tree(1, {}), tree(2, {10}), tree(3, {1e30f, 1e30f})}).empty());
+        std::vector<Instance> loaded;
+        uint32_t seed;
+        CHECK(loadWorld(path.c_str(), g, seed, loaded).empty() && loaded.size() == 3);
+        CHECK(prefabBox(g, prefabNamed(lib, "tree"), loaded[0]).empty() && prefabBox(g, prefabNamed(lib, "tree"), loaded[2]).empty());
+        GameView view;
+        for (int id = 1; id <= 3; ++id) {
+            Command c = runCommand(std::format(R"({{"cmd": "move", "args": {{"id": {}, "x": 30, "z": 30}}}})", id), g, loaded, h, lib, view);
+            CHECK(!c.response["ok"].get<bool>() && c.dirty.empty());
+        }
+        CHECK(runCommand(R"({"cmd": "remove", "args": {"id": 3}})", g, loaded, h, lib, view).response["ok"] == true && loaded.size() == 2);
+
+        // the loader rejects what placing can't produce: ids 0 and 2^32-1, x or z of -1, too many params, cells spread too far
+        Grid wide({128, 32, 128});
+        std::vector<Instance> bad[] = {
+            {Instance{.id = UINT32_MAX, .cells = {{1, 1, 1, Air, Stone}}}},
+            {Instance{.id = 1, .pos = {-1, 3, 5}, .cells = {{1, 1, 1, Air, Stone}}}},
+            {Instance{.id = 1, .params = std::vector<float>(kMaxInstanceParams + 1, 1), .cells = {{1, 1, 1, Air, Stone}}}},
+            {Instance{.id = 1, .cells = {{0, 0, 0, Air, Stone}, {127, 0, 0, Air, Stone}}}},
+        };
+        for (const std::vector<Instance>& b : bad) {
+            CHECK(saveWorld(path.c_str(), wide, 1, b).empty());
+            CHECK(loadWorld(path.c_str(), wide, seed, loaded).starts_with("bad instance"));
+        }
+        fs::remove(path);
+    }
+    {  // world files keep the instances; files without them load with none; corrupt instance data is rejected
+        Grid g = plain();
+        std::vector<Instance> list;
+        EditHistory h;
+        placePrefab(g, prefabNamed(lib, "well"), at(prefabNamed(lib, "well"), {8, 0, 8}, 1, 77), std::nullopt, list, h);
+        placePrefab(g, prefabNamed(lib, "spire"), at(prefabNamed(lib, "spire"), {20, 0, 20}), std::nullopt, list, h);
+        removePrefab(g, 1, list, h);
+        placePrefab(g, prefabNamed(lib, "fence"), at(prefabNamed(lib, "fence"), {30, 0, 8}), std::nullopt, list, h);
+        std::string path = (fs::temp_directory_path() / "flycoos_instances.flyw").string();
+        CHECK(saveWorld(path.c_str(), g, 5, list).empty());
+        Grid back({32, 32, 32});
+        uint32_t seed = 0;
+        std::vector<Instance> loaded{Instance{}};
+        CHECK(loadWorld(path.c_str(), back, seed, loaded).empty() && back.cells == g.cells && loaded.size() == 2);
+        for (size_t i = 0; i < loaded.size(); ++i) {
+            const Instance &a = loaded[i], &b = list[i];
+            CHECK(a.id == b.id && a.prefab == b.prefab && a.pos == b.pos && a.rotation == b.rotation && a.seed == b.seed &&
+                  a.params == b.params && a.cells.size() == b.cells.size() &&
+                  std::equal(a.cells.begin(), a.cells.end(), b.cells.begin(), [](auto& p, auto& q) {
+                      return p.x == q.x && p.y == q.y && p.z == q.z && p.before == q.before && p.after == q.after;
+                  }));
+        }
+        CHECK(!removePrefab(back, 2, loaded, h).error && loaded.size() == 1);  // a loaded instance still removes cleanly
+
+        std::ifstream in(path, std::ios::binary);
+        const std::string file((std::istreambuf_iterator<char>(in)), {});
+        auto reseal = [](std::string bytes) {
+            uint32_t hash = 2166136261u;
+            for (size_t i = 0; i + 4 < bytes.size(); ++i) hash = (hash ^ uint8_t(bytes[i])) * 16777619u;
+            for (int i = 0; i < 4; ++i) bytes[bytes.size() - 4 + size_t(i)] = char(hash >> (8 * i));
+            return bytes;
+        };
+        size_t inst = file.find("INST");
+        CHECK(inst != std::string::npos);
+        int rejected = 0;
+        for (size_t i = inst + 12; i + 4 < file.size(); i += 3) {  // flip bytes past the checksum: never crash or overrun
+            std::string bad = file;
+            bad[i] = char(bad[i] ^ 0xA5);
+            std::ofstream(path, std::ios::binary | std::ios::trunc) << reseal(bad);
+            rejected += !loadWorld(path.c_str(), back, seed, loaded).empty();
+        }
+        CHECK(rejected > 10);
+        for (size_t cut : {size_t(1), size_t(9), size_t(30)}) {
+            std::string bad = file.substr(0, file.size() - 4 - cut) + file.substr(file.size() - 4);
+            std::ofstream(path, std::ios::binary | std::ios::trunc) << reseal(bad);
+            CHECK(!loadWorld(path.c_str(), back, seed, loaded).empty());
+        }
+        CHECK(saveWorld(path.c_str(), g, 5, {}).empty());  // no instances: no section, and loading clears the list
+        loaded = list;
+        CHECK(loadWorld(path.c_str(), back, seed, loaded).empty() && loaded.empty());
+        std::ifstream noInst(path, std::ios::binary);
+        CHECK(std::string((std::istreambuf_iterator<char>(noInst)), {}).find("INST") == std::string::npos);
+        fs::remove(path);
+    }
 }
 
 static void raycasting() {
@@ -1171,6 +1544,7 @@ int main() {
     worldFiles();
     editing();
     commands();
+    prefabs();
     raycasting();
     if (failures) std::println(stderr, "{} check(s) failed", failures);
     else std::println("all checks passed");

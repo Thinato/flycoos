@@ -49,6 +49,18 @@ CENTER = {"x": num("Column x of the brush center", 0, 1023), "z": num("Column z 
 STRENGTH = num("Most blocks moved per column (at the center; falls off toward the rim), default 4", 1, 64)
 REGION = {"x0": num("Region corner x"), "z0": num("Region corner z"), "x1": num("Opposite corner x"),
           "z1": num("Opposite corner z")}
+PREFAB_FORMAT = (
+    " Structure files are prefabs/<name>.txt (name: letters, digits, - or _), plain text: header lines "
+    "`description: ...`, optional `foundation: <Block>` (fills down from the bottom layer's solid cells to the ground, "
+    "so it sits on slopes), optional `y: N` (the bottom layer sits at ground + 1 + N; -1 sinks it one block), and legend "
+    "lines `X = Block` (one character; the prefabs result lists the block names). Then the layers, bottom first, each starting with a line "
+    "`layer`. Each line of a layer is one row of cells along +x; rows go along +z, so a layer reads like the top-down "
+    "map (x right, z down). `.` = Air (clears the world's voxel), space = keep the world's voxel. A blank line right "
+    "after `layer` is a row of keep cells; blank lines before the next `layer` are ignored. Lines starting with # are "
+    "comments. At most 64 cells per axis. Convention: the front (door) is the last row, +z, at rotation 0. The "
+    "footprint is centered on the placed column.")
+INSTANCE_NOTE = (" One call is one undo step (voxels and the instance list together), shared with the user's undo. The "
+                 "change flashes in the game.")
 OPS = {
     "raise": ("Raise the ground in a circle: adds up to `strength` blocks on each column, most at the center, "
               "keeping the surface material on top (dirt under grass). Pushes ground up through water.",
@@ -72,7 +84,7 @@ OPS = {
 
 TOOLS = {
     "state": ("Game and world state: world file, size, seed, unsaved flag, undo/redo depth, player and camera "
-              "position, editor mode, Follow Claude, time of day. Start here. " + WORLD, obj({})),
+              "position, editor mode, Follow Claude, time of day, prefab instance count. Start here. " + WORLD, obj({})),
     **{k: (d + EDIT_NOTE, s) for k, (d, s) in OPS.items()},
     "apply": ("Apply a list of edits (up to 256) as one undo step. Each op is an object with `tool` (raise, lower, "
               "smooth, flatten, paint, fill) and that tool's arguments. All ops are checked first; if one is invalid "
@@ -93,6 +105,37 @@ TOOLS = {
                   "depth": num("Blocks below the graded height (river bed), default 0", 0, 64),
                   "material": {"type": "string", "enum": SOLID, "description": "Surface to paint, e.g. Dirt or Stone"}},
                  ["points"])),
+    "prefabs": ("List the prefabs `place` can put into the world: generated ones (tree, pine, bush, boulder, spire) with "
+                "their params and ranges, and structures from text files in prefabs/ with their size. Rescans the folder "
+                "first, so a file you just wrote is usable right away; files that don't parse are listed in `errors` "
+                "with their line number." + PREFAB_FORMAT, obj({})),
+    "place": ("Place a prefab as an instance that can be moved or removed later. It stands on column `x`, `z`: on the "
+              "ground voxel `y` (default: the column's highest solid voxel; trees count, so aim at open ground). "
+              "Generated prefabs grow like the world's own trees and rocks (trunks reach down to the ground on slopes, "
+              "canopies only fill air); structures overwrite their cells, `.` cells clear. Returns the instance: id, "
+              "box, cells changed. Fails if it would change nothing." + INSTANCE_NOTE,
+              obj({"prefab": {"type": "string", "description": "Name from the prefabs tool"},
+                   "x": num("Column x of the footprint center", 0, 1023), "z": num("Column z", 0, 1023),
+                   "y": num("Ground voxel it stands on (structures: bottom layer at y + 1)", 0, 191),
+                   "rotation": {"type": "integer", "enum": [0, 90, 180, 270],
+                                "description": "Degrees counterclockwise seen from above (90 turns +x toward -z, so a "
+                                               "+z front faces +x); structures only, default 0"},
+                   "seed": num("Variation of generated prefabs' ragged shape, default from the position", 0, 4294967295),
+                   "params": {"type": "object", "description": "Generated prefabs: e.g. {\"trunk\": 12, \"radius\": 5}; "
+                                                               "missing ones take their default"}},
+                  ["prefab", "x", "z"])),
+    "remove": ("Remove a placed instance: every voxel it wrote that still holds what it wrote gets back what was there "
+               "before (anything sculpted over it since stays)." + INSTANCE_NOTE,
+               obj({"id": num("Instance id (instances lists them)", 1)}, ["id"])),
+    "move": ("Move an instance to another column (and optionally turn it), keeping its id, seed and params: a remove "
+             "and a place in one undo step. Far moves can be over the work budget: then remove and place." + INSTANCE_NOTE,
+             obj({"id": num("Instance id", 1), "x": num("New column x", 0, 1023), "z": num("New column z", 0, 1023),
+                  "y": num("Ground voxel at the new spot (default: found after removing it)", 0, 191),
+                  "rotation": {"type": "integer", "enum": [0, 90, 180, 270], "description": "Default: unchanged"}},
+                 ["id", "x", "z"])),
+    "instances": ("List placed prefab instances (id, prefab, position, rotation, seed, params, box, cells), all of them "
+                  "or those whose box touches a region; at most 500 listed, `count` has the total.",
+                  obj(REGION)),
     "undo": ("Undo the last edit step (the user's or Claude's: one shared history).", obj({})),
     "redo": ("Redo the last undone step.", obj({})),
     "save": ("Save the world to its .flyw file. With `path`, write a copy there instead (the world file and the "
@@ -174,7 +217,8 @@ def handle(msg):
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "flycoos", "version": "0.1.0"},
                 "instructions": "Shape the flycoos story world in the running game together with the user. " + WORLD +
-                                " Look before and after editing (map, heights, screenshot); every edit is undoable."}
+                                " Look before and after editing (map, heights, screenshot); every edit is undoable. Houses, camps, trees "
+                                "and rocks are prefabs: place, move and remove them as instances."}
     if method == "ping":
         return {}
     if method == "tools/list":

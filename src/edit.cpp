@@ -19,13 +19,6 @@ template <class Fn> void rows(const Grid& g, Box b, Fn fn) {
         for (int z = b.lo.z; z <= b.hi.z; ++z) fn(g.index({b.lo.x, y, z}), r++);
 }
 
-std::vector<Block> read(const Grid& g, Box b) {
-    size_t w = size_t(b.size().x);
-    std::vector<Block> cells(w * size_t(b.size().y) * size_t(b.size().z));
-    rows(g, b, [&](size_t i, size_t r) { std::copy_n(&g.cells[i], w, &cells[r * w]); });
-    return cells;
-}
-
 // What a column's surface turns into when it's buried, as generation layers it.
 Block subsoil(Block surface) { return surface == Grass ? Dirt : surface == Snow ? Stone : surface; }
 
@@ -94,20 +87,33 @@ void brush(Grid& g, const EditOp& op, Box box) {
         }
 }
 
-// Swaps the record's cells with the grid's (the last edit first when undoing) and moves it to the
-// other stack.
-Box swapRecord(Grid& g, std::vector<EditRecord>& from, std::vector<EditRecord>& to, bool undo) {
+// Swaps the record's cells and instances with the live ones (the last change first when undoing)
+// and moves it to the other stack.
+Box swapRecord(Grid& g, std::vector<Instance>& list, std::vector<EditRecord>& from, std::vector<EditRecord>& to, bool undo) {
     if (from.empty()) return {};
     EditRecord rec = std::move(from.back());
     from.pop_back();
     for (const EditRecord::Part& p : rec.parts)
         if (!g.inside(p.box.lo) || !g.inside(p.box.hi)) return {};  // stale (the world was replaced)
     Box all{glm::ivec3(INT_MAX), glm::ivec3(INT_MIN)};
+    auto grow = [&](Box b) { all = {glm::min(all.lo, b.lo), glm::max(all.hi, b.hi)}; };
     for (size_t k = 0; k < rec.parts.size(); ++k) {
         EditRecord::Part& p = rec.parts[undo ? rec.parts.size() - 1 - k : k];
         size_t w = size_t(p.box.size().x);
         rows(g, p.box, [&](size_t i, size_t r) { std::swap_ranges(&p.cells[r * w], &p.cells[r * w] + w, &g.cells[i]); });
-        all = {glm::min(all.lo, p.box.lo), glm::max(all.hi, p.box.hi)};
+        grow(p.box);
+    }
+    for (size_t k = 0; k < rec.instances.size(); ++k) {
+        auto& [id, other] = rec.instances[undo ? rec.instances.size() - 1 - k : k];
+        auto it = std::ranges::lower_bound(list, id, {}, &Instance::id);
+        bool live = it != list.end() && it->id == id;
+        if (live) grow(instanceBox(*it));  // both sides are boxes the step touched
+        if (other) grow(instanceBox(*other));
+        std::optional<Instance> was = live ? std::optional(std::move(*it)) : std::nullopt;
+        if (other && live) *it = std::move(*other);
+        else if (other) list.insert(it, std::move(*other));
+        else if (live) list.erase(it);
+        other = std::move(was);
     }
     to.push_back(std::move(rec));
     return all;
@@ -141,16 +147,15 @@ Box editBox(const Grid& g, const EditOp& op) {
     return {glm::max(box.lo, glm::ivec3(0)), glm::min(box.hi, g.size - 1)};
 }
 
-EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join) {
-    if (const char* error = checkEdit(g, op)) return {{}, error};
-    Box box = editBox(g, op);
-    if (box.empty()) return {};
+std::vector<Block> readBox(const Grid& g, Box b) {
+    size_t w = size_t(b.size().x);
+    std::vector<Block> cells(w * size_t(b.size().y) * size_t(b.size().z));
+    rows(g, b, [&](size_t i, size_t r) { std::copy_n(&g.cells[i], w, &cells[r * w]); });
+    return cells;
+}
 
-    std::vector<Block> before = read(g, box);
-    if (op.tool == Tool::Fill) rows(g, box, [&](size_t i, size_t) { std::fill_n(&g.cells[i], box.size().x, op.block); });
-    else brush(g, op, box);
-
-    // The dirty box is the bounding box of what actually changed, so remeshing and undo stay small.
+EditRecord::Part changedPart(const Grid& g, Box box, const std::vector<Block>& before) {
+    // The bounding box of what changed, so remeshing and undo stay small.
     Box dirty{glm::ivec3(INT_MAX), glm::ivec3(INT_MIN)};
     size_t w = size_t(box.size().x);
     rows(g, box, [&](size_t i, size_t r) {
@@ -165,29 +170,68 @@ EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join)
     });
     if (dirty.empty()) return {};
 
-    EditRecord::Part rec{dirty, {}};
-    rec.cells.reserve(size_t(dirty.size().x) * size_t(dirty.size().y) * size_t(dirty.size().z));
+    EditRecord::Part part{dirty, {}};
+    part.cells.reserve(size_t(dirty.size().x) * size_t(dirty.size().y) * size_t(dirty.size().z));
     for (int y = dirty.lo.y; y <= dirty.hi.y; ++y)
         for (int z = dirty.lo.z; z <= dirty.hi.z; ++z) {
             const Block* row = &before[(size_t(y - box.lo.y) * size_t(box.size().z) + size_t(z - box.lo.z)) * w +
                                        size_t(dirty.lo.x - box.lo.x)];
-            rec.cells.insert(rec.cells.end(), row, row + dirty.size().x);
+            part.cells.insert(part.cells.end(), row, row + dirty.size().x);
         }
+    return part;
+}
+
+void pushRecord(EditHistory& history, EditRecord rec, bool join) {
     history.redo.clear();
     if (!join || history.undo.empty()) history.undo.emplace_back();
-    history.undo.back().bytes += rec.cells.size();
-    history.undo.back().parts.push_back(std::move(rec));
+    EditRecord& last = history.undo.back();
+    for (EditRecord::Part& p : rec.parts) {
+        last.bytes += p.cells.size();
+        last.parts.push_back(std::move(p));
+    }
+    for (auto& entry : rec.instances) {
+        last.bytes += entry.second ? entry.second->cells.size() * sizeof(Instance::Cell) : 0;
+        last.instances.push_back(std::move(entry));
+    }
     size_t total = 0;
     for (const EditRecord& r : history.undo) total += r.bytes;
     while (history.undo.size() > kMaxUndo || (total > kMaxUndoBytes && history.undo.size() > 1)) {
         total -= history.undo.front().bytes;
         history.undo.erase(history.undo.begin());
     }
+}
+
+Box instanceBox(const Instance& in) {
+    Box b{glm::ivec3(INT_MAX), glm::ivec3(INT_MIN)};
+    for (const Instance::Cell& c : in.cells) {
+        b.lo = glm::min(b.lo, glm::ivec3(c.x, c.y, c.z));
+        b.hi = glm::max(b.hi, glm::ivec3(c.x, c.y, c.z));
+    }
+    return b;
+}
+
+EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join) {
+    if (const char* error = checkEdit(g, op)) return {{}, error};
+    Box box = editBox(g, op);
+    if (box.empty()) return {};
+
+    std::vector<Block> before = readBox(g, box);
+    if (op.tool == Tool::Fill) rows(g, box, [&](size_t i, size_t) { std::fill_n(&g.cells[i], box.size().x, op.block); });
+    else brush(g, op, box);
+
+    EditRecord rec;
+    rec.parts.push_back(changedPart(g, box, before));
+    Box dirty = rec.parts[0].box;
+    if (!dirty.empty()) pushRecord(history, std::move(rec), join);
     return {dirty};
 }
 
-Box undoEdit(Grid& g, EditHistory& history) { return swapRecord(g, history.undo, history.redo, true); }
-Box redoEdit(Grid& g, EditHistory& history) { return swapRecord(g, history.redo, history.undo, false); }
+Box undoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances) {
+    return swapRecord(g, instances, history.undo, history.redo, true);
+}
+Box redoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances) {
+    return swapRecord(g, instances, history.redo, history.undo, false);
+}
 
 std::optional<RayHit> raycast(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDistance) {
     glm::ivec3 cell(glm::floor(from)), step(0), normal(0);
