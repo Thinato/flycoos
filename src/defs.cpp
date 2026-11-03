@@ -219,7 +219,9 @@ void loadCreatures(const File& f, Defs& d) {
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
         r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
-                 "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds"});
+                 "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds", "leash_radius",
+                 "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
+                 "flee_health"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
         auto flag = [&](const char* key) {
@@ -265,6 +267,24 @@ void loadCreatures(const File& f, Defs& d) {
         t.lootChance = float(r.number(r.fields, "loot_chance", 0, 1, 0, false));
         if (t.lootChance > 0 && !t.loot) throw r.fail("loot_chance", "no 'loot' to drop");
         t.respawnSeconds = float(r.number(r.fields, "respawn_seconds", 0, 3600, kRequired, false));
+        // The AI's numbers (ADR-020): only for creatures that fight; the defaults are the AI before them.
+        for (const char* key : {"leash_radius", "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup",
+                                "attack_recover", "attack_cooldown", "flee_health"})
+            if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");
+        if (t.temper != Temper::Harmless && !t.wanders) throw r.fail("wanders", "must be true for a creature that fights (the AI moves it)");
+        t.leashRadius = float(r.number(r.fields, "leash_radius", 2, 64, 20, false));
+        t.reaggroRadius = float(r.number(r.fields, "reaggro_radius", 0, 64, 0.8 * t.leashRadius, false));
+        if (t.reaggroRadius >= t.leashRadius) throw r.fail("reaggro_radius", "must be less than leash_radius (or it flaps at the edge)");
+        t.reaggroCooldown = float(r.number(r.fields, "reaggro_cooldown", 0, 60, 3, false));
+        t.giveUpSeconds = float(r.number(r.fields, "give_up_seconds", 0.5, 60, 5, false));
+        t.windup = float(r.number(r.fields, "attack_windup", 0.05, 2, kSwingWindup, false));
+        // The swing's impact comes at most kPunchImpact into it (startPunch), so a longer windup would be cut short.
+        float swing = swingTime(t.stats, t.weapon ? d.items[t.weapon].attack : kPunch);
+        if (t.temper != Temper::Harmless && t.windup >= kPunchImpact * swing)
+            throw r.fail("attack_windup", std::format("{} s must be less than {} x its swing time ({:.3f} s)", t.windup, kPunchImpact, swing));
+        t.recover = float(r.number(r.fields, "attack_recover", 0, 2, 0.2, false));
+        t.cooldown = float(r.number(r.fields, "attack_cooldown", 0, 10, 0, false));
+        t.fleeHealth = float(r.number(r.fields, "flee_health", 0, 0.95, 0, false));
         if (d.creatures.size() <= save) d.creatures.resize(save + 1), d.creatureIds.resize(save + 1), d.creatureNames.resize(save + 1);
         d.creatures[save] = t;
         d.creatureIds[save] = r.id();

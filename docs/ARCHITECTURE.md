@@ -37,7 +37,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
 | `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (stats, health, swing and damage timers, `Inventory`); walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
-| `src/entity.h/.cpp` | NPC entities: per-kind traits and temper (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), wander and chase AI, talking, damage both ways, loot |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), talking, damage both ways, loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in); `startSession` (starting gear, spawns), `step(Session&, SimInput, dt)` (one `kTick`: interaction, swing, movement, NPCs and combat, time of day, region enter, the knocked-out player's respawn) |
 | `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` (records by string id, `copy_from`, field and range checks), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
@@ -219,8 +219,8 @@ and for spawns an entity kind, a count and dialogue lines. Kinds:
   update also frees one buried by a later edit. A rename or new lines only update the NPCs' copy of
   the marker (new lines start over from the first).
 - **Lines** (ADR-016): talkers say the marker's next line on each E (cycling) instead of a random phrase;
-  anyone that fights (guards too) says the next one when it turns angry (`anger`), at most every
-  8 s, so hits from outside its territory (where it calms down at once) don't make it shout per hit;
+  anyone that fights (guards too) says the next one when it enters `Chase` from calm (`setState`), at most every
+  8 s, so hits from outside its territory (where it gives up at once) don't make it shout per hit;
   a shout's balloon doesn't hold a calm NPC still. Only the living talk. A balloon stays up 5 s,
   longer for long lines. With lines and count 1 the NPC's `displayName()` is the marker's name (nameplate,
   debug window), so a story character is one marker. Caps: 8 × 160 bytes per marker, ~5 MB for
@@ -623,6 +623,12 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   NPC a random villager name; flags default to false, ranges and speeds to 0; `weapon` (a main_hand
   item's id) and `loot` (any item's id) to none. `aggro_range` is for aggressive kinds only, a
   `loot_chance` needs `loot`, kinds that fight need a `chase_speed`, and stamina is at least 1. `copy_from` works as for items.
+  The AI's numbers (ADR-020) are optional and only for kinds that fight: `leash_radius` (2..64,
+  default 20), `reaggro_radius` (default 0.8 × leash, must be smaller), `reaggro_cooldown` (3 s),
+  `give_up_seconds` (5), `attack_windup` (0.05..2 and under 0.4 × the kind's swing time, default
+  0.14 s), `attack_recover` (0.2 s),
+  `attack_cooldown` (0) and `flee_health` (a health fraction 0..0.95, default 0: never flees). A
+  kind that fights must wander.
 
   | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Temper | Weapon | Drops | Talks |
   |---|---|---|---|---|---|---|---|---|
@@ -659,11 +665,23 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   Before each step it checks the block ahead: no walls it can't step up, no water, no drops of 2+.
   Beyond its wander radius it heads home. NPC bodies use the same `updatePlayer` physics as the
   player, driven by AI input.
-- **Temper:** harmless kinds never fight. Passive ones get angry when damaged; aggressive ones
-  also when a living player comes within their aggro range. An angry NPC runs at the player and
-  swings once within reach (same `startPunch` as the player; the boar's swing is a head-down gore).
-  Territory: they only fight a player within 20 blocks of their home (`kLeashRadius`). Once the
-  player leaves it, or is knocked out, they calm down and walk back. No line-of-sight check yet.
+- **Temper and AI** (ADR-020): one state machine for every kind, `Idle` (kinds that don't wander) /
+  `Wander` / `Talk` / `Chase` / `Windup` / `Recover` / `Return` / `Flee` / `Dead`, in `think()`; every
+  transition goes through `setState` with a reason, kept in an 8-entry ring per entity. Harmless
+  kinds never fight. Passive ones chase when damaged (`damage()` sets `EventDamaged`, read on the
+  entity's next update); aggressive ones also when a living player is within their aggro range and
+  within `reaggro_radius` (16) of their home, unless they got home in the last `reaggro_cooldown`
+  (3 s). A chasing NPC runs at the player; within reach it winds up (`startPunch` with the kind's
+  `attack_windup`, 0.14 s, committed: no moving or turning), the hit lands once at the impact frame
+  if the player is still in reach and in front, then it stands `attack_recover` (0.2 s) and chases
+  again; the weapon's swing time gates the cadence (the boar's swing is a head-down gore). It gives
+  up (`Return`) when the player is `leash_radius` (20) from its home or knocked out, or after
+  `give_up_seconds` (5) unable to step toward a player out of reach (too far, or a body height above
+  or below; no pathfinding). `Return` walks home ignoring the player and hits (pending ones are
+  dropped), then heals fully if it had to walk. A state forced in the debug window skips the enter
+  actions (no shout). Below `flee_health` of its health (0 for
+  every shipped kind: never) it runs from the player for 4 s, then returns. No line-of-sight or
+  FOV check yet. The Entities tab shows the state, time in it, the transitions and a force-state combo.
 - **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell until it
   respawns; E within 3.5 blocks moves the loot into the bags (it stays on the corpse if they're full).
 - **Default spawns:** dummy and villager just in front of the spawn, the boar about 14 blocks out, the

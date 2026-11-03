@@ -132,7 +132,7 @@
 
 ## ADR-009: NPC temper, territory and corpse loot
 
-- **Status:** accepted (2026-11-02)
+- **Status:** superseded by ADR-020 (2026-11-03); accepted (2026-11-02)
 - **Context:** the first hostile NPCs: a passive boar and an aggressive bandit, both with loot.
 - **Decision:**
   - One `Temper` per kind (harmless, passive, aggressive) and an `angry` flag per entity, instead
@@ -535,3 +535,76 @@
     rules by darkness) moves it next to the grid.
   - Changing `lightCost`, `emission` or the curve changes meshes and screenshots; `core_test` pins
     the falloff and the lit seed-7 quad count.
+
+## ADR-020: NPC AI as one explicit state machine with per-kind numbers
+
+- **Status:** accepted (2026-11-03); supersedes ADR-009's `angry` flag, its shared aggro/calm test and
+  its global leash
+- **Context:** `updateEntities` was a state machine encoded in an `angry` bool, two timers and an
+  if-chain. Aggro and calm-down tested the same player-to-home distance, so a player standing on
+  the leash edge flipped `angry` every tick. A chase stalled by terrain waited forever. Debugging
+  "why did it stop chasing?" meant reading code. Quests, time-of-day spawns and schedules will
+  hang off NPC behavior, so it needs named states first.
+- **Decision:**
+  - One C++ enum FSM for every kind: `Idle` (doesn't wander), `Wander`, `Talk`, `Chase`, `Windup`,
+    `Recover`, `Return`, `Flee`, `Dead`. `setState` records every transition with a static
+    `reason` string and the time spent in the old state in an 8-entry ring per entity, runs the
+    exit action (leaving `Windup` early cancels its hit) and the enter actions (entering `Chase`
+    from calm shouts the spawn marker's next line, at most every 8 s: ADR-016's rule; entering
+    `Return` drops pending events). A state forced from the debug window (reason `forced`) skips
+    the enter actions. One update may chain transitions (a hit from beyond the leash is `Chase`
+    and straight back to `Return`) before the final state produces the input; a chain that doesn't
+    settle in 8 is a bug (an assert in debug builds). The graph is code; only numbers are data.
+  - Per-kind numbers in `creatures.json`, all optional and only for creatures that fight:
+    `leash_radius` (20, the old constant), `reaggro_radius` (0.8 × leash, must be smaller),
+    `reaggro_cooldown` (3 s), `give_up_seconds` (5), `attack_windup` (0.14 s, the old impact frame),
+    `attack_recover` (0.2 s), `attack_cooldown` (0) and `flee_health` (0: never). No shipped kind
+    sets any, so the defaults are the shipped tuning. The windup must be shorter than 0.4 × the
+    kind's swing time (where the swing animation puts its impact), and a kind that fights must
+    wander (`Idle` kinds never move, so they only die and come back: reasons `respawned`, `stands`).
+  - Hysteresis: `Chase` ends when the player is `leash_radius` from home, knocked out, or the NPC
+    couldn't step toward an out-of-reach player for `give_up_seconds`. Out of reach is the swing's
+    test: too far, or a body height or more above or below (a player up a pillar), so a stalled
+    chase always ends. `Return` walks home ignoring the player and hits, heals fully on arrival
+    (within its wander radius) if it had to walk there (one that gives up at home keeps its
+    wounds, so poking it from beyond the leash doesn't heal it), and starts the re-aggro cooldown. Attacking on sight needs the player within `reaggro_radius` of home, so the band
+    between the two radii never re-aggroes. A hit always does (passive until hit, as before).
+  - `Windup` is committed: started by `startPunch` with the kind's windup (the swing animation
+    stretches to put its impact frame there), no moving or turning, and the hit lands once at its
+    end in `updateCombat` only if the target is still in reach and in front: the player's dodge
+    window. Cadence and damage are unchanged: the weapon's swing time still gates the next swing.
+  - Inputs arrive as an event bitmask (`EventDamaged`) set by `damage()` and read once by the
+    entity's next update, so "passive until hit" is a single transition.
+  - Targets: the AI reads its target as a `const Player&` body (any combatant: position, health),
+    and hits land through the same `inReach`/`hurt` the player uses. "Only the player can be a
+    target" is no longer a design rule, but the target is still always the player: NPC-vs-NPC
+    fights need a target handle that survives `syncSpawns` and a target choice, and aren't built.
+  - The debug window's Entities tab shows state, time in it, target distance, the kind's AI
+    numbers and the last 8 transitions with reasons, and forces a state from a combo (the AI
+    leaves an impossible one at once, e.g. `Dead` while alive).
+- **Alternatives considered:**
+  - Behavior trees or utility AI: they pay off for multi-step routines and graded choices, not for
+    one melee loop shared by every creature. Villager schedules (M4) can be a separate layer that
+    combat preempts.
+  - A data-driven graph (states and guarded transitions in JSON): no two kinds need different
+    topologies yet; a boolean trait per kind covers the first that does.
+  - Leashing on the NPC's distance from home as well: the chase follows a player inside the leash,
+    so the player's distance bounds the NPC's; `give_up_seconds` covers the stuck cases.
+  - An `ally_attacked` event (pack wolves, camps joining in): cheap to deliver, but deciding who
+    joins changes Act 1's fights; it waits for a kind that wants it.
+  - FOV and line of sight for aggro: no LOS ray yet (perception at 2–5 Hz belongs with it).
+- **Consequences:**
+  - The leash-edge flapping is gone (a test holds a player on the edge for 10 s: at most three
+    transitions). A player between the re-aggro and leash radii is safe from aggressive kinds
+    that didn't already chase them, a 4-block band the old shared test didn't have.
+  - A hit is read one tick later than before (the shout too). Tests that checked `angry` right
+    after `damage()` now run one update first.
+  - The committed windup changed one characterization value: `boarReplay`'s chase distance
+    (13.75 → 13.65; the boar no longer runs during a swing). Every hit frame and damage in
+    `fightReplay` and `boarReplay` stayed the same. Act 1's fight balance moved within its band
+    (ghouls 30 → 27 health left on average; chief 28 and wolves 36 unchanged).
+  - A returning NPC can be hit freely, and a ranged or kiting player could farm it. Accepted for
+    now (the classic evade, paid back by the full heal at home); revisit with ranged attacks, e.g.
+    with damage immunity or a faster walk while returning.
+  - Adding behavior means a state or a transition in `think()` (`entity.cpp`) plus its reason;
+    tuning means a JSON number and Reload defs.

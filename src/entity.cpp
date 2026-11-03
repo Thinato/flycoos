@@ -1,11 +1,13 @@
 #include "entity.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <iterator>
 #include <numbers>
 #include <unordered_map>
 #include <unordered_set>
+#include <string_view>
 
 #include "defs.h"
 
@@ -78,16 +80,6 @@ void wander(Entity& e, const Grid& g, glm::vec3 player, float dt) {
     }
 }
 
-// Turns a fighter on the player; one with spawn marker lines shouts the next one (not more often
-// than every kShoutSeconds, e.g. when the player hits it from outside its territory, where it can't stay angry).
-void anger(Entity& e) {
-    if (!e.angry && e.body.alive() && !e.spawn.lines.empty() && e.shoutTimer <= 0) {
-        talk(e);
-        e.shoutTimer = std::max(kShoutSeconds, e.speechTimer);
-    }
-    e.angry = true;
-}
-
 // A new entity of `kind` standing at (and at home on) `pos`, facing `face`.
 Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 face) {
     Entity e{};
@@ -106,6 +98,7 @@ Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 fa
     glm::vec2 toFace = xz(face) - xz(pos);
     if (glm::length(toFace) > 0.01f) e.body.yaw = std::atan2(toFace.x, toFace.y);
     e.body.teleport(e.home = pos);
+    e.state = t.wanders ? AiState::Wander : AiState::Idle;
     return e;
 }
 
@@ -208,37 +201,149 @@ std::vector<Marker> defaultMarkers(const Grid& world, uint32_t seed) {
     return out;
 }
 
+void setState(Entity& e, AiState to, const char* reason) {
+    AiState from = e.state;
+    if (from == AiState::Windup) e.body.hitPending = false;  // exit: a windup cut short never lands (it has landed if it ran out)
+    e.history[e.transitions++ % e.history.size()] = {from, to, reason, e.stateTime};
+    e.state = to;
+    e.stateTime = 0;
+    e.lostTime = 0;
+    if (std::string_view(reason) == "forced") return;  // from the debug window: no enter actions
+    // Enter Return: it ignores whatever happened before it turned back, too.
+    if (to == AiState::Return) e.events = 0;
+    // Enter Chase from calm: one with spawn marker lines shouts the next one, not more often than every
+    // kShoutSeconds (e.g. when hit from outside its territory, where it can't stay in Chase).
+    bool calm = from != AiState::Windup && from != AiState::Recover && from != AiState::Chase;
+    if (to == AiState::Chase && calm && e.body.alive() && !e.spawn.lines.empty() && e.shoutTimer <= 0) {
+        talk(e);
+        e.shoutTimer = std::max(kShoutSeconds, e.speechTimer);
+    }
+}
+
+namespace {
+
+// One AI update of a wanderer: transitions (as many as the situation calls for, so e.g. a hit from
+// beyond the leash is Chase and back to Return in one update), then the input of the state it ends in.
+Input think(Entity& e, const Grid& g, const Player& target, float dt) {
+    const EntityType& t = e.type();
+    glm::vec2 toTarget = xz(target.pos - e.body.pos), toHome = xz(e.home - e.body.pos);
+    float dist = glm::length(toTarget);
+    glm::vec2 dir = dist > 1e-3f ? toTarget / dist : glm::vec2(0, 1);
+    float targetFromHome = glm::distance(xz(target.pos), xz(e.home));
+    // In reach as inReach() counts it (about level), so a player up a pillar counts toward giving up.
+    bool fighter = t.temper != Temper::Harmless, inReach = dist < kPunchReach - 0.2f && std::abs(target.pos.y - e.body.pos.y) < kHeight;
+    Input in;
+    constexpr int kMaxHops = 8;  // the longest chain is 3 transitions (e.g. Recover, Chase, Return, Wander), then the input
+    for (int hops = 0; hops < kMaxHops; ++hops) {
+        if (!e.body.alive() && e.state != AiState::Dead) setState(e, AiState::Dead, "died");
+        switch (e.state) {
+        case AiState::Dead:  // lies where it fell
+            if (!e.body.alive()) return in;
+            setState(e, AiState::Wander, "respawned");
+            continue;
+        case AiState::Idle:
+        case AiState::Wander:
+        case AiState::Talk:
+            if (fighter && (e.events & EventDamaged)) {
+                e.events = 0;  // read once
+                setState(e, AiState::Chase, "damaged");
+                continue;
+            }
+            if (t.temper == Temper::Aggressive && target.alive() && e.calmTimer <= 0 && targetFromHome < t.reaggroRadius &&
+                dist < t.aggroRange) {
+                setState(e, AiState::Chase, "saw_target");
+                continue;
+            }
+            if (e.speechTimer > 0 && e.shoutTimer == 0) {  // stands still and faces the player while talking (not after a shout)
+                if (e.state != AiState::Talk) setState(e, AiState::Talk, "spoken_to");
+                if (dist > 0.01f) turnToward(e.body, toTarget, dt);
+                return in;
+            }
+            if (e.state != AiState::Wander) setState(e, AiState::Wander, e.state == AiState::Talk ? "done_talking" : "wanders");
+            wander(e, g, target.pos, dt);
+            in.move = e.wanderDir;
+            return in;
+        case AiState::Chase:  // runs at the target until in reach, then winds up a swing
+            if (!fighter) setState(e, AiState::Wander, "harmless");  // forced from the debug window
+            else if (!target.alive()) setState(e, AiState::Return, "target_down");
+            else if (targetFromHome >= t.leashRadius) setState(e, AiState::Return, "target_left_leash");
+            else if (e.lostTime >= t.giveUpSeconds) setState(e, AiState::Return, "lost_target");
+            else if (e.body.health < t.fleeHealth * float(maxHealth(e.body.stats))) setState(e, AiState::Flee, "low_health");
+            else if (inReach && e.stateTime >= t.cooldown && startPunch(e.body, dir, t.windup)) setState(e, AiState::Windup, "in_reach");
+            else {
+                if (walkable(g, e.body.pos, dir, target.pos)) {
+                    in.move = dir;
+                    in.run = true;
+                    e.lostTime = 0;
+                } else {  // ponytail: no pathfinding; it waits, and gives up after giveUpSeconds
+                    turnToward(e.body, dir, dt);
+                    if (!inReach) e.lostTime += dt;
+                }
+                return in;
+            }
+            continue;
+        case AiState::Windup:  // committed: stands and doesn't turn; updateCombat lands the hit at its end, if still in reach
+            if (e.body.hitPending) return in;
+            setState(e, AiState::Recover, "swung");
+            continue;
+        case AiState::Recover:
+            if (e.stateTime < t.recover) return in;
+            setState(e, AiState::Chase, "recovered");
+            continue;
+        case AiState::Flee:
+            if (e.stateTime >= kFleeSeconds) {
+                setState(e, AiState::Return, "fled");
+                continue;
+            }
+            if (walkable(g, e.body.pos, -dir, target.pos)) {
+                in.move = -dir;
+                in.run = true;
+            }
+            return in;
+        case AiState::Return:  // ignores the player (and hits) until home
+            if (glm::length(toHome) <= std::max(e.wanderRadius, 1.0f)) {
+                // Heals only after walking back: one that gives up at home (hit from beyond the leash)
+                // arrives in the same update, with stateTime still 0, and keeps its wounds.
+                if (e.stateTime > 0) e.body.health = float(maxHealth(e.body.stats));
+                e.calmTimer = t.reaggroCooldown;
+                setState(e, AiState::Wander, "home");
+                continue;
+            }
+            if (e.lostTime >= t.giveUpSeconds) {  // stuck on the way: wandering may get it unstuck
+                setState(e, AiState::Wander, "cannot_get_home");
+                continue;
+            }
+            if (glm::vec2 d = glm::normalize(toHome); walkable(g, e.body.pos, d, target.pos)) {
+                in.move = d;
+                e.lostTime = 0;
+            } else e.lostTime += dt;
+            return in;
+        case AiState::Count:
+            break;
+        }
+        break;
+    }
+    assert(!"think: transitions didn't settle");  // a cycle in the graph; release builds just stand still this tick
+    return in;
+}
+
+}  // namespace
+
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt) {
     for (Entity& e : entities) {
         e.speechTimer = std::max(0.0f, e.speechTimer - dt);
         e.shoutTimer = std::max(0.0f, e.shoutTimer - dt);
+        e.calmTimer = std::max(0.0f, e.calmTimer - dt);
+        e.stateTime += dt;
         e.body.pos = clearOfTerrain(world, e.body.pos);  // e.g. respawned at a home that was built over since
-        const EntityType& t = e.type();
-        if (!t.wanders) continue;
-        Input in;
-        glm::vec2 toPlayer = xz(player.pos - e.body.pos);
-        float dist = glm::length(toPlayer);
-        glm::vec2 dir = dist > 1e-3f ? toPlayer / dist : glm::vec2(0, 1);
-        // Fighters only care about a living player inside their territory.
-        bool inTerritory = player.alive() && glm::distance(xz(player.pos), xz(e.home)) < kLeashRadius;
-        if (t.temper == Temper::Aggressive && inTerritory && dist < t.aggroRange) anger(e);
-        if (!inTerritory || !e.body.alive()) e.angry = false;
-        if (!e.body.alive()) {
-            // lies where it fell
-        } else if (e.angry) {  // run at the player until in reach, then swing
-            if (walkable(world, e.body.pos, dir, player.pos)) {
-                in.move = dir;
-                in.run = true;
-            } else if (!e.body.punching()) {  // ponytail: no pathfinding; it waits until the player comes back or leaves
-                turnToward(e.body, dir, dt);
-            }
-            if (dist < kPunchReach - 0.2f) startPunch(e.body, dir);
-        } else if (e.speechTimer > 0 && e.shoutTimer == 0) {  // stands still and faces the player while talking (not after a shout)
-            if (dist > 0.01f) turnToward(e.body, toPlayer, dt);
-        } else {
-            wander(e, world, player.pos, dt);
-            in.move = e.wanderDir;
+        if (!e.type().wanders) {  // stands where it was put: only dies and comes back
+            if (!e.body.alive() && e.state != AiState::Dead) setState(e, AiState::Dead, "died");
+            else if (e.body.alive() && e.state != AiState::Idle) setState(e, AiState::Idle, e.state == AiState::Dead ? "respawned" : "stands");
+            e.events = 0;
+            continue;
         }
+        Input in = think(e, world, player, dt);
+        e.events = 0;  // read by this update only: later hits arrive with the next
         updatePlayer(e.body, world, in, dt);
     }
 }
@@ -315,16 +420,16 @@ bool hurt(Player& b, int amount) {
 bool damage(Entity& e, int amount) {
     const EntityType& t = e.type();
     if (!t.attackable || !hurt(e.body, amount)) return false;
-    if (t.temper != Temper::Harmless) anger(e);
+    if (t.temper != Temper::Harmless) e.events |= EventDamaged;
     if (!e.body.alive() && (t.lootChance >= 1 || rand01(e.rng) < t.lootChance)) e.loot = t.loot;  // rand01 may return 1
     return true;
 }
 
-bool startPunch(Player& b, glm::vec2 aim) {
+bool startPunch(Player& b, glm::vec2 aim, float windup) {
     if (!b.alive() || b.swingTimer > 0) return false;
     b.swingWeapon = b.inv.equipped[SlotMainHand];
     b.swingTimer += swingTime(b.stats, weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
-    b.punchLength = std::min(kPunchSeconds, b.swingTimer);
+    b.punchLength = std::min(windup / kPunchImpact, b.swingTimer);
     b.punchTime = 0;
     b.punchRight = !b.punchRight;
     b.hitPending = true;

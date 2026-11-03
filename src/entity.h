@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <random>
 #include <string>
@@ -29,9 +30,32 @@ struct EntityType {
     ItemId loot;          // can drop when killed
     float lootChance;
     float respawnSeconds; // dead this long, then back at home fully healed
+    // The AI's numbers (ADR-020); fighters only.
+    float leashRadius;     // a chase ends once the player is this far from home
+    float reaggroRadius;   // aggressive: attacks on sight only a player this close to home (< leashRadius)
+    float reaggroCooldown; // seconds after getting home before it attacks on sight again
+    float giveUpSeconds;   // can't step toward the player (out of reach) this long: goes home
+    float windup;          // seconds from starting a swing to its hit, standing committed
+    float recover;         // seconds it stands after the hit
+    float cooldown;        // seconds of chasing before the next swing (the weapon's swing time gates it too)
+    float fleeHealth;      // runs away below this fraction of its health; 0: never
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);
+
+// The NPC AI's states (ADR-020). Idle: stands where it was put (kinds that don't wander). Talk:
+// stands facing the player while its balloon is up. Chase, Windup, Recover: fighting. Return: walks
+// home ignoring the player, then heals. Flee: runs from the player for a while, then returns.
+enum class AiState : uint8_t { Idle, Wander, Talk, Chase, Windup, Recover, Return, Flee, Dead, Count };
+inline constexpr const char* kAiStateNames[] = {"idle", "wander", "talk", "chase", "windup", "recover", "return", "flee", "dead"};
+static_assert(std::size(kAiStateNames) == size_t(AiState::Count));
+// What happened to an entity since its last AI update (bits of Entity::events).
+enum AiEvent : uint8_t { EventDamaged = 1 };
+struct AiTransition {
+    AiState from = AiState::Idle, to = AiState::Idle;
+    const char* reason = "";  // a static string, e.g. "target_left_leash"
+    float after = 0;          // seconds it had spent in `from`
+};
 
 struct Entity {
     EntityKind kind;
@@ -46,11 +70,18 @@ struct Entity {
     int phrase = -1;       // index into the phrase list, -1 = silent
     float speechTimer = 0; // seconds the balloon stays up
     float shoutTimer = 0;  // > 0: shouted a line on turning angry lately: no new shout, and the balloon doesn't hold it still
-    bool angry = false;    // chasing and attacking the player
+    AiState state = AiState::Idle;  // change it with setState
+    float stateTime = 0;   // seconds in `state`
+    float lostTime = 0;    // seconds it couldn't step toward where it's going (chasing or going home)
+    float calmTimer = 0;   // > 0: back home lately; doesn't attack on sight yet
+    uint8_t events = 0;    // AiEvent bits, read and cleared by its next AI update
+    std::array<AiTransition, 8> history{};  // the latest transitions: history[(transitions - 1) % 8] is the newest
+    uint32_t transitions = 0;               // how many it has made
     ItemId loot = NoItem;  // what its corpse holds
     std::mt19937 rng;
 
     const EntityType& type() const { return typeOf(kind); }
+    bool angry() const { return state == AiState::Chase || state == AiState::Windup || state == AiState::Recover; }
     const char* speech() const;  // current balloon text, null when silent
     // Its name on the nameplate: the spawn marker's name for a lone NPC with lines, else `name`.
     const std::string& displayName() const;
@@ -58,7 +89,7 @@ struct Entity {
 
 constexpr float kTalkRange = 3.5f;   // blocks between feet; also how close you loot from
 constexpr float kPunchReach = 2.0f;  // blocks between feet
-constexpr float kLeashRadius = 20;   // fighters give up once the player is this far from their home
+constexpr float kFleeSeconds = 4;    // how long a fleeing NPC runs before it heads home
 constexpr float kPlayerRespawnSeconds = 5;
 
 // The training dummy, a villager, a boar and a bandit on grass beside `near` (usually the player
@@ -75,8 +106,11 @@ glm::vec3 playerSpawn(const Grid& world, const std::vector<Marker>& markers);
 // Spawn markers for the NPCs that worlds had before markers existed: one per spawnEntities entity
 // around the world spawn (findSpawn), with its kind's wander radius. For new worlds and older files.
 std::vector<Marker> defaultMarkers(const Grid& world, uint32_t seed);
-// AI and physics for every entity: wandering, talking villagers stop and face the player, angry
-// fighters chase the player and swing at them.
+// Moves `e` to `to`, recording `reason`, with the exit and enter actions: leaving Windup early
+// cancels its hit; entering Chase from a calm state shouts the spawn marker's next line (at most every 8 s).
+void setState(Entity& e, AiState to, const char* reason);
+// AI and physics for every entity: the state machine of ADR-020 (wandering, talking villagers stop
+// and face the player, fighters chase the player, wind up and swing, give up and walk home).
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt);
 // Keeps the player from walking through entities (never pushes into terrain).
 void separate(Player& player, const Grid& world, const std::vector<Entity>& entities);
@@ -92,11 +126,12 @@ bool takeLoot(Entity& e, Inventory& inv);
 
 // Takes damage if alive; health stops at 0. Puts the body in combat. Returns whether it applied.
 bool hurt(Player& body, int amount);
-// hurt() for attackable entities only. Angers fighters; a kill rolls the loot.
+// hurt() for attackable entities only. Tells fighters (EventDamaged); a kill rolls the loot.
 bool damage(Entity& e, int amount);
 
-// Starts an attack (main-hand weapon, or a punch) toward `aim` (XZ direction) if the body is alive and its swing is ready.
-bool startPunch(Player& attacker, glm::vec2 aim);
+// Starts an attack (main-hand weapon, or a punch) toward `aim` (XZ direction) if the body is alive and
+// its swing is ready. It hits `windup` seconds later (sooner if the swing is quicker than its animation).
+bool startPunch(Player& attacker, glm::vec2 aim, float windup = kSwingWindup);
 // Whether a swing from `attacker` reaches feet position `target`: in reach, within 60 degrees of facing, about level.
 bool inReach(const Player& attacker, glm::vec3 target);
 // What a punch from `attacker` hits: the nearest living, attackable entity in reach.

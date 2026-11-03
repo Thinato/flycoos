@@ -70,6 +70,7 @@ struct Player : Body, Combatant {};
 
 constexpr float kPunchSeconds = 0.35f;  // punch animation length (shorter if swings are faster)
 constexpr float kPunchImpact = 0.4f;    // fraction of the animation where the fist lands
+constexpr float kSwingWindup = kPunchImpact * kPunchSeconds;  // seconds from a swing's start to its hit
 
 // Where to draw a body `alpha` of the way through the current tick (0: as it was, 1: as it is).
 inline glm::vec3 drawPos(const Body& b, float alpha) { return glm::mix(b.prevPos, b.pos, alpha); }

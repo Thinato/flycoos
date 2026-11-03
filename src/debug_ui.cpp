@@ -169,11 +169,23 @@ static void entitiesTab(std::vector<Entity>& entities, const Player& player, Deb
         attributes(e.body, false);
         ImGui::Text("Attackable %s   Wanders %s   Talks %s   Temper %s", t.attackable ? "yes" : "no",
                     t.wanders ? "yes" : "no", t.talks ? "yes" : "no", kTemperNames[int(t.temper)]);
+        if (int st = int(e.state); ImGui::Combo("State", &st, kAiStateNames, int(AiState::Count)) && st != int(e.state))
+            setState(e, AiState(st), "forced");
+        ImGui::SetItemTooltip("Forces a state; the AI leaves it again at once if it doesn't fit (e.g. dead while alive).");
+        ImGui::Text("for %.1f s   target you: %.1f away, %.1f from home%s", e.stateTime, glm::distance(e.body.pos, player.pos),
+                    glm::distance(player.pos, e.home), e.calmTimer > 0 ? "   calming" : "");
         if (t.temper != Temper::Harmless) {
-            ImGui::Text("%s   aggro %.0f   leash %.0f from home   chase %.1f b/s", e.angry ? "ANGRY" : "calm",
-                        t.aggroRange, kLeashRadius, t.chaseSpeed);
-            ImGui::SameLine();
-            if (ImGui::SmallButton(e.angry ? "Calm" : "Anger")) e.angry = !e.angry;
+            ImGui::Text("aggro %.0f   leash %.0f   re-aggro %.0f (after %.0f s)   chase %.1f b/s", t.aggroRange, t.leashRadius,
+                        t.reaggroRadius, t.reaggroCooldown, t.chaseSpeed);
+            ImGui::Text("windup %.2f s   recover %.2f s   cooldown %.2f s", t.windup, t.recover, t.cooldown);
+            ImGui::Text("gives up after %.0f s stuck   flees below %.0f%% health", t.giveUpSeconds, t.fleeHealth * 100);
+        }
+        if (e.transitions && ImGui::TreeNode("transitions", "Last %u transitions", std::min(e.transitions, uint32_t(e.history.size())))) {
+            for (uint32_t k = 0; k < std::min(e.transitions, uint32_t(e.history.size())); ++k) {  // newest first
+                const AiTransition& h = e.history[(e.transitions - 1 - k) % e.history.size()];
+                ImGui::Text("%s -> %s: %s (after %.1f s)", kAiStateNames[int(h.from)], kAiStateNames[int(h.to)], h.reason, h.after);
+            }
+            ImGui::TreePop();
         }
         if (t.lootChance > 0)
             ImGui::Text("Drops %s %.0f%%%s%s", itemType(t.loot).name, t.lootChance * 100, e.loot ? ", corpse holds " : "",

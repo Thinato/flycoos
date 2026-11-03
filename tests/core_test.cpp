@@ -526,43 +526,45 @@ static void fighters() {
     // Its camp is out of sight of the spawn: even at the edge of its wandering it can't see it,
     // and the spawn is outside its territory.
     float campDist = glm::distance(flat(bandit.home), flat(player.pos));
-    CHECK(campDist - bandit.type().wanderRadius > bandit.type().aggroRange && campDist > kLeashRadius);
+    CHECK(campDist - bandit.type().wanderRadius > bandit.type().aggroRange && campDist > bandit.type().leashRadius);
 
     // A minute at the spawn: nobody starts a fight.
     sim(60);
-    CHECK(player.health == 100 && !boar.angry && !bandit.angry);
+    CHECK(player.health == 100 && !boar.angry() && !bandit.angry());
 
     // Passive: standing right next to the boar is fine, until it gets hit. Then it gores back.
     player.pos = boar.body.pos + glm::vec3(1.5f, 0, 0);
     sim(5);
-    CHECK(player.health == 100 && !boar.angry);
-    CHECK(damage(boar, 1) && boar.angry);
+    CHECK(player.health == 100 && !boar.angry());
+    CHECK(damage(boar, 1) && !boar.angry());  // it reads the hit on its next update
+    updateEntities(es, g, player, 1 / 60.0f);
+    CHECK(boar.angry());
     sim(5);
     CHECK(player.health < 100 && player.lastDamage >= 3 && player.lastDamage <= 6);  // a punch, like the player's
-    CHECK(!bandit.angry);
-    boar.angry = false;
+    CHECK(!bandit.angry());
+    setState(boar, AiState::Wander, "test");
 
     // Aggressive: the bandit charges a player inside its aggro range and hits with the knife.
     player.health = 100;
     player.pos = bandit.body.pos + glm::vec3(-8, 0, 0);
     sim(0.1f);
-    CHECK(bandit.angry);
+    CHECK(bandit.angry());
     sim(6);
     CHECK(player.health < 100 && player.lastDamage >= 5 && player.lastDamage <= 8);  // 3-6 + strength 3 x speed 0.75
     CHECK(glm::distance(flat(bandit.body.pos), flat(player.pos)) < kPunchReach);
 
     // Leash: once the player is out of its territory it gives up and walks home.
-    player.pos = bandit.home + glm::vec3(-kLeashRadius - 1, 0, 0);
+    player.pos = bandit.home + glm::vec3(-bandit.type().leashRadius - 1, 0, 0);
     sim(0.1f);
-    CHECK(!bandit.angry);
+    CHECK(!bandit.angry());
     sim(30);
-    CHECK(!bandit.angry && glm::distance(flat(bandit.body.pos), flat(bandit.home)) < bandit.type().wanderRadius + 1);
+    CHECK(!bandit.angry() && glm::distance(flat(bandit.body.pos), flat(bandit.home)) < bandit.type().wanderRadius + 1);
 
     // Knocked out: fighters stop, and the player can't swing until back up.
     player.health = 1;
     player.pos = bandit.body.pos + glm::vec3(-3, 0, 0);
     sim(6);
-    CHECK(!player.alive() && player.deadTime > 0 && !bandit.angry && !startPunch(player, {1, 0}));
+    CHECK(!player.alive() && player.deadTime > 0 && !bandit.angry() && !startPunch(player, {1, 0}));
     player.health = 100;
     player.deadTime = 0;
     player.pos = {5.5f, 4, 5.5f};  // out of everyone's way
@@ -577,7 +579,7 @@ static void fighters() {
     }
     CHECK(drops > 400 * 0.65f && drops < 400 * 0.85f);  // 75%
     for (int i = 0; i < 50; ++i) CHECK(damage(bandit, 1) && bandit.loot == NoItem);  // still alive, nothing yet
-    bandit.angry = false;
+    bandit.events = 0;  // forget those hits
     bandit.body.health = float(maxHealth(bandit.body.stats));
     // The corpse is looted with E from close by; full bags leave the loot on it.
     boar.loot = BoarSkin;
@@ -594,9 +596,9 @@ static void fighters() {
     // It lies still where it fell, then comes back at home, healed and calm.
     glm::vec3 fell = boar.body.pos;
     boar.body.deadTime = 0;
-    boar.angry = true;
+    setState(boar, AiState::Chase, "test");
     sim(boar.type().respawnSeconds - 1);
-    CHECK(!boar.body.alive() && !boar.angry && flat(boar.body.pos) == flat(fell));
+    CHECK(!boar.body.alive() && !boar.angry() && flat(boar.body.pos) == flat(fell));
     sim(1.2f);
     CHECK(boar.body.alive() && boar.body.health == 100 && boar.loot == NoItem);
     CHECK(glm::distance(flat(boar.body.pos), flat(boar.home)) < 1);
@@ -783,7 +785,7 @@ static void protection() {
     std::vector<Entity> es = spawnEntities(g, player.pos, 1);
     Entity& bandit = es[3];
     player.pos = bandit.body.pos + glm::vec3(-1.5f, 0, 0);
-    bandit.angry = true;
+    setState(bandit, AiState::Chase, "test");
     std::mt19937 rng(5);
     auto hits = [&](float k) {
         int lo = 99, hi = 0, n = 0;
@@ -1861,7 +1863,7 @@ static void storyNpcs() {
         CHECK(t.name && t.level == r.level && t.temper == r.temper && t.talks == r.talks && t.model == r.model);
         CHECK(t.weapon == r.weapon && t.loot == r.loot && t.attackable && t.wanders && t.respawnSeconds > 0);
         CHECK((t.loot == NoItem) == (t.lootChance == 0) && t.lootChance <= 1);
-        if (r.temper == Temper::Aggressive) CHECK(t.aggroRange > 0 && t.aggroRange < kLeashRadius && t.chaseSpeed > 0);
+        if (r.temper == Temper::Aggressive) CHECK(t.aggroRange > 0 && t.aggroRange < t.reaggroRadius && t.chaseSpeed > 0);
     }
     CHECK(typeOf(EntityKind::Wolf).chaseSpeed > 5 && typeOf(EntityKind::Ghoul).chaseSpeed < 5);  // the player walks 5, runs 9
     CHECK(typeOf(EntityKind::BanditChief).lootChance == 1);
@@ -1966,7 +1968,7 @@ static void storyNpcs() {
     Player player;
     player.pos = hakon.body.pos + glm::vec3(5, 0, 0);
     updateEntities(es, g, player, 1 / 60.0f);
-    CHECK(hakon.angry && hakon.speech() && std::string_view(hakon.speech()) == "You walked into the wrong camp.");
+    CHECK(hakon.angry() && hakon.speech() && std::string_view(hakon.speech()) == "You walked into the wrong camp.");
     CHECK(damage(hakon, 10000) && hakon.loot == IronHelm);
     hakon.speechTimer = 0;
     for (int i = 0; i < 3; ++i) updateEntities(es, g, player, 1 / 60.0f);
@@ -1982,12 +1984,15 @@ static void storyNpcs() {
     CHECK(talkTarget(gs, player) == &guard);
     talk(guard);
     CHECK(std::string_view(guard.speech()) == "Halt.");
-    CHECK(damage(guard, 5) && guard.angry && std::string_view(guard.speech()) == "Have at you!");
+    CHECK(damage(guard, 5));
+    updateEntities(gs, g, player, 1 / 60.0f);
+    CHECK(guard.angry() && std::string_view(guard.speech()) == "Have at you!");
     // Hit from outside its territory it can't stay angry: one shout, not one per hit, and it doesn't
     // stand frozen under the balloon.
     Player far;
-    far.pos = guard.home + glm::vec3(kLeashRadius + 2, 0, 0);
-    guard.angry = false, guard.shoutTimer = 0, guard.speechTimer = 0;
+    far.pos = guard.home + glm::vec3(guard.type().leashRadius + 2, 0, 0);
+    setState(guard, AiState::Wander, "test");
+    guard.shoutTimer = 0, guard.speechTimer = 0;
     int shouts = 0;
     for (int i = 0; i < 4 * 60; ++i) {  // within the balloon's 5 s
         int before = guard.phrase;
@@ -1995,7 +2000,7 @@ static void storyNpcs() {
         float waited = guard.wanderTimer;
         updateEntities(gs, g, far, 1 / 60.0f);
         shouts += guard.phrase != before;
-        CHECK(!guard.angry && (guard.wanderTimer < waited || guard.wanderTimer > waited + 1));  // it keeps wandering
+        CHECK(!guard.angry() && (guard.wanderTimer < waited || guard.wanderTimer > waited + 1));  // it keeps wandering
     }
     CHECK(shouts == 1 && guard.speech());
     guard.body.health = 0;
@@ -2059,7 +2064,7 @@ static void markerLines() {
     sync();
     Entity* g1 = &npcs[1];
     CHECK(g1->kind == EntityKind::Guard && g1->displayName() == "Gate" && damage(*g1, 7) && g1->body.health == 153);
-    g1->angry = false;
+    g1->events = 0;  // forget the hit
     talk(*g1);
     CHECK(std::string_view(g1->speech()) == "Halt.");
     guard = list[1];
@@ -2420,7 +2425,8 @@ static void fightReplay() {
     }
 }
 
-// Characterization of the passive temper and the leash, before the AI becomes a state machine. A
+// Characterization of the passive temper and the leash, pinned before the AI became a state machine
+// (ADR-020) and re-pinned only where that changed it on purpose (noted at the value). A
 // bare-handed player stands by a boar (seed 2, fixed 60 fps): it ignores them until punched once, then
 // chases and fights back; the player doesn't swing again. Then the player steps beyond the leash: the
 // boar calms down and walks home.
@@ -2449,25 +2455,26 @@ static void boarReplay() {
         }
     };
     run(120, false);  // two seconds side by side: no fight
-    CHECK(hits.empty() && !boar.angry);
+    CHECK(hits.empty() && !boar.angry());
     player.pos = boar.body.pos + glm::vec3(1.2f, 0, 0);
     run(60, true);  // one punch
-    CHECK(boar.angry);
+    CHECK(boar.angry());
     run(5 * 60, false);  // it fights back
-    CHECK(boar.angry);
+    CHECK(boar.angry());
     same("boarReplay", "boar health", boar.body.health, 97.0f);  // one punch, no regen in combat
     same("boarReplay", "player health", player.health, 71.0f);
     player.pos = boar.home + glm::vec3(0, 0, 15);  // backs off, still in its territory
     run(3 * 60, false);  // it runs after them and keeps biting
-    CHECK(boar.angry);
+    CHECK(boar.angry());
     auto near = [](float got, float want) { return std::abs(got - want) < 0.01f; };
-    if (!near(glm::distance(boar.body.pos, boar.home), 13.75f))
-        same("boarReplay", "chase distance from home", glm::distance(boar.body.pos, boar.home), 13.75f);
-    player.pos = boar.home + glm::vec3(0, 0, kLeashRadius + 5);  // out of its territory: calms at once
+    // Was 13.75: the boar used to keep running through a swing; a windup now stands committed.
+    if (!near(glm::distance(boar.body.pos, boar.home), 13.65f))
+        same("boarReplay", "chase distance from home", glm::distance(boar.body.pos, boar.home), 13.65f);
+    player.pos = boar.home + glm::vec3(0, 0, boar.type().leashRadius + 5);  // out of its territory: gives up at once
     run(1, false);
-    CHECK(!boar.angry);
+    CHECK(!boar.angry());
     run(10 * 60, false);  // walks back home, both heal out of combat
-    CHECK(!boar.angry);
+    CHECK(!boar.angry());
     if (!near(glm::distance(boar.body.pos, boar.home), 0.067f))
         same("boarReplay", "distance from home", glm::distance(boar.body.pos, boar.home), 0.067f);
     same("boarReplay", "boar health", boar.body.health, 100.0f);
@@ -2478,6 +2485,206 @@ static void boarReplay() {
     CHECK(hits == want);
     if (hits != want)
         for (auto [f, who, amount] : hits) std::println(stderr, "  got {{{}, '{}', {}}}", f, who, amount);
+}
+
+// The AI state machine (ADR-020): leash hysteresis, the committed windup, passive until hit, giving
+// up, Return, fleeing, and the transition log.
+static void npcAi() {
+    namespace fs = std::filesystem;
+    auto flat = [](glm::vec3 v) { return glm::vec2(v.x, v.z); };
+    auto newest = [](const Entity& e, uint32_t back = 0) -> const AiTransition& {
+        return e.history[(e.transitions - 1 - back) % e.history.size()];
+    };
+    auto reason = [&](const Entity& e, uint32_t back = 0) { return std::string_view(newest(e, back).reason); };
+    // The shipped kinds: the old global leash, the old swing timing, nobody flees.
+    for (const EntityType& t : defs().creatures)
+        CHECK(t.leashRadius == 20 && t.reaggroRadius == 16 && t.windup == kSwingWindup && t.cooldown == 0 && t.fleeHealth == 0);
+
+    Grid g = meadow();
+    Player player;
+    std::mt19937 rng(4);
+    std::vector<Entity> es;
+    const glm::vec3 home{26.5f, 4, 32.5f};
+    auto spawn = [&](EntityKind kind) {
+        es.clear();
+        syncSpawns(es, g, {{.id = 1, .kind = MarkerKind::Spawn, .pos = home, .radius = 3, .entity = kind}}, 1, player.pos);
+        CHECK(es.size() == 1);
+        return &es[0];
+    };
+    auto sim = [&](int ticks, auto&& each) {
+        for (int i = 0; i < ticks; ++i) {
+            each(i);
+            updateEntities(es, g, player, kTick);
+            separate(player, g, es);
+            updateCombat(player, es, kTick, rng);
+        }
+    };
+    auto none = [](int) {};
+
+    // Leash hysteresis: a bandit chases the player to the edge of its territory, where the player
+    // stands for 10 s stepping back and forth across it every tick. It gives up once and walks home;
+    // the player, still within its aggro range of the bandit's path but outside the re-aggro radius,
+    // doesn't pull it back (before the state machine it flipped angry every tick).
+    player.pos = home + glm::vec3(-8, 0, 0);
+    Entity* bandit = spawn(EntityKind::Bandit);
+    sim(1, none);
+    CHECK(bandit->state == AiState::Chase && reason(*bandit) == "saw_target");
+    uint32_t before = bandit->transitions;
+    float leash = bandit->type().leashRadius;
+    sim(10 * 60, [&](int i) {
+        player.pos = home + glm::vec3(-leash + (i % 2 ? 0.05f : -0.05f), 0, 0);
+        player.health = 100;
+    });
+    CHECK(bandit->transitions - before <= 3 && !bandit->angry());  // Return, then Wander at home
+    CHECK(glm::distance(flat(bandit->body.pos), flat(home)) < 3 + 1);
+    // Re-aggro: inside the re-aggro radius and its aggro range it attacks again.
+    player.pos = bandit->body.pos + glm::vec3(-6, 0, 0);
+    sim(1, none);
+    CHECK(bandit->state == AiState::Chase && reason(*bandit) == "saw_target");
+
+    // Windup: committed and timed; the hit lands once, at its end, and only if the player is still in reach.
+    player.pos = bandit->body.pos + glm::vec3(-1.5f, 0, 0);
+    player.health = 100;
+    int ticks = 0;
+    while (bandit->state != AiState::Windup && ticks++ < 120) sim(1, none);
+    CHECK(bandit->state == AiState::Windup && reason(*bandit) == "in_reach" && bandit->body.hitPending);
+    float yaw = bandit->body.yaw;
+    player.pos = bandit->body.pos + glm::vec3(-4, 0, 0);  // steps out of reach (and around it)
+    for (ticks = 0; bandit->state == AiState::Windup && ticks < 60; ++ticks) {
+        sim(1, none);
+        if (bandit->state == AiState::Windup) CHECK(bandit->body.yaw == yaw);  // no turning (it only slides to a stop)
+    }
+    CHECK(ticks == int(std::ceil(kSwingWindup * 60)) && player.health == 100);  // dodged
+    CHECK(bandit->state == AiState::Recover && reason(*bandit) == "swung" && newest(*bandit).after >= kSwingWindup - kTick);
+    // Standing in reach: exactly one hit per windup.
+    player.pos = bandit->body.pos + glm::vec3(-1.5f, 0, 0);
+    int hits = 0, windups = 0;
+    sim(5 * 60, [&](int) {
+        windups += bandit->state == AiState::Windup && bandit->stateTime == 0;
+        hits += player.hitTime == 0;
+        player.health = 100;
+    });
+    CHECK(hits > 3 && std::abs(hits - windups) <= 1);
+
+    // Return ignores the player: hit from close by on the way home it keeps going, then heals and
+    // stays calm for its re-aggro cooldown even with the player beside it.
+    sim(60, [&](int) { player.pos = home + glm::vec3(-12, 0, 0); });  // draws it away from home
+    player.pos = home + glm::vec3(-leash - 2, 0, 0);
+    for (ticks = 0; bandit->state != AiState::Return && ticks < 60; ++ticks) sim(1, none);  // finishes a windup it started
+    CHECK(bandit->state == AiState::Return && reason(*bandit) == "target_left_leash");
+    sim(30, none);
+    damage(*bandit, 20);
+    player.pos = bandit->body.pos + glm::vec3(-2, 0, 0);  // behind it: it walks toward home, +x
+    float hurtHealth = bandit->body.health;
+    sim(1, none);
+    CHECK(bandit->state == AiState::Return && hurtHealth < float(maxHealth(bandit->body.stats)));
+    for (ticks = 0; bandit->state == AiState::Return && ticks < 20 * 60; ++ticks) {
+        player.pos = bandit->body.pos + glm::vec3(-2, 0, 0);  // tags along behind
+        player.health = 100;
+        sim(1, none);
+    }
+    CHECK(bandit->state == AiState::Wander && reason(*bandit) == "home" && player.health == 100);
+    CHECK(bandit->body.health == float(maxHealth(bandit->body.stats)) && bandit->calmTimer > 0);
+    sim(int(bandit->type().reaggroCooldown * 60) - 2, [&](int) { player.pos = bandit->body.pos + glm::vec3(-2, 0, 0); });
+    CHECK(!bandit->angry());
+    sim(5, none);
+    CHECK(bandit->state == AiState::Chase && reason(*bandit) == "saw_target");
+
+    // Giving up: a player behind a wall (no pathfinding) inside its territory.
+    for (int z = 20; z < 45; ++z)
+        for (int y = 4; y < 7; ++y) g.set({20, y, z}, Stone);
+    bandit->body.teleport(home);
+    player.pos = home + glm::vec3(-9, 0, 0);
+    setState(*bandit, AiState::Chase, "test");
+    sim(int(bandit->type().giveUpSeconds * 60) + 120, none);
+    CHECK(bandit->state != AiState::Chase && reason(*bandit, bandit->state == AiState::Return ? 0 : 1) == "lost_target");
+    g = meadow();
+
+    // Up a pillar beside it the player is out of reach (a body height above): it doesn't swing, and gives up.
+    bandit->body.teleport(home);
+    for (int y = 4; y < 7; ++y) g.set({24, y, 32}, Stone);
+    player.pos = {24.5f, 7, 32.5f};
+    player.health = 100;
+    setState(*bandit, AiState::Chase, "test");
+    sim(int(bandit->type().giveUpSeconds * 60) + 60, [&](int) { player.pos = {24.5f, 7, 32.5f}; });
+    CHECK(player.health == 100 && bandit->state == AiState::Wander && reason(*bandit, 1) == "lost_target");
+    g = meadow();
+
+    // A hit while chasing, then the player leaves the leash: home already, it turns back once and
+    // stays calm (the hit is dropped on entering Return), and only a Return that walked heals.
+    player.pos = home + glm::vec3(-2, 0, 0);
+    bandit->body.teleport(home);
+    bandit->body.swingTimer = 1;  // no swing this time
+    setState(*bandit, AiState::Chase, "test");
+    damage(*bandit, 10);
+    player.pos = home + glm::vec3(-leash - 2, 0, 0);
+    before = bandit->transitions;
+    updateEntities(es, g, player, kTick);
+    CHECK(bandit->state == AiState::Wander && bandit->transitions == before + 2 && reason(*bandit) == "home");
+    CHECK(bandit->body.health == float(maxHealth(bandit->body.stats)) - 10);  // didn't travel: keeps its wounds
+
+    // Forcing a state runs no enter actions: a forced Chase doesn't shout.
+    {
+        Marker m{.id = 2, .kind = MarkerKind::Spawn, .pos = home, .radius = 3, .entity = EntityKind::Guard, .count = 1, .lines = {"Halt."}};
+        std::vector<Entity> gs;
+        syncSpawns(gs, g, {m}, 1, player.pos);
+        setState(gs[0], AiState::Chase, "forced");
+        CHECK(gs[0].speech() == nullptr && gs[0].shoutTimer == 0);
+        setState(gs[0], AiState::Wander, "forced");
+        setState(gs[0], AiState::Chase, "damaged");
+        CHECK(gs[0].speech() && std::string_view(gs[0].speech()) == "Halt.");
+    }
+
+    // Passive until hit: ten seconds beside a boar, nothing; one hit, one transition.
+    player.pos = home + glm::vec3(-3, 0, 0);
+    Entity* boar = spawn(EntityKind::Boar);
+    sim(10 * 60, [&](int) { player.pos = boar->body.pos + glm::vec3(-1.5f, 0, 0); });
+    CHECK(boar->state == AiState::Wander && player.health == 100);
+    before = boar->transitions;
+    player.pos = boar->body.pos + glm::vec3(-3, 0, 0);  // out of reach: it only starts the chase
+    CHECK(damage(*boar, 1) && boar->state == AiState::Wander && boar->events == EventDamaged);  // read on its next update
+    updateEntities(es, g, player, kTick);
+    CHECK(boar->state == AiState::Chase && boar->transitions == before + 1 && reason(*boar) == "damaged" && boar->events == 0);
+
+    // The log keeps the latest 8, newest last; forcing works from any state.
+    for (int i = 0; i < 10; ++i) setState(*boar, i % 2 ? AiState::Idle : AiState::Flee, "forced");
+    CHECK(boar->transitions == before + 11 && newest(*boar).from == AiState::Flee && newest(*boar).to == AiState::Idle);
+    CHECK(reason(*boar, 7) == "forced" && newest(*boar, 7).from == AiState::Idle);
+    setState(*boar, AiState::Dead, "forced");
+    updateEntities(es, g, player, kTick);  // alive: it leaves Dead at once
+    CHECK(boar->state != AiState::Dead && reason(*boar, boar->state == AiState::Wander ? 0 : 1) == "respawned");
+
+    // Fleeing: a test-only kind, a boar that runs below half health, then goes home and heals.
+    fs::path dir = fs::temp_directory_path() / "flycoos_ai_test";
+    fs::create_directories(dir);
+    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json", dir / "items.json", fs::copy_options::overwrite_existing);
+    std::ostringstream text;
+    text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
+    std::string creatures = text.str();
+    creatures.erase(creatures.rfind(']'));
+    std::ofstream(dir / "creatures.json") << creatures << R"(,{"id": "coward", "save_id": 8, "copy_from": "boar", "flee_health": 0.5}])";
+    Defs test, shipped;
+    std::string error;
+    CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
+    fs::remove_all(dir);
+    setDefs(std::move(test));
+    player.pos = home + glm::vec3(-3, 0, 0);
+    Entity* coward = spawn(EntityKind(8));
+    CHECK(coward->type().fleeHealth == 0.5f);
+    damage(*coward, 10);
+    sim(1, none);
+    CHECK(coward->state == AiState::Chase);
+    damage(*coward, 50);  // 40 left of 100
+    sim(1, none);
+    CHECK(coward->state == AiState::Flee && reason(*coward) == "low_health");
+    float startDist = glm::distance(flat(coward->body.pos), flat(player.pos));
+    sim(int(kFleeSeconds * 60) - 2, none);
+    CHECK(coward->state == AiState::Flee && glm::distance(flat(coward->body.pos), flat(player.pos)) > startDist + 5);
+    sim(3, none);
+    CHECK(coward->state == AiState::Return && reason(*coward) == "fled");
+    sim(30 * 60, none);
+    CHECK(coward->state == AiState::Wander && coward->body.health == 100);
+    setDefs(std::move(shipped));
 }
 
 // Session and step(): what main.cpp's loop did inline before, now drivable headless.
@@ -2735,6 +2942,9 @@ static void dataFiles() {
     scarecrow.replace(scarecrow.find(R"("id": "dummy")"), std::string_view(R"("id": "dummy")").size(), R"("id": "scarecrow")");
     CHECK(shipped.creatures.size() == size_t(EntityKind::Count) && shipped.creatureById.at("ghoul") == EntityKind::Ghoul &&
           shipped.creatures[1].name == nullptr && shipped.creatureIds[1] == "villager");
+    writeCreatures(creatures + R"(,{"id": "townsfolk", "save_id": 8, "copy_from": "villager", "leash_radius": null}])");
+    CHECK(loadDefs(dir, grown, error));  // null is no AI number: fine on a harmless kind
+    if (!error.empty()) std::println(stderr, "FAIL null AI key: {}", error);
     writeCreatures(creatures + R"(,{"id": "boar_sow", "save_id": 8, "copy_from": "boar", "name": null, "stats": {"stamina": 14}, "loot": "wolf_pelt"}])");
     CHECK(loadDefs(dir, grown, error) && grown.creatures.size() == 9 && grown.creatureById.at("boar_sow") == EntityKind(8));
     if (!error.empty()) std::println(stderr, "FAIL grown creatures: {}", error);
@@ -2768,6 +2978,17 @@ static void dataFiles() {
              {creatures + R"(,{"id": "a", "save_id": 8, "model": "boar", "temper": "passive", "respawn_seconds": 5}])", "field 'level': missing"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "respawn_seconds": null}])", "field 'respawn_seconds': missing"},
              {creatures + R"(,{"id": "wolf", "save_id": 8, "copy_from": "boar"}])", "record 8 'wolf': field 'id': duplicate of record 4"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "leash_radius": 10, "reaggro_radius": 10}])",
+              "field 'reaggro_radius': must be less than leash_radius"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "flee_health": 1}])", "field 'flee_health': 1 is out of range 0..0.95"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "attack_windup": 0}])", "field 'attack_windup': 0 is out of range"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "villager", "leash_radius": 10}])",
+              "field 'leash_radius': harmless creatures don't fight"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "give_up_seconds": "soon"}])", "field 'give_up_seconds': must be a number"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "attack_windup": 0.4}])",
+              "field 'attack_windup': 0.4 s must be less than 0.4 x its swing time (0.980 s)"},  // punch 1.0 at agility 2
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "wanders": false}])",
+              "field 'wanders': must be true for a creature that fights"},
              {scarecrow + "]",
               "save_id 0 must be 'dummy' (code names it), not 'scarecrow'"},
              {creatures, "not valid JSON"},
@@ -2990,6 +3211,7 @@ int main() {
     tables();
     fightReplay();
     boarReplay();
+    npcAi();
     session();
     ticks();
     if (failures) std::println(stderr, "{} check(s) failed", failures);
