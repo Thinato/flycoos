@@ -20,6 +20,7 @@
 #include "hud.h"
 #include "inventory_ui.h"
 #include "renderer.h"
+#include "save.h"
 #include "server.h"
 #include "session.h"
 
@@ -36,13 +37,14 @@ struct Options {
     bool fixedLook = false;  // --look: fixed camera angles instead of the benchmark orbit
     float lookYaw = 0, lookPitch = 0;
     bool debug = false;  // --debug: start with the debug window open
+    bool newGame = false;  // --new-game: don't load the world's player save (quitting still writes it)
     int port = 47800;    // command server (127.0.0.1 only)
     bool serve = true;   // --no-serve turns it off; benchmarks never serve
     RenderSettings render;
 };
 
 [[noreturn]] static void usage() {
-    std::println(stderr, "usage: flycoos [--world PATH] [--seed N] [--time 0..1] [--debug] [--view shaded|quads|chunks|ao|normals|light|wire]\n"
+    std::println(stderr, "usage: flycoos [--world PATH] [--new-game] [--seed N] [--time 0..1] [--debug] [--view shaded|quads|chunks|ao|normals|light|wire]\n"
                          "               [--port N | --no-serve]\n"
                          "               [--frames N [--screenshot out.bmp] [--look YAW PITCH]]");
     std::exit(2);
@@ -66,6 +68,7 @@ static Options parseArgs(int argc, char** argv) {
             o.lookYaw = glm::radians(std::strtof(argv[++i], nullptr));
             o.lookPitch = glm::radians(std::strtof(argv[++i], nullptr));
         } else if (a == "--debug") o.debug = true;
+        else if (a == "--new-game") o.newGame = true;
         else if (a == "--port" && hasValue) {
             o.port = std::atoi(argv[++i]);
             if (o.port < 1 || o.port > 65535) usage();
@@ -123,7 +126,7 @@ static int run(SDL_Window* window, const Options& opt) {
     if (opt.world && std::filesystem::exists(opt.world, ec)) {
         uint64_t start = SDL_GetTicksNS();
         std::optional<std::vector<Marker>> loaded;
-        if (std::string error = loadWorld(opt.world, world, worldSeed, instances, loaded); !error.empty()) {
+        if (std::string error = loadWorld(opt.world, world, worldSeed, instances, loaded, &editor.history.markerIds); !error.empty()) {
             std::println(stderr, "cannot load world {}: {}", opt.world, error);
             return 1;  // never fall back to generating: the next save would overwrite the file
         }
@@ -146,7 +149,7 @@ static int run(SDL_Window* window, const Options& opt) {
 
     auto save = [&] {
         uint64_t start = SDL_GetTicksNS();
-        std::string error = saveWorld(editor.path.c_str(), world, worldSeed, instances, markers);
+        std::string error = saveWorld(editor.path.c_str(), world, worldSeed, instances, markers, editor.history.markerIds);
         double seconds = double(SDL_GetTicksNS() - start) * 1e-9;
         editor.status = error.empty() ? std::format("Saved {:.1f} MB in {:.2f} s",
                                                     double(std::filesystem::file_size(editor.path, ec)) / (1 << 20), seconds)
@@ -159,6 +162,56 @@ static int run(SDL_Window* window, const Options& opt) {
     };
     startSession(session);
     Player& player = session.player;
+    // The player save (ADR-025) next to the world file; the editor's saves never write it, F5, F9 and quitting do.
+    const std::string savePath = savePathFor(editor.path).string();
+    ui.savePath = savePath;
+    std::string notice;  // a line at the top of the screen for a moment (F5, F9)
+    uint64_t noticeAt = 0;
+    // When quitting and F5 don't save: a save that exists but didn't load is kept until the player
+    // overwrites or deletes it in the Save tab; after Delete, until the next save (so the next start
+    // is a new game); and quitting doesn't save a session that opened the editor (F5 still does).
+    bool saveLocked = false, deleted = false, usedEditor = false;
+    auto autosaveOff = [&]() -> const char* {
+        if (benchmark) return "benchmark: saves are off";
+        if (saveLocked) return "the save didn't load: the Save tab can save over it or delete it";
+        if (deleted) return "the save was deleted: the next start is a new game (F5 saves again)";
+        if (usedEditor) return "the editor was opened this session: quitting doesn't save (F5 does)";
+        return nullptr;
+    };
+    auto saveGame = [&] {
+        uint64_t start = SDL_GetTicksNS();
+        std::string error = savePlayer(savePath.c_str(), session, std::filesystem::path(editor.path).filename().string(),
+                                       worldFileChecksum(editor.path.c_str()));
+        ui.saveStatus = error.empty() ? std::format("Saved in {:.1f} ms", double(SDL_GetTicksNS() - start) * 1e-6) : "Save failed: " + error;
+        notice = error.empty() ? "Game saved" : "Save failed";
+        noticeAt = SDL_GetTicksNS();
+        std::println("{}: {}", savePath, ui.saveStatus);
+        if (error.empty()) saveLocked = deleted = false;
+    };
+    auto loadGame = [&] {
+        SaveReport r;
+        if (std::string error = loadPlayer(savePath.c_str(), session, worldFileChecksum(editor.path.c_str()), r); !error.empty()) {
+            ui.saveStatus = "Load failed: " + error;
+            saveLocked = true;  // don't overwrite what may still be rescued
+            notice = "Load failed: saving is off until you choose in the debug window's Save tab";
+            noticeAt = SDL_GetTicksNS();
+            std::println(stderr, "{}: {}", savePath, ui.saveStatus);
+            return;
+        }
+        ui.saveStatus = std::format("Loaded {}{}: {} NPCs restored, {} dropped", r.world, r.fromBackup ? " (from the backup)" : "",
+                                    r.npcs, r.droppedNpcs);
+        ui.saveNotes = r.notes;
+        notice = r.notes.empty() ? "Game loaded" : "Game loaded, with warnings (debug window, Save tab)";
+        noticeAt = SDL_GetTicksNS();
+        std::println("{}: {}", savePath, ui.saveStatus);
+        for (const std::string& note : ui.saveNotes) std::println("  {}", note);
+    };
+    if (!benchmark && !opt.newGame && (std::filesystem::exists(savePath, ec) || std::filesystem::exists(savePath + ".bak", ec))) loadGame();
+    auto quit = [&] {
+        if (const char* off = autosaveOff()) std::println("{}: not saved on quit ({})", savePath, off);
+        else saveGame();
+        return 0;
+    };
     std::vector<Entity>& entities = session.entities;
     // After an edit, undo or redo: remesh what changed, bring spawns in line with the markers and
     // keep the editor's bookkeeping.
@@ -207,6 +260,7 @@ static int run(SDL_Window* window, const Options& opt) {
         punchQueued = false;  // a click queued mid-swing must not become an editor action
         editor.corner.reset();
         if (on) {
+            usedEditor = true;
             walking = player.tuning;
             player.tuning.fly = player.tuning.noclip = true;
         } else {
@@ -238,7 +292,7 @@ static int run(SDL_Window* window, const Options& opt) {
     for (int frame = 0;; ++frame) {
         if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) {  // don't spin or count frames while hidden
             for (SDL_Event e; SDL_WaitEventTimeout(&e, 100);)
-                if (e.type == SDL_EVENT_QUIT) return 0;
+                if (e.type == SDL_EVENT_QUIT) return quit();
             last = SDL_GetTicksNS();
             --frame;
             continue;
@@ -254,7 +308,7 @@ static int run(SDL_Window* window, const Options& opt) {
         SimInput sim;
         for (SDL_Event e; SDL_PollEvent(&e);) {
             ui.processEvent(e);
-            if (e.type == SDL_EVENT_QUIT) return 0;
+            if (e.type == SDL_EVENT_QUIT) return quit();
             // Editor shortcuts (Ctrl or Cmd); undo and redo repeat while held.
             if (e.type == SDL_EVENT_KEY_DOWN && (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) && !ui.wantsKeyboard()) {
                 if (e.key.key == SDLK_Z) ((e.key.mod & SDL_KMOD_SHIFT) ? editorActions.redo : editorActions.undo) = true;
@@ -275,6 +329,14 @@ static int run(SDL_Window* window, const Options& opt) {
                     interactQueued = true;
                 } else if (e.key.key == SDLK_TAB) {
                     setEditing(!editor.active);
+                } else if (e.key.key == SDLK_F5 && !benchmark) {
+                    if (!saveLocked) saveGame();
+                    else {
+                        notice = "Not saved: the save didn't load (debug window, Save tab)";
+                        noticeAt = SDL_GetTicksNS();
+                    }
+                } else if (e.key.key == SDLK_F9 && !benchmark) {
+                    actions.loadGame = true;
                 } else if (editor.active && e.key.key == SDLK_Q) {
                     editor.cursor = !editor.cursor;
                     updateMouseMode();
@@ -294,7 +356,7 @@ static int run(SDL_Window* window, const Options& opt) {
                     editor.brush.radius = std::clamp(editor.brush.radius + (e.key.key == SDLK_RIGHTBRACKET ? 1 : -1), 0, kMaxBrushRadius);
                 } else if (e.key.key == SDLK_ESCAPE) {
                     // Esc closes the debug window, then the others, then quits (twice with unsaved edits).
-                    if (!menus() && (!editor.unsaved || editor.quitArmed)) return 0;
+                    if (!menus() && (!editor.unsaved || editor.quitArmed)) return quit();
                     if (!menus()) editor.quitArmed = true;
                     else if (ui.open) ui.open = false;
                     else characterOpen = bagsOpen = editor.cursor = false;
@@ -459,7 +521,7 @@ static int run(SDL_Window* window, const Options& opt) {
             }
             if (c.save) {  // to the world's file, or a copy elsewhere (which leaves the unsaved state alone)
                 std::string target = c.save->empty() ? editor.path : *c.save;
-                std::string error = c.save->empty() ? save() : saveWorld(target.c_str(), world, worldSeed, instances, markers);
+                std::string error = c.save->empty() ? save() : saveWorld(target.c_str(), world, worldSeed, instances, markers, editor.history.markerIds);
                 if (error.empty()) response["result"]["path"] = std::filesystem::absolute(target, ec).string();
                 else response = {{"id", response["id"]}, {"ok", false}, {"error", "save failed: " + error}};
             }
@@ -498,6 +560,7 @@ static int run(SDL_Window* window, const Options& opt) {
             const Entity* target = lootTarget(entities, player);
             drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player), alpha);
             drawPlaces(fp.view, fp.fovY, player, markers, region, float(session.elapsed - session.regionSince));
+            drawNotice(notice.c_str(), float(double(SDL_GetTicksNS() - noticeAt) * 1e-9));
         }
         drawEditorOverlay(fp.view, fp.fovY, fp.eye, world, instances, markers, editor, aim);
         characterWindow(characterOpen, player, session.armorK);
@@ -566,6 +629,23 @@ static int run(SDL_Window* window, const Options& opt) {
             entities.clear();
             syncSpawns(entities, world, markers, worldSeed, player.pos);
         }
+        if (benchmark) actions.saveGame = actions.loadGame = actions.deleteSave = false;
+        if (actions.saveGame) saveGame();  // the Save tab's button: also over a save that didn't load
+        if (actions.loadGame) {
+            loadGame();
+            camTarget = player.pos + glm::vec3(0, 1.4f, 0);
+        }
+        if (actions.deleteSave) {
+            std::filesystem::remove(savePath, ec);
+            std::filesystem::remove(savePath + ".bak", ec);
+            ui.saveStatus = "Deleted";
+            ui.saveNotes.clear();
+            saveLocked = false;
+            deleted = true;
+        }
+        const char* off = autosaveOff();
+        ui.autosave = off ? off : "on: quitting saves";
+        ui.saveLocked = saveLocked;
         actions = {};
 
         titleTimer += realDt;

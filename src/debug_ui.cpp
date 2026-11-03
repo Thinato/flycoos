@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <string>
+
+#include <sys/stat.h>
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -338,6 +341,31 @@ static void worldTab(GameSettings& g, Session& sim, const RenderStats& s, DebugA
                 double(s.opaqueQuads + s.waterQuads) * 8 / (1 << 20), s.chunksTotal);
 }
 
+static void saveTab(const std::string& path, const std::string& status, const std::vector<std::string>& notes, const char* autosave,
+                    bool locked, DebugActions& actions) {
+    ImGui::TextWrapped("Player save: %s", path.c_str());
+    struct stat st;
+    if (::stat(path.c_str(), &st) == 0) {
+        char when[32];
+        std::tm tm;
+        std::strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime_r(&st.st_mtime, &tm));
+        ImGui::Text("Last saved %s, %lld bytes", when, (long long)st.st_size);
+    } else ImGui::TextUnformatted("No save yet");
+    if (ImGui::Button(locked ? "Save over the unreadable save" : "Save (F5)")) actions.saveGame = true;
+    if (locked) ImGui::SetItemTooltip("F5 and quitting won't write over a save that didn't load; this does (it becomes the .bak).");
+    ImGui::SameLine();
+    if (ImGui::Button("Load (F9)")) actions.loadGame = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) actions.deleteSave = true;
+    ImGui::SetItemTooltip("Removes the save and its .bak. Quitting doesn't save again until the next F5, so the next start is a new game.");
+    ImGui::TextWrapped("Autosave: %s", autosave);
+    ImGui::TextUnformatted("--new-game skips loading on start. The editor's saves write only the world file.");
+    if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
+    if (notes.empty()) return;
+    ImGui::SeparatorText("Last load");
+    for (const std::string& note : notes) ImGui::BulletText("%s", note.c_str());
+}
+
 static void statsTab(const std::array<float, 240>& frameMs, size_t frameIndex) {
     float mean = 0, worst = 0;
     for (float ms : frameMs) {
@@ -364,6 +392,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
         if (ImGui::BeginTabItem("Data")) { dataTab(defsStatus_); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Save")) { saveTab(savePath, saveStatus, saveNotes, autosave, saveLocked, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Stats")) {
             statsTab(frameMs_, frameIndex_);
             ImGui::Text("Sim ticks this frame %d (60 Hz), drawn %.2f into the next", ticks, tickAlpha);

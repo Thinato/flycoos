@@ -62,8 +62,9 @@ const Marker* regionAt(const std::vector<Marker>& markers, glm::vec3 p);
 // World files (.flyw): the whole grid, its seed, the prefab instances and the markers (both sorted
 // by id), in one versioned file; see docs/ARCHITECTURE.md. Both return an empty string on success,
 // else why it failed. A file without a marker section (older ones) loads `markers` as nullopt. A
-// rejected load leaves `g`, `instances` and `markers` unspecified.
+// rejected load leaves `g`, `instances` and `markers` unspecified. `markerIds` is the highest marker
+// id ever used (EditHistory::markerIds); a file without one loads it as 0 (the markers' own ids count).
 std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances,
-                      const std::vector<Marker>& markers);
+                      const std::vector<Marker>& markers, uint32_t markerIds = 0);
 std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances,
-                      std::optional<std::vector<Marker>>& markers);
+                      std::optional<std::vector<Marker>>& markers, uint32_t* markerIds = nullptr);

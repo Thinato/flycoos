@@ -32,8 +32,12 @@ def main():
     opt = ap.parse_args()
     scratch = tempfile.mkdtemp(prefix="flycoos-e2e-")
     opt.world = opt.world or os.path.join(scratch, "e2e.flyw")
-    if os.path.exists(opt.world):
-        os.remove(opt.world)
+    if os.path.realpath(opt.world).startswith(os.path.realpath(os.path.join(ROOT, "worlds")) + os.sep):
+        sys.exit("refusing a world under worlds/: this test overwrites its world and deletes its saves")
+    save = os.path.splitext(opt.world)[0] + ".flys"
+    for stale in (opt.world, save, save + ".bak", save + ".tmp"):
+        if os.path.exists(stale):
+            os.remove(stale)
     with socket.socket() as s:  # a free port, so a game the user is running isn't touched
         s.bind(("127.0.0.1", 0))
         PORT = s.getsockname()[1]
@@ -303,6 +307,7 @@ def main():
         with open(opt.world, "rb") as f:
             data = f.read()
             check(b"INST" in data and b"MARK" in data, "the saved world holds the prefab instances and the markers")
+        check(not os.path.exists(save), "save writes the world only, never the player save")
         copy = os.path.join(os.path.dirname(opt.world), "e2e-copy.flyw")
         err, r, _ = tool("save", path=copy)
         check(not err and os.path.exists(copy) and os.path.getsize(copy) > 100_000, "save a copy next to the world file")
@@ -319,6 +324,8 @@ def main():
             code = "hung"
         log = game.stdout.read()
         check(code == 0, f"game quits cleanly on SIGTERM (exit {code})")
+        check(not os.path.exists(save), "quitting after the editor was opened (goto) doesn't save the player")
+        check("not saved on quit" in log, "the log says why it didn't save")
         noisy = [line for line in log.splitlines() if re.search(r"error|sanitizer|fail", line, re.I)]
         check(not noisy, "no errors in the game's log" + "".join("\n     " + line for line in noisy[:10]))
         if failures:

@@ -157,3 +157,11 @@ void drawPlaces(const glm::mat4& view, float fovY, const Player& player, const s
     dl->AddText(ImGui::GetFont(), size, ImVec2(at.x + 2, at.y + 2), uiColor(0, 0, 0, 0.8f * alpha), region->name.c_str());
     dl->AddText(ImGui::GetFont(), size, at, uiColor(1, 0.95f, 0.8f, alpha), region->name.c_str());
 }
+
+void drawNotice(const char* text, float age) {
+    constexpr float kNoticeSeconds = 2.5f;
+    if (!*text || age >= kNoticeSeconds) return;
+    float alpha = std::min(1.0f, kNoticeSeconds - age);  // fades out over the last second
+    ImVec2 screen = ImGui::GetIO().DisplaySize, size = ImGui::CalcTextSize(text);
+    shadowText(ImGui::GetBackgroundDrawList(), ImVec2(screen.x / 2 - size.x / 2, screen.y * 0.08f), uiColor(1, 1, 1, alpha), alpha, text);
+}

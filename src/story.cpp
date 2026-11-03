@@ -57,8 +57,10 @@ static uint64_t get(const uint8_t* p, int bytes) {
 // "OWNR" section (only when a prefab instance owns a marker; after MARK): u32 count, then per owned
 //   marker, by ascending id: u32 marker id | u32 instance id (live instances only; never the player_spawn).
 //   Older builds skip it (the markers stay, unowned).
+// "MKID" section (only when a removed marker had a higher id than every live one): u32 the highest
+//   marker id ever used, so new markers never reuse a removed one's id. Older builds skip it.
 std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances,
-                      const std::vector<Marker>& markers) {
+                      const std::vector<Marker>& markers, uint32_t markerIds) {
     std::vector<Section> sections;
     // always: an empty one means "no markers", a missing one "older file"
     std::vector<uint8_t>& out = sections.emplace_back(Section{{'M', 'A', 'R', 'K'}, {}}).bytes;
@@ -94,6 +96,7 @@ std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std:
         for (const Marker& m : markers)
             if (owned(m)) put(owners, m.id, 4), put(owners, m.owner, 4);
     }
+    if (markerIds > (markers.empty() ? 0 : markers.back().id)) put(sections.emplace_back(Section{{'M', 'K', 'I', 'D'}, {}}).bytes, markerIds, 4);
     return writeWorldFile(path, g, seed, instances, sections);
 }
 
@@ -184,15 +187,21 @@ static std::string readOwners(const uint8_t* p, const uint8_t* end, const std::v
 }
 
 std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances,
-                      std::optional<std::vector<Marker>>& markers) {
+                      std::optional<std::vector<Marker>>& markers, uint32_t* markerIds) {
     markers.reset();
+    if (markerIds) *markerIds = 0;
     std::vector<Section> sections;
     if (std::string error = readWorldFile(path, g, seed, instances, sections); !error.empty()) return error;
     const Section *lines = nullptr, *owners = nullptr;  // read once the markers are in
+    bool markerIdsSeen = false;
     for (const Section& sec : sections) {
         const uint8_t *p = sec.bytes.data(), *end = p + sec.bytes.size();
         if (std::memcmp(sec.tag, "MARK", 4) == 0) {
             if (std::string error = readMarkers(p, end, g, markers.emplace()); !error.empty()) return error;
+        } else if (std::memcmp(sec.tag, "MKID", 4) == 0) {
+            if (sec.bytes.size() != 4 || get(p, 4) == UINT32_MAX || markerIdsSeen) return "bad marker id mark";
+            markerIdsSeen = true;
+            if (markerIds) *markerIds = uint32_t(get(p, 4));
         } else if (std::memcmp(sec.tag, "LINE", 4) == 0 || std::memcmp(sec.tag, "OWNR", 4) == 0) {
             const Section*& seen = sec.tag[0] == 'L' ? lines : owners;
             if (seen) return "duplicate marker lines or owners";

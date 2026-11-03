@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cerrno>
 #include <climits>
 #include <cmath>
 #include <cstring>
@@ -10,6 +11,9 @@
 #include <format>
 #include <fstream>
 #include <thread>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <FastNoiseLite.h>
 
@@ -235,7 +239,7 @@ glm::vec3 findSpawn(const Grid& g, glm::ivec2 near) {
 constexpr uint32_t kWorldFileVersion = 1;
 constexpr int kChunkVoxels = kChunk * kChunk * kChunk;
 
-static uint32_t fnv1a(const uint8_t* p, size_t n) {
+uint32_t fnv1a(const uint8_t* p, size_t n) {
     uint32_t h = 2166136261u;
     for (size_t i = 0; i < n; ++i) h = (h ^ p[i]) * 16777619u;
     return h;
@@ -349,24 +353,51 @@ std::string writeWorldFile(const char* path, const Grid& g, uint32_t seed, const
     }
     put(out, fnv1a(out.data(), out.size()), 4);
 
-    // Write a temp file and rename it over the target, so a failed save never destroys the last good one.
-    std::filesystem::path target(path), tmp = target;
+    return replaceFile(path, out);
+}
+
+std::string replaceFile(const char* path, const std::vector<uint8_t>& bytes, bool durable) {
+    std::filesystem::path target(path), tmp = target, bak = target;
     tmp += ".tmp";
+    bak += ".bak";
     std::error_code ec;
     if (target.has_parent_path()) std::filesystem::create_directories(target.parent_path(), ec);
-    {
-        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        f.write(reinterpret_cast<const char*>(out.data()), std::streamsize(out.size()));
-        if (!f.flush()) {
-            std::filesystem::remove(tmp, ec);
-            return std::format("cannot write {}", tmp.string());
-        }
+    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    bool ok = fd >= 0;
+    for (size_t done = 0; ok && done < bytes.size();) {
+        ssize_t n = ::write(fd, bytes.data() + done, bytes.size() - done);
+        if (n < 0 && errno == EINTR) continue;
+        ok = n > 0;
+        done += ok ? size_t(n) : 0;
     }
+#ifdef F_FULLFSYNC
+    if (ok && durable && ::fcntl(fd, F_FULLFSYNC) != 0) ok = ::fsync(fd) == 0;  // fsync alone may stay in the drive's cache
+#else
+    if (ok && durable) ok = ::fsync(fd) == 0;
+#endif
+    if (fd >= 0 && ::close(fd) != 0) ok = false;
+    if (!ok) {
+        std::filesystem::remove(tmp, ec);
+        return std::format("cannot write {}", tmp.string());
+    }
+    // ponytail: two renames leave a moment with only PATH.bak; the save loader falls back to it.
+    if (durable && std::filesystem::exists(target, ec)) std::filesystem::rename(target, bak, ec);
     std::filesystem::rename(tmp, target, ec);
     if (ec) {
         std::string error = std::format("cannot replace {}: {}", target.string(), ec.message());
         std::filesystem::remove(tmp, ec);
         return error;
+    }
+    if (durable) {  // the renames themselves reach the disk with the folder's entry
+        std::filesystem::path dir = target.has_parent_path() ? target.parent_path() : ".";
+        if (int d = ::open(dir.c_str(), O_RDONLY | O_CLOEXEC); d >= 0) {
+#ifdef F_FULLFSYNC
+            if (::fcntl(d, F_FULLFSYNC) != 0) ::fsync(d);  // best effort: not every file system syncs a folder
+#else
+            ::fsync(d);
+#endif
+            ::close(d);
+        }
     }
     return {};
 }

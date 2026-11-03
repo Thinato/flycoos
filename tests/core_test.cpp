@@ -5,6 +5,7 @@
 #include <climits>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <fstream>
 #include <numbers>
 #include <print>
@@ -21,6 +22,7 @@
 #include "light.h"
 #include "mesher.h"
 #include "prefab.h"
+#include "save.h"
 #include "session.h"
 
 static int failures = 0;
@@ -3101,6 +3103,245 @@ static void session() {
     CHECK(std::get<2>(a.back()) < 120 && std::get<1>(a.back()) < 100);  // blows were traded: the rolls ran
 }
 
+// Player saves (ADR-025): everything round-trips, NPCs are keyed by spawn marker and slot (so world
+// edits that add or reorder markers keep them), and a bad file never touches the session.
+static void playerSaves() {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "flycoos_player_save_test";
+    fs::remove_all(dir);
+    std::string path = (dir / "w.flys").string();
+    std::vector<Marker> markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {24.5f, 4, 8.5f}},
+                                   {.id = 3, .kind = MarkerKind::Spawn, .pos = {8.5f, 4, 52.5f}, .radius = 4, .entity = EntityKind::Bandit, .count = 2},
+                                   {.id = 4, .kind = MarkerKind::Spawn, .pos = {24.5f, 4, 40.5f}, .radius = 3, .entity = EntityKind::Boar}};
+    auto make = [&](std::vector<Marker> m) {
+        Session s{.world = meadow(), .seed = 5};
+        s.markers = std::move(m);
+        startSession(s);
+        return s;
+    };
+    auto npc = [](Session& s, uint32_t marker, int slot) -> Entity* {
+        auto it = std::ranges::find_if(s.entities, [&](const Entity& e) { return e.spawn.id == marker && e.slot == slot; });
+        return it != s.entities.end() ? &*it : nullptr;
+    };
+
+    // Play a little: gear, bags, wounds, a dead bandit with loot on its respawn timer.
+    Session a = make(markers);
+    Player& p = a.player;
+    p.teleport({20.25f, 4, 12.75f});
+    p.yaw = 1.25f;
+    p.level = 3;
+    p.stats.strength = 7;
+    a.elapsed = 123.5;
+    a.timeOfDay = 0.625f;
+    for (ItemId id : {IronHelm, BoneCharm, Knife, WolfPelt}) CHECK(giveItem(p.inv, id));
+    CHECK(quickMove(p.inv, {SlotRef::Item, 0}));  // shortsword to the main hand
+    CHECK(quickMove(p.inv, {SlotRef::Item, 2}));  // helm
+    CHECK(quickMove(p.inv, {SlotRef::Item, 3}));  // the charm to the trinket slot
+    CHECK(quickMove(p.inv, {SlotRef::Item, 1}));  // the satchel to the bag bar
+    CHECK(moveItem(p.inv, {SlotRef::Item, 5}, {SlotRef::Item, 2, 1}));  // the pelt into the satchel
+    CHECK(p.inv.equipped[SlotTrinket] == BoneCharm && p.inv.equipped[SlotHead] == IronHelm && p.inv.bags[0] == Satchel);
+    p.health = 37;
+    Entity *b0 = npc(a, 3, 0), *b1 = npc(a, 3, 1);
+    CHECK(b0 && b1 && npc(a, 4, 0));
+    b0->body.teleport({10.5f, 4, 50.5f});
+    b0->body.yaw = -2;
+    b0->body.health = 5;
+    b1->body.health = 0;
+    b1->body.deadTime = 7;
+    b1->loot = Knife;
+    glm::vec3 corpse = b1->body.pos;
+    CHECK(savePlayer(path.c_str(), a, "w.flyw", 0x1234abcd).empty());
+
+    Session b = make(markers);
+    SaveReport r;
+    CHECK(loadPlayer(path.c_str(), b, 0x1234abcd, r).empty());
+    CHECK(r.world == "w.flyw" && !r.worldChanged && !r.fromBackup && r.npcs == 3 && r.droppedNpcs == 0 && r.notes.empty());
+    CHECK(b.elapsed == 123.5 && b.timeOfDay == 0.625f);
+    CHECK(b.player.pos == glm::vec3(20.25f, 4, 12.75f) && b.player.prevPos == b.player.pos && b.player.yaw == 1.25f);
+    CHECK(b.player.health == 37 && b.player.level == 3 && b.player.stats.strength == 7 && b.player.stats.stamina == p.stats.stamina);
+    CHECK(b.player.inv.equipped == p.inv.equipped && b.player.inv.bags == p.inv.bags && b.player.inv.containers == p.inv.containers);
+    Entity *c0 = npc(b, 3, 0), *c1 = npc(b, 3, 1);
+    CHECK(c0 && c0->body.pos == glm::vec3(10.5f, 4, 50.5f) && c0->body.yaw == -2 && c0->body.health == 5 && c0->body.alive());
+    CHECK(c1 && !c1->body.alive() && c1->state == AiState::Dead && c1->body.deadTime == 7 && c1->loot == Knife && c1->body.pos == corpse);
+    // The respawn timer runs on: back home, healed, after the rest of the 30 s.
+    float rest = c1->type().respawnSeconds - 7;
+    for (int i = 0; i < int((rest - 0.5f) / kTick); ++i) step(b, {}, kTick);
+    CHECK(!npc(b, 3, 1)->body.alive());
+    for (int i = 0; i < int(1 / kTick); ++i) step(b, {}, kTick);
+    CHECK(npc(b, 3, 1)->body.alive() && npc(b, 3, 1)->loot == NoItem);
+
+    // Bad files are rejected and leave the session alone: a flipped byte, a truncation, a huge count.
+    auto bytes = [](const std::string& f) {
+        std::ifstream in(f, std::ios::binary);
+        return std::vector<uint8_t>(std::istreambuf_iterator<char>(in), {});
+    };
+    auto write = [](const std::string& f, const std::vector<uint8_t>& v) {
+        std::ofstream(f, std::ios::binary | std::ios::trunc).write(reinterpret_cast<const char*>(v.data()), std::streamsize(v.size()));
+    };
+    auto le = [](std::vector<uint8_t>& out, uint64_t v, int n) {
+        for (int i = 0; i < n; ++i) out.push_back(uint8_t(v >> (8 * i)));
+    };
+    // A save of these sections, with a valid checksum.
+    auto craft = [&](std::vector<std::pair<std::string, std::vector<uint8_t>>> sections) {
+        std::vector<uint8_t> out{'F', 'L', 'Y', 'S', 1, 0, 0, 0};
+        for (auto& [tag, payload] : sections) {
+            out.insert(out.end(), tag.begin(), tag.end());
+            le(out, payload.size(), 8);
+            out.insert(out.end(), payload.begin(), payload.end());
+        }
+        le(out, fnv1a(out.data(), out.size()), 4);
+        return out;
+    };
+    std::vector<uint8_t> head{0};  // no world name, checksum 0x1234abcd, seed 5, 10 s, 0.5
+    le(head, 0x1234abcd, 4), le(head, 5, 4), le(head, std::bit_cast<uint64_t>(10.0), 8), le(head, std::bit_cast<uint32_t>(0.5f), 4);
+    std::vector<uint8_t> good = bytes(path);
+    std::string bad = (dir / "bad.flys").string();
+    std::vector<uint8_t> hugeNpcs, hugeEquip{200};
+    le(hugeNpcs, 1000000, 4);
+    std::vector<std::vector<uint8_t>> broken = {
+        [&] { auto v = good; v[v.size() / 2] ^= 1; return v; }(),
+        std::vector<uint8_t>(good.begin(), good.begin() + long(good.size() / 2)),
+        craft({{"HEAD", head}, {"NPCS", hugeNpcs}}),
+        craft({{"HEAD", head}, {"INVT", hugeEquip}}),
+        craft({{"HEAD", head}, {"HEAD", head}}),
+        craft({{"PLYR", {}}}),  // no header
+        [&] {  // a later version
+            auto v = craft({{"HEAD", head}});
+            v[4] = 2;
+            v.resize(v.size() - 4);
+            le(v, fnv1a(v.data(), v.size()), 4);
+            return v;
+        }(),
+    };
+    Session before = make(markers);
+    before.player.health = 12;
+    for (const std::vector<uint8_t>& v : broken) {
+        write(bad, v);
+        Session t = before;
+        SaveReport tr;
+        tr.npcs = 99;
+        CHECK(!loadPlayer(bad.c_str(), t, 0, tr).empty());
+        CHECK(t.player.health == 12 && t.player.pos == before.player.pos && t.elapsed == before.elapsed && tr.npcs == 99);
+    }
+    CHECK(!loadPlayer((dir / "missing.flys").string().c_str(), before, 0, r).empty());
+
+    // An unknown section (from a later build) is skipped; missing ones keep startSession's state.
+    {
+        std::vector<uint8_t> v(good.begin(), good.end() - 4);
+        v.insert(v.end(), {'Z', 'Z', 'Z', 'Z', 3, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3});
+        le(v, fnv1a(v.data(), v.size()), 4);
+        write(bad, v);
+        Session t = make(markers);
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty() && r.npcs == 3 && t.player.inv.equipped[SlotTrinket] == BoneCharm);
+        write(bad, craft({{"HEAD", head}}));
+        t = a;
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty());
+        CHECK(t.elapsed == 10 && t.timeOfDay == 0.5f && t.player.pos == glm::vec3(24.5f, 4, 8.5f) && t.player.health == float(maxHealth(sheet(t.player))));
+        CHECK(t.player.inv.containers[0][0] == Shortsword && t.player.inv.equipped[SlotTrinket] == NoItem && npc(t, 3, 1)->body.alive());
+    }
+
+    // The world changed: a marker added before the bandits (other vector indices), the boar's gone,
+    // and the bandit marker spawns one now. The bandit in slot 0 keeps its state; the rest drop, with notes.
+    {
+        std::vector<Marker> edited = {markers[0],
+                                      {.id = 2, .kind = MarkerKind::Spawn, .pos = {16.5f, 4, 30.5f}, .radius = 3, .entity = EntityKind::Wolf},
+                                      markers[1]};
+        edited[2].count = 1;
+        Session t = make(edited);
+        CHECK(t.entities[0].spawn.id == 2);  // the wolf comes first now
+        CHECK(loadPlayer(path.c_str(), t, 0x99, r).empty());
+        CHECK(r.worldChanged && r.npcs == 1 && r.droppedNpcs == 2 && r.notes.size() == 3);
+        CHECK(npc(t, 3, 0)->body.health == 5 && npc(t, 3, 0)->body.pos == glm::vec3(10.5f, 4, 50.5f));
+        CHECK(npc(t, 2, 0)->body.health == float(maxHealth(sheet(npc(t, 2, 0)->body))));
+        CHECK(std::ranges::count_if(r.notes, [](const std::string& n) { return n.contains("gone"); }) == 1);
+        // With the count back, both bandits load: the dead one too, still holding its loot.
+        edited[2].count = 2;
+        t = make(edited);
+        CHECK(loadPlayer(path.c_str(), t, 0x1234abcd, r).empty() && r.npcs == 2 && r.droppedNpcs == 1 && !r.worldChanged);
+        CHECK(!npc(t, 3, 1)->body.alive() && npc(t, 3, 1)->loot == Knife);
+    }
+
+    // The inventory is fitted to the current data: an item in a slot it doesn't fit, or past a bag's
+    // (smaller) size, moves to a free slot, else is lost; unknown item and creature ids are dropped.
+    {
+        auto inventory = [&](std::vector<uint8_t> equip, std::vector<uint8_t> bags, std::vector<std::vector<uint8_t>> containers) {
+            std::vector<uint8_t> v{uint8_t(equip.size())};
+            v.insert(v.end(), equip.begin(), equip.end());
+            v.push_back(uint8_t(bags.size()));
+            v.insert(v.end(), bags.begin(), bags.end());
+            v.push_back(uint8_t(containers.size()));
+            for (auto& c : containers) v.push_back(uint8_t(c.size())), v.insert(v.end(), c.begin(), c.end());
+            return v;
+        };
+        std::vector<uint8_t> satchel(size_t(itemType(Satchel).bagSlots) + 2, NoItem);
+        satchel.back() = WolfPelt;  // past the satchel's size
+        std::vector<uint8_t> backpack(kBackpackSlots, NoItem);
+        backpack[0] = 250;  // no such item
+        write(bad, craft({{"HEAD", head}, {"INVT", inventory({Knife}, {Satchel}, {backpack, satchel})}}));  // a knife on the head
+        Session t = make(markers);
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty() && r.notes.size() == 3);
+        CHECK(t.player.inv.equipped[SlotHead] == NoItem && t.player.inv.bags[0] == Satchel &&
+              t.player.inv.containers[1].size() == size_t(itemType(Satchel).bagSlots));
+        CHECK(t.player.inv.containers[0][0] == Knife && t.player.inv.containers[0][1] == WolfPelt);
+        CHECK(std::ranges::count_if(r.notes, [](const std::string& n) { return n.contains("moved"); }) == 2 && r.notes[0].contains("unknown item 250"));
+        std::vector<uint8_t> full(kBackpackSlots, BoarSkin);
+        write(bad, craft({{"HEAD", head}, {"INVT", inventory({Knife}, {}, {full})}}));
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty() && r.notes.size() == 1 && r.notes[0].contains("lost"));
+        CHECK(t.player.inv.equipped[SlotHead] == NoItem && freeSlots(t.player.inv) == 0);
+        std::vector<uint8_t> npcs;  // one of a creature kind the data doesn't have
+        le(npcs, 1, 4), le(npcs, 3, 4), le(npcs, 0, 1), le(npcs, 200, 1);
+        for (float f : {10.0f, 0.0f}) le(npcs, std::bit_cast<uint32_t>(f), 4);
+        le(npcs, 0, 1);
+        for (float f : {8.5f, 4.0f, 52.5f, 0.0f}) le(npcs, std::bit_cast<uint32_t>(f), 4);
+        write(bad, craft({{"HEAD", head}, {"NPCS", npcs}}));
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty() && r.npcs == 0 && r.notes.size() == 1 && r.notes[0].contains("unknown kind"));
+        // Not a number anywhere is a corrupt file: the player's position, an NPC's health.
+        std::vector<uint8_t> player;
+        for (float f : {std::numeric_limits<float>::quiet_NaN(), 4.0f, 8.0f, 0.0f, 50.0f, 0.0f}) le(player, std::bit_cast<uint32_t>(f), 4);
+        for (int v : {1, 10, 2, 2, 2, 2}) le(player, uint32_t(v), 4);
+        write(bad, craft({{"HEAD", head}, {"PLYR", player}}));
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).starts_with("bad player"));
+        npcs[10] = 0, npcs[11] = 0, npcs[12] = 0xc0, npcs[13] = 0x7f;  // the health: a NaN
+        write(bad, craft({{"HEAD", head}, {"NPCS", npcs}}));
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).starts_with("bad NPC"));
+    }
+
+    // Marker ids are never reused, so a save's NPCs can't land on a newer marker: the highest id ever
+    // handed out survives undo-then-edit (redo cleared) and a world save (MKID); older files use max + 1.
+    {
+        Grid g({32, 32, 32});  // world files hold whole chunks
+        EditHistory h;
+        std::vector<Marker> list;
+        std::vector<Instance> none;
+        Marker poi{.kind = MarkerKind::Poi, .name = "Well", .pos = {5.5f, 4, 5.5f}};
+        CHECK(putMarker(g, list, h, poi).id == 1 && putMarker(g, list, h, poi).id == 2);
+        undoEdit(g, h, none, list);  // marker 2 is gone, its id only in the redo stack
+        CHECK(putMarker(g, list, h, poi).id == 3 && h.redo.empty());  // then not even there
+        CHECK(!removeMarker(g, list, h, 3).error && list.size() == 1 && h.markerIds == 3);
+        std::string world = (dir / "ids.flyw").string();
+        CHECK(saveWorld(world.c_str(), g, 1, {}, list, h.markerIds).empty());
+        Grid back({32, 32, 32});
+        uint32_t seed = 0, ids = 0;
+        std::optional<std::vector<Marker>> loaded;
+        CHECK(loadWorld(world.c_str(), back, seed, none, loaded, &ids).empty() && ids == 3 && loaded && loaded->size() == 1);
+        EditHistory fresh{.markerIds = ids};
+        CHECK(nextMarkerId(*loaded, fresh) == 4);
+        CHECK(saveWorld(world.c_str(), g, 1, {}, list).empty());  // an older file: no MKID
+        CHECK(loadWorld(world.c_str(), back, seed, none, loaded, &ids).empty() && ids == 0 && nextMarkerId(*loaded, {}) == 2);
+    }
+
+    // The previous save is kept as .bak, and loads when the save itself is broken.
+    a.player.health = 20;
+    CHECK(savePlayer(path.c_str(), a, "w.flyw", 0x1234abcd).empty());
+    CHECK(fs::exists(path + ".bak") && !fs::exists(path + ".tmp"));
+    std::vector<uint8_t> second = bytes(path);
+    second[10] ^= 0xff;
+    write(path, second);
+    Session t = make(markers);
+    CHECK(loadPlayer(path.c_str(), t, 0x1234abcd, r).empty() && r.fromBackup && t.player.health == 37 && r.notes.size() == 1);
+    fs::remove_all(dir);
+}
+
 // The fixed tick: N ticks of a scripted input end in exactly the same state, and bodies are drawn
 // between their last two ticks (but never slid across a teleport).
 static void ticks() {
@@ -3552,6 +3793,7 @@ int main() {
     npcAi();
     session();
     ticks();
+    playerSaves();
     if (failures) std::println(stderr, "{} check(s) failed", failures);
     else std::println("all checks passed");
     return failures ? 1 : 0;

@@ -18,3 +18,6 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
 // quarter), and `region`'s name for a few seconds after the player walked into it `regionSeconds` ago.
 void drawPlaces(const glm::mat4& view, float fovY, const Player& player, const std::vector<Marker>& markers,
                 const Marker* region, float regionSeconds);
+// A short message at the top of the screen (e.g. "Game saved"), shown for a few seconds after it
+// came `age` seconds ago; nothing for an empty one.
+void drawNotice(const char* text, float age);

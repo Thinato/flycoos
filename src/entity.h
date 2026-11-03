@@ -64,6 +64,7 @@ struct Entity {
     glm::vec3 home{};      // wanderers stay near this; respawns here
     float wanderRadius = 0;  // how far from home it wanders: its kind's, or its spawn marker's radius
     Marker spawn;          // the spawn marker it came from as it was then (id 0: none); see syncSpawns
+    int slot = 0;          // which of that marker's NPCs it is (0..count-1): player saves key NPCs by spawn.id and slot
     glm::vec2 wanderDir{}; // zero = standing still
     float wanderTimer = 0; // seconds until the next wander decision
     int phrase = -1;       // index into the phrase list, -1 = silent

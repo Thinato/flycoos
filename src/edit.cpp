@@ -161,7 +161,7 @@ Box swapRecord(Grid& g, std::vector<Instance>& list, std::vector<Marker>& marker
 }  // namespace
 
 uint32_t nextMarkerId(const std::vector<Marker>& list, const EditHistory& h) {
-    uint32_t id = list.empty() ? 0 : list.back().id;
+    uint32_t id = std::max(list.empty() ? 0 : list.back().id, h.markerIds);
     for (const std::vector<EditRecord>* stack : {&h.undo, &h.redo})  // ids an undo or redo may bring back
         for (const EditRecord& r : *stack)
             for (const auto& entry : r.markers) id = std::max(id, entry.first);
@@ -229,7 +229,8 @@ EditRecord::Part changedPart(const Grid& g, Box box, const std::vector<Block>& b
 }
 
 void pushRecord(EditHistory& history, EditRecord rec, bool join) {
-    history.redo.clear();
+    for (const auto& entry : rec.markers) history.markerIds = std::max(history.markerIds, entry.first);
+    history.redo.clear();  // their marker ids stay used: see markerIds
     if (!join || history.undo.empty()) history.undo.emplace_back();
     EditRecord& last = history.undo.back();
     for (EditRecord::Part& p : rec.parts) {

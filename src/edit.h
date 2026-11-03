@@ -61,6 +61,9 @@ struct EditRecord {
 };
 struct EditHistory {
     std::vector<EditRecord> undo, redo;
+    // The highest marker id this world has handed out (pushRecord raises it; saved in the world file's
+    // MKID section), so a removed marker's id is never reused: player saves key NPCs by marker id.
+    uint32_t markerIds = 0;
 };
 
 struct EditResult {
@@ -99,7 +102,7 @@ EditRecord::Part changedPart(const Grid& g, Box box, const std::vector<Block>& b
 void pushRecord(EditHistory& history, EditRecord rec, bool join);
 // The bounding box of the voxels an instance changed.
 Box instanceBox(const Instance& in);
-// The id a new marker gets: above every id in the list and the history; 0 when they ran out.
+// The id a new marker gets: above every id in the list, the history and `h.markerIds`; 0 when they ran out.
 uint32_t nextMarkerId(const std::vector<Marker>& list, const EditHistory& h);
 
 // First opaque voxel along the ray (Amanatides-Woo DDA), with the face it was entered through

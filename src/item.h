@@ -6,7 +6,8 @@
 #include "stats.h"
 
 // Where an item is worn. Bags go in the bag bar instead.
-// Not saved anywhere yet (data files name slots), so appending one may shift SlotBag and SlotNone.
+// Player saves store the equipment by slot index (ADR-025): only append slots (SlotBag and SlotNone
+// aren't saved and may move).
 enum EquipSlot : uint8_t { SlotHead, SlotChest, SlotHands, SlotLegs, SlotFeet, SlotMainHand, SlotOffHand, SlotTrinket,
                            EquipCount, SlotBag = EquipCount, SlotNone };
 extern const char* const kSlotNames[EquipCount];

@@ -55,10 +55,18 @@ GPU debug layer.
 | B | Bags: backpack, bags and bag slots |
 | `.` | Open/close the debug window |
 | Tab | Enter/leave the world editor (see below) |
-| Esc | Close the open windows, otherwise quit (asks twice with unsaved world edits) |
+| F5 / F9 | Save / load the game (the player save next to the world file, e.g. `worlds/story.flys`) |
+| Esc | Close the open windows, otherwise quit (asks twice with unsaved world edits); quitting saves the game (see below) |
 
 In the Character and Bags windows, drag items between slots and right-click to equip or unequip.
 The mouse cursor is free while any window is open.
+
+The game loads its world's player save on start, if there is one (`--new-game` starts fresh). The
+save holds the player, the inventory and every NPC (health, dead or alive and its respawn timer,
+loot, position); the world file stays as the editor saved it. A save from before the world was
+edited loads what still matches and lists what it dropped in the debug window's Save tab.
+Quitting doesn't save after a save failed to load (F5 neither: save over it or delete it in the
+Save tab), after Delete (until the next F5), or once the editor was opened (F5 still saves).
 
 ## World editor
 
@@ -242,13 +250,15 @@ unless a text field has focus.
 | Entities | Every NPC: health and attributes, traits and temper, aggro/leash/chase numbers, angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
+| Save | The player save's path, when it was written and its size, Save / Load / Delete, whether quitting saves (and why not), the last result and what the last load restored or dropped |
 | Stats | Frame-time graph of the last 240 frames, average and worst frame |
 
 ## Command-line options
 
 | Flag | Meaning |
 |---|---|
-| `--world PATH` | World file: load it if it exists, otherwise generate from `--seed`; the editor saves here |
+| `--world PATH` | World file: load it if it exists, otherwise generate from `--seed`; the editor saves here. The player save is the same path with `.flys` |
+| `--new-game` | Don't load the player save on start (quitting still writes it) |
 | `--seed N` | World seed (default 1337) |
 | `--time T` | Start time of day, 0..1 (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset) |
 | `--frames N` | Benchmark: the player walks a circle and the camera orbits; exits after N frames and prints frame-time stats. Vsync is off. Each frame is exactly one 60 Hz tick of game time, so a run is the same at any frame rate. |
@@ -278,6 +288,7 @@ src/player.*     movement physics (+ fly/noclip tuning), camera collision, chara
 src/stats.h      the five attributes and the stats derived from them
 src/entity.*     NPCs: dummy, villager, boar, bandit, wolf, guard, bandit chief, ghoul (traits, temper, AI, talking, loot), attacks and damage
 src/defs.*       data definitions: the two-pass loader of data/*.json
+src/save.*       player saves (.flys): player, inventory, NPCs by spawn marker and slot
 src/item.*       items, inventory (equipment, backpack, bags), move/equip rules
 src/inventory_ui.*  Character (C) and Bags (B) windows
 src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, place names

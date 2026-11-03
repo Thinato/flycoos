@@ -740,3 +740,80 @@
     debug Level slider shows the effect today.
   - The debug Player tab shows the sheet: every stat's base and final value, and each modifier with
     its source. The Character window shows final attributes with what gear adds in green.
+
+## ADR-025: A separate `.flys` player save, keyed by stable ids
+
+- **Status:** accepted (2026-11-03)
+- **Context:** the game had no player save: quitting lost the character, its gear and every NPC's
+  fate. The world file (`.flyw`) is authored data that only the editor writes, and a designer
+  keeps editing it after players have played on it. Quests, flags and progression (refactor steps
+  10 and 11) need somewhere to persist. Bethesda's split is the model: an immutable master and a
+  save of deltas keyed by stable ids, whose failure mode is bloat from deltas never dropped.
+- **Decision:**
+  - A player save is its own file next to the world, `worlds/story.flyw` → `worlds/story.flys`
+    (`savePathFor`), in the `.flyw` container style: `"FLYS" | u32 version | tagged sections |
+    FNV-1a checksum`. Sections: `HEAD` (required: world file name, the world file's checksum,
+    seed, simulated seconds, time of day), `PLYR` (position, yaw, health, seconds knocked out,
+    level, the five attributes), `INVT` (equipment by `EquipSlot`, bag bar, every container, all
+    by item `save_id`), `NPCS` (per NPC: spawn marker id, slot, kind, health, seconds dead —
+    the respawn timer —, loot, position, yaw). `*.flys*` is git-ignored.
+  - NPCs are keyed by **(spawn marker id, slot)**, never by vector index: `Entity::slot` is the
+    NPC's index among its marker's, set by `spawnAt`. Adding, removing or reordering markers in the
+    world doesn't scramble NPC state. Marker ids are never reused, so a removed marker's NPCs can't
+    land on a newer one: `EditHistory::markerIds` is the highest id ever handed out (`pushRecord`
+    raises it, so undo-then-edit doesn't free one), `nextMarkerId` stays above it, and the world
+    file keeps it in a new `MKID` section (written only when it's above every live id; `MARK` is
+    unchanged; older files fall back to the highest live id + 1).
+  - Loading parses and bound-checks the whole file first (size ≤ 1 MiB, counts ≤ the caps: 256
+    NPCs, `EquipCount` slots, 4 bags, 5 containers, finite numbers, the data files' level and
+    attribute ranges); any failure rejects the file and leaves the session untouched, then the
+    loader tries `PATH.bak`. Item and creature ids the data doesn't know (a save from a build with
+    more) are not a failure: those items and NPCs are dropped with a note. A good file sets the time
+    of day first (spawns may depend on it), resets the session as `startSession` does (keeping the
+    player's movement tuning) and applies each section on top.
+    Unknown sections are skipped, missing ones keep `startSession`'s state; duplicate sections are
+    rejected. The version is checked; a semantic change gets a chained `vN → vN+1` step then.
+  - A save made on a different world file (checksum or seed) loads what still matches and says
+    so: an NPC entry whose marker is gone, spawns another kind or fewer NPCs now is dropped with a
+    note; an NPC whose home moved away (beyond its wander or leash range) starts at home; player and
+    NPC positions are clamped into the world and lifted out of terrain. Items no longer fit for their slot, or
+    past a bag's new size, go into a free slot, else are lost with a note. Nothing crashes.
+  - The AI state isn't saved: living NPCs start calm (a chase resumes on sight), dead ones load
+    in Dead with their timer. The damage-roll and NPC RNG streams aren't saved either.
+  - Writing reuses the world file's path through one `replaceFile` (`world.cpp`): temp file, then
+    rename over the target. For saves it also tries to make it durable: `F_FULLFSYNC` on the file
+    on macOS (plain `fsync` may sit in the drive cache), the old save renamed to `PATH.bak` first,
+    and a best-effort sync of the folder after the rename (`F_FULLFSYNC`, else `fsync`; not every
+    file system supports it, and POSIX doesn't promise a rename survives a crash without it).
+    World saves keep the plain temp-and-rename. If both the save and its `.bak` fail to load (e.g.
+    a crash between the two renames with a bad `.bak`), nothing is loaded and saving is locked as
+    below; the files stay for a look.
+  - F5 saves, F9 loads (both unbound before), quitting saves, and the game loads the save on start
+    when one exists for its world; `--new-game` skips that (quitting still writes it). Benchmarks
+    never read or write saves (keys and the Save tab's buttons too). Quitting doesn't save:
+    - when a save exists but didn't load (on start or F9): F5 refuses too, until the player saves
+      over it or deletes it in the Save tab, so a file that might be rescued isn't overwritten;
+    - after Delete, until the next save, so the next start really is a new game;
+    - when the session opened the editor (its flight and teleports aren't play); F5 still saves.
+    The log and the Save tab say which. The editor's Ctrl+S and the MCP `save` write only the `.flyw` (the
+    e2e test checks no `.flys` appears); there is no MCP save/load command.
+  - **Rule from here on:** every new runtime state (quests, flags, skills, a voxel change made by
+    gameplay...) lands with its own section in the player save and a round-trip test in
+    `core_test`.
+- **Alternatives considered:**
+  - The player state in the `.flyw`: every editor save would overwrite a play, and every play would
+    dirty the authored file.
+  - JSON saves: easy to read, but a second format to bound-check, and the container already exists.
+  - NPCs keyed by vector index: any marker edit would hand one NPC's state to another.
+  - Saving the FSM state and timers: a mid-swing Windup or a chase against a player who loaded
+    elsewhere needs more restore code than it is worth; calm NPCs re-aggro on their own.
+  - A hard link or copy for the `.bak` instead of a rename: no moment without `PATH`, but more
+    code; the loader's fallback to `.bak` covers that moment.
+- **Consequences:**
+  - The story world's save (28 NPCs) is ~1 KB and takes ~5 ms with the full fsync.
+  - The debug window's Save tab shows the path, the file's time and size, Save / Load / Delete
+    buttons, the last result and the last load's notes (world changed, NPCs dropped, items moved);
+    the HUD shows "Game saved" / "Game loaded" for a moment.
+  - `EquipSlot` values are saved now: append only (amends ADR-022's note).
+  - World files gain the `MKID` section; older builds skip it (and may reuse a removed marker's id).
+  - A save on a world without a file (generated, never saved) records checksum 0 and the seed.

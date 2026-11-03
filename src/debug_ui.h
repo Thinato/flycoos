@@ -21,9 +21,10 @@ struct GameSettings {
 // One-shot requests the main loop carries out (they need the world and renderer).
 struct DebugActions {
     bool regenerate = false, respawn = false, respawnEntities = false;
+    bool saveGame = false, loadGame = false, deleteSave = false;  // the player save (F5, F9)
 };
 
-// Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Items, Entities, Data, Camera, World, Stats.
+// Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Items, Entities, Data, Camera, World, Save, Stats.
 // Also owns the ImGui frame the in-game HUD draws into.
 class DebugUI {
 public:
@@ -47,6 +48,12 @@ public:
     const char* region = nullptr;  // the name of the region the player is in (main sets it each frame)
     int ticks = 0;                 // sim ticks this frame, and how far into the next one it's drawn (main sets them)
     float tickAlpha = 0;
+    // The Save tab (main sets them): the player save's path, the last save or load's result, and the
+    // last load's warnings (world changed, NPCs dropped, items moved).
+    std::string savePath, saveStatus;
+    std::vector<std::string> saveNotes;
+    const char* autosave = "";  // whether quitting saves, else why not
+    bool saveLocked = false;    // the save didn't load: F5 and quitting won't write over it
 
 private:
     void window(GameSettings& game, RenderSettings& render, Session& session,

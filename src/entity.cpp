@@ -159,6 +159,7 @@ static void spawnAt(std::vector<Entity>& out, const Grid& world, const Marker& m
         Entity e = makeEntity(m.entity, seed * 2654435761u + (m.id - 1) + uint32_t(i) * 0x9E3779B9u, pos, face);
         e.wanderRadius = m.radius;
         e.spawn = m;
+        e.slot = i;
         out.push_back(std::move(e));
     }
 }

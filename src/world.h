@@ -142,6 +142,13 @@ struct Section {
     char tag[4];
     std::vector<uint8_t> bytes;
 };
+// The FNV-1a hash the file containers (.flyw, .flys) end with, of every byte before it.
+uint32_t fnv1a(const uint8_t* p, size_t n);
+// Writes `bytes` to PATH.tmp and renames it over PATH (creating the folder), so a failed write never
+// destroys the last good file; empty on success, else why it failed. `durable` (player saves): the
+// temp file is flushed to the disk (F_FULLFSYNC on macOS), the old PATH is kept as PATH.bak, and
+// the folder is synced after the rename.
+std::string replaceFile(const char* path, const std::vector<uint8_t>& bytes, bool durable = false);
 // Writes `extra` after the voxels and instances, in order.
 std::string writeWorldFile(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances,
                            const std::vector<Section>& extra);

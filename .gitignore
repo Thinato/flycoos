@@ -3,3 +3,7 @@ build/
 .DS_Store
 .omc/
 imgui.ini
+# player saves (ADR-025): per player, next to their world file
+*.flys
+*.flys.bak
+*.flys.tmp

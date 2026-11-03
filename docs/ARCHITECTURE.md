@@ -2,7 +2,7 @@
 
 Milestone 0 is about 1,200 lines of C++ (including tests) and 160 lines of MSL. It has two layers:
 
-- **`flycoos_core`** (static library: `world`, `story`, `mesher`, `model`, `player`, `entity`, `item`, `defs`, `edit`, `prefab`, `commands`, `session`): pure CPU
+- **`flycoos_core`** (static library: `world`, `story`, `mesher`, `model`, `player`, `entity`, `item`, `defs`, `edit`, `prefab`, `commands`, `session`, `save`): pure CPU
   code with no GPU or SDL dependency, unit-tested by `tests/core_test.cpp`.
 - **`flycoos`** (executable: `main`, `renderer` + `shaders/world.metal`, `server`): platform, input,
   camera, GPU and the command server.
@@ -19,6 +19,8 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
    ├─ editor (Tab): raycast() ─► applyEdit() / undoEdit() / redoEdit() ─► dirty Box ─► Renderer::updateWorld()
    │                saveWorld() on Ctrl+S
    │
+   ├─ player save: loadPlayer() on start (unless --new-game) and F9; savePlayer() on F5 and quit ─► worlds/<world>.flys
+   │
    └─ CommandServer::take() ─► runCommand() ─► same edits/undo ─► updateWorld(); save, snapshot, goto
             ▲ socket thread, 127.0.0.1:47800 ◄── tools/flycoos_mcp.py (stdio MCP) ◄── Claude Code
 ```
@@ -27,7 +29,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 
 | File | Responsibility |
 |---|---|
-| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, the world file container (`writeWorldFile`/`readWorldFile`: header, `VOXL`, `INST`, checksum; other sections pass through as `Section`s) |
+| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, the world file container (`writeWorldFile`/`readWorldFile`: header, `VOXL`, `INST`, checksum; other sections pass through as `Section`s), `fnv1a` and `replaceFile` (temp and rename; durable for player saves) shared with `save.cpp` |
 | `src/story.h/.cpp` | Story data: `EntityKind` save ids (and the string ids of the ones code names), `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`, `OWNR`) and `saveWorld`/`loadWorld` (the container plus markers) |
 | `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels, prefab instances and markers); `putMarker`/`removeMarker`; `raycast` (voxel DDA); `groundTop` |
 | `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances |
@@ -40,6 +42,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), talking, damage both ways (`resolveHit`), loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in); `startSession` (starting gear, spawns), `step(Session&, SimInput, dt)` (one `kTick`: interaction, swing, movement, NPCs and combat, time of day, region enter, the knocked-out player's respawn) |
+| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`; NPCs keyed by spawn marker id and slot), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
 | `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` (records by string id, `copy_from`, field and range checks), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
@@ -48,7 +51,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/text.h` | `validName`: UTF-8 display text without control, bidi or zero-width characters (marker names and lines, item names) |
 | `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh, light and remesh times, light memory), for the debug and editor UIs without `renderer.h` |
 | `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
-| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Data, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
+| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Data, Camera, World, Save, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor) into `SimInput`, orbit camera, main loop around `step`, remote commands, benchmark stats |
 | `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs` |
 
@@ -119,6 +122,10 @@ u32 FNV-1a checksum of every byte before it
   player_spawn) and a loaded instance; a second section is rejected. A file
   without it (all older ones) loads with every marker hand-placed; older builds skip it, so their
   saves keep the markers but drop the ownership.
+- The `MKID` section (ADR-025; only when a removed marker had a higher id than every live one)
+  holds `u32` the highest marker id ever used (`EditHistory::markerIds`), so new markers never
+  reuse a removed one's id: player saves key NPCs by marker id. A file without it falls back to
+  the highest live id; a second one, a bad size or 2³²−1 is rejected.
 - Later content gets its own sections; old readers skip them, so adding one needs no version bump.
 - Loading rejects, with a message, anything that doesn't parse exactly: wrong magic or version,
   checksum mismatch (any corruption or truncation), bad sizes, block ids or run lengths. A
@@ -127,6 +134,49 @@ u32 FNV-1a checksum of every byte before it
 - Saving writes `PATH.tmp` and renames it over `PATH`, so a failed save never destroys the last
   good file.
 - Real world (seed 1337): save 22 ms, load 13 ms, 2.78 MB.
+
+## Player saves (`savePlayer` / `loadPlayer`, ADR-025)
+
+The world file is the authored base; only the editor writes it. What play changes goes into a
+player save next to it, `worlds/story.flyw` → `worlds/story.flys` (git-ignored), little-endian:
+
+```
+"FLYS" | u32 version (1)
+sections: char tag[4] | u64 bytes | payload      (unknown tags are skipped, missing ones defaulted)
+u32 FNV-1a checksum of every byte before it
+```
+
+- `HEAD` (required): `u8 length | world file name | u32 world checksum | u32 seed | f64 simulated
+  seconds | f32 time of day`. The world checksum is the one the `.flyw` ends with
+  (`worldFileChecksum`), so it hashes all of the world's content.
+- `PLYR`: `f32 x, y, z, yaw | f32 health | f32 seconds knocked out | u32 level | u32 stamina,
+  strength, agility, intellect, spirit`.
+- `INVT`: `u8 count` + item save ids of the equip slots (by `EquipSlot`), the same for the bag bar,
+  then `u8 container count`, each `u8 slot count` + item save ids (container 0 is the backpack).
+- `NPCS`: `u32 count`, then per NPC `u32 spawn marker id | u8 slot | u8 kind | f32 health | f32
+  seconds dead | u8 loot | f32 x, y, z, yaw` (31 bytes). The key is (marker id, slot), where
+  `Entity::slot` is the NPC's index among its marker's: never the vector index.
+- Loading parses and bound-checks everything before it touches the session (file ≤ 1 MiB, every
+  count within its cap, known item and creature ids, finite numbers, data-file ranges for level
+  and attributes, no duplicate sections or NPC keys). On any failure it tries `PATH.bak`, and if
+  that fails too the session is untouched. Unknown item and creature ids are dropped with a note,
+  not rejected. A good file sets the time of day (spawns may depend on it), resets the session like
+  `startSession` (keeping the movement tuning, so the editor's flight stays on), then applies each
+  section.
+- A save from another version of the world (checksum or seed differ) loads what still matches:
+  NPC entries whose marker is gone, now spawns another kind or fewer NPCs are dropped; an NPC whose
+  home moved away starts at home; the player and NPCs are clamped into the world and lifted out of terrain;
+  items that no longer fit their slot move to a free one (or are lost). Each case adds a line to
+  `SaveReport::notes`: the log prints them, the debug Save tab lists them.
+- The AI state isn't saved: living NPCs start calm, dead ones in Dead with their respawn timer.
+- Writing builds the file in memory and calls `replaceFile(path, bytes, durable)`: `PATH.tmp`,
+  `F_FULLFSYNC`, the old save renamed to `PATH.bak`, the temp renamed over `PATH`, the folder
+  synced (best effort). The story world's save is ~1 KB and takes ~5 ms.
+- When: F5 and F9, quitting (any way: Esc, the window, SIGTERM), and on start if a save exists
+  (`--new-game` skips it). Benchmarks never read or write one. The MCP `save` writes the world only.
+  Quitting skips the save after a failed load (F5 too, until the Save tab overwrites or deletes
+  the file), after Delete (until the next F5), and in a session that opened the editor.
+- Every new runtime state gets a section here and a round-trip test.
 
 ## Editing (`applyEdit`)
 
