@@ -80,6 +80,33 @@ static void meshing() {
     }
 }
 
+// The world's chunk meshes come from core (meshChunks/remeshChunks); the renderer only uploads them.
+static void chunkMeshes() {
+    Grid g({64, 128, 64});
+    generateTerrain(g, 7);  // the world `generation` pins
+    std::vector<Mesh> meshes = meshChunks(g);
+    CHECK(meshes.size() == 16);
+    size_t opaque = 0, water = 0;
+    for (size_t i = 0; i < meshes.size(); ++i) {
+        Mesh one = meshRegion(g, chunkOrigin(g.size, int(i)), glm::ivec3(kChunk));
+        CHECK(meshes[i].opaque == one.opaque && meshes[i].water == one.water);
+        opaque += meshes[i].opaque.size(), water += meshes[i].water.size();
+    }
+    CHECK(opaque == 7632 && water == 7);  // what Renderer::uploadWorld meshed before meshing moved to core
+
+    // A voxel edited on a chunk corner remeshes the 8 chunks its faces and AO reach, and they match a
+    // full remesh.
+    glm::ivec3 corner(32, 64, 32);
+    g.set(corner, g.get(corner) == Air ? Stone : Air);
+    std::vector<size_t> ids = remeshChunks(g, corner, corner, meshes);
+    CHECK(ids.size() == 8);
+    std::vector<Mesh> fresh = meshChunks(g);
+    bool same = true;
+    for (size_t i = 0; i < fresh.size(); ++i) same &= fresh[i].opaque == meshes[i].opaque && fresh[i].water == meshes[i].water;
+    CHECK(same);
+    CHECK(remeshChunks(g, {0, 0, 0}, {0, 0, 0}, meshes) == std::vector<size_t>{0});  // a corner voxel: its own chunk
+}
+
 static void packing() {
     QuadInfo cases[] = {
         {{0, 0, 0}, 1, 1, 0, {0, 0, 0, 0}, Grass},
@@ -2600,6 +2627,7 @@ static void ticks() {
 
 int main() {
     meshing();
+    chunkMeshes();
     packing();
     physics();
     entities();

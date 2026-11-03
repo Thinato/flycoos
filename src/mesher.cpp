@@ -90,3 +90,25 @@ Mesh meshRegion(const Grid& g, glm::ivec3 o, glm::ivec3 e) {
     }
     return mesh;
 }
+
+std::vector<Mesh> meshChunks(const Grid& g) {
+    glm::ivec3 counts = g.size / kChunk;
+    int n = counts.x * counts.y * counts.z;
+    std::vector<Mesh> meshes(static_cast<size_t>(n));
+    parallelFor(n, [&](int i) { meshes[size_t(i)] = meshRegion(g, chunkOrigin(g.size, i), glm::ivec3(kChunk)); });
+    return meshes;
+}
+
+std::vector<size_t> remeshChunks(const Grid& g, glm::ivec3 dirtyLo, glm::ivec3 dirtyHi, std::vector<Mesh>& meshes) {
+    glm::ivec3 lo = glm::max(dirtyLo - 1, glm::ivec3(0)) / kChunk, hi = glm::min(dirtyHi + 1, g.size - 1) / kChunk;
+    glm::ivec3 counts = g.size / kChunk;
+    std::vector<size_t> ids;
+    for (int z = lo.z; z <= hi.z; ++z)
+        for (int y = lo.y; y <= hi.y; ++y)
+            for (int x = lo.x; x <= hi.x; ++x) ids.push_back(size_t(x + counts.x * (y + counts.y * z)));
+    parallelFor(int(ids.size()), [&](int j) {
+        size_t i = ids[size_t(j)];
+        meshes[i] = meshRegion(g, chunkOrigin(g.size, int(i)), glm::ivec3(kChunk));
+    });
+    return ids;
+}

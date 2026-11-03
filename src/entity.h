@@ -4,7 +4,9 @@
 #include <string>
 #include <vector>
 
+#include "model.h"
 #include "player.h"
+#include "story.h"
 
 // How an NPC treats the player. Harmless ones never fight back.
 enum class Temper { Harmless, Passive, Aggressive };  // passive: fights back once hit; aggressive: attacks on sight

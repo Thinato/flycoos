@@ -8,7 +8,8 @@
 
 #include "edit.h"
 #include "mesher.h"
-#include "player.h"
+#include "model.h"
+#include "render_stats.h"
 
 struct ImDrawData;
 
@@ -35,15 +36,6 @@ struct RenderSettings {
     bool freezeCulling = false;  // keep the current visible set, then fly away to inspect it
 };
 
-struct RenderStats {
-    size_t opaqueQuads = 0, waterQuads = 0, quadsDrawn = 0;
-    int chunksTotal = 0, chunksDrawn = 0, drawCalls = 0;
-    double genSeconds = 0, meshSeconds = 0;  // last world generation / meshing + upload
-    double remeshMs = 0;      // last updateWorld: remesh + upload
-    int chunksRemeshed = 0;   // by the last updateWorld
-    int repacks = 0;          // updateWorld calls that ran out of buffer headroom and repacked everything
-};
-
 class Renderer {
 public:
     Renderer() = default;
@@ -52,9 +44,9 @@ public:
     ~Renderer();
 
     bool init(SDL_Window* window, bool vsync);
-    void uploadWorld(const Grid& world);  // meshes every chunk (in parallel) and uploads
-    // After an edit: remeshes and re-uploads only the chunks overlapping `dirty` grown by one voxel
-    // (faces and AO look at neighbours).
+    void uploadWorld(const Grid& world);  // meshes every chunk (meshChunks) and uploads
+    // After an edit: remeshes (remeshChunks) and re-uploads only the chunks overlapping `dirty` grown
+    // by one voxel (faces and AO look at neighbours).
     void updateWorld(const Grid& world, const Box& dirty);
     void uploadModels();  // character and NPC models
     // Draws one frame, then the debug UI (if any) on top. With screenshotPath set, also writes

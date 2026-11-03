@@ -6,6 +6,7 @@
 #include <cstring>
 #include <numbers>
 
+#include <SDL3/SDL.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 

@@ -245,14 +245,10 @@ void Renderer::write(const void* data, uint32_t bytes, const std::vector<Upload>
 
 void Renderer::uploadWorld(const Grid& world) {
     uint64_t start = SDL_GetTicksNS();
-    glm::ivec3 counts = world.size / kChunk;
-    int n = counts.x * counts.y * counts.z;
-    meshes_.assign(static_cast<size_t>(n), {});
-    chunks_.assign(static_cast<size_t>(n), {});
-    parallelFor(n, [&](int i) {
-        chunks_[size_t(i)].origin = chunkOrigin(world.size, i);
-        meshes_[size_t(i)] = meshRegion(world, chunks_[size_t(i)].origin, glm::ivec3(kChunk));
-    });
+    meshes_ = {};  // free the old world's meshes before building the new ones
+    meshes_ = meshChunks(world);
+    chunks_.assign(meshes_.size(), {});
+    for (size_t i = 0; i < chunks_.size(); ++i) chunks_[i].origin = chunkOrigin(world.size, int(i));
     packWorld();
     stats.meshSeconds = double(SDL_GetTicksNS() - start) * 1e-9;
 }
@@ -280,16 +276,7 @@ void Renderer::packWorld() {
 void Renderer::updateWorld(const Grid& world, const Box& dirty) {
     if (dirty.empty()) return;
     uint64_t start = SDL_GetTicksNS();
-    glm::ivec3 lo = glm::max(dirty.lo - 1, glm::ivec3(0)) / kChunk, hi = glm::min(dirty.hi + 1, world.size - 1) / kChunk;
-    glm::ivec3 counts = world.size / kChunk;
-    std::vector<size_t> ids;
-    for (int z = lo.z; z <= hi.z; ++z)
-        for (int y = lo.y; y <= hi.y; ++y)
-            for (int x = lo.x; x <= hi.x; ++x) ids.push_back(size_t(x + counts.x * (y + counts.y * z)));
-    parallelFor(int(ids.size()), [&](int j) {
-        size_t i = ids[size_t(j)];
-        meshes_[i] = meshRegion(world, chunks_[i].origin, glm::ivec3(kChunk));
-    });
+    std::vector<size_t> ids = remeshChunks(world, dirty.lo, dirty.hi, meshes_);
 
     // A chunk's new quads overwrite its slot when they fit. Otherwise they move to a new slot with
     // spare room at the end of the buffer; once that headroom is used up, everything is repacked.

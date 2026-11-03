@@ -2,7 +2,7 @@
 
 Milestone 0 is about 1,200 lines of C++ (including tests) and 160 lines of MSL. It has two layers:
 
-- **`flycoos_core`** (static library: `world`, `mesher`, `player`, `entity`, `item`, `edit`, `prefab`, `commands`): pure CPU
+- **`flycoos_core`** (static library: `world`, `story`, `mesher`, `model`, `player`, `entity`, `item`, `edit`, `prefab`, `commands`, `session`): pure CPU
   code with no GPU or SDL dependency, unit-tested by `tests/core_test.cpp`.
 - **`flycoos`** (executable: `main`, `renderer` + `shaders/world.metal`, `server`): platform, input,
   camera, GPU and the command server.
@@ -12,7 +12,7 @@ Milestone 0 is about 1,200 lines of C++ (including tests) and 160 lines of MSL. 
 main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024×192×1024 bytes)
    │                                                     │
    │                                          Renderer::uploadWorld()
-   │                                             └─ parallelFor(chunks) ─► meshRegion() ─► packed quads ─► GPU storage buffers
+   │                                             └─ meshChunks() (core: parallelFor(chunks) ─► meshRegion()) ─► packed quads ─► GPU storage buffers
    │
    ├─ loop: events ─► SimInput ─► step() × N (fixed 60 Hz) ─► poseModel(alpha) ─► camera ─► Renderer::render()
    │
@@ -27,19 +27,22 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 
 | File | Responsibility |
 |---|---|
-| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, `Marker` (`checkMarker`, `regionAt`, `playerSpawn`), world files (`saveWorld`/`loadWorld`) |
+| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, the world file container (`writeWorldFile`/`readWorldFile`: header, `VOXL`, `INST`, checksum; other sections pass through as `Section`s) |
+| `src/story.h/.cpp` | Story data: `EntityKind`, `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`) and `saveWorld`/`loadWorld` (the container plus markers) |
 | `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels, prefab instances and markers); `putMarker`/`removeMarker`; `raycast` (voxel DDA); `groundTop` |
 | `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances |
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
-| `src/mesher.h/.cpp` | Greedy mesher with per-corner AO, `Quad` packing/unpacking |
-| `src/player.h/.cpp` | Walking-body physics and collision (player and NPCs), character models (`buildPart`), procedural animation (`poseModel`) |
+| `src/mesher.h/.cpp` | Greedy mesher with per-corner AO (`meshRegion`), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
+| `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (stats, health, swing and damage timers, `Inventory`); walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
+| `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits and temper, spawning (`syncSpawns` from spawn markers, `defaultMarkers`), wander and chase AI, talking, damage both ways, loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in); `startSession` (starting gear, spawns), `step(Session&, SimInput, dt)` (one `kTick`: interaction, swing, movement, NPCs and combat, time of day, region enter, the knocked-out player's respawn) |
 | `src/item.h/.cpp` | Item table, `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, poi labels and the region name (`drawPlaces`) |
-| `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, buffer uploads, render targets, frustum culling, day/night lighting, screenshots |
+| `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, uploads of the core's chunk and model meshes, render targets, frustum culling, day/night lighting, screenshots |
+| `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh and remesh times), for the debug and editor UIs without `renderer.h` |
 | `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
 | `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor) into `SimInput`, orbit camera, main loop around `step`, remote commands, benchmark stats |
@@ -422,7 +425,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   palette color, since `Iron` reads black in shade) at the same sizes. Each `ModelInstance` names
   the model per part (`partModels`), so a worn piece swaps in the part it covers without changing
   the pose. The rig has no legs, so greaves don't show.
-- **Tuning and flight:** walk/run/jump speed, gravity, fly and noclip live in `Player::tuning`, so
+- **Tuning and flight:** walk/run/jump speed, gravity, fly and noclip live in `Body::tuning` (every `Player` and NPC body has one), so
   the debug UI edits them live. Flight ignores gravity (Space rises, Ctrl sinks, Shift is 2.5×) and
   still collides; noclip moves straight through terrain.
 - **Camera:** an orbit around a smoothed target 1.4 blocks above the feet. `cameraClearance` marches
@@ -622,4 +625,3 @@ derives the following from the sun height:
 | MSL-only shaders (macOS) | HLSL/Slang + SDL_shadercross for SPIR-V/DXIL (M1) |
 | No shadows | Cascaded shadow map for sun/moon (M1) |
 | Absolute world-space float positions (jitter far from the origin) | Camera-relative rendering: subtract the camera's chunk origin on the CPU (needed for M1 streaming) |
-| Meshing is driven by `Renderer::uploadWorld` | Move meshing into a core job that produces `Mesh`; the renderer only uploads |

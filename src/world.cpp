@@ -9,7 +9,6 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <string_view>
 #include <thread>
 
 #include <FastNoiseLite.h>
@@ -220,62 +219,11 @@ glm::vec3 findSpawn(const Grid& g, glm::ivec2 near) {
     return {cx + 0.5f, float(g.size.y), cz + 0.5f};
 }
 
-// UTF-8 without control characters, bidi overrides or zero-width characters (which could hide or
-// reorder a name's text); overlong forms and surrogates are invalid too.
-static bool validName(std::string_view s) {
-    for (size_t i = 0; i < s.size();) {
-        auto c = uint8_t(s[i]);
-        int n = c < 0x80 ? 0 : c >= 0xC2 && c <= 0xDF ? 1 : (c & 0xF0) == 0xE0 ? 2 : c >= 0xF0 && c <= 0xF4 ? 3 : -1;
-        if (n < 0 || c < 0x20 || c == 0x7F || s.size() - i <= size_t(n)) return false;
-        uint32_t cp = n ? c & (0x3F >> n) : c;
-        for (int k = 1; k <= n; ++k) {
-            auto t = uint8_t(s[i + size_t(k)]);
-            if ((t & 0xC0) != 0x80) return false;
-            cp = cp << 6 | (t & 0x3F);
-        }
-        if ((cp >= 0x80 && cp < 0xA0) || (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) ||
-            (cp >= 0x2066 && cp <= 0x2069) || cp == 0xFEFF || (n == 2 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) ||
-            (n == 3 && (cp < 0x10000 || cp > 0x10FFFF)))
-            return false;
-        i += size_t(n) + 1;
-    }
-    return true;
-}
-
-const char* checkMarker(const Grid& g, const Marker& m) {
-    if (m.kind >= MarkerKind::Count) return "unknown marker kind";
-    if (m.entity >= EntityKind::Count) return "unknown entity kind";
-    if (m.count < 1 || m.count > kMaxSpawnCount) return "count out of range (1..8)";
-    if (m.name.size() > kMaxMarkerName) return "name longer than 48 bytes";
-    if (!validName(m.name)) return "name must be UTF-8 text without control, bidi or zero-width characters";
-    if (m.name.empty() && (m.kind == MarkerKind::Poi || m.kind == MarkerKind::Region)) return "a poi or region needs a name";
-    if (!(m.pos.x >= 0 && m.pos.x < float(g.size.x) && m.pos.z >= 0 && m.pos.z < float(g.size.z) && m.pos.y >= 0 &&
-          m.pos.y <= float(g.size.y)))
-        return "position outside the world";  // NaN fails every comparison
-    if (!(m.radius >= 0 && m.radius <= kMaxMarkerRadius)) return "radius out of range (0..512)";
-    if (m.lines.empty()) return nullptr;
-    if (!takesLines(m)) return "lines are for spawn markers, not the dummy: clear them first (lines: [])";
-    if (m.lines.size() > kMaxMarkerLines) return "more than 8 lines";
-    for (const std::string& line : m.lines) {
-        if (line.empty() || line.size() > kMaxMarkerLine) return "each line needs 1..160 bytes";
-        if (!validName(line)) return "lines must be UTF-8 text without control, bidi or zero-width characters";
-    }
-    return nullptr;
-}
-
-const Marker* regionAt(const std::vector<Marker>& markers, glm::vec3 p) {
-    const Marker* best = nullptr;
-    for (const Marker& m : markers)
-        if (m.kind == MarkerKind::Region && glm::distance(glm::vec2(p.x, p.z), glm::vec2(m.pos.x, m.pos.z)) <= m.radius &&
-            (!best || m.radius < best->radius))
-            best = &m;
-    return best;
-}
-
 // World file layout (little-endian):
 //   "FLYW" | u32 version | i32 size x, y, z | u32 seed
-//   sections, each: char tag[4] | u64 bytes | payload. Unknown tags are skipped, which leaves room
-//     for later sections without a version bump.
+//   sections, each: char tag[4] | u64 bytes | payload. Unknown tags are returned to the caller
+//   (story.cpp skips any it doesn't know), which leaves room for later sections without a
+//   version bump.
 //   u32 FNV-1a of every byte before it: any corruption is rejected instead of loading a wrong world.
 // "VOXL" section: per 32^3 chunk (in chunkOrigin order): u32 bytes, then runs of
 //   (u8 block, LEB128 count - 1) over the chunk's voxels, x fastest, then z, then y. Terrain is
@@ -283,10 +231,7 @@ const Marker* regionAt(const std::vector<Marker>& markers, glm::vec3 p) {
 // "INST" section (only when there are instances): u32 count, then per instance: u32 id | u8 name
 //   length | name | i32 x, y, z | u8 rotation | u32 seed | u8 param count | f32 params |
 //   u32 cell count | cells (u16 x, y, z | u8 before | u8 after).
-// "MARK" section (always): u32 count, then per marker: u32 id | u8 kind | u8 name length | name |
-//   f32 x, y, z, radius | u8 entity | u8 count.
-// "LINE" section (only when a marker has lines; after MARK): u32 count, then per marker with lines,
-//   by ascending id: u32 id | u8 line count | lines (u8 length | text). Older builds skip it.
+// Every other section goes to and comes from the caller as `extra` (story.cpp: MARK, LINE).
 constexpr uint32_t kWorldFileVersion = 1;
 constexpr int kChunkVoxels = kChunk * kChunk * kChunk;
 
@@ -351,8 +296,8 @@ static bool decodeChunk(Grid& g, glm::ivec3 o, const uint8_t* p, const uint8_t* 
     return i == kChunkVoxels;
 }
 
-std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances,
-                      const std::vector<Marker>& markers) {
+std::string writeWorldFile(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances,
+                           const std::vector<Section>& extra) {
     if (g.size % kChunk != glm::ivec3(0)) return "world size is not a multiple of the chunk size";
     glm::ivec3 counts = g.size / kChunk;
     int n = counts.x * counts.y * counts.z;
@@ -397,35 +342,10 @@ std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std:
         }
         endSection();
     }
-    out.insert(out.end(), {'M', 'A', 'R', 'K'});  // always: an empty one means "no markers", a missing one "older file"
-    sizeAt = out.size();
-    put(out, 0, 8);
-    put(out, markers.size(), 4);
-    for (const Marker& m : markers) {
-        put(out, m.id, 4);
-        put(out, uint8_t(m.kind), 1);
-        put(out, m.name.size(), 1);
-        out.insert(out.end(), m.name.begin(), m.name.end());
-        for (float f : {m.pos.x, m.pos.y, m.pos.z, m.radius}) put(out, std::bit_cast<uint32_t>(f), 4);
-        put(out, uint8_t(m.entity), 1);
-        put(out, uint32_t(m.count), 1);
-    }
-    endSection();
-    if (size_t talking = size_t(std::ranges::count_if(markers, [](const Marker& m) { return !m.lines.empty(); }))) {
-        out.insert(out.end(), {'L', 'I', 'N', 'E'});
-        sizeAt = out.size();
-        put(out, 0, 8);
-        put(out, talking, 4);
-        for (const Marker& m : markers) {
-            if (m.lines.empty()) continue;
-            put(out, m.id, 4);
-            put(out, m.lines.size(), 1);
-            for (const std::string& line : m.lines) {
-                put(out, line.size(), 1);
-                out.insert(out.end(), line.begin(), line.end());
-            }
-        }
-        endSection();
+    for (const Section& sec : extra) {
+        out.insert(out.end(), sec.tag, sec.tag + 4);
+        put(out, sec.bytes.size(), 8);
+        out.insert(out.end(), sec.bytes.begin(), sec.bytes.end());
     }
     put(out, fnv1a(out.data(), out.size()), 4);
 
@@ -497,74 +417,8 @@ static std::string readInstances(const uint8_t* p, const uint8_t* end, glm::ivec
     return p == end ? std::string() : "instance section size mismatch";
 }
 
-// Reads the MARK payload [p, end) into `out`; returns why it's malformed, or "".
-static std::string readMarkers(const uint8_t* p, const uint8_t* end, const Grid& g, std::vector<Marker>& out) {
-    bool truncated = false;
-    auto take = [&](int64_t bytes) -> uint64_t {  // a little-endian number, or 0 past the end
-        if (end - p < bytes) return truncated = true, p = end, 0;
-        p += bytes;
-        return get(p - bytes, int(bytes));
-    };
-    uint64_t count = take(4);
-    int npcs = 0;
-    if (count > kMaxMarkers) return std::format("more than {} markers", kMaxMarkers);
-    for (uint64_t i = 0; i < count && !truncated; ++i) {
-        Marker m;
-        m.id = uint32_t(take(4));
-        m.kind = MarkerKind(take(1));
-        uint64_t nameBytes = take(1);
-        if (end - p < int64_t(nameBytes)) return "truncated markers";
-        m.name.assign(p, p + nameBytes);
-        p += nameBytes;
-        float f[4];
-        for (float& v : f) v = std::bit_cast<float>(uint32_t(take(4)));
-        m.pos = {f[0], f[1], f[2]};
-        m.radius = f[3];
-        m.entity = EntityKind(take(1));
-        m.count = int(take(1));
-        if (truncated) break;
-        bool secondPlayerSpawn = m.kind == MarkerKind::PlayerSpawn && std::ranges::find(out, MarkerKind::PlayerSpawn, &Marker::kind) != out.end();
-        if (m.id == 0 || m.id == UINT32_MAX || (!out.empty() && m.id <= out.back().id) || checkMarker(g, m) || secondPlayerSpawn)
-            return std::format("bad marker {}", m.id);
-        if (m.kind == MarkerKind::Spawn && (npcs += m.count) > kMaxSpawnedNpcs)
-            return std::format("spawn markers make more than {} NPCs", kMaxSpawnedNpcs);
-        out.push_back(std::move(m));
-    }
-    if (truncated) return "truncated markers";
-    return p == end ? std::string() : "marker section size mismatch";
-}
-
-// Reads the LINE payload [p, end) onto the already loaded `markers`; returns why it's malformed, or "".
-static std::string readLines(const uint8_t* p, const uint8_t* end, const Grid& g, std::vector<Marker>& markers) {
-    bool truncated = false;
-    auto take = [&](int64_t bytes) -> uint64_t {  // a little-endian number, or 0 past the end
-        if (end - p < bytes) return truncated = true, p = end, 0;
-        p += bytes;
-        return get(p - bytes, int(bytes));
-    };
-    uint64_t count = take(4);
-    if (count > markers.size()) return "more marker lines than markers";
-    uint32_t last = 0;
-    for (uint64_t i = 0; i < count && !truncated; ++i) {
-        uint32_t id = uint32_t(take(4));
-        auto m = std::ranges::lower_bound(markers, id, {}, &Marker::id);
-        uint64_t n = take(1);
-        if (m == markers.end() || m->id != id || id <= last || n == 0 || n > kMaxMarkerLines) return std::format("bad lines for marker {}", id);
-        last = id;
-        for (uint64_t k = 0; k < n; ++k) {
-            uint64_t bytes = take(1);
-            if (truncated || end - p < int64_t(bytes)) return "truncated marker lines";
-            m->lines.emplace_back(p, p + bytes);
-            p += bytes;
-        }
-        if (!truncated && checkMarker(g, *m)) return std::format("bad lines for marker {}", id);
-    }
-    if (truncated) return "truncated marker lines";
-    return p == end ? std::string() : "marker lines section size mismatch";
-}
-
-std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances,
-                      std::optional<std::vector<Marker>>& markers) {
+std::string readWorldFile(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances,
+                          std::vector<Section>& extra) {
     std::error_code ec;
     uintmax_t fileBytes = std::filesystem::file_size(path, ec);
     std::ifstream f(path, std::ios::binary);
@@ -585,10 +439,9 @@ std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Ins
     seed = uint32_t(get(p + 20, 4));
     if (g.size != size) g = Grid(size);
     instances.clear();
-    markers.reset();
+    extra.clear();
 
     bool voxels = false;
-    const uint8_t *lines = nullptr, *linesEnd = nullptr;  // read once the markers are in
     for (p += kHeader; p < end;) {
         if (end - p < 12) return "truncated section header";
         const uint8_t* tag = p;
@@ -614,16 +467,12 @@ std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Ins
             voxels = true;
         } else if (std::memcmp(tag, "INST", 4) == 0) {
             if (std::string error = readInstances(p, next, size, instances); !error.empty()) return error;
-        } else if (std::memcmp(tag, "MARK", 4) == 0) {
-            if (std::string error = readMarkers(p, next, g, markers.emplace()); !error.empty()) return error;
-        } else if (std::memcmp(tag, "LINE", 4) == 0) {
-            if (lines) return "duplicate marker lines";
-            lines = p, linesEnd = next;
+        } else {
+            Section& sec = extra.emplace_back();
+            std::memcpy(sec.tag, tag, 4);
+            sec.bytes.assign(p, next);
         }
         p = next;
     }
-    if (lines && !markers) return "marker lines without markers";
-    if (lines)
-        if (std::string error = readLines(lines, linesEnd, g, *markers); !error.empty()) return error;
     return voxels ? std::string() : "no voxel section";
 }

@@ -1,5 +1,4 @@
 #pragma once
-#include <array>
 #include <cmath>
 #include <numbers>
 
@@ -27,8 +26,8 @@ struct PlayerTuning {
     float flySpeed = 15;
 };
 
-// A walking body: the player, and the body of every NPC (driven by AI input instead of keys).
-struct Player {
+// The moving body: position and physics (updatePlayer), its animation state, and where to draw it.
+struct Body {
     glm::vec3 pos{}, vel{};  // pos = feet center
     float yaw = 0;           // radians; 0 faces +Z
     glm::vec3 prevPos{};     // pos and yaw at the start of the latest sim tick: drawn between them
@@ -40,7 +39,12 @@ struct Player {
     float breathPhase = 0;  // idle breathing cycle, radians
     PlayerTuning tuning;
 
-    // Combat
+    // Moved without passing in between (spawned, respawned, flown to): drawn there at once, not slid.
+    void teleport(glm::vec3 to) { pos = prevPos = to; prevYaw = yaw; }
+};
+
+// What fights: attributes, health, the swing and damage timers, and the gear it wears and carries.
+struct Combatant {
     Stats stats;
     float health = float(maxHealth(Stats{}));
     float combatTimer = 0;                 // > 0: in combat, no regeneration
@@ -55,19 +59,21 @@ struct Player {
     Inventory inv;                         // equipment and bags
 
     bool alive() const { return health > 0; }
-    // Moved without passing in between (spawned, respawned, flown to): drawn there at once, not slid.
-    void teleport(glm::vec3 to) { pos = prevPos = to; prevYaw = yaw; }
     bool punching() const { return punchTime < punchLength; }  // any attack swing, armed or not
     // What's in hand: the main hand, or what the current swing started with (swapping mid-swing waits).
     ItemId weapon() const { return punching() ? swingWeapon : inv.equipped[SlotMainHand]; }
 };
 
+// A walking, fighting character: the player, and the body of every NPC (driven by AI input instead
+// of keys).
+struct Player : Body, Combatant {};
+
 constexpr float kPunchSeconds = 0.35f;  // punch animation length (shorter if swings are faster)
 constexpr float kPunchImpact = 0.4f;    // fraction of the animation where the fist lands
 
 // Where to draw a body `alpha` of the way through the current tick (0: as it was, 1: as it is).
-inline glm::vec3 drawPos(const Player& b, float alpha) { return glm::mix(b.prevPos, b.pos, alpha); }
-inline float drawYaw(const Player& b, float alpha) {  // the short way around
+inline glm::vec3 drawPos(const Body& b, float alpha) { return glm::mix(b.prevPos, b.pos, alpha); }
+inline float drawYaw(const Body& b, float alpha) {  // the short way around
     return b.prevYaw + std::remainder(b.yaw - b.prevYaw, 2 * std::numbers::pi_v<float>) * alpha;
 }
 
@@ -80,24 +86,3 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt);
 // How far a camera (a cube of half-size `radius`, bigger than the near plane) can move from `from`
 // along unit `dir` before touching an opaque voxel, up to maxDist.
 float cameraClearance(const Grid& g, glm::vec3 from, glm::vec3 dir, float maxDist, float radius);
-
-// Character models: 6 floating voxel parts, each its own tiny grid meshed by meshRegion.
-// The training dummy reuses the slots: FootL is its post, FootR its base, hands its arms.
-enum Part { Head, Torso, HandL, HandR, FootL, FootR, PartCount };
-// The boar and the wolf reuse them as quadrupeds: hands are front legs, feet hind legs.
-// Weapons are held items: only their Head slot has voxels, posed by poseModel's `held` output.
-// Armor is a humanoid whose parts are plated: a worn piece swaps in the part it covers.
-// The guard, the bandit chief and the ghoul are humanoids (the chief scaled up, the ghoul thinner).
-enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelBoar, ModelBandit, ModelSword, ModelKnife, ModelIronArmor,
-             ModelWolf, ModelGuard, ModelChief, ModelGhoul, ModelCount };
-Grid buildPart(Model model, Part part);
-Model heldModel(ItemId weapon);
-// Which model each part of `model` is drawn from: its own, or the armor worn over it. Greaves have
-// no part (the rig has no legs), so they don't show.
-std::array<Model, PartCount> partModels(Model model, const Inventory& inv);
-// Part-grid space -> world space for the body's current animation pose (the dummy only wobbles
-// when hit and topples when out of health; everyone else falls over). With a main-hand weapon
-// equipped, a humanoid's `held` gets its pose (gripped in the right hand) and attacks are slashes
-// instead of punches; the boar and the wolf lunge with their heads.
-// `alpha`: where between its last two ticks the body is drawn (see drawPos).
-std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model, glm::mat4* held = nullptr, float alpha = 1);

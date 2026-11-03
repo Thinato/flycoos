@@ -6,7 +6,7 @@
 #include <string>
 
 #include "prefab.h"
-#include "renderer.h"
+#include "render_stats.h"
 
 // In-game world editor (Tab): brush settings, undo history and save state. main.cpp applies the
 // brushes; this draws the Editor panel and the crosshair/brush preview.

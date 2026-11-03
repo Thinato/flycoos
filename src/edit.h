@@ -2,7 +2,7 @@
 #include <optional>
 #include <vector>
 
-#include "world.h"
+#include "story.h"
 
 // World editing: one data-driven entry point (an EditOp in, the changed box and an undo record
 // out) shared by the in-game editor and, later, remote commands. See docs/ARCHITECTURE.md.
