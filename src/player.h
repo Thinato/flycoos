@@ -1,5 +1,7 @@
 #pragma once
 #include <array>
+#include <cmath>
+#include <numbers>
 
 #include <glm/glm.hpp>
 
@@ -29,6 +31,8 @@ struct PlayerTuning {
 struct Player {
     glm::vec3 pos{}, vel{};  // pos = feet center
     float yaw = 0;           // radians; 0 faces +Z
+    glm::vec3 prevPos{};     // pos and yaw at the start of the latest sim tick: drawn between them
+    float prevYaw = 0;
     bool onGround = false, inWater = false;
     float gaitPhase = 0;     // advances with distance walked
     float gaitAmount = 0;    // 0 idle .. ~1.4 running
@@ -51,6 +55,8 @@ struct Player {
     Inventory inv;                         // equipment and bags
 
     bool alive() const { return health > 0; }
+    // Moved without passing in between (spawned, respawned, flown to): drawn there at once, not slid.
+    void teleport(glm::vec3 to) { pos = prevPos = to; prevYaw = yaw; }
     bool punching() const { return punchTime < punchLength; }  // any attack swing, armed or not
     // What's in hand: the main hand, or what the current swing started with (swapping mid-swing waits).
     ItemId weapon() const { return punching() ? swingWeapon : inv.equipped[SlotMainHand]; }
@@ -58,6 +64,12 @@ struct Player {
 
 constexpr float kPunchSeconds = 0.35f;  // punch animation length (shorter if swings are faster)
 constexpr float kPunchImpact = 0.4f;    // fraction of the animation where the fist lands
+
+// Where to draw a body `alpha` of the way through the current tick (0: as it was, 1: as it is).
+inline glm::vec3 drawPos(const Player& b, float alpha) { return glm::mix(b.prevPos, b.pos, alpha); }
+inline float drawYaw(const Player& b, float alpha) {  // the short way around
+    return b.prevYaw + std::remainder(b.yaw - b.prevYaw, 2 * std::numbers::pi_v<float>) * alpha;
+}
 
 bool overlapsSolid(const Grid& g, glm::vec3 feet);
 // `feet` raised a block at a time until the body is out of the terrain (up to the world's top), so a
@@ -87,4 +99,5 @@ std::array<Model, PartCount> partModels(Model model, const Inventory& inv);
 // when hit and topples when out of health; everyone else falls over). With a main-hand weapon
 // equipped, a humanoid's `held` gets its pose (gripped in the right hand) and attacks are slashes
 // instead of punches; the boar and the wolf lunge with their heads.
-std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model, glm::mat4* held = nullptr);
+// `alpha`: where between its last two ticks the body is drawn (see drawPos).
+std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model, glm::mat4* held = nullptr, float alpha = 1);

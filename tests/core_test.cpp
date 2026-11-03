@@ -2554,6 +2554,50 @@ static void session() {
     CHECK(std::get<2>(a.back()) < 120 && std::get<1>(a.back()) < 100);  // blows were traded: the rolls ran
 }
 
+// The fixed tick: N ticks of a scripted input end in exactly the same state, and bodies are drawn
+// between their last two ticks (but never slid across a teleport).
+static void ticks() {
+    Session s{.world = meadow(), .seed = 3};
+    s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}},
+                 {.id = 2, .kind = MarkerKind::Spawn, .pos = {20.5f, 4, 24.5f}, .radius = 4, .entity = EntityKind::Villager}};
+    startSession(s);
+    CHECK(s.player.prevPos == s.player.pos && s.entities.size() == 1 && s.entities[0].body.prevPos == s.entities[0].body.pos);
+    SimInput in;
+    in.move.move = glm::normalize(glm::vec2(1, 0.5f));
+    in.move.run = true;
+    for (int tick = 0; tick < 120; ++tick) {
+        in.move.jump = tick == 30;
+        glm::vec3 before = s.player.pos;
+        step(s, in, kTick);
+        CHECK(s.player.prevPos == before);
+    }
+    // 2 s running along (1, 0.5) with one jump (accelerating, then 9 b/s), facing the way it runs; the villager strolls.
+    same("ticks", "player.x", s.player.pos.x, 25.891537f);
+    same("ticks", "player.y", s.player.pos.y, 4.001f);
+    same("ticks", "player.z", s.player.pos.z, 18.195745f);
+    same("ticks", "player.yaw", s.player.yaw, 1.1071485f);
+    same("ticks", "elapsed", s.elapsed, 120 * double(kTick));
+    same("ticks", "villager.x", s.entities[0].body.pos.x, 20.693283f);
+    same("ticks", "villager.z", s.entities[0].body.pos.z, 20.679798f);
+
+    // Drawing: alpha 0 is the previous tick, 1 the current; yaw turns the short way past ±pi.
+    Player b;
+    b.prevPos = {0, 0, 0};
+    b.pos = {2, 0, 0};
+    CHECK(drawPos(b, 0) == b.prevPos && drawPos(b, 1) == b.pos && drawPos(b, 0.25f) == glm::vec3(0.5f, 0, 0));
+    b.prevYaw = 3.0f;
+    b.yaw = -3.0f;
+    CHECK(std::abs(drawYaw(b, 0.5f)) > 3.1f);  // through pi, not through 0
+    b.teleport({9, 0, 9});
+    CHECK(drawPos(b, 0.3f) == glm::vec3(9, 0, 9) && drawYaw(b, 0.3f) == b.yaw);
+    // A respawn is a teleport too: the next frame draws it at the spawn, whatever alpha.
+    s.player.pos = {40.5f, 4, 40.5f};
+    CHECK(hurt(s.player, 1000));
+    s.player.deadTime = kPlayerRespawnSeconds;
+    CHECK(step(s, {}, kTick).respawned);
+    CHECK(glm::distance(drawPos(s.player, 0), glm::vec3(10.5f, 4, 10.5f)) < 0.05f);
+}
+
 int main() {
     meshing();
     packing();
@@ -2577,6 +2621,7 @@ int main() {
     fightReplay();
     boarReplay();
     session();
+    ticks();
     if (failures) std::println(stderr, "{} check(s) failed", failures);
     else std::println("all checks passed");
     return failures ? 1 : 0;

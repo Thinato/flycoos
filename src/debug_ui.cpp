@@ -101,7 +101,7 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
     ImGui::Text("Armor %d: -%.1f%% damage vs level 1, -%.1f%% vs level 2", a,
                 armorReduction(a, 1, armorK) * 100, armorReduction(a, 2, armorK) * 100);
     ImGui::SeparatorText("Body");
-    ImGui::DragFloat3("Position", &p.pos.x, 0.25f);
+    if (glm::vec3 at = p.pos; ImGui::DragFloat3("Position", &at.x, 0.25f)) p.teleport(at);
     ImGui::Text("Velocity  %.2f  %.2f  %.2f  (%.2f b/s)", p.vel.x, p.vel.y, p.vel.z, glm::length(p.vel));
     ImGui::Text("On ground %s   In water %s", p.onGround ? "yes" : "no", p.inWater ? "yes" : "no");
     ImGui::Text("Region %s", region ? region : "-");
@@ -241,7 +241,11 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
         if (ImGui::BeginTabItem("Entities")) { entitiesTab(session.entities, player, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Stats")) { statsTab(frameMs_, frameIndex_); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Stats")) {
+            statsTab(frameMs_, frameIndex_);
+            ImGui::Text("Sim ticks this frame %d (60 Hz), drawn %.2f into the next", ticks, tickAlpha);
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
     ImGui::End();

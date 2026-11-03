@@ -203,6 +203,7 @@ static int run(SDL_Window* window, const Options& opt) {
     auto setEditing = [&](bool on) {  // the editor flies with noclip; NPCs and combat pause
         editor.active = on;
         editor.cursor = false;
+        punchQueued = false;  // a click queued mid-swing must not become an editor action
         editor.corner.reset();
         if (on) {
             walking = player.tuning;
@@ -210,14 +211,14 @@ static int run(SDL_Window* window, const Options& opt) {
         } else {
             player.tuning.fly = walking.fly;
             player.tuning.noclip = walking.noclip;
-            player.pos = clearOfTerrain(world, player.pos);  // not buried by an edit
+            player.teleport(clearOfTerrain(world, player.pos));  // not buried by an edit
         }
         updateMouseMode();
     };
     // Editor flight to `pos`, facing `lookAt` past the character.
     auto flyTo = [&](glm::vec3 pos, std::optional<glm::vec3> lookAt) {
         if (!editor.active) setEditing(true);
-        player.pos = pos;
+        player.teleport(pos);
         player.vel = {};
         camTarget = player.pos + glm::vec3(0, 1.4f, 0);
         if (lookAt) {
@@ -231,6 +232,8 @@ static int run(SDL_Window* window, const Options& opt) {
     frameMs.reserve(size_t(opt.frames));
     uint64_t last = SDL_GetTicksNS();
     double titleTimer = 0;
+    float tickTime = 0;          // frame time not yet simulated, < kTick between frames
+    bool interactQueued = false;  // E pressed, not yet seen by a step
     for (int frame = 0;; ++frame) {
         if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) {  // don't spin or count frames while hidden
             for (SDL_Event e; SDL_WaitEventTimeout(&e, 100);)
@@ -240,9 +243,12 @@ static int run(SDL_Window* window, const Options& opt) {
             continue;
         }
         uint64_t now = SDL_GetTicksNS();
-        float dt = float(double(now - last) * 1e-9);
+        float realDt = float(double(now - last) * 1e-9);
         last = now;
-        if (frame > 0) frameMs.push_back(dt * 1000.0);
+        if (frame > 0) frameMs.push_back(realDt * 1000.0);
+        // Game time this frame. A benchmark frame is exactly one tick, so a run (path, camera,
+        // screenshot) is the same on every machine and at any frame rate.
+        float dt = benchmark ? kTick : realDt;
 
         SimInput sim;
         for (SDL_Event e; SDL_PollEvent(&e);) {
@@ -265,7 +271,7 @@ static int run(SDL_Window* window, const Options& opt) {
                     bagsOpen = !bagsOpen;
                     updateMouseMode();
                 } else if (e.key.key == SDLK_E) {  // loot a corpse, else talk
-                    sim.interact = true;
+                    interactQueued = true;
                 } else if (e.key.key == SDLK_TAB) {
                     setEditing(!editor.active);
                 } else if (editor.active && e.key.key == SDLK_Q) {
@@ -315,28 +321,42 @@ static int run(SDL_Window* window, const Options& opt) {
         in.jump = key(SDL_SCANCODE_SPACE);
         in.run = key(SDL_SCANCODE_LSHIFT);
         in.descend = key(SDL_SCANCODE_LCTRL);
-        double elapsed = session.elapsed + dt;  // after this step
-        if (benchmark) in.move = {std::sin(elapsed * 0.4), std::cos(elapsed * 0.4)};  // walk a circle
         if ((SDL_GetModState() & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) && (key(SDL_SCANCODE_Z) || key(SDL_SCANCODE_Y) || key(SDL_SCANCODE_S)))
             in = {};  // a shortcut (Ctrl+S) isn't movement
-        if (benchmark) player.health = float(maxHealth(player.stats));  // a passing fight mustn't change the benchmark's path
         // Left mouse attacks toward where the camera looks; holding it keeps swinging.
         // A press that began in a window (e.g. a drag) doesn't attack once the window closes.
         if (menus()) punchQueued = pressInGame = false;
         bool punchHeld = pressInGame && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK);
         sim.aim = forward;
-        sim.attack = punchHeld || punchQueued;
         sim.editing = editor.active;
         sim.timeRate = benchmark ? 0 : key(SDL_SCANCODE_T) ? 60.0f : 1.0f;
-        StepResult stepped = step(session, sim, dt);
-        if (stepped.attacked) punchQueued = false;
-        if (stepped.respawned) camTarget = player.pos + glm::vec3(0, 1.4f, 0);
+        // Fixed 60 Hz simulation (ADR-017): as many ticks as the frame time covers, at most 0.25 s
+        // worth after a stall. A click or E press is held until one tick takes it.
+        tickTime += std::min(dt, 0.25f);
+        bool respawned = false;
+        ui.ticks = 0;
+        for (; tickTime >= kTick; tickTime -= kTick, ++ui.ticks) {
+            if (benchmark) {
+                double t = session.elapsed + kTick;  // after this tick
+                in.move = {std::sin(t * 0.4), std::cos(t * 0.4)};  // walk a circle
+                player.health = float(maxHealth(player.stats));  // a passing fight mustn't change the benchmark's path
+            }
+            sim.attack = punchHeld || punchQueued;
+            sim.interact = interactQueued;
+            StepResult stepped = step(session, sim, kTick);
+            if (stepped.attacked) punchQueued = false;
+            interactQueued = false;
+            respawned |= stepped.respawned;
+        }
+        float alpha = ui.tickAlpha = tickTime / kTick;  // how far into the next tick this frame is drawn
+        glm::vec3 drawnAt = drawPos(player, alpha);
+        if (respawned) camTarget = drawnAt + glm::vec3(0, 1.4f, 0);
 
         if (benchmark && !opt.fixedLook) camYaw -= dt * 0.5f;  // counter-orbit so the benchmark sees the player from all sides
 
         // Third-person orbit camera. A camera-sized box is marched out from the player; the camera
         // snaps in when terrain is in the way and eases back out so it doesn't pop.
-        camTarget += (player.pos + glm::vec3(0, 1.4f, 0) - camTarget) * (1 - std::exp(-15 * dt));
+        camTarget += (drawnAt + glm::vec3(0, 1.4f, 0) - camTarget) * (1 - std::exp(-15 * dt));
         glm::vec3 offset{std::sin(camYaw) * std::cos(camPitch), std::sin(camPitch), std::cos(camYaw) * std::cos(camPitch)};
         bool collide = game.cameraCollision && !player.tuning.noclip;
         float clear = collide ? cameraClearance(world, camTarget, offset, game.cameraDistance, kCameraRadius)
@@ -413,7 +433,7 @@ static int run(SDL_Window* window, const Options& opt) {
         }
         auto pushModel = [&](const Player& body, Model model) {  // with whatever it holds
             glm::mat4 held(0);
-            fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held)});
+            fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held, alpha)});
             if (held == glm::mat4(0)) return;
             ModelInstance weapon;
             weapon.parts.fill(heldModel(body.weapon()));
@@ -472,10 +492,10 @@ static int run(SDL_Window* window, const Options& opt) {
         const Marker* region = session.regionId && inRegion != markers.end() ? &*inRegion : nullptr;
         ui.region = region ? region->name.c_str() : nullptr;
         bool wasOpen = menus();
-        ui.begin(dt, wasOpen);
+        ui.begin(realDt, wasOpen);
         if (game.hud) {
             const Entity* target = lootTarget(entities, player);
-            drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player));
+            drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player), alpha);
             drawPlaces(fp.view, fp.fovY, player, markers, region, float(session.elapsed - session.regionSince));
         }
         drawEditorOverlay(fp.view, fp.fovY, fp.eye, world, instances, markers, editor, aim);
@@ -547,13 +567,13 @@ static int run(SDL_Window* window, const Options& opt) {
         }
         actions = {};
 
-        titleTimer += dt;
+        titleTimer += realDt;
         if (titleTimer > 0.5) {
             titleTimer = 0;
             int minutes = int(session.timeOfDay * 24 * 60);
             char title[224];
             std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack | E = talk/loot | C = character | B = bags | . = debug | Tab = editor",
-                          dt * 1000.0, 1.0 / std::max(dt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);
+                          realDt * 1000.0, 1.0 / std::max(realDt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);
             SDL_SetWindowTitle(window, title);
         }
         if (lastFrame) break;

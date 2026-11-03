@@ -131,9 +131,9 @@ Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 fa
     e.body.tuning.runSpeed = t.chaseSpeed;
     e.body.inv.equipped[SlotMainHand] = t.weapon;
     e.body.breathPhase = kTau * rand01(e.rng);
-    e.body.pos = e.home = pos;
     glm::vec2 toFace = xz(face) - xz(pos);
     if (glm::length(toFace) > 0.01f) e.body.yaw = std::atan2(toFace.x, toFace.y);
+    e.body.teleport(e.home = pos);
     return e;
 }
 
@@ -417,7 +417,7 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
         if (lands(e.body) && inReach(e.body, player.pos) && hurt(player, roll(e.body, e.level, player, armorK, rng)))
             e.body.combatTimer = kCombatSeconds;
         if (!e.body.alive() && e.body.deadTime >= e.type().respawnSeconds) {  // back home, fully healed
-            e.body.pos = e.home;
+            e.body.teleport(e.home);
             e.body.vel = {};
             e.body.health = float(maxHealth(e.body.stats));
             e.body.deadTime = 0;

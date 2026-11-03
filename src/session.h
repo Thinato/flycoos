@@ -6,6 +6,7 @@
 #include "entity.h"
 
 constexpr float kDayLength = 4320;  // seconds per full day/night cycle (72 minutes)
+constexpr float kTick = 1 / 60.0f;  // seconds per step(); see docs/DECISIONS.md, ADR-017
 
 // The simulation state: the world and everything that lives in it. main.cpp keeps the window,
 // camera, renderer, UI and editor around it and drives it with step().
@@ -44,7 +45,7 @@ struct StepResult {
 void startSession(Session& s);
 // Back at the player spawn with full health, out of combat.
 void respawnPlayer(Session& s);
-// Advances the simulation by `dt` seconds: interaction, the player's swing and movement, NPCs and
+// Advances the simulation by `dt` seconds (the game always passes kTick): interaction, the player's swing and movement, NPCs and
 // combat (paused while editing), the time of day, and which region the player is in. A player
 // knocked out for kPlayerRespawnSeconds gets back up first.
 StepResult step(Session& s, const SimInput& in, float dt);

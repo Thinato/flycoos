@@ -14,7 +14,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
    │                                          Renderer::uploadWorld()
    │                                             └─ parallelFor(chunks) ─► meshRegion() ─► packed quads ─► GPU storage buffers
    │
-   ├─ loop: events ─► Input ─► updatePlayer() ─► posePlayer() ─► camera ─► Renderer::render()
+   ├─ loop: events ─► SimInput ─► step() × N (fixed 60 Hz) ─► poseModel(alpha) ─► camera ─► Renderer::render()
    │
    ├─ editor (Tab): raycast() ─► applyEdit() / undoEdit() / redoEdit() ─► dirty Box ─► Renderer::updateWorld()
    │                saveWorld() on Ctrl+S
@@ -35,7 +35,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO, `Quad` packing/unpacking |
 | `src/player.h/.cpp` | Walking-body physics and collision (player and NPCs), character models (`buildPart`), procedural animation (`poseModel`) |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits and temper, spawning (`syncSpawns` from spawn markers, `defaultMarkers`), wander and chase AI, talking, damage both ways, loot |
-| `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in); `startSession` (starting gear, spawns), `step(Session&, SimInput, dt)` (interaction, swing, movement, NPCs and combat, time of day, region enter, the knocked-out player's respawn) |
+| `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in); `startSession` (starting gear, spawns), `step(Session&, SimInput, dt)` (one `kTick`: interaction, swing, movement, NPCs and combat, time of day, region enter, the knocked-out player's respawn) |
 | `src/item.h/.cpp` | Item table, `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, poi labels and the region name (`drawPlaces`) |
@@ -379,6 +379,26 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   sky.
 - **Water:** the top surface is lowered by 0.12, with Fresnel sky reflection and a sun specular
   highlight.
+
+## Simulation tick (ADR-017)
+
+- `step()` runs at a fixed 60 Hz (`kTick`). Each frame adds its frame time, clamped to 0.25 s, to an
+  accumulator and runs as many ticks as it covers: 0 on a fast frame, 2+ on a slow one. After a
+  long stall the game slows down instead of spiralling.
+- Every tick first copies each body's `pos`/`yaw` into `prevPos`/`prevYaw`. A frame draws models,
+  nameplates, damage numbers and the camera target at `drawPos`/`drawYaw`: `alpha` (the leftover
+  accumulator / `kTick`) of the way from the previous tick to the current one, yaw the short way
+  round. So the picture lags the simulation by at most one tick (17 ms). `teleport()` (spawns,
+  respawns, the editor's fly-to) sets both, so a jump is never drawn as a slide.
+- A click or an E press is held until a tick takes it: never lost on a 0-tick frame, never doubled
+  on a 2-tick one. Held keys (movement, a held attack) apply to every tick of the frame.
+- On frame time: the camera's smoothing and orbit, editor brushes, the command mailbox, HUD layout
+  and UI. Animation timers (gait, punches, breathing, falls, damage-number rise, balloon fades) live
+  in the bodies and advance per tick.
+- Benchmarks (`--frames`) add exactly one tick per frame, of both game and camera time, so a run
+  walks the same path and takes the same screenshot on any machine. Frame-time stats still use the
+  real clock.
+- The debug window's Stats tab shows the ticks run this frame and the alpha.
 
 ## Player and animation
 

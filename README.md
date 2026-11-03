@@ -239,7 +239,7 @@ unless a text field has focus.
 | `--world PATH` | World file: load it if it exists, otherwise generate from `--seed`; the editor saves here |
 | `--seed N` | World seed (default 1337) |
 | `--time T` | Start time of day, 0..1 (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset) |
-| `--frames N` | Benchmark: the player walks a circle and the camera orbits; exits after N frames and prints frame-time stats. Vsync is off. |
+| `--frames N` | Benchmark: the player walks a circle and the camera orbits; exits after N frames and prints frame-time stats. Vsync is off. Each frame is exactly one 60 Hz tick of game time, so a run is the same at any frame rate. |
 | `--screenshot out.bmp` | With `--frames`: save the last frame as a BMP |
 | `--look YAW PITCH` | With `--frames`: fixed camera angles in degrees instead of the orbit (yaw 0 looks toward −Z, −90 toward +X; negative pitch looks up) |
 | `--debug` | Start with the debug window open (it's also captured by `--screenshot`) |

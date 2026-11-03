@@ -369,3 +369,38 @@
     no total cap.
   - Once the player can level up, these foes need retuning (the fight test will say by how much).
   - Lower stats than their levels suggest: a level-3 chief has less health than a level-2 bandit.
+
+## ADR-017: A fixed 60 Hz simulation tick with interpolated drawing
+
+- **Status:** accepted (2026-11-03)
+- **Context:** `step()` took the frame's variable `dt`. Fights, AI and physics then differ with the
+  frame rate, and a replay or scripted test can't reproduce a play session. Quests, saves and
+  balance tests (ADR-016's fight test) need "N ticks of input X → exact state".
+- **Decision:**
+  - The game calls `step(session, input, kTick)` with `kTick` = 1/60 s, as many times per frame as
+    an accumulator of frame time covers. Frame time is clamped to 0.25 s first, so a stall costs
+    at most 15 ticks.
+  - Bodies keep `prevPos`/`prevYaw`, copied at the start of each tick. Drawing (models, nameplates,
+    damage numbers, the camera target) interpolates by the accumulator's leftover fraction.
+    `Player::teleport()` sets both for moves that mustn't be drawn as a slide.
+  - One-shot inputs (attack click, E) are latched in `main.cpp` until a tick consumes them.
+  - Camera smoothing, editor brushes, the command mailbox (ADR-013) and the UI stay on frame time.
+    Animation state stays inside the bodies and so advances per tick.
+  - Benchmarks run exactly one tick per frame (game and camera), so runs are deterministic and
+    comparable across machines and builds.
+- **Alternatives considered:**
+  - Variable `dt` with a cap: simple, but nothing is reproducible, and fast frames (e.g. 1000 Hz)
+    stress the physics edge cases.
+  - Fixed tick without interpolation: at 120 Hz displays every other frame repeats, which reads
+    as judder.
+  - Extrapolating from velocity instead of interpolating: no lag, but overshoots on every stop,
+    hit and wall.
+  - 30 Hz or 120 Hz: 30 shows in the punch timing (impact frames 33 ms apart); 120 doubles the cost
+    of AI and combat for NPC counts we want to grow.
+- **Consequences:**
+  - What's drawn trails the simulation by up to one tick (17 ms).
+  - Animation poses update at 60 Hz even on faster displays; only position and facing are smoothed.
+  - Below 4 fps the game runs slower than real time.
+  - Benchmark screenshots changed once: 300 frames now cover 5 s of game time at any frame rate.
+  - Anything that moves a body outside the simulation must use `teleport()`, or it may be drawn
+    partway for up to one tick.

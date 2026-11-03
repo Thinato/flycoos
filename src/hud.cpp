@@ -70,7 +70,7 @@ void damageNumber(ImDrawList* dl, const glm::mat4& viewProj, ImVec2 screen, glm:
 }  // namespace
 
 void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world, const Player& player,
-             const std::vector<Entity>& entities, const Entity* target) {
+             const std::vector<Entity>& entities, const Entity* target, float tickAlpha) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ImVec2 screen = ImGui::GetIO().DisplaySize;
     if (screen.x <= 0 || screen.y <= 0) return;
@@ -80,7 +80,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     for (const Entity& e : entities) {
         Model model = e.type().model;
         float top = model == ModelBoar ? 1.6f : model == ModelWolf ? 1.9f : model == ModelChief ? 2.8f : 2.5f;
-        glm::vec3 head = e.body.pos + glm::vec3(0, top, 0);  // above the model
+        glm::vec3 head = drawPos(e.body, tickAlpha) + glm::vec3(0, top, 0);  // above the model
         glm::vec3 toHead = head - eye;
         float dist = glm::length(toHead);
         glm::vec4 clip = viewProj * glm::vec4(head, 1);
@@ -111,7 +111,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         if (!speech && &e == target) hint(dl, p, alpha, e);
     }
 
-    damageNumber(dl, viewProj, screen, player.pos + glm::vec3(0, 2.2f, 0), player, {1, 0.3f, 0.25f});
+    damageNumber(dl, viewProj, screen, drawPos(player, tickAlpha) + glm::vec3(0, 2.2f, 0), player, {1, 0.3f, 0.25f});
     if (!player.alive()) {
         char msg[64];
         std::snprintf(msg, sizeof msg, "Knocked out - back on your feet in %.0f s",

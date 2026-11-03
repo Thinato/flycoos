@@ -8,7 +8,7 @@ void startSession(Session& s) {
     s.elapsed = 0;
     s.regionId = 0;
     s.regionSince = 0;
-    s.player.pos = playerSpawn(s.world, s.markers);
+    s.player.teleport(playerSpawn(s.world, s.markers));
     giveItem(s.player.inv, Shortsword);
     giveItem(s.player.inv, Satchel);
     syncSpawns(s.entities, s.world, s.markers, s.seed, s.player.pos);
@@ -17,7 +17,7 @@ void startSession(Session& s) {
 
 void respawnPlayer(Session& s) {
     Player& p = s.player;
-    p.pos = playerSpawn(s.world, s.markers);
+    p.teleport(playerSpawn(s.world, s.markers));
     p.vel = {};
     p.health = float(maxHealth(p.stats));
     p.deadTime = 0;
@@ -28,6 +28,8 @@ StepResult step(Session& s, const SimInput& in, float dt) {
     StepResult r;
     Player& p = s.player;
     s.elapsed += dt;
+    p.prevPos = p.pos, p.prevYaw = p.yaw;  // drawn from here to where this tick leaves them
+    for (Entity& e : s.entities) e.body.prevPos = e.body.pos, e.body.prevYaw = e.body.yaw;
     if (p.deadTime >= kPlayerRespawnSeconds) {
         respawnPlayer(s);
         r.respawned = true;

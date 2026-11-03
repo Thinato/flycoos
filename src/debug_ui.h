@@ -44,6 +44,8 @@ public:
 
     bool open = false;
     const char* region = nullptr;  // the name of the region the player is in (main sets it each frame)
+    int ticks = 0;                 // sim ticks this frame, and how far into the next one it's drawn (main sets them)
+    float tickAlpha = 0;
 
 private:
     void window(GameSettings& game, RenderSettings& render, Session& session,

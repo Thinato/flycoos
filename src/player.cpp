@@ -426,7 +426,7 @@ static void animateBoar(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 
     off[Torso].z += 1.0f * g;
 }
 
-std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held) {
+std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held, float alpha) {
     bool armed = model != ModelDummy && !quadruped(model) && p.weapon() != NoItem;
     const PartSpec* parts = specs(model);
     glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
@@ -450,8 +450,8 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         }
     }
 
-    glm::mat4 base = glm::translate(glm::mat4(1), p.pos);
-    base = glm::rotate(base, p.yaw, {0, 1, 0});
+    glm::mat4 base = glm::translate(glm::mat4(1), drawPos(p, alpha));
+    base = glm::rotate(base, drawYaw(p, alpha), {0, 1, 0});
     // The chief is bigger and bulkier, the ghoul gaunt; only the drawing scales, not the body's box.
     glm::vec3 scale = model == ModelChief ? glm::vec3(1.25f, 1.12f, 1.25f) : model == ModelGhoul ? glm::vec3(0.82f, 1.06f, 0.82f) : glm::vec3(1);
     base = glm::scale(base, kVoxel * scale);
