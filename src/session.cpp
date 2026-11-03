@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 
 #include "defs.h"
 
@@ -50,7 +51,15 @@ StepResult step(Session& s, const SimInput& in, float dt) {
     if (!in.editing) {
         updateEntities(s.entities, s.world, p, dt);
         separate(p, s.world, s.entities);
+        int level = p.level;
+        auto skills = p.progress.skills;
         updateCombat(p, s.entities, dt, s.rng, s.armorK, &s.events);
+        for (size_t k = 0; k < skills.size(); ++k)  // progression news (ADR-027) for the HUD, like quest news
+            if (int now = p.progress.skills[k].level; now > skills[k].level && s.toasts.size() < 8)
+                s.toasts.emplace_back(-1, std::format("{} {}", skillDef(Skill(k)).name, now));
+        if (int points = talentPoints(p.progress, p.level); p.level > level && s.toasts.size() < 8)
+            s.toasts.emplace_back(-1, points == 1 ? std::format("Level {}! A talent point to spend (K)", p.level)
+                                                  : std::format("Level {}! {} talent points to spend (K)", p.level, points));
     }
     s.timeOfDay = std::fmod(s.timeOfDay + dt / kDayLength * s.timeScale * in.timeRate, 1.0f);
     if (std::ranges::any_of(s.markers, [](const Marker& m) { return m.activeFrom != m.activeTo; }))  // timed spawns come and go

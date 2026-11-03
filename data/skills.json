@@ -1,0 +1,8 @@
+[
+  {"id": "one_handed", "name": "One-Handed", "use_mult": 1, "improve_mult": 1, "improve_offset": 200,
+   "per_level": [{"stat": "damage", "increased": 0.02, "with": "one_handed"}]},
+  {"id": "unarmed", "name": "Unarmed", "use_mult": 3, "improve_mult": 1, "improve_offset": 200,
+   "per_level": [{"stat": "damage", "increased": 0.03, "with": "unarmed"}]},
+  {"id": "armor", "name": "Armor", "use_mult": 2, "improve_mult": 1, "improve_offset": 200,
+   "per_level": [{"stat": "armor", "increased": 0.02}]}
+]

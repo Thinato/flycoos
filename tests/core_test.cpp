@@ -4249,7 +4249,8 @@ static void quests() {
     }
 
     // Data: a quest exercising every trigger, the drain order and the loader's checks, in a scratch data folder.
-    for (const char* f : {"items.json", "creatures.json"}) fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / f, dir / f);
+    for (const char* f : {"items.json", "creatures.json", "skills.json", "talents.json"})
+        fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / f, dir / f);
     std::string error;
     auto load = [&](std::string_view quest, Defs& d) {
         std::ofstream(dir / "quests" / "a.json", std::ios::trunc) << quest;
@@ -4444,6 +4445,428 @@ static void conditions() {
     CHECK(is({.kind = C::Stage, .op = Cmp::Eq, .value = 0, .quest = 999}));
 }
 
+// Progression (ADR-027): Skyrim's formulas reproduced, skill and character XP from the one award on
+// the damage path and its anti-farm guards, talents (canLearn, their modifiers, respec), the
+// level-band fight invariant, the PROG save section and the data files.
+static void progression() {
+    namespace fs = std::filesystem;
+    // Skyrim's numbers from UESP (Skyrim:Leveling) first: the formulas with its constants.
+    int toLevel81 = 0;
+    for (int n = 1; n < 81; ++n) toLevel81 += levelXpToNext(n);
+    CHECK(toLevel81 == 87000 && levelXpTotal(81) == 87000 && levelXpTotal(1) == 0 && levelXpTotal(2) == 100);
+    auto skillChar = [](int from, int to) {  // character XP for raising one skill from..to
+        int n = 0;
+        for (int l = from + 1; l <= to; ++l) n += characterXpForSkill(l);
+        return n;
+    };
+    CHECK(skillChar(15, 100) == 4930);
+    // Its 18 skills (twelve start at 15, five at 20, one at 25) all at 100: 88,085 XP, the old level 81 cap.
+    int all = 12 * skillChar(15, 100) + 5 * skillChar(20, 100) + skillChar(25, 100);
+    CHECK(all == 88085);
+    Progress sky;
+    int skyLevel = 1;
+    CHECK(addCharacterXp(sky, skyLevel, all) == 80 && skyLevel == 81 && sky.xp == all - 87000);
+    double combat = 0, smithing = 0;  // XP to raise a skill 15 -> 100: combat (2, 0) 528,804, smithing (0.25, 300) 91,600
+    for (int l = 15; l < 100; ++l) combat += skillXpToNext(2, 0, l), smithing += skillXpToNext(0.25f, 300, l);
+    CHECK(std::abs(combat - 528804) < 2 && std::abs(smithing - 91600) < 2);
+
+    // flycoos' numbers (data/skills.json): a few sword levels and three character levels for Act 1.
+    const SkillDef &blade = skillDef(Skill::OneHanded), &fist = skillDef(Skill::Unarmed), &plate = skillDef(Skill::Armor);
+    CHECK(blade.name == "One-Handed" && fist.name == "Unarmed" && plate.name == "Armor");
+    Progress g;
+    int level = 1;
+    float first = skillXpToNext(blade.improveMult, blade.improveOffset, 1);
+    CHECK(addSkillXp(g, level, Skill::OneHanded, first - 1) == 0 && g.skills[0].level == 1);
+    CHECK(addSkillXp(g, level, Skill::OneHanded, 1) == 1 && g.skills[0].level == 2 && g.skills[0].xp == 0 && g.xp == 2);  // + its new level
+    CHECK(addSkillXp(g, level, Skill::OneHanded, -5) == 0 && addSkillXp(g, level, Skill::OneHanded, std::nanf("")) == 0);
+    CHECK(addCharacterXp(g, level, 98) == 1 && level == 2 && g.xp == 0 && talentPoints(g, level) == 1);
+    CHECK(addCharacterXp(g, level, 125 + 150) == 2 && level == 4 && g.xp == 0);  // 2 -> 3 costs 125, 3 -> 4 150
+    level = kMaxLevel - 1;
+    CHECK(addCharacterXp(g, level, 1 << 30) == 1 && level == kMaxLevel && g.xp == 0);  // capped
+    g.skills[0] = {kMaxSkill, 0};
+    CHECK(addSkillXp(g, level, Skill::OneHanded, 1e9f) == 0);
+    Progress big;  // a huge use stops at the cap, never loops forever
+    int bigLevel = 1;
+    CHECK(addSkillXp(big, bigLevel, Skill::Unarmed, 1e9f) == kMaxSkill - kMinSkill && big.skills[1].level == kMaxSkill && bigLevel > 10);
+
+    // The award on the damage path (awardHitXp): only attackable NPCs, base damage, wear per NPC.
+    Grid world = meadow();
+    auto one = [&](EntityKind kind) {
+        std::vector<Entity> es;
+        syncSpawns(es, world, {{.id = 1, .kind = MarkerKind::Spawn, .pos = {10.5f, 4, 10.5f}, .entity = kind}}, 1, {}, 0.5f);
+        return es.at(0);
+    };
+    Entity bandit = one(EntityKind::Bandit), dummy = one(EntityKind::TrainingDummy), villager = one(EntityKind::Villager);
+    Player hero;
+    hero.swingWeapon = Shortsword;
+    auto bladeXp = [&] { return hero.progress.skills[size_t(Skill::OneHanded)].xp; };
+    float sword = skillUseXp(blade.useMult, blade.useOffset, 8);  // the shortsword's 6-10 averages 8
+    awardHitXp(hero, bandit, true, false);
+    CHECK(bladeXp() == sword && bandit.xpWear == 1);
+    awardHitXp(hero, dummy, true, false);
+    CHECK(std::abs(bladeXp() - sword * (1 + kTrainingRate)) < 1e-4f);  // the dummy teaches at a quarter
+    awardHitXp(hero, villager, true, true);
+    CHECK(std::abs(bladeXp() - sword * (1 + kTrainingRate)) < 1e-4f && hero.progress.xp == 0 && villager.xpWear == 0);  // can't be hurt: nothing
+    // The final hit doesn't matter: strength, damage modifiers and talents earn no more per hit.
+    Player strong = hero;
+    strong.progress = {};
+    strong.stats.strength = 50;
+    strong.inv.equipped[SlotTrinket] = BoneCharm;
+    Entity fresh = one(EntityKind::Bandit);
+    awardHitXp(strong, fresh, true, false);
+    CHECK(strong.progress.skills[0].xp == sword);
+    Player puncher;  // a punch (1-4) is unarmed XP: use_mult x 2.5
+    Entity fresh2 = one(EntityKind::Bandit);
+    awardHitXp(puncher, fresh2, true, false);
+    CHECK(puncher.progress.skills[size_t(Skill::Unarmed)].xp == skillUseXp(fist.useMult, fist.useOffset, 2.5f) && puncher.progress.skills[0].xp == 0);
+    // The same target teaches less and less: halved after kXpWearHalving hits.
+    Player grinder;
+    grinder.swingWeapon = Shortsword;
+    Entity punchbag = one(EntityKind::Bandit);
+    std::vector<float> per;
+    for (int i = 0; i < 41; ++i) {
+        float before = grinder.progress.skills[0].xp + 1000 * float(grinder.progress.skills[0].level);
+        awardHitXp(grinder, punchbag, true, false);
+        per.push_back(grinder.progress.skills[0].xp + 1000 * float(grinder.progress.skills[0].level) - before);
+    }
+    CHECK(std::abs(per[20] - sword / 2) < 0.01f && std::abs(per[40] - sword / 4) < 0.01f && per[0] == sword);
+    // Kills: the creature's xp, once per kill (the default is 10 x level for hostile ones; the chief's is its own).
+    CHECK(bandit.type().xp == 20 && dummy.type().xp == 0 && villager.type().xp == 0 && typeOf(EntityKind::BanditChief).xp == 60);
+    Player killer;
+    Entity victim = one(EntityKind::Bandit);
+    awardHitXp(killer, victim, true, true);
+    CHECK(killer.progress.xp == 20);
+    awardHitXp(killer, dummy, true, true);
+    CHECK(killer.progress.xp == 20);
+    // Armor XP: from the NPC's hits, only while wearing armor, by its weapon's base damage (the knife's 3-6).
+    Player bare, armored;
+    armored.inv.equipped[SlotHead] = IronHelm;
+    Entity knifer = one(EntityKind::Bandit), knifer2 = one(EntityKind::Bandit);
+    knifer.body.swingWeapon = knifer2.body.swingWeapon = Knife;
+    awardHitXp(bare, knifer, false, false);
+    awardHitXp(armored, knifer2, false, false);
+    CHECK(bare.progress.skills[size_t(Skill::Armor)].xp == 0 && armored.progress.skills[size_t(Skill::Armor)].xp == skillUseXp(plate.useMult, plate.useOffset, 4.5f));
+    // Farming the dummy for ten minutes (it falls and gets back up every few seconds) barely moves Unarmed.
+    {
+        Player farmer;
+        farmer.pos = {14.5f, 4, 10.5f};
+        std::vector<Entity> es;
+        syncSpawns(es, world, {{.id = 1, .kind = MarkerKind::Spawn, .pos = {13.5f, 4, 10.5f}, .entity = EntityKind::TrainingDummy}}, 1, {}, 0.5f);
+        std::mt19937 rng(1);
+        int punches = 0;
+        for (int i = 0; i < 600 * 60; ++i) {
+            updateEntities(es, world, farmer, kTick);
+            punches += startPunch(farmer, {-1, 0});
+            updateCombat(farmer, es, kTick, rng);
+        }
+        const SkillLevel& u = farmer.progress.skills[size_t(Skill::Unarmed)];
+        float earned = u.xp + (u.level > 1 ? skillXpToNext(fist.improveMult, fist.improveOffset, 1) : 0);
+        float fullRate = float(punches) * skillUseXp(fist.useMult, fist.useOffset, 2.5f);
+        std::println("dummy farm: {} punches in 10 min, {:.0f} unarmed XP ({:.1f}% of full rate), level {}", punches, earned,
+                     100 * earned / fullRate, u.level);
+        CHECK(punches > 500 && u.level <= 2 && earned < 0.05f * fullRate && farmer.progress.xp < 5);
+    }
+
+    // Talents: canLearn's rules, one at a time.
+    const Defs& d = defs();
+    auto id = [&](const char* name) { return size_t(d.talentById.at(name)); };
+    size_t keen = id("keen_edge"), quick = id("quick_wrist"), steady = id("steady_hand"), deep = id("deep_cuts"), worn = id("worn_in");
+    const char* why = nullptr;
+    Progress t;
+    CHECK(!canLearn(t, 1, keen, &why) && std::string_view(why).starts_with("no talent point"));
+    CHECK(!canLearn(t, 1, steady, &why) && std::string_view(why).starts_with("needs more points"));  // the rules before the budget
+    CHECK(canLearn(t, 2, keen, &why) && !why && learn(t, 2, keen) && rank(t, keen) == 1 && talentPoints(t, 2) == 0 && !learn(t, 2, keen));
+    CHECK(!canLearn(t, 20, steady, &why) && std::string_view(why).starts_with("needs more points"));  // tier 1: 3 points in the tree
+    CHECK(learn(t, 20, quick) && !canLearn(t, 20, steady) && learn(t, 20, worn) && !canLearn(t, 20, steady));  // armor points don't count
+    CHECK(learn(t, 20, keen) && canLearn(t, 20, steady) && pointsSpent(t, Skill::OneHanded) == 3 && pointsSpent(t, Skill::Armor) == 1);
+    CHECK(learn(t, 20, quick) && learn(t, 20, quick) && !canLearn(t, 20, quick, &why) && std::string_view(why) == "at its highest rank");
+    CHECK(pointsSpent(t, Skill::OneHanded) == 5 && learn(t, 20, steady) && pointsSpent(t, Skill::OneHanded) == 6);
+    CHECK(!canLearn(t, 20, deep, &why) && std::string_view(why).starts_with("needs its prerequisite"));  // keen_edge 2 of 5
+    while (learn(t, 20, keen)) {}
+    CHECK(rank(t, keen) == 5 && canLearn(t, 20, deep) && !canLearn(t, 20, d.talents.size()));
+    // Their modifiers go into the sheet; "with one_handed" ones only into sword hits, never the plain sheet.
+    Player fighter;
+    fighter.inv.equipped[SlotMainHand] = Shortsword;
+    fighter.inv.equipped[SlotChest] = IronCuirass;
+    fighter.level = 4;
+    StatSheet plain = sheet(fighter), withBlade = sheet(fighter, Skill::OneHanded);
+    CHECK(plain.v == withBlade.v);
+    CHECK(learn(fighter.progress, 4, keen) && learn(fighter.progress, 4, keen) && learn(fighter.progress, 4, worn));
+    CHECK(std::abs(sheet(fighter, Skill::OneHanded)[Stat::Damage] - 1.06f) < 1e-5f && sheet(fighter)[Stat::Damage] == 1 &&
+          sheet(fighter, Skill::Unarmed)[Stat::Damage] == 1);
+    CHECK(std::abs(sheet(fighter)[Stat::Armor] - 12 * 1.04f) < 1e-4f);
+    fighter.progress.skills[size_t(Skill::OneHanded)].level = 6;  // +2% per level gained: 1 + 0.06 + 0.10
+    CHECK(std::abs(sheet(fighter, Skill::OneHanded)[Stat::Damage] - 1.16f) < 1e-5f);
+    {  // a rank above the max (data lowered it since) counts as the max
+        Player over = fighter;
+        over.progress.talents.assign(d.talents.size(), 0);
+        over.progress.talents[keen] = 9;
+        CHECK(std::abs(sheet(over, Skill::OneHanded)[Stat::Damage] - (1.15f + 0.10f)) < 1e-5f);  // 5 x 3%, + 2% x 5 levels
+    }
+    bool sourced = false;
+    for (const Modifier& m : collect(fighter)) sourced |= std::string_view(m.source) == "Keen Edge" && m.with == Skill::OneHanded;
+    CHECK(sourced);
+    {  // resolveHit reads them through the swing's weapon: a fixed 8 roll, 2 strength, +16%
+        Player a = fighter, b;
+        a.swingWeapon = Shortsword;
+        std::mt19937 rng(1);
+        CHECK(resolveHit(a, b, Attack{8, 8, 1}, {rng}) == 12);  // 10 x 1.16 = 11.6
+        a.swingWeapon = NoItem;  // a punch: none of the blade's
+        CHECK(resolveHit(a, b, Attack{8, 8, 1}, {rng}) == 10);
+    }
+    fighter.progress.skills = {};
+    respec(fighter.progress);
+    CHECK(sheet(fighter).v == plain.v && sheet(fighter, Skill::OneHanded).v == withBlade.v && talentPoints(fighter.progress, 4) == 3);
+
+    // Level band: a level-N player in the Iron set with the sword, its N - 1 points in the blade tree
+    // and the skills clearing Act 1 gives at that pace (level 4: about One-Handed 6, Armor 5), against
+    // each fighter of level N (wolf and boar 1, bandit 2, chief and ghoul 3, guard 4). Time to kill both
+    // ways: swings x the time between them (the player's swing time; an NPC's swing time, or its
+    // windup + recover + cooldown if longer). NPCs wear no armor yet, so the player's level pierces
+    // nothing; this pins the band for when gear tiers and armored NPCs come.
+    for (size_t k = 0; k < d.creatures.size(); ++k) {
+        const EntityType& foe = d.creatures[k];
+        if (foe.temper == Temper::Harmless || !foe.attackable) continue;
+        Player p;
+        for (ItemId item : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, Shortsword}) p.inv.equipped[itemType(item).slot] = item;
+        p.swingWeapon = Shortsword;
+        p.level = foe.level;
+        p.progress.skills[size_t(Skill::OneHanded)].level = 1 + 5 * (foe.level - 1) / 3;
+        p.progress.skills[size_t(Skill::Armor)].level = 1 + 4 * (foe.level - 1) / 3;
+        for (size_t tl = 0; tl < d.talents.size(); ++tl)
+            while (d.talents[tl].tree == Skill::OneHanded && learn(p.progress, p.level, tl)) {}
+        CHECK(talentPoints(p.progress, p.level) == 0);
+        Player npc;
+        npc.stats = foe.stats, npc.level = foe.level, npc.swingWeapon = npc.inv.equipped[SlotMainHand] = foe.weapon;
+        std::mt19937 rng(7);
+        double dealt = 0, taken = 0;
+        for (int i = 0; i < 2000; ++i) dealt += resolveHit(p, npc, weaponAttack(Shortsword), {rng}), taken += resolveHit(npc, p, weaponAttack(foe.weapon), {rng});
+        int toKill = int(std::ceil(maxHealth(sheet(npc)) / (dealt / 2000))), toDown = int(std::ceil(maxHealth(sheet(p)) / (taken / 2000)));
+        float killTime = float(toKill) * swingTime(sheet(p, Skill::OneHanded), weaponAttack(Shortsword));
+        float downTime = float(toDown) * std::max(swingTime(sheet(npc, skillOf(foe.weapon)), weaponAttack(foe.weapon)), foe.windup + foe.recover + foe.cooldown);
+        std::println("level band: level {} {}: {} swings ({:.1f} s) to kill it, it needs {} ({:.1f} s) to down the player", foe.level,
+                     d.creatureIds[k], toKill, killTime, toDown, downTime);
+        CHECK(toKill >= 6 && toKill <= 16);  // never a one-shot, never a slog
+        // A same-level fight alone is won. The exception: guards are the village's watch, meant to be
+        // tougher than anything a player of their level should take on (passive: they never start it).
+        if (d.creatureIds[k] == "guard") CHECK(downTime < killTime && foe.temper == Temper::Passive);
+        else CHECK(downTime > killTime);
+    }
+    // Kill XP wears too: killing the same respawning guard again and again gives less each time.
+    {
+        Player slayer;
+        slayer.swingWeapon = Shortsword;
+        slayer.pos = {40.5f, 4, 40.5f};
+        slayer.progress.skills[0].level = kMaxSkill;  // no skill levels, so only the kill adds character XP
+        std::vector<Entity> gs;
+        syncSpawns(gs, world, {{.id = 1, .kind = MarkerKind::Spawn, .pos = {10.5f, 4, 10.5f}, .entity = EntityKind::Guard}}, 1, {}, 0.5f);
+        Entity& guard = gs.at(0);
+        std::mt19937 rng(1);
+        std::vector<int> kills;
+        for (int n = 0; n < 4; ++n) {
+            for (int hit = 0; hit < 14; ++hit) awardHitXp(slayer, guard, true, false);  // about what killing one takes
+            int before = slayer.progress.xp + 10000 * slayer.level;
+            CHECK(damage(guard, 10000));
+            awardHitXp(slayer, guard, true, true);
+            kills.push_back(slayer.progress.xp + 10000 * slayer.level - before);
+            updateCombat(slayer, gs, guard.type().respawnSeconds, rng);  // it gets back up; some wear fades
+            CHECK(guard.body.alive());
+        }
+        std::println("guard kills: {} {} {} {} XP (no wear: {})", kills[0], kills[1], kills[2], kills[3], guard.type().xp);
+        CHECK(kills[0] < guard.type().xp && kills[1] < kills[0] && kills[2] < kills[1] && kills[3] < kills[2] && kills[3] > 0);
+    }
+
+    // The PROG section: a round trip by string id, then unknown ids dropped with a note, bad ones rejected.
+    fs::path dir = fs::temp_directory_path() / "flycoos_progress_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    std::string path = (dir / "w.flys").string();
+    auto make = [&] {
+        Session s{.world = meadow(), .seed = 5};
+        s.markers = {{.id = 7, .kind = MarkerKind::Spawn, .pos = {40.5f, 4, 40.5f}, .entity = EntityKind::Guard, .count = 2}};
+        startSession(s);
+        return s;
+    };
+    Session a = make();
+    CHECK(a.entities.size() == 2);
+    a.entities[1].xpWear = 7.5f, a.entities[1].armorWear = 2.25f;
+    a.player.level = 5;
+    a.player.progress.xp = 37;
+    a.player.progress.skills = {SkillLevel{6, 12.5f}, SkillLevel{2, 0.25f}, SkillLevel{4, 99}};
+    CHECK(learn(a.player.progress, 5, keen) && learn(a.player.progress, 5, keen) && learn(a.player.progress, 5, worn));
+    CHECK(savePlayer(path.c_str(), a, "w.flyw", 1).empty());
+    Session b = make();
+    SaveReport r;
+    CHECK(loadPlayer(path.c_str(), b, 1, r).empty() && r.notes.empty());
+    const Progress &pa = a.player.progress, &pb = b.player.progress;
+    CHECK(b.player.level == 5 && pb.xp == 37 && rank(pb, keen) == 2 && rank(pb, worn) == 1 && pointsSpent(pb) == 3);
+    for (size_t k = 0; k < size_t(Skill::Count); ++k) CHECK(pb.skills[k].level == pa.skills[k].level && pb.skills[k].xp == pa.skills[k].xp);
+    CHECK(sheet(b.player, Skill::OneHanded).v == sheet(a.player, Skill::OneHanded).v);
+    // WEAR: by (marker id, slot), beside NPCS.
+    CHECK(b.entities.size() == 2 && b.entities[0].xpWear == 0 && b.entities[0].armorWear == 0);
+    CHECK(b.entities[1].slot == 1 && b.entities[1].xpWear == 7.5f && b.entities[1].armorWear == 2.25f);
+    // Crafted files: HEAD plus a PROG payload.
+    auto le = [](std::vector<uint8_t>& out, uint64_t v, int n) {
+        for (int i = 0; i < n; ++i) out.push_back(uint8_t(v >> (8 * i)));
+    };
+    auto str = [&](std::vector<uint8_t>& out, std::string_view v) {
+        le(out, v.size(), 1);
+        out.insert(out.end(), v.begin(), v.end());
+    };
+    auto craft = [&](const std::vector<uint8_t>& prog, const char* tag2 = "PROG") {
+        std::vector<uint8_t> out{'F', 'L', 'Y', 'S', 1, 0, 0, 0}, head{0};
+        le(head, 1, 4), le(head, 5, 4), le(head, std::bit_cast<uint64_t>(10.0), 8), le(head, std::bit_cast<uint32_t>(0.5f), 4);
+        for (auto [tag, payload] : {std::pair{"HEAD", head}, std::pair{tag2, prog}}) {
+            out.insert(out.end(), tag, tag + 4);
+            le(out, payload.size(), 8);
+            out.insert(out.end(), payload.begin(), payload.end());
+        }
+        le(out, fnv1a(out.data(), out.size()), 4);
+        std::string f = (dir / "crafted.flys").string();
+        fs::remove(f + ".bak");
+        std::ofstream(f, std::ios::binary | std::ios::trunc).write(reinterpret_cast<const char*>(out.data()), std::streamsize(out.size()));
+        return f;
+    };
+    auto prog = [&](std::vector<std::tuple<std::string, uint64_t, float>> skills, std::vector<std::pair<std::string, uint64_t>> talents,
+                    uint64_t xp = 0) {
+        std::vector<uint8_t> out;
+        le(out, xp, 4), le(out, skills.size(), 1);
+        for (auto& [sid, lvl, sxp] : skills) str(out, sid), le(out, lvl, 4), le(out, std::bit_cast<uint32_t>(sxp), 4);
+        le(out, talents.size(), 2);
+        for (auto& [tid, rk] : talents) str(out, tid), le(out, rk, 1);
+        return out;
+    };
+    Session c = make();
+    // Level 1 (no PLYR): a talent is over budget, so the talents reset; unknown ids are dropped; rank above max lowered.
+    CHECK(loadPlayer(craft(prog({{"one_handed", 3, 5}, {"archery", 9, 0}}, {{"keen_edge", 9}, {"juggling", 1}}, 7)).c_str(), c, 1, r).empty());
+    CHECK(c.player.progress.skills[0].level == 3 && c.player.progress.skills[0].xp == 5 && c.player.progress.xp == 7);
+    CHECK(pointsSpent(c.player.progress) == 0 && r.notes.size() == 4);  // archery, juggling, keen_edge 9 -> 5, then the reset
+    for (const std::string& n : r.notes) std::println("  progress note: {}", n);
+    for (auto bad : {prog({{"one_handed", 0, 0}}, {}), prog({{"one_handed", 101, 0}}, {}), prog({{"one_handed", 2, std::nanf("")}}, {}),
+                     prog({{"one_handed", 2, -1}}, {}), prog({{"one_handed", 2, 0}, {"one_handed", 3, 0}}, {}),
+                     prog({}, {{"keen_edge", 0}}), prog({}, {{"keen_edge", 1}, {"keen_edge", 1}}), prog({}, {{"", 1}})}) {
+        Session e = make();
+        e.player.level = 9;
+        CHECK(!loadPlayer(craft(bad).c_str(), e, 1, r).empty() && e.player.level == 9);  // rejected, untouched
+    }
+    // XP past the next level is lowered with a note (level 1: 100 to level 2; One-Handed 1: 201 to 2).
+    CHECK(loadPlayer(craft(prog({{"one_handed", 1, 500}}, {}, 150)).c_str(), c, 1, r).empty() && r.notes.size() == 2);
+    CHECK(c.player.progress.xp == 99 && c.player.progress.skills[0].xp < skillXpToNext(blade.improveMult, blade.improveOffset, 1) &&
+          c.player.progress.skills[0].xp > 200 && c.player.level == 1);
+    {  // ranks that break the rules (Deep Cuts without Keen Edge at its max), with points enough: reset
+        Session h = make();
+        h.player.level = 10;
+        h.player.progress.talents.assign(d.talents.size(), 0);
+        h.player.progress.talents[deep] = 1, h.player.progress.talents[quick] = 3, h.player.progress.talents[steady] = 3;
+        CHECK(savePlayer(path.c_str(), h, "w.flyw", 1).empty());
+        CHECK(loadPlayer(path.c_str(), b, 1, r).empty() && pointsSpent(b.player.progress) == 0 && r.notes.size() == 1);
+        h.player.progress.talents[deep] = 0;  // the same without it replays
+        CHECK(savePlayer(path.c_str(), h, "w.flyw", 1).empty());
+        CHECK(loadPlayer(path.c_str(), b, 1, r).empty() && pointsSpent(b.player.progress) == 6 && r.notes.empty());
+    }
+    auto wearOf = [&](std::vector<std::tuple<uint32_t, int, float, float>> es) {
+        std::vector<uint8_t> out;
+        le(out, es.size(), 4);
+        for (auto [m, sl, x, y] : es) le(out, m, 4), le(out, uint64_t(sl), 1), le(out, std::bit_cast<uint32_t>(x), 4), le(out, std::bit_cast<uint32_t>(y), 4);
+        return out;
+    };
+    CHECK(loadPlayer(craft(wearOf({{7, 0, 3, 1}, {99, 0, 5, 5}}), "WEAR").c_str(), c, 1, r).empty() && c.entities[0].xpWear == 3 &&
+          c.entities[0].armorWear == 1 && r.notes.empty());  // marker 99 has no NPC: dropped silently
+    for (auto bad : {wearOf({{7, 0, std::nanf(""), 0}}), wearOf({{7, 0, -1, 0}}), wearOf({{0, 0, 1, 0}}), wearOf({{7, 9, 1, 0}}),
+                     wearOf({{7, 0, 1, 0}, {7, 0, 2, 0}})})
+        CHECK(!loadPlayer(craft(bad, "WEAR").c_str(), c, 1, r).empty());
+    std::vector<uint8_t> shortWear = wearOf({{7, 0, 1, 1}});
+    shortWear.pop_back();
+    CHECK(loadPlayer(craft(shortWear, "WEAR").c_str(), c, 1, r) == "wear section size mismatch");
+    std::vector<uint8_t> cut = prog({{"one_handed", 2, 0}}, {});
+    cut.pop_back();
+    CHECK(loadPlayer(craft(cut).c_str(), c, 1, r) == "truncated progress");
+    cut = prog({}, {});
+    cut.push_back(0);
+    CHECK(loadPlayer(craft(cut).c_str(), c, 1, r) == "progress section size mismatch");
+
+    // A skill level and a level up show on the HUD (Session::toasts) from step().
+    {
+        Session s = make();
+        Marker boar{.id = 9, .kind = MarkerKind::Spawn, .pos = s.player.pos + glm::vec3(1.2f, 0, 0), .entity = EntityKind::Boar};
+        s.markers.push_back(boar);
+        syncSpawns(s.entities, s.world, s.markers, s.seed, s.player.pos, s.timeOfDay);
+        s.player.progress.skills[size_t(Skill::Unarmed)].xp = skillXpToNext(fist.improveMult, fist.improveOffset, 1) - 1;
+        s.player.progress.xp = 98;  // the new skill level's 2 XP levels the character
+        for (int i = 0; i < 60 && s.toasts.size() < 2; ++i) step(s, {.aim = {1, 0}, .attack = true}, kTick);
+        CHECK(s.toasts.size() == 2 && s.toasts[0].second == "Unarmed 2" && s.toasts[1].second == "Level 2! A talent point to spend (K)" &&
+              s.player.level == 2);
+        s.toasts.clear();  // two levels at once: the count
+        s.player.progress.skills[size_t(Skill::Unarmed)].xp = skillXpToNext(fist.improveMult, fist.improveOffset, 2) - 1;
+        s.player.progress.xp = levelXpToNext(2) + levelXpToNext(3) - 3;  // the skill's 3 XP crosses both
+        for (int i = 0; i < 120 && s.toasts.size() < 2; ++i) step(s, {.aim = {1, 0}, .attack = true}, kTick);
+        CHECK(s.toasts.size() == 2 && s.toasts[1].second == "Level 4! 3 talent points to spend (K)");
+    }
+
+    // The data files: skills.json and talents.json are optional; their mistakes name file, record and field.
+    fs::path data = dir / "data";
+    fs::create_directories(data);
+    for (const char* f : {"items.json", "creatures.json"}) fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / f, data / f);
+    Defs none;
+    std::string error;
+    CHECK(loadDefs(data, none, error) && none.talents.empty() && none.skills[0].name == "one_handed" && none.skills[0].useMult == 0);
+    CHECK(none.warnings.size() == 2 && none.warnings[0].ends_with("skills.json: missing: skills never improve"));
+    const std::string skills = R"([{"id": "one_handed", "name": "A", "use_mult": 1, "improve_mult": 1, "improve_offset": 10},
+                                   {"id": "unarmed", "name": "B", "use_mult": 1, "improve_mult": 1, "improve_offset": 10},
+                                   {"id": "armor", "name": "C", "use_mult": 1, "improve_mult": 1, "improve_offset": 10)";
+    const std::string talent = R"([{"id": "t", "name": "T", "tree": "armor", "tier": 0, "max_rank": 2, "per_rank": [{"stat": "armor", "flat": 1}]})";
+    auto attempt = [&](const std::string& sk, const std::string& tl, std::string_view want) {
+        std::ofstream(data / "skills.json") << sk;
+        std::ofstream(data / "talents.json") << tl;
+        Defs out;
+        bool ok = loadDefs(data, out, error);
+        if (want.empty()) {
+            CHECK(ok);
+            if (!ok) std::println(stderr, "FAIL progress data: {}", error);
+        } else {
+            CHECK(!ok && error.find(want) != std::string::npos);
+            if (ok || error.find(want) == std::string::npos) std::println(stderr, "FAIL want '{}', got '{}'", want, error);
+        }
+    };
+    attempt(skills + "}]", talent + "]", "");
+    for (auto [sk, tl, want] : std::initializer_list<std::tuple<std::string, std::string, std::string_view>>{
+             {skills + "}]", talent + R"(,{"id": "u", "name": "U", "tree": "armor", "tier": 1, "per_rank": [], "max_rank": 1}])", "'u': field 'per_rank': must add something"},
+             {skills + "}]", talent + R"(,{"id": "u", "name": "U", "tree": "bow", "tier": 1, "max_rank": 1}])", "'u': field 'tree': must be one of"},
+             {skills + "}]", talent + R"(,{"id": "u", "name": "U", "tree": "armor", "tier": 1, "max_rank": 0, "per_rank": [{"stat": "armor", "flat": 1}]}])", "field 'max_rank': 0 is out of range"},
+             {skills + "}]", talent + R"(,{"id": "u", "name": "U", "tree": "armor", "tier": 5, "max_rank": 1, "per_rank": [{"stat": "armor", "flat": 1}]}])", "field 'tier': 5 is out of range"},
+             {skills + "}]", talent + R"(,{"id": "u", "name": "U", "tree": "armor", "tier": 1, "max_rank": 1, "requires": "v", "per_rank": [{"stat": "armor", "flat": 1}]}])", "field 'requires': unknown talent \"v\""},
+             {skills + "}]", talent + R"(,{"id": "u", "name": "U", "tree": "armor", "tier": 0, "max_rank": 1, "requires": "t", "per_rank": [{"stat": "armor", "flat": 1}]}])", "'u': field 'requires': 't' must be in the same tree and a lower tier"},
+             {skills + "}]", talent + R"(,{"id": "u", "name": "U", "tree": "unarmed", "tier": 1, "max_rank": 1, "requires": "t", "per_rank": [{"stat": "armor", "flat": 1}]}])", "must be in the same tree"},
+             {skills + "}]", talent + R"(,{"id": "u", "name": "U", "tree": "armor", "tier": 1, "max_rank": 1}])", "'u': field 'per_rank': missing"},
+             {skills + "}]", talent + R"(,{"id": "u", "name": "U", "tree": "armor", "tier": 1, "max_rank": 1, "per_rank": [{"stat": "armor", "flat": 1, "with": "armor"}]}])", "field 'per_rank[0].with': must be a weapon skill"},
+             {skills + "}]", talent + R"(,{"id": "u", "name": "U", "tree": "armor", "tier": 1, "max_rank": 1, "per_rank": [{"stat": "armor", "flat": 1}], "cost": 2}])", "'u': field 'cost': unknown field"},
+             {skills + R"(},{"id": "archery", "name": "D", "use_mult": 1, "improve_mult": 1, "improve_offset": 10}])", talent + "]", "'archery': field 'id': must be one of one_handed, unarmed, armor"},
+             {skills.substr(0, skills.rfind(",\n")) + "]", talent + "]", "skills.json: no record for skill 'armor'"},
+             {skills + R"(, "improve_offset": 0}])", talent + "]", "duplicate key"},
+             {skills.substr(0, skills.rfind("\"improve_offset\"")) + R"("improve_offset": 0}])", talent + "]", "'armor': field 'improve_offset': 0 is out of range 1.."},
+             {skills.substr(0, skills.rfind("\"improve_offset\"")) + R"("improve_offset": 1, "per_level": [{"stat": "armor", "flat": 1, "with": "bow"}]}])", talent + "]", "field 'per_level[0].with': must be a weapon skill"},
+         })
+        attempt(sk, tl, want);
+    std::ofstream(data / "skills.json") << skills + "}]";
+    std::ofstream(data / "talents.json") << talent + "]";
+    {  // a creature's xp: in range, and only on one that can be killed
+        std::ostringstream text;
+        text << std::ifstream(data / "creatures.json").rdbuf();
+        std::string creatures = text.str();
+        auto withXp = [&](std::string_view where, std::string_view xp) {
+            std::string c = creatures;
+            c.insert(c.find(where) + where.size(), xp);
+            std::ofstream(data / "creatures.json") << c;
+            Defs out;
+            return loadDefs(data, out, error) ? std::string() : error;
+        };
+        CHECK(withXp(R"("id": "villager", "save_id": 1,)", R"( "xp": 5,)").find("'villager': field 'xp': a creature that can't be hurt") != std::string::npos);
+        CHECK(withXp(R"("id": "wolf", "save_id": 4,)", R"( "xp": -1,)").find("'wolf': field 'xp': -1 is out of range") != std::string::npos);
+        CHECK(withXp(R"("id": "wolf", "save_id": 4,)", R"( "xp": 0,)").empty());
+    }
+    fs::remove_all(dir);
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -4493,6 +4916,7 @@ int main() {
     playerSaves();
     quests();
     conditions();
+    progression();
     std::error_code ec;
     std::filesystem::remove_all(tmp, ec);
     if (failures) std::println(stderr, "{} check(s) failed", failures);

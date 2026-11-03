@@ -37,22 +37,23 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`), `fillLight` (whole world) and `relight` (the columns around an edit; returns the box whose light changed), `lightCost`/`emission` per block |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
-| `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (base stats, level, health, swing and damage timers, `Inventory`); `collect`/`sheet` (its modifiers and final stats); walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
-| `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch` |
+| `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (base stats, level, health, swing and damage timers, `Inventory`); `Progress`; `collect`/`sheet` (its modifiers and final stats, optionally with a weapon skill's conditional modifiers), `skillOf`; walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
+| `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch`; `Skill` and the progression formulas (skill XP per use and per level, character XP and level costs, default kill XP; ADR-027) |
+| `src/progress.h/.cpp` | Progression (ADR-027): `SkillDef`/`TalentDef` (filled by the loader), `Progress` (character XP, skill levels, talent ranks), `addSkillXp`/`addCharacterXp`, `canLearn`/`learn`/`respec`, `talentPoints`, `progressModifiers` (what `collect` adds) |
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
-| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), talking, damage both ways (`resolveHit`), loot |
-| `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the quest drain, the knocked-out player's respawn) |
-| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
+| `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the quest drain, the knocked-out player's respawn, skill and level-up toasts) |
+| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
 | `src/quest.h/.cpp` | Quests (ADR-026): `GameEvent` (`Killed`, `ItemCountChanged`, `TalkedTo`, `RegionEntered`), the quest data types the loader fills (`QuestDef`, `Stage`, `Trigger`, `Action`, `Condition`, `QuestLine`), `QuestState`; `updateQuests` (the once-per-tick drain), `setQuestStage`/`resetQuest(s)`, the condition evaluator (`passes`, `passesAll`, `pickLine`), `countItem`, `checkQuestMarkers` |
 | `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` and `data/quests/*.json` (records by string id, `copy_from`, field and range checks, quest references resolved to handles, warnings), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
-| `src/inventory_ui.h/.cpp` | In-game Character (C), Bags (B) and Journal (J) windows: slots, drag and drop, right-click equip, tooltips, attributes; quests with the current entry and checked objectives |
+| `src/inventory_ui.h/.cpp` | In-game Character (C), Bags (B), Journal (J) and Progress (K) windows: slots, drag and drop, right-click equip, tooltips, attributes; quests with the current entry and checked objectives; level, skills and the talent trees |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, poi labels and the region name (`drawPlaces`) |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, the world's `Light` (filled by `uploadWorld`, relit by `updateWorld`), uploads of the core's chunk and model meshes, render targets, frustum culling, day/night lighting, screenshots |
 | `src/text.h` | `validName`: UTF-8 display text without control, bidi or zero-width characters (marker names and lines, item names) |
 | `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh, light and remesh times, light memory), for the debug and editor UIs without `renderer.h` |
 | `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
-| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Quests, Data, Camera, World, Save, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
+| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Progression, Items, Entities, Quests, Data, Camera, World, Save, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor) into `SimInput`, orbit camera, main loop around `step`, remote commands, benchmark stats |
 | `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs` |
 
@@ -189,6 +190,16 @@ u32 FNV-1a checksum of every byte before it
   a stage it no longer has is kept with a note. `FLAG`: `u32 count` (≤ 4096), then per flag `u8
   length | name (1–48 bytes, checked like names) | i32 value`. Duplicate keys, unknown bits or states
   and stages above 65535 reject the file.
+- `PROG` (ADR-027): `u32 character XP` toward the next level (the level is `PLYR`'s) | `u8 skill
+  count`, each `u8 length | skill id | u32 level (1–100) | f32 XP toward the next (0–10⁹)` | `u16
+  talent count`, each `u8 length | talent id | u8 rank (≥ 1)`. By string id: an unknown skill or
+  talent is dropped with a note, a rank above the talent's max lowered with a note, and more points
+  spent than `level − 1` resets the talents with a note. Duplicate ids, rank 0 and out-of-range
+  levels or XP reject the file. XP at or past the next level's cost is lowered with a note, and the
+  ranks are replayed through `canLearn` tier by tier (any failure resets them with a note).
+- `WEAR` (ADR-027): `u32 count`, then per NPC with wear `u32 spawn marker id | u8 slot | f32 the
+  player's hits on it | f32 its hits on the player` (`Entity::xpWear`, `armorWear`; 0–10⁶). Keyed
+  like `NPCS` but apart from it, so `NPCS` keeps its layout; entries without their NPC are dropped.
 - Every new runtime state gets a section here and a round-trip test.
 
 ## Editing (`applyEdit`)
@@ -670,10 +681,34 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   (`kMaxArmorReduction`), × the defender's damage taken, rounded once and never below 1.
   `HitContext` carries the damage RNG and K. K (`kArmorK` = 40) is the armor that halves a level 1
   attacker's damage, and a slider in the debug Player tab (`Session::armorK`, passed to
-  `updateCombat`). The attacker level is `Combatant::level`: an NPC's kind's, the player's 1 for
-  now (a debug slider). The full Iron set (37 armor) takes 48% off a level 1 hit and 32% off a
+  `updateCombat`). The attacker level is `Combatant::level`: an NPC's kind's, the player's from
+  XP (ADR-027; a debug slider in the Progression tab). The full Iron set (37 armor) takes 48% off a level 1 hit and 32% off a
   level 2 hit: the bandit's knife does 3–5 instead of 5–8. Debug "Hit for 10" / "Kill" bypass
   it. The damage number shows what landed.
+- **Progression (ADR-027):** skills (`one_handed`, `unarmed`, `armor`; numbers in
+  `data/skills.json`) run 1..100 from 1. A use earns `use_mult × base XP + use_offset` skill XP;
+  L → L + 1 costs `improve_mult × L^1.95 + improve_offset`; each new skill level L adds L character
+  XP; level N → N + 1 costs `25 × (N + 3)`. Kills add the creature's `xp` (default `10 × level`
+  for hostile, attackable kinds; Hakon 60). Each level is one talent point (`level − 1 − spent`).
+  `awardHitXp` (entity.cpp), called by `updateCombat` after every landed swing either way, is the
+  only source of XP: attackable NPCs only, by the attack's *average base damage* (sword 8, punch
+  2.5, knife 4.5), the dummy at 25%, halved per 20 counted hits on the same NPC (`xpWear` for the
+  player's hits, `armorWear` for the NPC's; fading 1 per 10 s, saved in `WEAR`); armor XP only
+  while wearing armor. Kill XP takes the same `xpWear` factor.
+
+  | Skill | XP per use | Per level gained |
+  |---|---|---|
+  | One-Handed | 1 × base damage of a landed weapon hit | +2% damage with one-handed |
+  | Unarmed | 3 × base damage of a landed punch | +3% damage with unarmed |
+  | Armor | 2 × base damage of a hit taken in armor | +2% increased armor |
+
+  Skills (`per_level` × levels gained) and talents (`per_rank` × rank) are modifiers from
+  `collect()`. A modifier `with` a weapon skill counts only in `sheet(c, skill)`, which
+  `resolveHit` and `startPunch` call with `skillOf(swingWeapon)`; the plain sheet (health, regen,
+  UIs) never counts it. Talents (`data/talents.json`): one tree per skill, tier N needs 3 × N
+  points in its tree, `requires` a lower-tier talent of the tree at max rank, all in `canLearn`;
+  respec clears the ranks. The Progress window (K) spends points; the debug Progression tab grants
+  XP, sets level and skills, respecs and shows the formulas.
 - Left mouse starts an attack toward where the camera looks, once the swing timer allows. Holding
   keeps swinging; a click during the cooldown is queued. Damage lands at the fist's impact frame
   (40% into a 0.35 s animation) on the nearest living, attackable entity within 2 blocks and
@@ -758,6 +793,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   NPC a random villager name; flags default to false, ranges and speeds to 0; `weapon` (a main_hand
   item's id) and `loot` (any item's id) to none. `aggro_range` is for aggressive kinds only, a
   `loot_chance` needs `loot`, kinds that fight need a `chase_speed`, and stamina is at least 1. `copy_from` works as for items.
+  `xp` (0–100000, ADR-027) is the character XP for a kill: by default 10 × level for hostile,
+  attackable kinds and 0 for the rest; one that can't be hurt can't have any.
   The AI's numbers (ADR-020) are optional and only for kinds that fight: `leash_radius` (2..64,
   default 20), `reaggro_radius` (default 0.8 × leash, must be smaller), `reaggro_cooldown` (3 s),
   `give_up_seconds` (5), `attack_windup` (0.05..2 and under 0.4 × the kind's swing time, default

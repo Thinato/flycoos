@@ -17,6 +17,7 @@ std::vector<Modifier> collect(const Combatant& c) {
             out.push_back(m);
         }
     }
+    progressModifiers(c.progress, out);
     return out;
 }
 

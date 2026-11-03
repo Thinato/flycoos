@@ -50,6 +50,8 @@ The village also has two generic villagers (#2), a training dummy (#1) and boars
 
 **Balance:** a level-1 player in the Iron set with the Shortsword beats Hakon alone, or one pair of raiders, wolves or ghouls. Three at once is meant to be too much.
 
+**Progression (ADR-027):** kills give character XP (10 per creature level; Hakon 60), so clearing the act once (raiders, Hakon, wolves, boars, ghouls, about 380 XP) is about level 4: three talent points. Fighting with the sword the whole way is about One-Handed 6, and taking the hits in the Iron set about Armor 5. The training dummy teaches at a quarter and less the longer it's hit. Guards give XP too (40), but are a poor fight at level 1.
+
 ## Quest: Torvald's Helm (`data/quests/torvalds_helm.json`)
 The Act 1 quest, in the journal (J) once started. Its triggers and lines name the spawn markers
 Maren Holt (#12), Torvald (#13), Captain Brenna (#14) and Hakon the Red (#27); each name is unique

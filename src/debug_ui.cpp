@@ -1,6 +1,7 @@
 #include "debug_ui.h"
 
 #include <algorithm>
+#include <format>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -117,9 +118,10 @@ static void attributes(Player& b, bool fights) {
     ImGui::Text("Max health %d, regen %.1f/s out of combat", maxHealth(total), healthRegen(total));
     if (fights) {
         const Attack& a = mainAttack(b.inv);
-        float swing = swingTime(total, a);
-        int lo = hitBeforeArmor(total, a, a.minDamage), hi = hitBeforeArmor(total, a, a.maxDamage);
         ItemId weapon = b.inv.equipped[SlotMainHand];
+        StatSheet with = sheet(b, skillOf(weapon));  // the weapon skill's conditional modifiers too
+        float swing = swingTime(with, a);
+        int lo = hitBeforeArmor(with, a, a.minDamage), hi = hitBeforeArmor(with, a, a.maxDamage);
         ImGui::Text("%s %d-%d every %.2f s (%.1f damage/s)", weapon ? itemType(weapon).name : "Punch", lo, hi, swing,
                     float(lo + hi) / 2 / swing);
     }
@@ -147,14 +149,13 @@ static void statSheet(const Combatant& b) {
     std::vector<Modifier> mods = collect(b);
     if (mods.empty()) ImGui::TextDisabled("No modifiers");
     for (const Modifier& m : mods)
-        ImGui::BulletText("%s: %s %s %+g", m.source, kStatIds[size_t(m.stat)], kKinds[size_t(m.kind)], double(m.value));
+        ImGui::BulletText("%s: %s %s %+g%s%s", m.source, kStatIds[size_t(m.stat)], kKinds[size_t(m.kind)], double(m.value),
+                          m.with != Skill::Count ? " with " : "", m.with != Skill::Count ? kSkillIds[size_t(m.with)] : "");
     ImGui::TextDisabled("final = (base + flat) x (1 + increased) x (1 + more)...");
 }
 
 static void playerTab(Player& p, float& armorK, DebugActions& actions, const char* region) {
     attributes(p, true);
-    ImGui::SliderInt("Level", &p.level, 1, 60);
-    ImGui::SetItemTooltip("The attacker level of the player's hits in armor reduction (1 until progression).");
     ImGui::SeparatorText("Stat sheet");
     statSheet(p);
     ImGui::SeparatorText("Armor");
@@ -270,11 +271,52 @@ static void itemsTab(Player& p) {
     ImGui::SetItemTooltip("Removes every item, equipped ones and bags included.");
 }
 
+// Progression (ADR-027): grant XP, set the level and skills, respec, and the formulas' numbers now.
+static void progressionTab(Player& p) {
+    Progress& g = p.progress;
+    ImGui::Text("Level %d, %d / %d XP, %d talent points free (%d spent)", p.level, g.xp, levelXpToNext(p.level), talentPoints(g, p.level),
+                pointsSpent(g));
+    if (ImGui::SliderInt("Level", &p.level, 1, kMaxLevel)) g.xp = 0;
+    ImGui::SetItemTooltip("Also the attacker level of the player's hits in armor reduction. Lowering it below the talents spent leaves negative points.");
+    for (int xp : {50, 250, 1000}) {
+        ImGui::PushID(xp);
+        if (ImGui::Button(std::format("+{} XP", xp).c_str())) addCharacterXp(g, p.level, xp);
+        ImGui::PopID();
+        ImGui::SameLine();
+    }
+    if (ImGui::Button("Respec")) respec(g);
+    ImGui::SetItemTooltip("Clears every talent: their points are free again.");
+    ImGui::SeparatorText("Skills");
+    for (size_t k = 0; k < size_t(Skill::Count); ++k) {
+        const SkillDef& d = skillDef(Skill(k));
+        SkillLevel& sk = g.skills[k];
+        ImGui::PushID(int(k));
+        if (ImGui::SliderInt(d.name.c_str(), &sk.level, kMinSkill, kMaxSkill)) sk.xp = 0;
+        ImGui::SameLine();
+        if (ImGui::Button("+100 XP")) addSkillXp(g, p.level, Skill(k), 100);
+        ImGui::SetItemTooltip("As if used: levels it, and each level adds character XP.");
+        ImGui::TextDisabled("%.0f / %.0f to %d; per use %.4g x base XP + %.4g; per level gained:", double(sk.xp),
+                            double(skillXpToNext(d.improveMult, d.improveOffset, sk.level)), sk.level + 1, double(d.useMult), double(d.useOffset));
+        for (const Modifier& m : d.perLevel)
+            ImGui::SameLine(), ImGui::TextDisabled("%s %+g%s", kStatIds[size_t(m.stat)], double(m.value), m.kind == ModKind::Flat ? "" : " (fraction)");
+        ImGui::PopID();
+    }
+    ImGui::SeparatorText("Formulas");
+    const SkillDef &blade = skillDef(Skill::OneHanded), &fist = skillDef(Skill::Unarmed);
+    ImGui::Text("XP per hit before wear: sword %.1f, punch %.1f (training dummy x %.2f)",
+                double(skillUseXp(blade.useMult, blade.useOffset, (weaponAttack(Shortsword).minDamage + weaponAttack(Shortsword).maxDamage) / 2.0f)),
+                double(skillUseXp(fist.useMult, fist.useOffset, (kPunch.minDamage + kPunch.maxDamage) / 2.0f)), double(kTrainingRate));
+    ImGui::Text("Skill XP halves every %.0f hits on one NPC; one hit wears off per %.0f s", double(kXpWearHalving), double(kXpWearSeconds));
+    ImGui::Text("Level %d -> %d: %d XP; level %d in all: %d XP", p.level, p.level + 1, levelXpToNext(p.level), p.level, levelXpTotal(p.level));
+    ImGui::Text("Talent tiers: %d points spent in the tree per tier", kPointsPerTier);
+}
+
 // The UI runs between ticks, so the registry can be swapped right here.
-static void dataTab(std::string& status) {
+static void dataTab(std::string& status, Player& player) {
     if (ImGui::Button("Reload defs")) {
         std::string error;
         status = reloadDefs(dataDir(), error) ? "Reloaded " + dataDir().string() : "Kept the old defs: " + error;
+        if (error.empty() && !replayTalents(player.progress, player.level)) status += "; the talents no longer fit the rules: reset";
     }
     ImGui::SetItemTooltip("Reloads data/*.json. On an error, or if a loaded save id would change meaning, the old defs stay.");
     if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
@@ -302,8 +344,8 @@ static void dataTab(std::string& status) {
         ImGui::EndTable();
     }
     ImGui::SeparatorText("Creatures (data/creatures.json)");
-    if (ImGui::BeginTable("creatures", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
-        for (const char* h : {"save", "id", "lvl / hp", "temper", "weapon", "drops"}) ImGui::TableSetupColumn(h);
+    if (ImGui::BeginTable("creatures", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+        for (const char* h : {"save", "id", "lvl / hp", "temper", "weapon", "drops", "xp"}) ImGui::TableSetupColumn(h);
         ImGui::TableHeadersRow();
         for (size_t k = 0; k < d.creatures.size(); ++k) {
             const EntityType& t = d.creatures[k];
@@ -316,9 +358,14 @@ static void dataTab(std::string& status) {
             ImGui::TableNextColumn(), ImGui::TextUnformatted(t.weapon ? itemType(t.weapon).name : "-");
             ImGui::TableNextColumn();
             if (t.loot) ImGui::Text("%s %.0f%%", itemType(t.loot).name, t.lootChance * 100);
+            ImGui::TableNextColumn(), ImGui::Text("%d", t.xp);
         }
         ImGui::EndTable();
     }
+    ImGui::SeparatorText("Talents (data/talents.json)");
+    for (const TalentDef& t : d.talents)
+        ImGui::BulletText("%s (%s tier %d, %d ranks%s%s)", t.id.c_str(), kSkillIds[size_t(t.tree)], t.tier, t.maxRank,
+                          t.prerequisite >= 0 ? ", needs " : "", t.prerequisite >= 0 ? d.talents[size_t(t.prerequisite)].id.c_str() : "");
 }
 
 // Quests (ADR-026): every quest's stage and objectives (set or reset them), the flags, warnings
@@ -478,10 +525,11 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
     if (ImGui::Begin("Debug   ( . to toggle )", &open) && ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Render")) { renderTab(render, stats); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Player")) { playerTab(player, session.armorK, actions, region); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Progression")) { progressionTab(player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Items")) { itemsTab(player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Entities")) { entitiesTab(session, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Quests")) { questsTab(session); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Data")) { dataTab(defsStatus_); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Data")) { dataTab(defsStatus_, player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Save")) { saveTab(savePath, saveStatus, saveNotes, autosave, saveLocked, actions); ImGui::EndTabItem(); }

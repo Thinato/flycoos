@@ -466,7 +466,7 @@ bool damage(Entity& e, int amount) {
 bool startPunch(Player& b, glm::vec2 aim, float windup) {
     if (!b.alive() || b.swingTimer > 0) return false;
     b.swingWeapon = b.inv.equipped[SlotMainHand];
-    b.swingTimer += swingTime(sheet(b), weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
+    b.swingTimer += swingTime(sheet(b, skillOf(b.swingWeapon)), weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
     b.punchLength = std::min(windup / kPunchImpact, b.swingTimer);
     b.punchTime = 0;
     b.punchRight = !b.punchRight;
@@ -517,9 +517,27 @@ static bool lands(Player& b) {
 }
 
 int resolveHit(const Combatant& attacker, const Combatant& defender, const Attack& attack, const HitContext& ctx) {
-    StatSheet a = sheet(attacker), d = sheet(defender);
+    StatSheet a = sheet(attacker, skillOf(attacker.swingWeapon)), d = sheet(defender);
     float hit = float(rollDamage(a, attack, ctx.rng)) * a[Stat::Damage];
     return mitigate(hit, d[Stat::Armor], attacker.level, ctx.armorK, d[Stat::DamageTaken]);
+}
+
+void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed) {
+    const EntityType& t = npc.type();
+    if (!t.attackable) return;  // can't be hurt or killed: nothing to learn from (the Skyrim companion exploit)
+    float& wear = playerHit ? npc.xpWear : npc.armorWear;
+    float worn = std::exp2(-wear / kXpWearHalving), rate = (t.temper == Temper::Harmless ? kTrainingRate : 1) * worn;
+    auto use = [&](Skill s, const Attack& a) {  // base damage, so gear, strength and talents don't speed it up
+        const SkillDef& d = skillDef(s);
+        addSkillXp(player.progress, player.level, s, skillUseXp(d.useMult, d.useOffset, float(a.minDamage + a.maxDamage) / 2) * rate);
+        wear += 1;
+    };
+    if (playerHit) {
+        use(skillOf(player.swingWeapon), weaponAttack(player.swingWeapon));
+        if (killed) addCharacterXp(player.progress, player.level, int(std::lround(float(t.xp) * worn)));
+    } else if (sheet(player)[Stat::Armor] > 0) {
+        use(Skill::Armor, weaponAttack(npc.body.swingWeapon));
+    }
 }
 
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK,
@@ -530,13 +548,18 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
         Entity* target = punchTarget(entities, player);
         if (target && damage(*target, resolveHit(player, target->body, weaponAttack(player.swingWeapon), ctx))) {
             player.combatTimer = kCombatSeconds;
+            awardHitXp(player, *target, true, !target->body.alive());
             if (!target->body.alive() && events) events->push_back(Killed{target->kind, target->spawn.id});
         }
     }
     for (Entity& e : entities) {
         tick(e.body, dt);
-        if (lands(e.body) && inReach(e.body, player.pos) && hurt(player, resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), ctx)))
+        e.xpWear = std::max(0.0f, e.xpWear - dt / kXpWearSeconds);
+        e.armorWear = std::max(0.0f, e.armorWear - dt / kXpWearSeconds);
+        if (lands(e.body) && inReach(e.body, player.pos) && hurt(player, resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), ctx))) {
             e.body.combatTimer = kCombatSeconds;
+            awardHitXp(player, e, false, false);
+        }
         if (!e.body.alive() && e.body.deadTime >= e.type().respawnSeconds) {  // back home, fully healed
             e.body.teleport(e.home);
             e.body.vel = {};

@@ -54,6 +54,7 @@ GPU debug layer.
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
 | J | Journal: active and finished quests, the current entry and objectives |
+| K | Progress: level and XP, skills, talent trees (click a highlighted talent to learn it) |
 | `.` | Open/close the debug window |
 | Tab | Enter/leave the world editor (see below) |
 | F5 / F9 | Save / load the game (the player save next to the world file, e.g. `worlds/story.flys`) |
@@ -67,6 +68,10 @@ The mouse cursor is free while any window is open.
 Quests (`data/quests/*.json`, ADR-026) move on when you talk to, kill or loot what they name;
 the top of the screen says when one starts, updates or completes, and NPCs say other lines as
 they do. The first one is "Torvald's Helm" in Ravensford (see docs/STORY.md).
+
+Fighting improves skills (ADR-027): hitting with a sword raises One-Handed, punching Unarmed,
+taking hits in armor Armor; each skill level makes you a little better at it. Kills and skill
+levels give character XP; every level up is a talent point to spend in the Progress window (K).
 
 The game loads its world's player save on start, if there is one (`--new-game` starts fresh). The
 save holds the player, the inventory, the quests and world flags, and every NPC (health, dead or alive and its respawn timer,
@@ -298,7 +303,7 @@ src/defs.*       data definitions: the two-pass loader of data/*.json
 src/save.*       player saves (.flys): player, inventory, NPCs by spawn marker and slot, quests and flags
 src/quest.*      quests: the per-tick event drain, stages, triggers and actions, dialogue conditions
 src/item.*       items, inventory (equipment, backpack, bags), move/equip rules
-src/inventory_ui.*  Character (C), Bags (B) and Journal (J) windows
+src/inventory_ui.*  Character (C), Bags (B), Journal (J) and Progress (K) windows
 src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, place names
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
 src/debug_ui.*   Dear ImGui debug window (toggle with .)

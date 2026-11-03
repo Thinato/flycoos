@@ -4,6 +4,8 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <format>
+#include <string>
 
 #include <imgui.h>
 
@@ -179,7 +181,7 @@ void statRow(const char* name, const char* tip, const char* fmt, auto... args) {
     if (tip) ImGui::SetItemTooltip("%s", tip);
 }
 
-// A stat's final value, then in green (or red) what gear adds to (or takes from) its base.
+// A stat's final value, then in green (or red) what gear, skills and talents add to (or take from) its base.
 void gearRow(const char* name, const char* tip, const char* fmt, const StatSheet& s, const StatSheet& base, Stat stat) {
     statRow(name, tip, fmt, double(s[stat]));
     if (float gear = s[stat] - base[stat]; std::abs(gear) > 0.01f) {
@@ -193,8 +195,9 @@ void gearRow(const char* name, const char* tip, const char* fmt, const StatSheet
 void attributes(const Player& p, float armorK) {
     StatSheet s = sheet(p), base = compute(p.stats);
     const Attack& a = mainAttack(p.inv);
-    float swing = swingTime(s, a);
-    int lo = hitBeforeArmor(s, a, a.minDamage), hi = hitBeforeArmor(s, a, a.maxDamage);
+    StatSheet w = sheet(p, skillOf(p.inv.equipped[SlotMainHand]));  // with the weapon skill's conditional modifiers
+    float swing = swingTime(w, a);
+    int lo = hitBeforeArmor(w, a, a.minDamage), hi = hitBeforeArmor(w, a, a.maxDamage);
     char tip[96];
     if (!ImGui::BeginTable("attributes", 2, ImGuiTableFlags_SizingFixedFit)) return;
     statRow("Health", nullptr, "%d / %d", int(std::ceil(p.health)), maxHealth(s));
@@ -213,7 +216,7 @@ void attributes(const Player& p, float armorK) {
     statRow("Attack speed", "Seconds per swing", "%.2f s", swing);
     statRow("Damage/sec", nullptr, "%.1f", float(lo + hi) / 2 / swing);
     gearRow("Regen", "Health per second, out of combat", "%.1f /s", s, base, Stat::Regen);
-    statRow("Armor", "From worn gear", "%.0f", double(s[Stat::Armor]));
+    statRow("Armor", "From gear, skills and talents", "%.0f", double(s[Stat::Armor]));
     float taken = (1 - armorReduction(s[Stat::Armor], 1, armorK)) * s[Stat::DamageTaken];
     statRow("Damage taken", "Against a level 1 enemy, after armor and damage taken modifiers. Higher levels get through more.",
             "%+.1f%%", double(taken - 1) * 100);
@@ -311,6 +314,101 @@ void journalWindow(bool& open, const Session& s) {
         quests("Active", [](const QuestState& st) { return st.active(); });
         quests("Completed", [](const QuestState& st) { return st.done; });
         quests("Failed", [](const QuestState& st) { return st.failed; });
+    }
+    ImGui::End();
+}
+
+namespace {
+
+// "+3% damage (one-handed)": what a modifier does, for tooltips.
+std::string describe(const Modifier& m, int times) {
+    float v = m.value * float(times);
+    const char* how = m.kind == ModKind::More ? (v < 0 ? "less" : "more") : (v < 0 ? "reduced" : "increased");
+    std::string out = m.kind == ModKind::Flat ? std::format("{:+g} {}", double(m.stat == Stat::Haste ? v * 100 : v),
+                                                           m.stat == Stat::Haste ? "% attack speed" : kStatNames[size_t(m.stat)])
+                                              : std::format("{:g}% {} {}", double(std::abs(v) * 100), how, kStatNames[size_t(m.stat)]);
+    if (m.with != Skill::Count) out += std::format(" ({} hits)", skillDef(m.with).name);
+    return out;
+}
+
+void bar(float fraction, const std::string& overlay) {
+    ImGui::ProgressBar(std::clamp(fraction, 0.0f, 1.0f), {-FLT_MIN, 0}, overlay.c_str());
+}
+
+}  // namespace
+
+void progressWindow(bool& open, Player& p) {
+    if (!open) return;
+    const Defs& d = defs();
+    Progress& g = p.progress;
+    ImGui::SetNextWindowPos({120, 100}, ImGuiCond_FirstUseEver);  // not on top of the other windows' spot
+    ImGui::SetNextWindowSize({720, 520}, ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Progress   ( K )", &open, ImGuiWindowFlags_NoCollapse)) {
+        int points = talentPoints(g, p.level);
+        ImGui::Text("Level %d", p.level);
+        ImGui::SameLine(0, 24);
+        if (points > 0) ImGui::TextColored({0.45f, 0.9f, 0.45f, 1}, "%d talent point%s to spend", points, points == 1 ? "" : "s");
+        else if (points < 0) ImGui::TextColored({0.95f, 0.5f, 0.35f, 1}, "%d point%s over budget", -points, points == -1 ? "" : "s");
+        else ImGui::TextDisabled("No talent points (one per level)");
+        bar(p.level >= kMaxLevel ? 1 : float(g.xp) / float(levelXpToNext(p.level)),
+            p.level >= kMaxLevel ? std::string("Highest level") : std::format("{} / {} XP", g.xp, levelXpToNext(p.level)));
+        ImGui::SetItemTooltip("Character XP: kills, and every skill level gained (its new level number)");
+        ImGui::SeparatorText("Skills");
+        if (ImGui::BeginTable("skills", 2, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthFixed, 150);
+            for (size_t k = 0; k < size_t(Skill::Count); ++k) {
+                const SkillDef& sd = d.skills[k];
+                const SkillLevel& sk = g.skills[k];
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(), ImGui::Text("%s %d", sd.name.c_str(), sk.level);
+                ImGui::TableNextColumn();
+                float cost = skillXpToNext(sd.improveMult, sd.improveOffset, sk.level);
+                bar(sk.level >= kMaxSkill ? 1 : sk.xp / cost, sk.level >= kMaxSkill ? std::string("Mastered") : std::format("{:.0f} / {:.0f}", sk.xp, cost));
+                if (ImGui::BeginItemTooltip()) {
+                    ImGui::TextUnformatted(k == size_t(Skill::Armor) ? "Improves by taking hits while wearing armor"
+                                           : k == size_t(Skill::Unarmed) ? "Improves by punching foes" : "Improves by hitting foes with a one-handed weapon");
+                    for (const Modifier& m : sd.perLevel) ImGui::BulletText("%s per level (now %s)", describe(m, 1).c_str(), describe(m, sk.level - kMinSkill).c_str());
+                    ImGui::EndTooltip();
+                }
+            }
+            ImGui::EndTable();
+        }
+        ImGui::SeparatorText("Talents");
+        if (ImGui::BeginTable("trees", int(Skill::Count), ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame)) {
+            for (size_t k = 0; k < size_t(Skill::Count); ++k) {
+                ImGui::TableNextColumn();
+                ImGui::Text("%s  (%d)", d.skills[k].name.c_str(), pointsSpent(g, Skill(k)));
+                for (int tier = 0; tier <= kMaxTier; ++tier) {
+                    bool any = false;
+                    for (size_t t = 0; t < d.talents.size(); ++t) {
+                        const TalentDef& td = d.talents[t];
+                        if (size_t(td.tree) != k || td.tier != tier) continue;
+                        if (!any) ImGui::TextDisabled("Tier %d%s", tier + 1, tier ? std::format(": {} points", kPointsPerTier * tier).c_str() : "");
+                        any = true;
+                        const char* why = nullptr;
+                        bool learnable = canLearn(g, p.level, t, &why);
+                        int r = rank(g, t);
+                        // Maxed gold, learnable green, started blue, locked dark.
+                        ImU32 color = r >= td.maxRank ? uiColor(0.55f, 0.42f, 0.12f) : learnable ? uiColor(0.18f, 0.48f, 0.2f)
+                                      : r > 0 ? uiColor(0.25f, 0.32f, 0.45f) : uiColor(0.16f, 0.16f, 0.19f);
+                        ImGui::PushStyleColor(ImGuiCol_Button, color);
+                        ImGui::PushID(int(t));
+                        if (ImGui::Button(std::format("{}  {}/{}", td.name, r, td.maxRank).c_str(), {-FLT_MIN, 0})) learn(g, p.level, t);
+                        ImGui::PopID();
+                        ImGui::PopStyleColor();
+                        if (ImGui::BeginItemTooltip()) {
+                            ImGui::Text("%s, rank %d of %d", td.name.c_str(), r, td.maxRank);
+                            for (const Modifier& m : td.perRank) ImGui::BulletText("%s per rank", describe(m, 1).c_str());
+                            if (td.prerequisite >= 0) ImGui::TextDisabled("Needs %s at its highest rank", d.talents[size_t(td.prerequisite)].name.c_str());
+                            if (why) ImGui::TextColored({0.95f, 0.6f, 0.4f, 1}, "Can't learn: %s", why);
+                            else ImGui::TextColored({0.45f, 0.9f, 0.45f, 1}, "Click to learn");
+                            ImGui::EndTooltip();
+                        }
+                    }
+                }
+            }
+            ImGui::EndTable();
+        }
     }
     ImGui::End();
 }

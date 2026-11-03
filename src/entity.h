@@ -40,6 +40,7 @@ struct EntityType {
     float recover;         // seconds it stands after the hit
     float cooldown;        // seconds of chasing before the next swing (the weapon's swing time gates it too)
     float fleeHealth;      // runs away below this fraction of its health; 0: never
+    int xp;                // character XP the player gets for killing one (ADR-027)
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);
@@ -80,6 +81,8 @@ struct Entity {
     std::array<AiTransition, 8> history{};  // the latest transitions: history[(transitions - 1) % 8] is the newest
     uint32_t transitions = 0;               // how many it has made
     ItemId loot = NoItem;  // what its corpse holds
+    float xpWear = 0;      // the player's hits on it that earned XP lately: each one earns less (awardHitXp)
+    float armorWear = 0;   // its hits on the player that earned armor XP lately
     std::mt19937 rng;
 
     const EntityType& type() const { return typeOf(kind); }
@@ -153,10 +156,21 @@ struct HitContext {
 // The one damage formula (ADR-022), in this order: the attack's roll, plus the attacker's strength
 // bonus, times the attacker's damage, less the defender's armor against the attacker's level, times
 // the defender's damage taken; at least 1, unless the hit before armor is 0 (nothing rolled, or a
-// damage multiplier of 0): then 0. Reads both sheets.
+// damage multiplier of 0): then 0. Reads both sheets; the attacker's with the conditional modifiers
+// of its swing's weapon skill (skillOf(attacker.swingWeapon)).
 int resolveHit(const Combatant& attacker, const Combatant& defender, const Attack& attack, const HitContext& ctx);
+// Skill XP halves for every kXpWearHalving hits an NPC took from the player lately (and, apart,
+// for every one it dealt the player, for armor XP); the wear wears off at one hit per
+// kXpWearSeconds. The training dummy (harmless) teaches at kTrainingRate.
+constexpr float kXpWearHalving = 20, kXpWearSeconds = 10, kTrainingRate = 0.25f;
+// The only source of skill and character XP (ADR-027), for a hit that landed between the player and
+// `npc`: the player's (`playerHit`; `killed`: it killed) earns the swing's weapon skill XP and the
+// kill's character XP, the NPC's earns armor XP while the player wears armor. Only attackable NPCs
+// count; the XP scales with the attack's average base damage (never the final hit), the NPC's wear
+// and, for harmless ones, kTrainingRate. A kill gives the creature's `xp` times its wear, once per kill.
+void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed);
 // Combat timers and out-of-combat regeneration for everyone; lands every swing at its impact frame
 // (the player's on entities, entities' on the player) through resolveHit (`armorK` is the K of
-// armorReduction); brings the dead back home. A kill by the player raises Killed into `events`.
+// armorReduction) and awardHitXp; brings the dead back home. A kill by the player raises Killed into `events`.
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK = kArmorK,
                   std::vector<GameEvent>* events = nullptr);

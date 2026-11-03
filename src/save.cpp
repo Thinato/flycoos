@@ -29,6 +29,12 @@
 //   2 failed) | u8 objective count, each u8 length | objective id | u8 ObjectiveState. By string id:
 //   reordering or adding quests and objectives in the data doesn't scramble them.
 // "FLAG": u32 count, then per flag: u8 length | name | i32 value.
+// "PROG" (ADR-027): u32 character XP toward the next level (the level is PLYR's) | u8 skill count,
+//   each u8 length | skill id | u32 level | f32 XP toward the next | u16 talent count, each u8 length |
+//   talent id | u8 rank. By string id, like QUST.
+// "WEAR" (ADR-027): u32 count, then per NPC whose XP wear isn't 0: u32 spawn marker id | u8 slot |
+//   f32 the player's hits on it | f32 its hits on the player (Entity::xpWear, armorWear). Apart from
+//   NPCS, so that layout stays; an entry without its NPC is dropped silently.
 constexpr uint32_t kSaveFileVersion = 1;
 constexpr size_t kMaxSaveBytes = size_t(1) << 20;  // the biggest valid one is a few KB
 constexpr size_t kNpcBytes = 31;
@@ -102,6 +108,8 @@ struct SaveData {
     std::optional<std::vector<SavedNpc>> npcs;
     std::optional<std::vector<SavedQuest>> quests;
     std::optional<std::map<std::string, int32_t, std::less<>>> flags;
+    std::optional<Progress> progress;  // unknown skills and talents already dropped
+    std::map<std::pair<uint32_t, int>, std::pair<float, float>> wear;  // (marker id, slot) -> xpWear, armorWear
     std::vector<std::string> notes;  // what parsing dropped (ids this build's data doesn't know)
 };
 
@@ -239,6 +247,54 @@ std::string readFlags(Reader r, SaveData& d) {
     return r.done("flag");
 }
 
+std::string readProgress(Reader r, SaveData& d) {
+    Progress& p = d.progress.emplace();
+    p.xp = int(std::min<uint64_t>(r.take(4), 1u << 30));
+    std::set<std::string> ids;
+    bool bad = false;
+    for (uint64_t i = 0, n = r.take(1); i < n && !r.truncated; ++i) {
+        std::string id = r.str();
+        uint64_t level = r.take(4);
+        float xp = r.f32();
+        bad |= id.empty() || !ids.insert(id).second || level < kMinSkill || level > kMaxSkill || !finite({xp}) || xp < 0 || xp > 1e9f;
+        auto s = std::ranges::find(kSkillIds, id);
+        if (s == std::end(kSkillIds)) d.notes.push_back(std::format("dropped skill '{}': this build has no such skill", id));
+        else p.skills[size_t(s - std::begin(kSkillIds))] = {int(level), xp};
+    }
+    ids.clear();
+    for (uint64_t i = 0, n = r.take(2); i < n && !r.truncated; ++i) {
+        std::string id = r.str();
+        uint64_t rank = r.take(1);
+        bad |= id.empty() || !ids.insert(id).second || rank == 0;
+        auto it = defs().talentById.find(id);
+        if (it == defs().talentById.end()) {
+            d.notes.push_back(std::format("dropped talent '{}': the data has no such talent (its point is free again)", id));
+            continue;
+        }
+        int most = defs().talents[it->second].maxRank;
+        if (int(rank) > most) d.notes.push_back(std::format("talent '{}': rank {} is above its highest now, {}: lowered", id, rank, most));
+        if (p.talents.size() <= it->second) p.talents.resize(it->second + 1u);
+        p.talents[it->second] = uint8_t(std::min(int(rank), most));
+    }
+    if (bad && !r.truncated) return "bad progress";
+    return r.done("progress");
+}
+
+std::string readWear(Reader r, SaveData& d) {
+    uint64_t count = r.take(4);
+    if (count > uint64_t(kMaxSpawnedNpcs)) return std::format("more than {} worn NPCs", kMaxSpawnedNpcs);
+    if (uint64_t(r.end - r.p) != count * 13) return "wear section size mismatch";
+    for (uint64_t i = 0; i < count; ++i) {
+        uint32_t marker = uint32_t(r.take(4));
+        int slot = int(r.take(1));
+        float hits = r.f32(), dealt = r.f32();
+        if (marker == 0 || slot >= kMaxSpawnCount || !finite({hits, dealt}) || hits < 0 || dealt < 0 || hits > 1e6f || dealt > 1e6f ||
+            !d.wear.emplace(std::pair{marker, slot}, std::pair{hits, dealt}).second)
+            return std::format("bad wear (marker {} slot {})", marker, slot);
+    }
+    return r.done("wear");
+}
+
 std::string parse(const char* path, SaveData& d) {
     std::error_code ec;
     uintmax_t fileBytes = std::filesystem::file_size(path, ec);
@@ -269,6 +325,8 @@ std::string parse(const char* path, SaveData& d) {
         else if (tag == "NPCS") error = readNpcs(r, d);
         else if (tag == "QUST") error = readQuests(r, d);
         else if (tag == "FLAG") error = readFlags(r, d);
+        else if (tag == "PROG") error = readProgress(r, d);
+        else if (tag == "WEAR") error = readWear(r, d);
         else continue;  // a later build's section
         if (!seen.insert(tag).second) return std::format("duplicate {} section", tag);
         if (!error.empty()) return error;
@@ -322,8 +380,28 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
         p.yaw = d.player->yaw;
         p.teleport(inWorld(d.player->pos));
         p.deadTime = d.player->deadTime;
-        p.health = std::min(d.player->health, float(maxHealth(sheet(p))));  // after the gear: it adds health
     }
+    if (d.progress) {
+        Progress& g = p.progress = *d.progress;
+        // XP past the next level (the costs in the data may have dropped): just short of it.
+        if (int next = levelXpToNext(p.level); p.level >= kMaxLevel ? g.xp > 0 : g.xp >= next) {
+            r.notes.push_back(std::format("character XP {} is past level {}'s {}: lowered", g.xp, p.level, next));
+            g.xp = p.level >= kMaxLevel ? 0 : next - 1;
+        }
+        for (size_t k = 0; k < g.skills.size(); ++k) {
+            const SkillDef& sd = skillDef(Skill(k));
+            SkillLevel& sk = g.skills[k];
+            float next = sk.level >= kMaxSkill ? 0 : skillXpToNext(sd.improveMult, sd.improveOffset, sk.level);
+            if (sk.level >= kMaxSkill ? sk.xp > 0 : sk.xp >= next) {
+                r.notes.push_back(std::format("skill '{}': XP {:.0f} is past level {}'s {:.0f}: lowered", kSkillIds[k], sk.xp, sk.level, next));
+                sk.xp = sk.level >= kMaxSkill ? 0 : std::nextafter(next, 0.0f);
+            }
+        }
+        // The ranks must still follow the rules (points, tiers, prerequisites): else they're free again.
+        if (int spent = pointsSpent(g); !replayTalents(g, p.level))
+            r.notes.push_back(std::format("{} talent points no longer fit the talents' rules at level {}: talents reset", spent, p.level));
+    }
+    if (d.player) p.health = std::min(d.player->health, float(maxHealth(sheet(p))));  // after the gear and talents: they add health
     if (d.flags) s.flags = *d.flags;
     for (const SavedQuest& q : d.quests ? *d.quests : std::span<const SavedQuest>{}) {
         const Defs& defined = defs();
@@ -343,6 +421,8 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
             else st.objectives[size_t(o - def.objectives.begin())] = state;
         }
     }
+    for (Entity& e : s.entities)  // by the same key as NPCS, but on its own
+        if (auto w = d.wear.find({e.spawn.id, e.slot}); e.spawn.id && w != d.wear.end()) e.xpWear = w->second.first, e.armorWear = w->second.second;
     if (!d.npcs) return;
     for (const SavedNpc& n : *d.npcs) {
         auto e = std::ranges::find_if(s.entities, [&](const Entity& e) { return e.spawn.id == n.marker && e.slot == n.slot; });
@@ -451,6 +531,35 @@ std::string savePlayer(const char* path, const Session& s, const std::string& wo
             putStr(out, name);
             put(out, uint32_t(value), 4);
         }
+    });
+    section("WEAR", [&] {
+        auto worn = [](const Entity& e) { return e.spawn.id && (e.xpWear > 0 || e.armorWear > 0); };
+        put(out, size_t(std::ranges::count_if(s.entities, worn)), 4);
+        for (const Entity& e : s.entities)
+            if (worn(e)) {
+                put(out, e.spawn.id, 4);
+                put(out, uint32_t(e.slot), 1);
+                putF(out, e.xpWear);
+                putF(out, e.armorWear);
+            }
+    });
+    section("PROG", [&] {
+        const Progress& g = p.progress;
+        put(out, uint32_t(g.xp), 4);
+        put(out, g.skills.size(), 1);
+        for (size_t k = 0; k < g.skills.size(); ++k) {
+            putStr(out, kSkillIds[k]);
+            put(out, uint32_t(g.skills[k].level), 4);
+            putF(out, g.skills[k].xp);
+        }
+        const std::vector<TalentDef>& ts = defs().talents;
+        size_t n = std::min(g.talents.size(), ts.size());  // equal, unless the defs were reloaded with fewer
+        put(out, size_t(std::ranges::count_if(g.talents.begin(), g.talents.begin() + long(n), [](uint8_t r) { return r > 0; })), 2);
+        for (size_t t = 0; t < n; ++t)
+            if (g.talents[t]) {
+                putStr(out, ts[t].id);
+                put(out, g.talents[t], 1);
+            }
     });
     put(out, fnv1a(out.data(), out.size()), 4);
     return replaceFile(path, out, true);

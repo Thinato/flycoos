@@ -1,0 +1,30 @@
+[
+  {"id": "keen_edge", "name": "Keen Edge", "tree": "one_handed", "tier": 0, "max_rank": 5,
+   "per_rank": [{"stat": "damage", "increased": 0.03, "with": "one_handed"}]},
+  {"id": "quick_wrist", "name": "Quick Wrist", "tree": "one_handed", "tier": 0, "max_rank": 3,
+   "per_rank": [{"stat": "haste", "flat": 0.03, "with": "one_handed"}]},
+  {"id": "steady_hand", "name": "Steady Hand", "tree": "one_handed", "tier": 1, "max_rank": 3,
+   "per_rank": [{"stat": "strength", "flat": 1, "with": "one_handed"}]},
+  {"id": "deep_cuts", "name": "Deep Cuts", "tree": "one_handed", "tier": 2, "max_rank": 1, "requires": "keen_edge",
+   "per_rank": [{"stat": "damage", "more": 0.1, "with": "one_handed"}]},
+  {"id": "whirling_steel", "name": "Whirling Steel", "tree": "one_handed", "tier": 3, "max_rank": 1, "requires": "quick_wrist",
+   "per_rank": [{"stat": "haste", "flat": 0.1, "with": "one_handed"}]},
+
+  {"id": "hard_knuckles", "name": "Hard Knuckles", "tree": "unarmed", "tier": 0, "max_rank": 5,
+   "per_rank": [{"stat": "damage", "increased": 0.05, "with": "unarmed"}]},
+  {"id": "quick_jabs", "name": "Quick Jabs", "tree": "unarmed", "tier": 0, "max_rank": 3,
+   "per_rank": [{"stat": "haste", "flat": 0.04, "with": "unarmed"}]},
+  {"id": "heavy_hands", "name": "Heavy Hands", "tree": "unarmed", "tier": 1, "max_rank": 3,
+   "per_rank": [{"stat": "strength", "flat": 1, "with": "unarmed"}]},
+  {"id": "haymaker", "name": "Haymaker", "tree": "unarmed", "tier": 2, "max_rank": 1, "requires": "hard_knuckles",
+   "per_rank": [{"stat": "damage", "more": 0.2, "with": "unarmed"}]},
+
+  {"id": "worn_in", "name": "Worn In", "tree": "armor", "tier": 0, "max_rank": 5,
+   "per_rank": [{"stat": "armor", "increased": 0.04}]},
+  {"id": "hearty", "name": "Hearty", "tree": "armor", "tier": 0, "max_rank": 3,
+   "per_rank": [{"stat": "stamina", "flat": 1}]},
+  {"id": "catch_your_breath", "name": "Catch Your Breath", "tree": "armor", "tier": 1, "max_rank": 3,
+   "per_rank": [{"stat": "regen", "increased": 0.2}]},
+  {"id": "stand_fast", "name": "Stand Fast", "tree": "armor", "tier": 2, "max_rank": 1, "requires": "worn_in",
+   "per_rank": [{"stat": "damage_taken", "more": -0.1}]}
+]

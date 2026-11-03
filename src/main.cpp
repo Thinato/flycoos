@@ -249,9 +249,9 @@ static int run(SDL_Window* window, const Options& opt) {
     }
     glm::vec3 camTarget = player.pos + glm::vec3(0, 1.4f, 0);
     float camDist = game.cameraDistance;  // actual distance after terrain collision
-    bool characterOpen = false, bagsOpen = false, journalOpen = false;
+    bool characterOpen = false, bagsOpen = false, journalOpen = false, progressOpen = false;
     // Any open window frees the cursor and stops mouse look and attacks; the keyboard still plays.
-    auto menus = [&] { return ui.open || characterOpen || bagsOpen || journalOpen || editor.cursor; };
+    auto menus = [&] { return ui.open || characterOpen || bagsOpen || journalOpen || progressOpen || editor.cursor; };
     auto updateMouseMode = [&] { SDL_SetWindowRelativeMouseMode(window, !benchmark && !menus()); };
     updateMouseMode();
     PlayerTuning walking;  // movement settings from before entering the editor
@@ -329,6 +329,9 @@ static int run(SDL_Window* window, const Options& opt) {
                 } else if (e.key.key == SDLK_J) {
                     journalOpen = !journalOpen;
                     updateMouseMode();
+                } else if (e.key.key == SDLK_K) {
+                    progressOpen = !progressOpen;
+                    updateMouseMode();
                 } else if (e.key.key == SDLK_E) {  // loot a corpse, else talk
                     interactQueued = true;
                 } else if (e.key.key == SDLK_TAB) {
@@ -363,7 +366,7 @@ static int run(SDL_Window* window, const Options& opt) {
                     if (!menus() && (!editor.unsaved || editor.quitArmed)) return quit();
                     if (!menus()) editor.quitArmed = true;
                     else if (ui.open) ui.open = false;
-                    else characterOpen = bagsOpen = journalOpen = editor.cursor = false;
+                    else characterOpen = bagsOpen = journalOpen = progressOpen = editor.cursor = false;
                     updateMouseMode();
                 }
             }
@@ -576,6 +579,7 @@ static int run(SDL_Window* window, const Options& opt) {
         characterWindow(characterOpen, player, session.armorK);
         bagsWindow(bagsOpen, player);
         journalWindow(journalOpen, session);
+        progressWindow(progressOpen, player);
         editorWindow(editor, instances, markers, aim, s, editorActions);
         ImDrawData* uiDraw = ui.end(game, render, session, s, actions);
         if (menus() != wasOpen) updateMouseMode();  // closed with a window's X button

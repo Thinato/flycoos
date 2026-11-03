@@ -965,3 +965,109 @@
   - `reloadDefs` may append or drop quests at the end, never reorder them (`Session::quests` is by
     handle; the save is by id).
   - `pickLine` scans every quest line on each talk; fine for tens of quests.
+
+## ADR-027: Use-based skills, a character level and talent trees, all through the stat pipeline
+
+- **Status:** accepted (2026-11-03); amends ADR-022 (the player's level, conditional modifiers) and
+  ADR-025 (a `PROG` section)
+- **Context:** the player wants Skyrim-style skills ("the more you use your one-handed sword, the
+  better you get at it"), a level from fights, and a talent point per level spent in a tree per
+  ability. Skyrim's system is three formulas over small tables; its known failures are farming
+  (hitting an unkillable companion, crafting spam) and cheap skills pushing a level that scales the
+  world. flycoos' NPCs have fixed levels, so there is no world scaling to outrun. Research:
+  docs/research/notes/progression.md and the architecture report's progression section.
+- **Decision:**
+  - **Formulas** are pure functions in `stats.h` with Skyrim's shape: a use earns
+    `use_mult × base XP + use_offset`; a skill goes from L to L + 1 for `improve_mult × L^1.95 +
+    improve_offset`; reaching skill level L adds L character XP; level N → N + 1 costs
+    `25 × (N + 3)` (`levelXpTotal(N) = 12.5N² + 62.5N − 75`). `core_test` reproduces UESP's values
+    with Skyrim's constants first: 87,000 XP to level 81, 4,930 from one skill 15 → 100, 88,085
+    from all 18 skills maxed (the old level-81 cap), 528,804 and 91,600 skill XP for a combat skill
+    and Smithing 15 → 100.
+  - **Skills** are a closed set code awards: `Skill { OneHanded, Unarmed, Armor }` (one-handed:
+    landed hits with a weapon, every weapon so far being one-handed; unarmed: landed punches; armor:
+    hits taken while wearing armor). `data/skills.json` holds their names and four numbers, and
+    `per_level` modifiers times the levels gained. Skills run 1..100 and start at 1, so a new
+    player's sheet is unchanged. Shipped: `use_mult` 1 / 3 / 2 (a sword hit earns 8, a punch 7.5,
+    a knife hit taken 9), `improve_mult` 1, `improve_offset` 200 (about 25 sword hits a level at
+    first): clearing Act 1 once is about One-Handed 6 and Armor 5. Per level: +2% damage with
+    one-handed, +3% with unarmed, +2% increased armor.
+  - **Character XP** also comes from kills: creature records get an optional `xp`, by default
+    `10 × level` for hostile, attackable ones and 0 otherwise (an `xp` on one that can't be hurt is
+    an error). Hakon gives 60. Act 1's hostiles add up to ~380 XP, so clearing it is about level 4
+    and 3 talent points. A level up gives one talent point and nothing else. The level is
+    `Combatant::level` (ADR-022), capped at 100, so it is the attacker level of the player's hits;
+    NPCs wear no armor yet, so today it changes nothing in a fight.
+  - **One award on the damage path.** `awardHitXp(player, npc, playerHit, killed)` in `entity.cpp`,
+    called by `updateCombat` right after `resolveHit` lands a swing either way, is the only source
+    of skill and character XP besides the debug window. Its guards: the NPC must be attackable
+    (the Skyrim companion exploit); XP scales with the attack's *average base damage*, never the
+    final hit (gear, strength and talents don't speed it up); harmless NPCs (the training dummy)
+    teach at 25%, so it stays useful; per NPC, skill XP halves every 20 counted hits and the wear
+    fades at one hit per 10 s, kept through respawns. Two counters: the player's hits on the NPC
+    (`Entity::xpWear`, weapon skills and kills) and the NPC's hits on the player (`armorWear`,
+    armor), so standing in a wolf's bites doesn't cheapen hitting it. Ten minutes of punching the
+    dummy earns ~1% of the full rate. Kill XP is the creature's `xp` times the same wear factor,
+    once per kill (the killing hit): killing one guard as it keeps respawning gives 25, 18, 13, 10
+    of its 40.
+  - **Talents** are `data/talents.json`, one tree per skill: `{id, name, tree, tier 0..4, max_rank
+    1..10, requires, per_rank}`. Tier N needs `3 × N` points spent in its tree; `requires` names a
+    talent of the same tree and a lower tier that must be at its max rank. Every rule is in one
+    pure `canLearn(progress, level, talent, &why)`; points are derived (`level − 1 − spent`), never
+    stored. Respec is `talents.clear()` (a debug button for now). Thirteen talents with original
+    names: Keen Edge, Quick Wrist, Steady Hand, Deep Cuts, Whirling Steel; Hard Knuckles, Quick
+    Jabs, Heavy Hands, Haymaker; Worn In, Hearty, Catch Your Breath, Stand Fast.
+  - **Never applied by hand.** Skills and talents emit `Modifier`s from `collect()` (sourced by
+    their names), next to the gear's, so a respec or a lost level restores the base exactly.
+    A modifier may say `"with": "one_handed" | "unarmed"` (items too): `compute(base, mods, with)`
+    counts it only for that weapon skill, and the plain sheet never does. `resolveHit` and
+    `startPunch` (swing time) use `sheet(c, skillOf(swingWeapon))`, so "+3% damage with one-handed
+    weapons" is evaluated per hit, not baked into the sheet (ADR-022's conditional effects). Per-rank
+    and per-level values multiply the modifier's value (rank 2 of +10% more is +20% more).
+  - **State** is `Progress` on `Combatant` (character XP, each skill's level and XP, talent ranks by
+    handle); NPCs carry an empty one. Saves: a `PROG` section (character XP, skills and talents by
+    string id). Unknown skill or talent ids are dropped with a note, a rank above the talent's
+    max now is lowered with a note; character or skill XP at or past the next level's cost (the data
+    made it cheaper) is lowered to just short of it with a note; the ranks are replayed through
+    `canLearn` tier by tier (`replayTalents`), and any that fails (points, tier, prerequisite)
+    resets the talents with a note. A level outside 1..100, a negative or non-finite XP, rank 0 or a
+    duplicate id rejects the file. `reloadDefs` refuses a talents file that renames or reorders
+    loaded talents, and the Data tab replays the ranks after a reload; `progressModifiers` clamps a
+    rank to the talent's max anyway. A `WEAR` section keeps both wear counters per NPC by (spawn
+    marker id, slot), beside `NPCS` (its layout unchanged). Loading warns (`Defs::warnings`) when
+    `skills.json` or `talents.json` is missing.
+  - **UI.** K (free) opens the Progress window: level and XP bar, unspent points, each skill with
+    its bar and per-level effect, and the three trees by tier, learnable talents highlighted green,
+    maxed gold, a click learns, the tooltip says why not (`canLearn` checks the tree's rules before
+    the budget, so a locked talent says why it's locked), and "N points over budget" when the
+    debug window lowered the level. A multi-level toast counts the points. Skill and level ups toast in the notice
+    line (`step` compares before and after combat). The debug window gets a Progression tab: the
+    level slider (moved from Player), +XP buttons, skill sliders and +100 XP per skill, Respec, and
+    the formulas' current numbers; the Data tab lists creature XP and the talents.
+  - **Level band.** A `core_test` invariant: a level-N player in the Iron set with the sword, its
+    N − 1 points in the blade tree and the skill levels Act 1's pace gives (level 4: One-Handed 6,
+    Armor 5) needs 6–16 swings to kill each fighter of level N, and kills it sooner than it downs
+    the player (swings × the time between them: the player's swing time; the NPC's swing time or
+    windup + recover + cooldown). The one named exception is the guard: the village watch is meant
+    to be tougher than a player of its level (it's passive and never starts the fight).
+    **NPC armor isn't modeled yet** (creatures wear none), so the player's level, its attacker
+    level, pierces nothing today; the band is what gear tiers and armored NPCs must keep. The Act 1
+    balance tests are for a level-1 player and unchanged; one test fight never earns a skill level.
+- **Alternatives considered:**
+  - Skills starting at 15 like Skyrim: a fresh player would need per-level effects counted from 15
+    anyway; starting at 1 keeps "levels gained" and the shown number the same.
+  - A stored talent-point pool: it can disagree with level and ranks; deriving it can't.
+  - Skill XP from the rolled or final damage: rewards strength and gear, the Skyrim tempering bug.
+  - Wear reset on respawn, or a hard cap per NPC: resetting re-opens dummy farming every 5 s; a cap
+    makes the hundredth bandit worthless instead of cheaper.
+  - XP from killing only (WoW): misses the "use it to improve it" the player asked for.
+  - Talents applied on learn: an undo per talent and drift with percentages (ADR-022).
+  - Data-defined skills: code decides what counts as a use, so a skill only data knows would never
+    improve.
+- **Consequences:**
+  - A new skill is an enum value, its id, the code that awards it and a record; a new talent is a
+    record (and a stat, if it needs one). Effects that aren't stat modifiers (abilities) need a
+    new kind of talent output.
+  - Gear tiers must keep the level band: once NPCs wear armor, the player's level pierces it.
+  - Kill XP doesn't fall off for low-level foes; farming respawns is slow (30 s+) but possible.
+  - Debug "Hit for 10" and "Kill" give no XP (they bypass `resolveHit`, as before).

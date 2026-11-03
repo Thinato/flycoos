@@ -36,11 +36,17 @@ inline constexpr const char* kStatNames[] = {"Stamina", "Strength", "Agility", "
                                              "Damage", "Attack speed", "Regen", "Armor", "Damage taken"};
 static_assert(std::size(kStatIds) == size_t(Stat::Count) && std::size(kStatNames) == size_t(Stat::Count));
 enum class ModKind : uint8_t { Flat, Increased, More };  // increased and more are fractions: 0.1 = 10%
+// The use-based skills (ADR-027). Code awards their XP, so the set is closed; data/skills.json has
+// their numbers. Saves name them by id.
+enum class Skill : uint8_t { OneHanded, Unarmed, Armor, Count };
+inline constexpr const char* kSkillIds[] = {"one_handed", "unarmed", "armor"};
+static_assert(std::size(kSkillIds) == size_t(Skill::Count));
 struct Modifier {
     Stat stat;
     ModKind kind;
     float value;
-    const char* source = "";  // what it comes from (an item's name), for the UI
+    const char* source = "";     // what it comes from (an item's, skill's or talent's name), for the UI
+    Skill with = Skill::Count;   // a weapon skill: only on hits (and swings) made with it, never in the plain sheet
 };
 
 // Final stat values; consumers round (maxHealth, strengthBonus). Damage and DamageTaken multiply hits
@@ -53,11 +59,13 @@ struct StatSheet {
 constexpr float kMaxStat = 1e6f;    // every stat's ceiling, so int conversions can't overflow
 constexpr float kMinHaste = -0.9f;  // haste may go negative (a slow), every other stat stops at 0
 // Pure and uncached: rebuild it from the sources whenever it's needed. Values stay in
-// 0..kMaxStat (haste kMinHaste..kMaxStat); a more factor below -100% counts as -100%.
-constexpr StatSheet compute(const Stats& base, std::span<const Modifier> mods = {}) {
+// 0..kMaxStat (haste kMinHaste..kMaxStat); a more factor below -100% counts as -100%. `with`: the
+// weapon skill of the swing being resolved, whose conditional modifiers count too (Count: none).
+constexpr StatSheet compute(const Stats& base, std::span<const Modifier> mods = {}, Skill with = Skill::Count) {
     std::array<float, size_t(Stat::Count)> flat{}, increased{}, more{};
     more.fill(1);
     for (const Modifier& m : mods) {
+        if (m.with != Skill::Count && m.with != with) continue;
         size_t i = size_t(m.stat);
         if (m.kind == ModKind::Flat) flat[i] += m.value;
         else if (m.kind == ModKind::Increased) increased[i] += m.value;
@@ -117,3 +125,21 @@ inline int mitigate(float damage, float armor, int attackerLevel, float k = kArm
     if (damage <= 0) return 0;
     return std::max(1, int(std::lround(damage * (1 - armorReduction(armor, attackerLevel, k)) * taken)));
 }
+
+// Progression (ADR-027), Skyrim's three formulas with their numbers in data/skills.json:
+// a use earns useMult x baseXp + useOffset skill XP (weapons: baseXp is the attack's average base
+// damage, never the final hit); a skill goes from `level` to level + 1 for
+// improveMult x level^1.95 + improveOffset; reaching skill level L adds L character XP; character
+// level N -> N + 1 costs 25 x (N + 3), so reaching level N takes 12.5 N^2 + 62.5 N - 75 in all.
+constexpr int kMinSkill = 1, kMaxSkill = 100;  // every skill starts at kMinSkill
+constexpr int kMaxLevel = 100;                 // the character level cap (also data's creature levels)
+constexpr float kSkillCurve = 1.95f;
+constexpr float skillUseXp(float useMult, float useOffset, float baseXp) { return useMult * baseXp + useOffset; }
+inline float skillXpToNext(float improveMult, float improveOffset, int level) {
+    return improveMult * std::pow(float(level), kSkillCurve) + improveOffset;
+}
+constexpr int characterXpForSkill(int newLevel) { return newLevel; }
+constexpr int levelXpToNext(int level) { return 25 * (level + 3); }
+constexpr int levelXpTotal(int level) { return (25 * level * level + 125 * level - 150) / 2; }  // from level 1: 12.5 N^2 + 62.5 N - 75
+// A kill's character XP when its creature record names none: hostile, attackable ones 10 per level.
+constexpr int defaultKillXp(int level) { return 10 * level; }

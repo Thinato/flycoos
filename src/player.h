@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 
 #include "item.h"
+#include "progress.h"
 #include "stats.h"
 #include "world.h"
 
@@ -46,7 +47,7 @@ struct Body {
 // What fights: attributes, health, the swing and damage timers, and the gear it wears and carries.
 struct Combatant {
     Stats stats;                           // base attributes; sheet() adds gear on top
-    int level = 1;                         // an NPC's is its kind's; the player's is 1 until progression
+    int level = 1;                         // an NPC's is its kind's; the player's grows with XP (ADR-027)
     float health = float(maxHealth(Stats{}));
     float combatTimer = 0;                 // > 0: in combat, no regeneration
     float swingTimer = 0;                  // > 0: the next swing isn't ready
@@ -58,6 +59,7 @@ struct Combatant {
     int lastDamage = 0;
     float deadTime = 0;                    // seconds spent at 0 health
     Inventory inv;                         // equipment and bags
+    Progress progress;                     // skills, XP and talents: the player's (NPCs' stay at the start)
 
     bool alive() const { return health > 0; }
     bool punching() const { return punchTime < punchLength; }  // any attack swing, armed or not
@@ -65,11 +67,14 @@ struct Combatant {
     ItemId weapon() const { return punching() ? swingWeapon : inv.equipped[SlotMainHand]; }
 };
 
-// The modifiers on `c` (ADR-022): its equipped items' armor and mods, rebuilt on every call, so
-// unequipping needs no undo.
+// The modifiers on `c` (ADR-022): its equipped items' armor and mods, then its skills' and talents'
+// (ADR-027), rebuilt on every call, so unequipping or a respec needs no undo.
 std::vector<Modifier> collect(const Combatant& c);
-// Its final stats: base attributes plus every collected modifier. Uncached.
-inline StatSheet sheet(const Combatant& c) { return compute(c.stats, collect(c)); }
+// Its final stats: base attributes plus every collected modifier. Uncached. `with`: the weapon skill
+// of a swing, whose conditional ("with") modifiers count too.
+inline StatSheet sheet(const Combatant& c, Skill with = Skill::Count) { return compute(c.stats, collect(c), with); }
+// The weapon skill a swing with `weapon` uses: a punch is unarmed, every weapon so far one-handed.
+constexpr Skill skillOf(ItemId weapon) { return weapon ? Skill::OneHanded : Skill::Unarmed; }
 
 // A walking, fighting character: the player, and the body of every NPC (driven by AI input instead
 // of keys).

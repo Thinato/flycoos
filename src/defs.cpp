@@ -5,6 +5,7 @@
 #include <format>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -157,6 +158,38 @@ struct SaveIds {
     }
 };
 
+// [{"stat": "spirit", "flat": 2}, ...]: stat modifiers (ADR-022), at most 8, each a known stat and
+// exactly one of flat (points), increased or more (fractions: 0.1 = 10%), and optionally "with" a
+// weapon skill: only on the hits made with it (ADR-027).
+std::vector<Modifier> readMods(const Record& r, const json& ms, const std::string& key) {
+    if (!ms.is_array() || ms.size() > 8) throw r.fail(key, "must be an array of at most 8 {stat, flat|increased|more}");
+    std::vector<Modifier> out;
+    for (size_t j = 0; j < ms.size(); ++j) {
+        const json& m = ms[j];
+        std::string field = std::format("{}[{}]", key, j);
+        if (!m.is_object()) throw r.fail(field, "must be an object {stat, flat|increased|more}");
+        for (const auto& [k, v] : m.items())
+            if (k != "stat" && k != "flat" && k != "increased" && k != "more" && k != "with") throw r.fail(field + "." + k, "unknown field");
+        auto stat = std::ranges::find(kStatIds, m.contains("stat") && m["stat"].is_string() ? m["stat"].get<std::string>() : "");
+        if (stat == std::end(kStatIds)) throw r.fail(field + ".stat", oneOf(kStatIds));
+        if (m.contains("flat") + m.contains("increased") + m.contains("more") != 1)
+            throw r.fail(field, "needs exactly one of flat, increased, more");
+        ModKind kind = m.contains("flat") ? ModKind::Flat : m.contains("increased") ? ModKind::Increased : ModKind::More;
+        bool flat = kind == ModKind::Flat;
+        double value = r.number(m, field + (flat ? ".flat" : kind == ModKind::Increased ? ".increased" : ".more"), flat ? -1000 : -1,
+                                flat ? 1000 : 10, kRequired, false);
+        Modifier mod{Stat(stat - std::begin(kStatIds)), kind, float(value)};
+        if (m.contains("with")) {
+            auto with = std::ranges::find(kSkillIds, m["with"].is_string() ? m["with"].get<std::string>() : "");
+            if (with == std::end(kSkillIds) || Skill(with - std::begin(kSkillIds)) == Skill::Armor)
+                throw r.fail(field + ".with", "must be a weapon skill: one_handed, unarmed");
+            mod.with = Skill(with - std::begin(kSkillIds));
+        }
+        out.push_back(mod);
+    }
+    return out;
+}
+
 // ---- Items.
 
 constexpr const char* kSlotIds[] = {"head", "chest", "hands", "legs", "feet", "main_hand", "off_hand", "trinket", "bag", "none"};  // EquipSlot order
@@ -197,27 +230,9 @@ void loadItems(const File& f, Defs& d) {
         if (t.slot == SlotBag) t.bagSlots = int(r.number(r.fields, "bag_slots", 1, 32));
         else if (r.fields.contains("bag_slots")) throw r.fail("bag_slots", "only bag items have bag slots");
         t.armor = int(r.number(r.fields, "armor", 0, 1000, 0));
-        if (r.fields.contains("mods")) {  // [{"stat": "spirit", "flat": 2}, ...]: what wearing it adds (ADR-022)
-            const json& ms = r.fields["mods"];
-            if (!ms.is_array() || ms.size() > 8) throw r.fail("mods", "must be an array of at most 8 {stat, flat|increased|more}");
-            if (!ms.empty() && t.slot >= EquipCount) throw r.fail("mods", "only items worn in an equip slot have mods");
-            for (size_t j = 0; j < ms.size(); ++j) {
-                const json& m = ms[j];
-                std::string field = std::format("mods[{}]", j);
-                if (!m.is_object()) throw r.fail(field, "must be an object {stat, flat|increased|more}");
-                for (const auto& [k, v] : m.items())
-                    if (k != "stat" && k != "flat" && k != "increased" && k != "more") throw r.fail(field + "." + k, "unknown field");
-                auto stat = std::ranges::find(kStatIds, m.contains("stat") && m["stat"].is_string() ? m["stat"].get<std::string>() : "");
-                if (stat == std::end(kStatIds))
-                    throw r.fail(field + ".stat", oneOf(kStatIds));
-                if (m.contains("flat") + m.contains("increased") + m.contains("more") != 1)
-                    throw r.fail(field, "needs exactly one of flat, increased, more");
-                ModKind kind = m.contains("flat") ? ModKind::Flat : m.contains("increased") ? ModKind::Increased : ModKind::More;
-                bool flat = kind == ModKind::Flat;  // flat: points; increased and more: fractions (0.1 = 10%)
-                double value = r.number(m, field + (flat ? ".flat" : kind == ModKind::Increased ? ".increased" : ".more"),
-                                        flat ? -1000 : -1, flat ? 1000 : 10, kRequired, false);
-                t.mods.push_back({Stat(stat - std::begin(kStatIds)), kind, float(value)});
-            }
+        if (r.fields.contains("mods")) {  // what wearing it adds (ADR-022)
+            t.mods = readMods(r, r.fields["mods"], "mods");
+            if (!t.mods.empty() && t.slot >= EquipCount) throw r.fail("mods", "only items worn in an equip slot have mods");
         }
         if (d.items.size() <= save) d.items.resize(save + 1), d.itemIds.resize(save + 1), d.itemNames.resize(save + 1);
         d.items[save] = t;
@@ -250,7 +265,7 @@ void loadCreatures(const File& f, Defs& d) {
         r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
                  "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds", "leash_radius",
                  "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
-                 "flee_health"});
+                 "flee_health", "xp"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
         auto flag = [&](const char* key) {
@@ -314,6 +329,10 @@ void loadCreatures(const File& f, Defs& d) {
         t.recover = float(r.number(r.fields, "attack_recover", 0, 2, 0.2, false));
         t.cooldown = float(r.number(r.fields, "attack_cooldown", 0, 10, 0, false));
         t.fleeHealth = float(r.number(r.fields, "flee_health", 0, 0.95, 0, false));
+        // Character XP for killing one (ADR-027); by default only fighters that can be hurt give any.
+        bool gives = t.attackable && t.temper != Temper::Harmless;
+        t.xp = int(r.number(r.fields, "xp", 0, 100000, gives ? defaultKillXp(t.level) : 0));
+        if (t.xp && !t.attackable) throw r.fail("xp", "a creature that can't be hurt is never killed");
         if (d.creatures.size() <= save) d.creatures.resize(save + 1), d.creatureIds.resize(save + 1), d.creatureNames.resize(save + 1);
         d.creatures[save] = t;
         d.creatureIds[save] = r.id();
@@ -326,6 +345,65 @@ void loadCreatures(const File& f, Defs& d) {
             throw Bad(std::format("{}: save_id {} must be '{}' (code names it), not '{}'", f.path, k, kEntityKindNames[k],
                                   k < d.creatureIds.size() ? d.creatureIds[k] : "missing"));
     for (size_t s = 0; s < d.creatures.size(); ++s) d.creatures[s].name = d.creatureNames[s].empty() ? nullptr : d.creatureNames[s].c_str();
+}
+
+// ---- Skills and talents (ADR-027). Both files are optional: without skills.json skills never
+// improve (no numbers), without talents.json there are no talents.
+
+void loadSkills(const File* f, Defs& d) {
+    for (size_t s = 0; s < size_t(Skill::Count); ++s) d.skills[s].name = kSkillIds[s];
+    if (!f) return;
+    std::array<bool, size_t(Skill::Count)> seen{};
+    for (size_t i = 0; i < f->records.size(); ++i) {
+        Record r{*f, i, flatten(*f, i, i)};
+        r.allow({"id", "copy_from", "name", "use_mult", "use_offset", "improve_mult", "improve_offset", "per_level"});
+        auto id = std::ranges::find(kSkillIds, r.id());
+        if (id == std::end(kSkillIds)) throw r.fail("id", "must be one of one_handed, unarmed, armor (code awards their XP)");
+        size_t s = size_t(id - std::begin(kSkillIds));
+        seen[s] = true;
+        SkillDef& k = d.skills[s];
+        k.name = r.text("name");
+        k.useMult = float(r.number(r.fields, "use_mult", 0, 1000, kRequired, false));
+        k.useOffset = float(r.number(r.fields, "use_offset", 0, 1000, 0, false));
+        k.improveMult = float(r.number(r.fields, "improve_mult", 0, 10000, kRequired, false));
+        k.improveOffset = float(r.number(r.fields, "improve_offset", 1, 1e6, kRequired, false));  // >= 1: a level always costs XP
+        if (r.fields.contains("per_level")) k.perLevel = readMods(r, r.fields["per_level"], "per_level");
+    }
+    for (size_t s = 0; s < seen.size(); ++s)
+        if (!seen[s]) throw Bad(std::format("{}: no record for skill '{}' (code awards its XP)", f->path, kSkillIds[s]));
+}
+
+void loadTalents(const File* f, Defs& d) {
+    if (!f) return;
+    if (f->records.size() > 65535) throw Bad(std::format("{}: more than 65535 talents", f->path));
+    for (size_t i = 0; i < f->records.size(); ++i) {
+        Record r{*f, i, flatten(*f, i, i)};
+        r.allow({"id", "copy_from", "name", "tree", "tier", "max_rank", "requires", "per_rank"});
+        TalentDef t;
+        t.id = r.id(), t.name = r.text("name");
+        auto tree = std::ranges::find(kSkillIds, r.fields.contains("tree") && r.fields["tree"].is_string() ? r.fields["tree"].get<std::string>() : "");
+        if (tree == std::end(kSkillIds)) throw r.fail("tree", oneOf(kSkillIds));
+        t.tree = Skill(tree - std::begin(kSkillIds));
+        t.tier = int(r.number(r.fields, "tier", 0, kMaxTier));
+        t.maxRank = int(r.number(r.fields, "max_rank", 1, 10));
+        if (r.fields.contains("requires")) {
+            const json& v = r.fields["requires"];
+            auto it = v.is_string() ? f->index.find(v.get<std::string>()) : f->index.end();
+            if (it == f->index.end()) throw r.fail("requires", std::format("unknown talent {}", v.dump()));
+            t.prerequisite = int(it->second);
+        }
+        if (!r.fields.contains("per_rank")) throw r.fail("per_rank", "missing (what each rank adds)");
+        t.perRank = readMods(r, r.fields["per_rank"], "per_rank");
+        if (t.perRank.empty()) throw r.fail("per_rank", "must add something");
+        d.talentById.emplace(t.id, uint16_t(i));
+        d.talents.push_back(std::move(t));
+    }
+    for (size_t i = 0; i < d.talents.size(); ++i)  // the prerequisites, now that every talent is read
+        if (int pre = d.talents[i].prerequisite; pre >= 0) {
+            const TalentDef &t = d.talents[i], &p = d.talents[size_t(pre)];
+            if (p.tree != t.tree || p.tier >= t.tier)
+                throw Record{*f, i, {}}.fail("requires", std::format("'{}' must be in the same tree and a lower tier", p.id));
+        }
 }
 
 // ---- Quests (after items and creatures: they name both; ADR-026). Every file in data/quests/.
@@ -629,9 +707,18 @@ bool loadDefs(const std::filesystem::path& dir, Defs& out, std::string& err) {
         std::ranges::sort(questPaths);
         std::vector<File> quests;
         for (const auto& path : questPaths) quests.push_back(parseFile(path));
+        auto optional = [&](const char* name) {
+            std::error_code ec;
+            return std::filesystem::exists(dir / name, ec) ? std::optional<File>(parseFile(dir / name)) : std::nullopt;
+        };
+        std::optional<File> skills = optional("skills.json"), talents = optional("talents.json");
         Defs d;
-        loadItems(items, d);  // pass 2, in reference order: items, creatures, quests
+        if (!skills) d.warnings.push_back((dir / "skills.json").string() + ": missing: skills never improve");
+        if (!talents) d.warnings.push_back((dir / "talents.json").string() + ": missing: no talents to learn");
+        loadItems(items, d);  // pass 2, in reference order: items, creatures, skills, talents, quests
         loadCreatures(creatures, d);
+        loadSkills(skills ? &*skills : nullptr, d);
+        loadTalents(talents ? &*talents : nullptr, d);
         loadQuests(quests, d);
         out = std::move(d);
         err.clear();
@@ -682,6 +769,12 @@ bool reloadDefs(const std::filesystem::path& dir, std::string& err) {
                 return false;
             }
     }
+    // Progress::talents is by handle too: talents may be appended or dropped from the end.
+    for (size_t t = 0; t < std::min(d.talents.size(), gDefs.talents.size()); ++t)
+        if (d.talents[t].id != gDefs.talents[t].id) {
+            err = std::format("talent {} is now '{}', was '{}': add talents at the end or restart", t, d.talents[t].id, gDefs.talents[t].id);
+            return false;
+        }
     setDefs(std::move(d));
     return true;
 }

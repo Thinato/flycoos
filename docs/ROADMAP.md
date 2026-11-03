@@ -80,12 +80,12 @@ reach them.
 
 Not yet scheduled into a milestone; see docs/STORY.md for where Act 1 needs each one.
 
-- [ ] Architecture refactor before the features below: data-driven entity definitions and
+- [x] Architecture refactor before the features below: data-driven entity definitions and
       behavior (state machines), clearer module boundaries; plan in docs/research/Voxel RPG code architecture.md (11 steps)
 - [x] Quests and a quest journal: data-driven objectives and flags (e.g. "bring Hakon's helm to
       Torvald"), dialogue that reacts to quest state (ADR-026)
-- [ ] Player leveling: XP, levels, a talent point per level, talent trees per ability
-- [ ] Skills that improve with use (e.g. one-handed improves by fighting with a one-handed weapon)
+- [x] Player leveling: XP, levels, a talent point per level, talent trees per ability (ADR-027)
+- [x] Skills that improve with use (e.g. one-handed improves by fighting with a one-handed weapon) (ADR-027)
 - [ ] Dynamic lighting: Ember/torches/campfires emit light at night; dark interiors (barrow)
 - [ ] Occlusion-based color ramping (ambient occlusion that darkens and shifts block colors)
 - [x] Time-of-day spawns (e.g. ghouls only at night): an active window on spawn markers (ADR-023)

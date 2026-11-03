@@ -17,7 +17,7 @@
    "weapon": "iron_shortsword", "respawn_seconds": 60},
   {"id": "bandit_chief", "save_id": 6, "name": "Bandit Chief", "level": 3, "stats": {"stamina": 11, "strength": 1, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "chief", "temper": "aggressive", "aggro_range": 10, "wander_radius": 6, "chase_speed": 5.5,
-   "weapon": "iron_shortsword", "loot": "iron_helm", "loot_chance": 1, "respawn_seconds": 120},
+   "weapon": "iron_shortsword", "loot": "iron_helm", "loot_chance": 1, "respawn_seconds": 120, "xp": 60},
   {"id": "ghoul", "save_id": 7, "name": "Barrow Ghoul", "level": 3, "stats": {"stamina": 7, "strength": 2, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "ghoul", "temper": "aggressive", "aggro_range": 8, "wander_radius": 4, "chase_speed": 4,
    "loot": "bone_charm", "loot_chance": 0.3, "respawn_seconds": 45}
