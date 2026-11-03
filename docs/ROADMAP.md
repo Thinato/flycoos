@@ -86,12 +86,15 @@ Not yet scheduled into a milestone; see docs/STORY.md for where Act 1 needs each
       Torvald"), dialogue that reacts to quest state (ADR-026)
 - [x] Player leveling: XP, levels, a talent point per level, talent trees per ability (ADR-027)
 - [x] Skills that improve with use (e.g. one-handed improves by fighting with a one-handed weapon) (ADR-027)
-- [ ] Dynamic lighting: Ember/torches/campfires emit light at night; dark interiors (barrow)
-- [ ] Occlusion-based color ramping (ambient occlusion that darkens and shifts block colors)
+- [x] Dynamic lighting: Ember/torches/campfires emit light at night; dark interiors (barrow)
+      (sky and block light, ADR-019; Lantern block)
+- [x] Occlusion-based color ramping (ambient occlusion that darkens and shifts block colors):
+      AO curve and a cool shadow tint, tunable in the debug Render tab
 - [x] Time-of-day spawns (e.g. ghouls only at night): an active window on spawn markers (ADR-023)
 - [x] Trinket slot (Bone Charm), and gear attributes on top of base stats (stat pipeline, ADR-022)
 - [x] Bigger block palette: 64 colors, and Brick, MossyCobble, DarkPlanks, Hay, Clay, Slate and a
       Lantern (light 11) to build with (ADR-019)
 - [x] Editor: `flatten` under tree canopies spreads Leaves; `fill` over MCP only takes natural
       blocks; prefab-placed markers (a camp that brings its own bandits) (ADR-021)
-- [ ] Re-run the render perf A/B once the 120 fps cap on the dev machine is lifted
+- [x] Re-run the render perf A/B once the 120 fps cap on the dev machine is lifted (2026-11-03:
+      pre-refactor vs HEAD in docs/ARCHITECTURE.md, Performance)

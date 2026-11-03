@@ -981,6 +981,26 @@ derives the following from the sun height:
 | GPU memory for world quads | ~14 MB |
 | Mean frame time (benchmark, vsync off) | ~2–3 ms |
 
+### Perf A/B 2026-11-03: pre-refactor (f7e14aa) vs 840bc30
+
+6 alternating runs per cell, `--frames 900 --look 0 -20`, 1600×900; the story world is a scratch copy.
+The machine ran on battery; about 1 run in 6 can pin to the display's 120 Hz with identical flags
+(mean ~8 ms), none did here.
+
+| Scene | Build | Mean frame | p99 (median) | Opaque quads | Light fill | Mesh + upload | RSS |
+|---|---|---|---|---|---|---|---|
+| Generated world, seed 1337, day | f7e14aa | 3.42 ms | 6.6 ms | 1,766,719 | – | 1.01 s | 335 MiB |
+| | 840bc30 | 3.70 ms | 7.8 ms | 1,853,847 | 0.37 s | 1.07 s | 390 MiB |
+| Story world, day (`--time 0.4`) | f7e14aa | 3.40 ms | 5.3 ms | 1,772,666 | – | 0.99 s | 339 MiB |
+| | 840bc30 | 3.67 ms | 7.1 ms | 1,863,601 | 0.31 s | 1.06 s | 400 MiB |
+| Story world, night (`--time 0.9`) | f7e14aa | 3.59 ms | 8.4 ms | 1,772,666 | – | 1.06 s | 338 MiB |
+| | 840bc30 | 3.84 ms | 9.0 ms | 1,863,601 | 0.31 s | 1.11 s | 400 MiB |
+
+The whole refactor plus the backlog costs about +0.27 ms (+7–8%) per frame, which is voxel lighting:
+light breaks greedy merges (+5% quads, ADR-019), the light arrays add ~47 MiB plus ~10 MiB of
+quads, and the light fill adds ~0.3 s to startup. Everything else (Session, fixed tick, data files,
+AI, stats, quests, progression) is not measurable in frame time.
+
 ## Known ceilings
 
 | Ceiling | Upgrade path |
