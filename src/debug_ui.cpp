@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlgpu3.h>
+
+#include "defs.h"
 
 DebugUI::DebugUI(SDL_Window* window, const Renderer& renderer) {
     IMGUI_CHECKVERSION();
@@ -168,7 +171,7 @@ static void itemsTab(Player& p) {
     Inventory& inv = p.inv;
     ImGui::Text("%d / %d item slots free (C: character, B: bags)", freeSlots(inv), itemSlots(inv));
     ImGui::BeginDisabled(freeSlots(inv) == 0);
-    for (int id = 1; id < ItemCount; ++id) {
+    for (int id = 1; id < int(defs().items.size()); ++id) {
         ImGui::PushID(id);
         if (ImGui::Button("Give")) giveItem(inv, ItemId(id));
         ImGui::PopID();
@@ -185,6 +188,35 @@ static void itemsTab(Player& p) {
         ImGui::Text("Bag %d      %s", b + 1, inv.bags[size_t(b)] ? itemType(inv.bags[size_t(b)]).name : "-");
     if (ImGui::Button("Empty inventory")) inv = Inventory{};
     ImGui::SetItemTooltip("Removes every item, equipped ones and bags included.");
+}
+
+// The UI runs between ticks, so the registry can be swapped right here.
+static void dataTab(std::string& status) {
+    if (ImGui::Button("Reload defs")) {
+        std::string error;
+        status = reloadDefs(dataDir(), error) ? "Reloaded " + dataDir().string() : "Kept the old defs: " + error;
+    }
+    ImGui::SetItemTooltip("Reloads data/*.json. On an error, or if a loaded save id would change meaning, the old defs stay.");
+    if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
+    const Defs& d = defs();
+    ImGui::SeparatorText("Items (data/items.json)");
+    if (ImGui::BeginTable("items", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+        for (const char* h : {"save", "id", "slot", "damage / speed", "bag / armor"}) ImGui::TableSetupColumn(h);
+        ImGui::TableHeadersRow();
+        for (size_t i = 1; i < d.items.size(); ++i) {
+            const ItemType& t = d.items[i];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(), ImGui::Text("%zu", i);
+            ImGui::TableNextColumn(), ImGui::TextUnformatted(d.itemIds[i].c_str());
+            ImGui::SetItemTooltip("%s", t.name);
+            ImGui::TableNextColumn(), ImGui::TextUnformatted(t.slot < EquipCount ? kSlotNames[t.slot] : t.slot == SlotBag ? "Bag" : "-");
+            ImGui::TableNextColumn();
+            if (t.attack.speed > 0) ImGui::Text("%d-%d / %.2f", t.attack.minDamage, t.attack.maxDamage, t.attack.speed);
+            ImGui::TableNextColumn();
+            if (t.bagSlots || t.armor) ImGui::Text("%d / %d", t.bagSlots, t.armor);
+        }
+        ImGui::EndTable();
+    }
 }
 
 static void cameraTab(GameSettings& g) {
@@ -239,6 +271,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
         if (ImGui::BeginTabItem("Player")) { playerTab(player, session.armorK, actions, region); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Items")) { itemsTab(player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Entities")) { entitiesTab(session.entities, player, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Data")) { dataTab(defsStatus_); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Stats")) {

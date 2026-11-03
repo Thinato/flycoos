@@ -2,7 +2,7 @@
 
 Milestone 0 is about 1,200 lines of C++ (including tests) and 160 lines of MSL. It has two layers:
 
-- **`flycoos_core`** (static library: `world`, `story`, `mesher`, `model`, `player`, `entity`, `item`, `edit`, `prefab`, `commands`, `session`): pure CPU
+- **`flycoos_core`** (static library: `world`, `story`, `mesher`, `model`, `player`, `entity`, `item`, `defs`, `edit`, `prefab`, `commands`, `session`): pure CPU
   code with no GPU or SDL dependency, unit-tested by `tests/core_test.cpp`.
 - **`flycoos`** (executable: `main`, `renderer` + `shaders/world.metal`, `server`): platform, input,
   camera, GPU and the command server.
@@ -38,13 +38,15 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits and temper, spawning (`syncSpawns` from spawn markers, `defaultMarkers`), wander and chase AI, talking, damage both ways, loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in); `startSession` (starting gear, spawns), `step(Session&, SimInput, dt)` (one `kTick`: interaction, swing, movement, NPCs and combat, time of day, region enter, the knocked-out player's respawn) |
-| `src/item.h/.cpp` | Item table, `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
+| `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` (records by string id, `copy_from`, field and range checks), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
+| `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C) and Bags (B) windows: slots, drag and drop, right-click equip, tooltips, attributes |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, poi labels and the region name (`drawPlaces`) |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, uploads of the core's chunk and model meshes, render targets, frustum culling, day/night lighting, screenshots |
+| `src/text.h` | `validName`: UTF-8 display text without control, bidi or zero-width characters (marker names and lines, item names) |
 | `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh and remesh times), for the debug and editor UIs without `renderer.h` |
 | `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
-| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
+| `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Items, Entities, Data, Camera, World, Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor) into `SimInput`, orbit camera, main loop around `step`, remote commands, benchmark stats |
 | `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs` |
 
@@ -498,8 +500,22 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
 
 ## Items and inventory
 
-- Items are ids into one table (`kItems` in item.cpp): name, equip slot, weapon `Attack`, bag size,
-  armor.
+- Items are defined in `data/items.json` (ADR-018) and loaded at startup by `loadDefs` into a table
+  indexed by save id: name, equip slot, weapon `Attack`, bag size, armor. A record:
+  `{"id": "iron_helm", "save_id": 5, "name": "Iron Helm", "slot": "head", "armor": 6}`; optional
+  fields are `slot` (head, chest, hands, legs, feet, main_hand, off_hand, bag; default none),
+  `attack` `{min, max, speed}` (required for main_hand), `bag_slots` (required for bag), `armor`,
+  and `copy_from` (another record's id: its fields but save_id, merge-patched with the record's own,
+  so objects merge and `null` removes; at most 16 deep). Any bad record stops the game with a
+  message naming file, record and field. `data/` is read from the working folder, else from the
+  source tree.
+- **Adding an item:** append a record with the next `save_id` (ids are saved in inventories: never
+  renumber or reuse one). Code names an item only through the `ItemId` constants; an item that code
+  must name gets one, at its save id, plus its row in `kNamedItems` (defs.cpp). Its icon (`inventory_ui.cpp`) and worn or held model
+  (`model.cpp`) are code; without them it shows no icon.
+- The debug window's **Data** tab lists the loaded items and has **Reload defs**: it reloads
+  `data/` between ticks and keeps the old definitions (showing the error) when the files are bad,
+  drop an item or give a loaded save id another string id.
 
   | Item | Slot | Notes |
   |---|---|---|

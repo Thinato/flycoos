@@ -1,0 +1,13 @@
+[
+  {"id": "iron_shortsword", "save_id": 1, "name": "Iron Shortsword", "slot": "main_hand", "attack": {"min": 6, "max": 10, "speed": 1.0}},
+  {"id": "canvas_satchel", "save_id": 2, "name": "Canvas Satchel", "slot": "bag", "bag_slots": 6},
+  {"id": "rusty_knife", "save_id": 3, "name": "Rusty Knife", "slot": "main_hand", "attack": {"min": 3, "max": 6, "speed": 0.75}},
+  {"id": "boar_skin", "save_id": 4, "name": "Boar Skin"},
+  {"id": "iron_helm", "save_id": 5, "name": "Iron Helm", "slot": "head", "armor": 6},
+  {"id": "iron_cuirass", "save_id": 6, "name": "Iron Cuirass", "slot": "chest", "armor": 12},
+  {"id": "iron_gauntlets", "save_id": 7, "name": "Iron Gauntlets", "slot": "hands", "armor": 4},
+  {"id": "iron_greaves", "save_id": 8, "name": "Iron Greaves", "slot": "legs", "armor": 10},
+  {"id": "iron_sabatons", "save_id": 9, "name": "Iron Sabatons", "slot": "feet", "armor": 5},
+  {"id": "wolf_pelt", "save_id": 10, "name": "Wolf Pelt"},
+  {"id": "bone_charm", "save_id": 11, "name": "Bone Charm"}
+]

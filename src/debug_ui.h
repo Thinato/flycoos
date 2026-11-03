@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <string>
 
 #include <SDL3/SDL.h>
 
@@ -22,7 +23,7 @@ struct DebugActions {
     bool regenerate = false, respawn = false, respawnEntities = false;
 };
 
-// Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Items, Entities, Camera, World, Stats.
+// Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Items, Entities, Data, Camera, World, Stats.
 // Also owns the ImGui frame the in-game HUD draws into.
 class DebugUI {
 public:
@@ -53,4 +54,5 @@ private:
 
     std::array<float, 240> frameMs_{};
     size_t frameIndex_ = 0;
+    std::string defsStatus_;  // the Data tab's last reload result
 };

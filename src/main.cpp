@@ -15,6 +15,7 @@
 
 #include "commands.h"
 #include "debug_ui.h"
+#include "defs.h"
 #include "editor_ui.h"
 #include "hud.h"
 #include "inventory_ui.h"
@@ -596,6 +597,12 @@ static int run(SDL_Window* window, const Options& opt) {
 
 int main(int argc, char** argv) {
     Options opt = parseArgs(argc, argv);
+    Defs loaded;
+    if (std::string error; !loadDefs(dataDir(), loaded, error)) {
+        std::println(stderr, "cannot load definitions: {}", error);
+        return 1;
+    }
+    setDefs(std::move(loaded));
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::println(stderr, "SDL_Init failed: {}", SDL_GetError());
         return 1;

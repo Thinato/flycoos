@@ -10,6 +10,8 @@ enum EquipSlot : uint8_t { SlotHead, SlotChest, SlotHands, SlotLegs, SlotFeet, S
                            EquipCount, SlotBag = EquipCount, SlotNone };
 extern const char* const kSlotNames[EquipCount];
 
+// Item save ids (the `save_id` of their record in data/items.json): append-only, never renumbered.
+// These are the ones code names; data may add more after ItemCount.
 enum ItemId : uint8_t { NoItem, Shortsword, Satchel, Knife, BoarSkin,
                         IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, WolfPelt, BoneCharm, ItemCount };
 
@@ -20,7 +22,7 @@ struct ItemType {
     int bagSlots;   // bags
     int armor;      // armor pieces; chest and legs always give the most (a test enforces it)
 };
-const ItemType& itemType(ItemId id);
+const ItemType& itemType(ItemId id);  // from the loaded defs (defs.h); NoItem's row when out of range
 
 constexpr int kBackpackSlots = 12;  // always there, before any bag
 constexpr int kBagBarSlots = 4;

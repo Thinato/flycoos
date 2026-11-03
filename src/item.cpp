@@ -1,24 +1,10 @@
 #include "item.h"
 
+#include "defs.h"
+
 const char* const kSlotNames[EquipCount] = {"Head", "Chest", "Hands", "Legs", "Feet", "Main Hand", "Off Hand"};
 
 namespace {
-
-constexpr ItemType kItems[ItemCount] = {
-    // name              slot          attack         bag slots  armor
-    {"",                 SlotNone,     {0, 0, 0},     0,         0},
-    {"Iron Shortsword",  SlotMainHand, {6, 10, 1.0f}, 0,         0},
-    {"Canvas Satchel",   SlotBag,      {0, 0, 0},     6,         0},
-    {"Rusty Knife",      SlotMainHand, {3, 6, 0.75f}, 0,         0},
-    {"Boar Skin",        SlotNone,     {0, 0, 0},     0,         0},
-    {"Iron Helm",        SlotHead,     {0, 0, 0},     0,         6},
-    {"Iron Cuirass",     SlotChest,    {0, 0, 0},     0,         12},
-    {"Iron Gauntlets",   SlotHands,    {0, 0, 0},     0,         4},
-    {"Iron Greaves",     SlotLegs,     {0, 0, 0},     0,         10},
-    {"Iron Sabatons",    SlotFeet,     {0, 0, 0},     0,         5},
-    {"Wolf Pelt",        SlotNone,     {0, 0, 0},     0,         0},
-    {"Bone Charm",       SlotNone,     {0, 0, 0},     0,         0},  // a trinket; no slot for it yet
-};
 
 bool bagEmpty(const Inventory& inv, int bar) {
     for (ItemId id : inv.containers[size_t(bar) + 1])
@@ -33,7 +19,10 @@ bool accepts(SlotRef s, ItemId id) {
 
 }  // namespace
 
-const ItemType& itemType(ItemId id) { return kItems[id < ItemCount ? id : NoItem]; }
+const ItemType& itemType(ItemId id) {
+    const std::vector<ItemType>& items = defs().items;
+    return items[id < items.size() ? id : NoItem];
+}
 
 ItemId* slotAt(Inventory& inv, SlotRef r) {
     switch (r.kind) {
@@ -81,7 +70,7 @@ bool quickMove(Inventory& inv, SlotRef from) {
 }
 
 bool giveItem(Inventory& inv, ItemId id) {
-    if (id == NoItem || id >= ItemCount) return false;
+    if (id == NoItem || id >= defs().items.size()) return false;
     for (auto& c : inv.containers)
         for (ItemId& slot : c)
             if (slot == NoItem) {

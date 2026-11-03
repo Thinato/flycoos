@@ -9,11 +9,13 @@
 #include <numbers>
 #include <print>
 #include <ranges>
+#include <sstream>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
 
 #include "commands.h"
+#include "defs.h"
 #include "edit.h"
 #include "entity.h"
 #include "mesher.h"
@@ -751,8 +753,8 @@ static void protection() {
     CHECK(mitigate(0, 37, 1) == 0);
 
     // Chest and legs always give more armor than any other piece.
-    for (int i = 1; i < ItemCount; ++i)
-        for (int j = 1; j < ItemCount; ++j) {
+    for (int i = 1; i < int(defs().items.size()); ++i)
+        for (int j = 1; j < int(defs().items.size()); ++j) {
             const ItemType &big = itemType(ItemId(i)), &other = itemType(ItemId(j));
             bool bigSlot = big.slot == SlotChest || big.slot == SlotLegs;
             bool otherSlot = other.slot == SlotHead || other.slot == SlotHands || other.slot == SlotFeet ||
@@ -2625,7 +2627,108 @@ static void ticks() {
     CHECK(glm::distance(drawPos(s.player, 0), glm::vec3(10.5f, 4, 10.5f)) < 0.05f);
 }
 
+// Data definitions (ADR-018): the shipped files load cleanly, and every kind of bad record is a hard
+// error naming the file, record and field.
+static void dataFiles() {
+    namespace fs = std::filesystem;
+    Defs shipped;
+    std::string error;
+    CHECK(loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error) && error.empty());
+    if (!error.empty()) std::println(stderr, "FAIL shipped data: {}", error);
+    CHECK(shipped.items.size() == ItemCount && shipped.itemIds[0].empty() && shipped.itemById.at("iron_helm") == IronHelm);
+
+    fs::path dir = fs::temp_directory_path() / "flycoos_defs_test";
+    fs::create_directories(dir);
+    std::ostringstream all;
+    all << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json").rdbuf();
+    std::string base = all.str();
+    base.erase(base.rfind(']'));  // open for appending records
+    auto write = [&](std::string_view text) { std::ofstream(dir / "items.json") << text; };
+    auto load = [&](std::string_view text, Defs& d) {
+        write(text);
+        return loadDefs(dir, d, error);
+    };
+    // copy_from merge-patches: every field but id and save_id is inherited, objects merge deeply,
+    // null removes. Data may add items after the ones code names.
+    Defs grown;
+    CHECK(load(base + R"(,{"id": "dented_helm", "save_id": 12, "copy_from": "iron_helm", "name": "Dented Helm", "armor": 4},
+                         {"id": "quick_sword", "save_id": 13, "copy_from": "iron_shortsword", "name": "Quick Sword", "attack": {"speed": 0.5}},
+                         {"id": "sword_pommel", "save_id": 14, "copy_from": "iron_shortsword", "name": "Pommel", "slot": null, "attack": null}])", grown));
+    if (!error.empty()) std::println(stderr, "FAIL grown data: {}", error);
+    CHECK(grown.items.size() == 15 && grown.items[12].slot == SlotHead && grown.items[12].armor == 4 &&
+          std::string_view(grown.items[12].name) == "Dented Helm" && grown.itemIds[12] == "dented_helm");
+    const Attack& quick = grown.items[13].attack;
+    CHECK(quick.minDamage == 6 && quick.maxDamage == 10 && quick.speed == 0.5f && grown.items[13].slot == SlotMainHand);
+    CHECK(grown.items[14].slot == SlotNone && grown.items[14].attack.speed == 0);
+    std::string chain = base;  // 16 copies deep is fine, 17 isn't
+    for (int i = 0; i <= 16; ++i)
+        chain += std::format(R"(,{{"id": "c{}", "save_id": {}, "copy_from": "{}", "name": "C"}})", i, 12 + i, i ? std::format("c{}", i - 1) : "boar_skin");
+    std::string chain16 = chain.substr(0, chain.rfind(",{")) + "]";
+    CHECK(load(chain16, grown) && grown.items.size() == 28);
+    for (auto [text, want] : std::initializer_list<std::pair<std::string, std::string_view>>{
+             {base + R"(,{"id": "a", "save_id": 12, "copy_from": "iron_sword", "name": "A"}])",
+              "record 11 'a': field 'copy_from': unknown id 'iron_sword'"},
+             {base + R"(,{"id": "boar_skin", "save_id": 12, "name": "A"}])", "record 11 'boar_skin': field 'id': duplicate of record 3"},
+             {base + R"(,{"id": "a", "save_id": 5, "name": "A"}])", "record 11 'a': field 'save_id': 5 is already 'iron_helm'"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "armor": -1}])", "record 11 'a': field 'armor': -1 is out of range"},
+             {base + R"(,{"id": "a", "save_id": 256, "name": "A"}])", "field 'save_id': 256 is out of range"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "main_hand", "attack": {"min": 6, "max": 2, "speed": 1}}])",
+              "field 'attack.max': 2 is out of range 6..1000"},
+             {base + R"(,{"id": "a", "save_id": 12, "copy_from": "b", "name": "A"},{"id": "b", "save_id": 13, "copy_from": "a", "name": "B"}])",
+              "field 'copy_from': a cycle, or a chain longer than 16"},
+             {chain + "]", "'c16': field 'copy_from': a cycle, or a chain longer than 16"},
+             {base + R"(,{"id": "a", "save_id": 12, "copy_from": 5, "name": "A"}])", "record 11 'a': field 'copy_from': must be a string id"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "armour": 3}])", "record 11 'a': field 'armour': unknown field"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "hat"}])", "field 'slot': must be one of"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "main_hand"}])", "field 'attack': missing"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "head", "attack": {"min": 1, "max": 2, "speed": 1}}])",
+              "field 'attack': only main_hand and off_hand items attack"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "bag"}])", "field 'bag_slots': missing"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "bag_slots": 4}])", "field 'bag_slots': only bag items"},
+             {base + R"(,{"id": "a", "save_id": 12.5, "name": "A"}])", "field 'save_id': must be an integer"},
+             {base + R"(,{"id": "Bad Id", "save_id": 12, "name": "A"}])", "record 11: field 'id': must be a snake_case string"},
+             {base + R"(,{"id": "a", "save_id": 12}])", "record 11 'a': field 'name': must be 1..48 bytes of text"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A‮B"}])", "field 'name': must be 1..48 bytes of text without control"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A\nB"}])", "field 'name': must be 1..48 bytes of text without control"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "armor": 1, "armor": 2}])", "record 11: field 'armor': duplicate key"},
+             {base + R"(,{"id": "a", "save_id": 14, "name": "A"}])", "no record has save_id 12"},
+             {R"([{"id": "a", "save_id": 1, "name": "A"}])", "save_id 1 must be 'iron_shortsword' (code names it), not 'a'"},
+             {base, "not valid JSON"},
+             {"{}", "must be an array of records"},
+         }) {
+        Defs d;
+        CHECK(!load(text, d) && d.items.size() == 1);  // a failed load leaves its target alone
+        if (error.find(want) == std::string::npos || error.find("items.json") == std::string::npos)
+            std::println(stderr, "FAIL defs error: got \"{}\", want \"{}\"", error, want), ++failures;
+    }
+    fs::remove(dir / "items.json");
+    CHECK(!loadDefs(dir, grown, error) && error.find("cannot open") != std::string::npos && grown.items.size() == 28);
+
+    // Reloading may add items but never drop or repurpose a loaded save id; a refusal keeps the defs.
+    write(base + R"(,{"id": "dented_helm", "save_id": 12, "copy_from": "iron_helm", "name": "Dented Helm"}])");
+    CHECK(reloadDefs(dir, error) && defs().items.size() == 13 && defs().itemIds[12] == "dented_helm");
+    write(base + R"(,{"id": "spare_helm", "save_id": 12, "copy_from": "iron_helm", "name": "Spare Helm"}])");
+    CHECK(!reloadDefs(dir, error) && error.find("save_id 12 is now 'spare_helm', was 'dented_helm'") != std::string::npos);
+    write(base + "]");
+    CHECK(!reloadDefs(dir, error) && error.find("11 items, fewer than the 12 loaded") != std::string::npos);
+    write("[");
+    CHECK(!reloadDefs(dir, error) && error.find("not valid JSON") != std::string::npos);
+    CHECK(defs().items.size() == 13 && std::string_view(itemType(ItemId(12)).name) == "Dented Helm");
+    setDefs(std::move(shipped));  // the other tests see exactly the shipped items
+    fs::remove_all(dir);
+}
+
 int main() {
+    {  // every test reads the shipped item definitions, as the game does
+        Defs shipped;
+        std::string error;
+        if (!loadDefs(std::filesystem::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error)) {
+            std::println(stderr, "FAIL cannot load the shipped data: {}", error);
+            return 1;
+        }
+        setDefs(std::move(shipped));
+    }
+    dataFiles();
     meshing();
     chunkMeshes();
     packing();

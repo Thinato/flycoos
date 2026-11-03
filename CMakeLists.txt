@@ -43,11 +43,13 @@ target_link_libraries(imgui PUBLIC SDL3::SDL3)
 
 # Engine core: no GPU code, so it is unit-testable.
 add_library(flycoos_core STATIC src/world.cpp src/story.cpp src/mesher.cpp src/model.cpp src/player.cpp src/entity.cpp src/item.cpp src/edit.cpp
-  src/commands.cpp src/prefab.cpp src/session.cpp)
+  src/commands.cpp src/prefab.cpp src/session.cpp src/defs.cpp)
 target_include_directories(flycoos_core PUBLIC src)
 target_include_directories(flycoos_core SYSTEM PUBLIC ${glm_SOURCE_DIR} ${json_SOURCE_DIR}/single_include)
 target_include_directories(flycoos_core SYSTEM PRIVATE ${stb_SOURCE_DIR})
 target_include_directories(flycoos_core SYSTEM PRIVATE ${fastnoiselite_SOURCE_DIR}/Cpp)
+# data/ falls back to the source tree's when the working folder has none; tests check the shipped files.
+target_compile_definitions(flycoos_core PUBLIC FLYCOOS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(flycoos_core PUBLIC $<IF:$<CXX_COMPILER_ID:MSVC>,/W4,-Wall -Wextra>)
 
 add_executable(flycoos src/main.cpp src/renderer.cpp src/debug_ui.cpp src/hud.cpp src/inventory_ui.cpp src/editor_ui.cpp
@@ -63,5 +65,4 @@ add_dependencies(flycoos shaders)
 enable_testing()
 add_executable(core_test tests/core_test.cpp)
 target_link_libraries(core_test PRIVATE flycoos_core)
-target_compile_definitions(core_test PRIVATE FLYCOOS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")  # checks the shipped prefabs
 add_test(NAME core_test COMMAND core_test)

@@ -404,3 +404,58 @@
   - Benchmark screenshots changed once: 300 frames now cover 5 s of game time at any frame rate.
   - Anything that moves a body outside the simulation must use `teleport()`, or it may be drawn
     partway for up to one tick.
+
+## ADR-018: Data definitions in JSON, keyed by string ids, with append-only save ids
+
+- **Status:** accepted (2026-11-03)
+- **Context:** adding an item or NPC kind meant editing a compiled-in table (`kItems`, `kTypes`)
+  plus the enum, the UI and the tests. Quests, skills and talents will add more tables that refer
+  to each other, and tuning should not need a recompile. Inventories, spawn markers and future
+  saves store numeric ids, so moving tables to data must not renumber anything.
+- **Decision:**
+  - One JSON file per definition type in `data/` (`items.json` first; `creatures.json` next), each
+    an array of records with a required snake_case string `id`. nlohmann/json is already a
+    dependency of the core.
+  - A two-pass loader (`loadDefs` in `defs.cpp`): pass one parses every file into `id → json`;
+    pass two resolves each type in reference order (items before creatures), keeping an
+    `id → save_id` map per type so later types can reference earlier ones, and range-checks every
+    field. Unknown or duplicate ids, duplicate JSON keys (rejected through the parser callback;
+    nlohmann would keep the last), unknown fields, wrong types, out-of-range values and display
+    names with control, bidi or zero-width characters are hard errors naming file, record and
+    field. The game won't start on one; runtime code never sees strings.
+  - `copy_from` names one parent; its fields (all but `save_id`) are merge-patched with the
+    record's own (RFC 7386: objects merge deeply, `null` removes a field). Chains stop at 16, which
+    also catches cycles.
+  - Each record has an explicit `save_id` equal to its old enum value. It is the handle code holds
+    (`ItemId`) and what saves store: append-only, unique, no gaps, never renumbered or reused. A
+    retired item keeps its record. The `ItemId` constants code names (`Shortsword`, `IronHelm`)
+    stay as save ids, so callers didn't change; data may add ids after them. A table in
+    `defs.cpp` pairs each constant with its string id, and loading fails on a mismatch.
+  - Data is found in `data/` in the working folder (`dataDir()`), like `prefabs/`, else in the
+    source tree (`FLYCOOS_SOURCE_DIR`, a compile definition of the core), so a build runs from any
+    folder. A `core_test` case loads every
+    shipped file and asserts zero errors (the CI-less stand-in for a schema), next to the pinned
+    table values.
+  - The debug window's Data tab reloads the files between ticks (`reloadDefs`). It keeps the old
+    registry when loading fails, when the new files have fewer items than are loaded, or when a
+    loaded save id would get a different string id: live inventories hold those ids.
+  - `Block` stays a C++ enum: the 32-entry palette is full, the shader duplicates `kWater`, and
+    generated terrain is pinned by hashes. Model painters and item icons stay code, referenced by
+    id, until voxel model files are worth authoring.
+- **Alternatives considered:**
+  - A JSON Schema validator (pboettch/json-schema-validator): not header-only, "work in
+    progress", and the loader's checks already cover references, types and ranges.
+  - Dense indices assigned in file order: reordering the file would scramble every saved inventory.
+  - Lua definition tables (Luanti-style) with behavior callbacks: an interpreter is a large step
+    that only quests or abilities with real scripting would justify.
+  - `relative`/`proportional`/`extend` on `copy_from` (CDDA): no record needs them yet; merge
+    patch covers overriding one nested field and removing one.
+  - `std::string` names in the type structs instead of pointers into the registry: the pinned
+    table tests read `name` as `const char*`, so the registry fixes the pointers up once per load.
+- **Consequences:**
+  - Tuning an item is a JSON edit and a Reload defs; adding one needs an icon and model in code to
+    look right (it works without them).
+  - The registry is a global the item functions read; swapping it mid-tick would be unsafe, so only
+    the startup and the debug UI set it.
+  - Reordering records changes nothing; deleting one leaves a gap that fails loading instead of
+    shifting ids.
