@@ -7,6 +7,9 @@
 #include <cmath>
 #include <format>
 #include <fstream>
+#include <utility>
+
+#include "defs.h"
 
 namespace {
 
@@ -40,6 +43,50 @@ std::optional<Block> blockNamed(std::string_view name) {
     return std::nullopt;
 }
 
+// A `marker:` value: "<spawn|poi|region> x=N z=N [entity=id] [count=N] [radius=N] [name=rest of the line]",
+// x, z a cell of the layers. Returns why it's wrong, or "". The parser checks the rest once the size is known.
+std::string parseMarker(std::string_view v, Marker& m) {
+    std::string_view kind = v.substr(0, v.find(' '));
+    auto k = std::ranges::find(kMarkerKindNames, kind);
+    if (k == std::end(kMarkerKindNames) || MarkerKind(k - std::begin(kMarkerKindNames)) == MarkerKind::PlayerSpawn)
+        return std::format("marker kind must be spawn, poi or region, not '{}'", kind);
+    m.kind = MarkerKind(k - std::begin(kMarkerKindNames));
+    bool x = false, z = false, entity = false, radius = false;
+    for (v = trim(v.substr(kind.size())); !v.empty();) {
+        size_t eq = v.find('='), end = std::min(v.find(' '), v.size());
+        std::string_view key = v.substr(0, std::min(eq, end));
+        if (eq > end) return std::format("expected key=value, not '{}'", key);
+        if (key == "name") {
+            m.name = trim(v.substr(eq + 1));
+            break;
+        }
+        std::string_view value = v.substr(eq + 1, end - eq - 1);
+        v = trim(v.substr(end));
+        if (key == "entity") {
+            auto it = defs().creatureById.find(value);
+            if (it == defs().creatureById.end()) return std::format("unknown entity '{}'", value);
+            m.entity = it->second;
+            entity = true;
+            continue;
+        }
+        int n = 0;
+        auto [last, ec] = std::from_chars(value.data(), value.data() + value.size(), n);
+        if (key != "x" && key != "z" && key != "count" && key != "radius")
+            return std::format("unknown marker field '{}' (x, z, entity, count, radius, name)", key);
+        if (ec != std::errc() || last != value.data() + value.size() || n < 0 || n > 1 << 16)
+            return std::format("marker {} must be a whole number", key);
+        if (key == "x") m.pos.x = float(n) + 0.5f, x = true;
+        if (key == "z") m.pos.z = float(n) + 0.5f, z = true;
+        if (key == "count") m.count = n;
+        if (key == "radius") m.radius = float(n), radius = true;
+    }
+    if (!x || !z) return "a marker needs x= and z= (a cell of the layers)";
+    if (m.kind == MarkerKind::Spawn && !entity) return "a spawn marker needs entity=";
+    if (m.kind != MarkerKind::Spawn && (entity || m.count != 1)) return "entity and count are for spawn markers";
+    if (!radius) m.radius = m.kind == MarkerKind::Spawn ? typeOf(m.entity).wanderRadius : m.kind == MarkerKind::Poi ? 16 : 32;
+    return {};
+}
+
 // Footprint size after `rotation` quarter turns, and where structure cell (x, z) lands in it.
 glm::ivec3 rotatedSize(glm::ivec3 s, int rotation) { return rotation % 2 ? glm::ivec3(s.z, s.y, s.x) : s; }
 glm::ivec2 rotate(int x, int z, glm::ivec3 s, int rotation) {
@@ -51,10 +98,26 @@ glm::ivec2 rotate(int x, int z, glm::ivec3 s, int rotation) {
     }
 }
 
+// rotate() for points: where (x, z) of a footprint of size `s` (cells 1 wide) lands after `rotation`
+// quarter turns. Turning back is turn(q, rotatedSize(s, rotation), (4 - rotation) % 4).
+glm::vec2 turn(glm::vec2 c, glm::ivec3 s, int rotation) {
+    switch (rotation) {
+    case 1: return {c.y, float(s.x) - c.x};
+    case 2: return {float(s.x) - c.x, float(s.z) - c.y};
+    case 3: return {float(s.z) - c.y, c.x};
+    default: return c;
+    }
+}
+
 // Where structure cell (0, 0, 0) of the rotated footprint goes: centered on the column, the bottom layer above the ground.
 glm::ivec3 structureOrigin(const Prefab& p, const Instance& in) {
     glm::ivec3 s = rotatedSize(p.size, in.rotation);
     return in.pos + glm::ivec3(-(s.x / 2), 1 + p.y, -(s.z / 2));
+}
+
+// A marker position kept inside the world (checkMarker's rule), for instances at its edge.
+glm::vec3 inWorld(const Grid& g, glm::vec3 p) {
+    return glm::clamp(p, glm::vec3(0.5f, 0, 0.5f), glm::vec3(float(g.size.x) - 0.5f, float(g.size.y), float(g.size.z) - 0.5f));
 }
 
 void stamp(Grid& g, const Prefab& p, const Instance& in) {
@@ -89,7 +152,7 @@ uint32_t nextId(const std::vector<Instance>& list, const EditHistory& h) {
     for (const std::vector<EditRecord>* stack : {&h.undo, &h.redo})  // ids an undo or redo may bring back
         for (const EditRecord& r : *stack)
             for (const auto& entry : r.instances) id = std::max(id, entry.first);
-    return id + 1;  // 0 when the ids ran out
+    return id >= UINT32_MAX - 1 ? 0 : id + 1;  // 0 when the ids ran out (2^32-1 is never an id)
 }
 
 }  // namespace
@@ -107,8 +170,14 @@ std::string parsePrefab(std::string_view text, Prefab& out) {
     Prefab p;
     p.name = out.name;
     std::vector<std::vector<std::string_view>> layers;
-    std::vector<int> layerLines;
-    int n = 0;
+    std::vector<int> layerLines, markerLines;
+    std::vector<std::string_view> given;  // header keys seen
+    const Grid any({1, 1, 1});
+    auto unplaced = [&](Marker m) {  // checkMarker but the position: placing sets that
+        m.pos = {};
+        return checkMarker(any, m);
+    };
+    int n = 0, npcs = 0;
     auto fail = [&](const std::string& why) { return std::format("line {}: {}", n, why); };
     for (size_t at = 0; at < text.size();) {
         size_t end = std::min(text.find('\n', at), text.size());
@@ -137,6 +206,10 @@ std::string parsePrefab(std::string_view text, Prefab& out) {
         size_t colon = t.find(':'), eq = t.find('=');
         std::string_view key = colon == std::string_view::npos ? "" : t.substr(0, colon), value = trim(t.substr(colon + 1));
         if (!key.empty() && std::ranges::all_of(key, [](unsigned char c) { return std::isalpha(c); })) {
+            if (key != "marker" && key != "line") {  // those repeat; the rest would silently override
+                if (std::ranges::find(given, key) != given.end()) return fail(std::format("'{}' is given twice", key));
+                given.push_back(key);
+            }
             if (key == "description") {
                 if (value.size() > 200) return fail("description longer than 200 characters");
                 p.description = value;
@@ -148,8 +221,19 @@ std::string parsePrefab(std::string_view text, Prefab& out) {
                 auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), p.y);
                 if (ec != std::errc() || end != value.data() + value.size() || p.y < -kMaxPrefabSize || p.y > kMaxPrefabSize)
                     return fail(std::format("y must be an integer in -{0}..{0}", kMaxPrefabSize));
+            } else if (key == "marker") {
+                if (std::string why = parseMarker(value, p.markers.emplace_back()); !why.empty()) return fail(why);
+                if (const char* why = unplaced(p.markers.back())) return fail(std::format("marker: {}", why));
+                if (p.markers.size() > kMaxMarkers) return fail(std::format("more than {} markers", kMaxMarkers));
+                if ((npcs += p.markers.back().kind == MarkerKind::Spawn ? p.markers.back().count : 0) > kMaxSpawnedNpcs)
+                    return fail(std::format("the spawn markers make more than {} NPCs", kMaxSpawnedNpcs));
+                markerLines.push_back(n);
+            } else if (key == "line") {
+                if (p.markers.empty()) return fail("a line belongs to the marker above it: put 'marker:' first");
+                p.markers.back().lines.emplace_back(value);
+                if (const char* why = unplaced(p.markers.back())) return fail(std::format("line: {}", why));
             } else {
-                return fail(std::format("unknown key '{}' (description, foundation, y)", key));
+                return fail(std::format("unknown key '{}' (description, foundation, y, marker, line)", key));
             }
         } else if (eq != std::string_view::npos && trim(t.substr(0, eq)).size() == 1) {
             unsigned char c = static_cast<unsigned char>(t[0]);
@@ -181,6 +265,12 @@ std::string parsePrefab(std::string_view text, Prefab& out) {
             for (size_t x = 0; x < layers[y][z].size(); ++x)
                 p.cells[(y * size_t(p.size.z) + z) * size_t(p.size.x) + x] = Block(legend[size_t(layers[y][z][x])]);
     if (std::ranges::all_of(p.cells, [](Block b) { return b == kKeep; })) return fail("no blocks: every cell is a space");
+    for (size_t i = 0; i < p.markers.size(); ++i) {
+        const Marker& m = p.markers[i];
+        n = markerLines[i];
+        if (m.pos.x > float(p.size.x) || m.pos.z > float(p.size.z))
+            return fail(std::format("marker cell {} {} is outside the layers ({} x {})", int(m.pos.x), int(m.pos.z), p.size.x, p.size.z));
+    }
     out = std::move(p);
     return {};
 }
@@ -260,12 +350,23 @@ Box prefabBox(const Grid& g, const Prefab& p, const Instance& in) {
 }
 
 EditResult placePrefab(Grid& g, const Prefab& p, Instance inst, std::optional<int> y, std::vector<Instance>& list,
-                       EditHistory& h, bool join) {
+                       EditHistory& h, bool join, std::vector<Marker>* markers) {
     inst.pos.y = y.value_or(groundTop(g, inst.pos.x, inst.pos.z));
     if (const char* error = checkPlacement(g, p, inst)) return {{}, error};
     if (list.size() >= kMaxInstances) return {{}, "too many instances: remove some first"};
     if (!inst.id) inst.id = nextId(list, h);
     if (!inst.id) return {{}, "out of instance ids"};
+    if (!markers || p.markers.empty()) markers = nullptr;  // none to make
+    uint32_t firstMarker = 0;
+    if (markers) {
+        int npcs = 0;
+        for (const std::vector<Marker>* l : {&std::as_const(*markers), &p.markers})
+            for (const Marker& m : *l) npcs += m.kind == MarkerKind::Spawn ? m.count : 0;
+        if (markers->size() + p.markers.size() > kMaxMarkers) return {{}, "too many markers for the prefab's: remove some first"};
+        if (npcs > kMaxSpawnedNpcs) return {{}, "the prefab's spawn markers would make more than 256 NPCs: remove some spawns first"};
+        firstMarker = nextMarkerId(*markers, h);
+        if (!firstMarker || UINT32_MAX - 1 - firstMarker < p.markers.size()) return {{}, "out of marker ids"};
+    }
     Box box = prefabBox(g, p, inst);
     if (box.empty()) return {{}, "the prefab is outside the world"};
     std::vector<Block> before = readBox(g, box);
@@ -287,13 +388,24 @@ EditResult placePrefab(Grid& g, const Prefab& p, Instance inst, std::optional<in
     EditRecord rec;
     rec.parts.push_back(changedPart(g, box, before));
     rec.instances.push_back({inst.id, std::nullopt});
+    if (markers) {  // standing on the bottom layer, turned with the footprint; the ids are above every other
+        glm::ivec3 origin = structureOrigin(p, inst);
+        for (const Marker& d : p.markers) {
+            Marker& m = markers->emplace_back(d);
+            glm::vec2 xz = glm::vec2(origin.x, origin.z) + turn({d.pos.x, d.pos.z}, p.size, inst.rotation);
+            m.id = firstMarker++;
+            m.owner = inst.id;
+            m.pos = inWorld(g, {xz.x, float(origin.y + 1), xz.y});
+            rec.markers.push_back({m.id, std::nullopt});
+        }
+    }
     EditResult result{rec.parts[0].box, nullptr, inst.id};
     list.insert(std::ranges::lower_bound(list, inst.id, {}, &Instance::id), std::move(inst));
     pushRecord(h, std::move(rec), join);
     return result;
 }
 
-EditResult removePrefab(Grid& g, uint32_t id, std::vector<Instance>& list, EditHistory& h) {
+EditResult removePrefab(Grid& g, uint32_t id, std::vector<Instance>& list, EditHistory& h, std::vector<Marker>* markers) {
     auto it = std::ranges::lower_bound(list, id, {}, &Instance::id);
     if (it == list.end() || it->id != id) return {{}, "no instance with that id"};
     Box box = instanceBox(*it);
@@ -304,14 +416,21 @@ EditResult removePrefab(Grid& g, uint32_t id, std::vector<Instance>& list, EditH
     if (EditRecord::Part part = changedPart(g, box, before); !part.box.empty()) rec.parts.push_back(std::move(part));
     rec.instances.push_back({id, std::move(*it)});
     list.erase(it);
+    if (markers) {
+        for (auto m = markers->begin(); m != markers->end();) {
+            if (m->owner == id) rec.markers.push_back({m->id, std::move(*m)}), m = markers->erase(m);
+            else ++m;
+        }
+    }
     pushRecord(h, std::move(rec), false);
     return {box, nullptr, id};  // the whole box, even if later edits covered all of it: the list changed
 }
 
 EditResult movePrefab(Grid& g, const Prefab& p, uint32_t id, glm::ivec2 column, std::optional<int> y, int rotation,
-                      std::vector<Instance>& list, EditHistory& h) {
+                      std::vector<Instance>& list, EditHistory& h, std::vector<Marker>* markers) {
     auto it = std::ranges::lower_bound(list, id, {}, &Instance::id);
     if (it == list.end() || it->id != id) return {{}, "no instance with that id"};
+    const Instance was{.pos = it->pos, .rotation = it->rotation};  // where its markers stand relative to
     Instance moved{id, it->prefab, {column.x, y.value_or(0), column.y}, rotation, it->seed, it->params, {}};
     if (const char* error = checkPlacement(g, p, moved)) return {{}, error};
     EditHistory step;  // the move's own record, so a failure leaves the real history untouched
@@ -321,6 +440,19 @@ EditResult movePrefab(Grid& g, const Prefab& p, uint32_t id, glm::ivec2 column, 
         std::vector<Marker> none;  // the step changed no markers
         undoEdit(g, step, list, none);
         return placed;
+    }
+    if (markers) {  // its markers keep their place on the footprint (even moved by hand), turned and moved with it
+        const Instance& now = *std::ranges::find(list, id, &Instance::id);
+        glm::ivec3 from = structureOrigin(p, was), to = structureOrigin(p, now);
+        for (Marker& m : *markers) {
+            if (m.owner != id) continue;
+            glm::vec2 local = turn(glm::vec2(m.pos.x - float(from.x), m.pos.z - float(from.z)), rotatedSize(p.size, was.rotation),
+                                   (4 - was.rotation) % 4);
+            glm::vec2 xz = glm::vec2(to.x, to.z) + turn(local, p.size, now.rotation);
+            Marker old = m;
+            m.pos = inWorld(g, {xz.x, m.pos.y + float(to.y - from.y), xz.y});
+            if (m != old) step.undo.back().markers.push_back({m.id, std::move(old)});
+        }
     }
     pushRecord(h, std::move(step.undo.back()), false);
     placed.dirty = {glm::min(from.lo, placed.dirty.lo), glm::max(from.hi, placed.dirty.hi)};

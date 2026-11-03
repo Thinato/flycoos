@@ -87,8 +87,11 @@ the brush on the ground. Fly up to aim farther away.
   keeps its surface material on top with subsoil (dirt under grass) below.
 - **Smooth** pulls columns toward their neighbours' average height; **Flatten** pulls them toward a
   height, taken from where each stroke starts. Strength caps the blocks moved per application.
-- **Paint** recolors the surface; **Fill box** sets a box of voxels (Air clears).
-- Brushes act on each column's highest solid voxel, so trees and rocks are treated as terrain.
+- **Paint** recolors the surface; **Fill box** sets a box of voxels (Air clears). Both take any
+  block, building blocks (Planks, Cobble, Thatch, Ember...) too; Paint only solid ones.
+- Brushes act on each column's highest solid voxel, so trees and rocks are treated as terrain. The
+  surface they keep on top is the top block, but cutting a tree or structure down to or below the
+  ground under it leaves the ground's surface (grass, not leaves); a painted road stays a road.
   They never create or drain water: lowering a lakebed keeps it under water, lowering dry land
   makes a dry pit even below sea level.
 - **Prefab** places a tree, rock, house, camp... (picker, params sliders, seed reroll, rotation in
@@ -124,7 +127,7 @@ server. If the game isn't running, the tools say how to start it.
 |---|---|
 | `state` | World file, size, seed, unsaved flag, undo/redo depth, player and camera, editor mode, time of day |
 | `raise` `lower` `smooth` `flatten` `paint` | The editor's brushes at a column `x`, `z` with `radius`, `strength`, `height` (flatten), `material` (paint) |
-| `fill` | Set a box (`min`, `max`, at most 128³) to a material; Air clears, Water makes water |
+| `fill` | Set a box (`min`, `max`, at most 128³) to any block (Planks, Cobble, Ember... too); Air clears, Water makes water |
 | `apply` | Up to 256 of the ops above in one call (within one command's work budget, see below) |
 | `path` | A road or river bed along `[x, z]` points: `width`, `follow_terrain` (graded) or a fixed `height`, `depth`, `material` |
 | `undo` `redo` | One shared history: Claude's edits and yours undo in order, each command is one step |
@@ -135,8 +138,8 @@ server. If the game isn't running, the tools say how to start it.
 | `inspect` | Block counts in a box |
 | `goto` | Fly your camera (editor mode) to a point, facing `look_at`, if **Follow Claude** is on |
 | `prefabs` | List the prefabs (rescans `prefabs/` first, with parse errors), their params and sizes |
-| `place` | Place a prefab at column `x`, `z` (optional ground `y`, `rotation` 0/90/180/270, `seed`, `params`); returns its instance id and box |
-| `move` `remove` | Move an instance (same id, one undo step) or remove it |
+| `place` | Place a prefab at column `x`, `z` (optional ground `y`, `rotation` 0/90/180/270, `seed`, `params`); returns its instance id and box, and the markers it brought |
+| `move` `remove` | Move an instance (same id, one undo step) or remove it; its own markers move and go with it |
 | `instances` | The placed instances, optionally those touching a region |
 | `markers` | The story markers, optionally of one `kind` and in a region |
 | `mark` | Add a marker: `kind`, `name`, column `x`, `z` (optional ground `y`), `radius`, and for a spawn `entity`, `count` and `lines`; returns its id |
@@ -189,6 +192,14 @@ W  W  W
   2 MB for the whole folder; a world holds at most 10,000 instances.
 - The footprint is centered on the placed column. Rotation turns it counterclockwise seen from
   above (90 turns +x toward −z); by convention the front is the last row (+z).
+- Optional `marker:` header lines bring story markers along (see "Story markers"):
+  `marker: <spawn|poi|region> x=N z=N [entity=<kind>] [count=N] [radius=N] [name=<rest of the line>]`,
+  at cell x, z of the layers (the marker stands on the bottom layer), each followed by optional
+  `line: <text>` lines for its dialogue. `prefabs/camp.txt` brings two bandits:
+  `marker: spawn x=11 z=12 entity=bandit count=2 name=Camp raiders`. Each placement makes its
+  own markers; they belong to the instance (the Editor panel shows them as `(of camp #N)`), turn
+  and move with it, and go when it's removed. Instances placed before a file declared markers
+  bring none.
 - Errors name the file and line (unknown block, character not in the legend, too big...).
 
 ## Story markers

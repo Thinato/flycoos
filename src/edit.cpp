@@ -29,19 +29,32 @@ template <class Fn> void rows(const Grid& g, Box b, Fn fn) {
 // What a column's surface turns into when it's buried, as generation layers it.
 Block subsoil(Block surface) { return surface == Grass ? Dirt : surface == Snow ? Stone : surface; }
 
-// Moves a column's ground top to `to`, keeping its surface material on top.
+// Ground as generation lays it (rocks included). Trees and structures stand on it: brushes keep its
+// material on top instead of spreading theirs (leaves, planks, thatch...).
+bool natural(Block b) { return b == Grass || b == Dirt || b == Stone || b == Sand || b == Snow || b == Rock; }
+
+// Moves a column's ground top to `to`, keeping its surface material on top: its top voxel, except
+// that lowering a tree or structure takes that of the natural ground under it (a painted top lying
+// right on natural ground, such as a Cobble road, stays). Lowering recolors the new top only where it
+// is natural ground, so cutting into a canopy leaves leaves.
 void setColumnTop(Grid& g, int x, int z, int to) {
     int top = groundTop(g, x, z);
     if (top < 0) return;
     to = std::clamp(to, 0, g.size.y - 1);
     Block surface = g.get({x, top, z});
+    bool painted = top > 0 && natural(g.get({x, top - 1, z}));
+    for (int y = top - 1; to < top && !natural(surface) && !painted && y >= 0; --y)
+        if (Block b = g.get({x, y, z}); natural(b)) {
+            surface = b;
+            break;
+        }
     if (to > top) {
         for (int y = top; y < to; ++y) g.set({x, y, z}, subsoil(surface));
         g.set({x, to, z}, surface);
     } else if (to < top) {
         Block fill = g.get({x, top + 1, z}) == Water ? Water : Air;  // a lakebed stays under water
         for (int y = to + 1; y <= top; ++y) g.set({x, y, z}, fill);
-        if (isOpaque(g.get({x, to, z}))) g.set({x, to, z}, surface);
+        if (natural(g.get({x, to, z}))) g.set({x, to, z}, surface);
     }
 }
 
@@ -145,6 +158,8 @@ Box swapRecord(Grid& g, std::vector<Instance>& list, std::vector<Marker>& marker
     return all;
 }
 
+}  // namespace
+
 uint32_t nextMarkerId(const std::vector<Marker>& list, const EditHistory& h) {
     uint32_t id = list.empty() ? 0 : list.back().id;
     for (const std::vector<EditRecord>* stack : {&h.undo, &h.redo})  // ids an undo or redo may bring back
@@ -152,8 +167,6 @@ uint32_t nextMarkerId(const std::vector<Marker>& list, const EditHistory& h) {
             for (const auto& entry : r.markers) id = std::max(id, entry.first);
     return id >= UINT32_MAX - 1 ? 0 : id + 1;  // 0 when the ids ran out (2^32-1 is never an id)
 }
-
-}  // namespace
 
 const char* checkEdit(const Grid& g, const EditOp& op) {
     if (op.tool >= Tool::Count) return "unknown tool";
@@ -280,9 +293,11 @@ EditResult putMarker(const Grid& g, std::vector<Marker>& list, EditHistory& h, M
     if (m.id) {
         auto it = std::ranges::lower_bound(list, m.id, {}, &Marker::id);
         if (it == list.end() || it->id != m.id) return {{}, "no marker with that id"};
+        m.owner = it->owner;  // only placing and removing its instance change who owns it
         if (*it == m) return {{}, nullptr, m.id};  // nothing changes: no undo step
         old = std::exchange(*it, m);
     } else {
+        m.owner = 0;  // placed by hand
         if (list.size() >= kMaxMarkers) return {{}, "too many markers: remove some first"};
         if (!(m.id = nextMarkerId(list, h))) return {{}, "out of marker ids"};
         list.insert(std::ranges::lower_bound(list, m.id, {}, &Marker::id), m);

@@ -35,7 +35,6 @@ constexpr int kMaxPathSamples = 4096;  // brush positions per `path`
 constexpr int kMaxSamples = 4096;      // `heights` columns
 constexpr size_t kMaxListed = 500;     // `instances` and `markers` entries
 constexpr int kMaxShot[2] = {1600, 900};
-constexpr Block kMaterials[] = {Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Rock, Water, Air};
 constexpr std::string_view kTools[] = {"raise", "lower", "smooth", "flatten", "paint", "fill"};
 static_assert(std::size(kTools) == size_t(Tool::Count));
 
@@ -64,12 +63,14 @@ glm::ivec3 voxel(const json& a, const char* key, const Grid& g) {
     glm::vec3 p = point(a, key, glm::vec3(-1e6f), glm::vec3(1e6f));
     return glm::clamp(glm::ivec3(glm::round(p)), glm::ivec3(0), g.size - 1);
 }
+// Any block, by name in any case (prefab files take the same): Air clears, Water makes still water.
+// Paint and path check for a solid one (checkEdit).
 Block material(const json& a, const char* key) {
     std::string name = a.contains(key) && a[key].is_string() ? a[key].get<std::string>() : "";
-    for (Block b : kMaterials)
+    for (int b = 0; b < BlockCount; ++b)
         if (std::ranges::equal(name, std::string_view(kBlockNames[b]), [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); }))
-            return b;
-    throw BadArgs(std::format("'{}' must be one of Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Rock, Water, Air", key));
+            return Block(b);
+    throw BadArgs(std::format("'{}' must be a block name, e.g. Grass, Planks, Ember or Air (the catalog command lists them)", key));
 }
 std::string str(const json& a, const char* key, std::string fallback) {
     if (!a.contains(key)) return fallback;
@@ -452,6 +453,7 @@ json prefabsJson(PrefabLibrary& lib, const std::vector<Instance>& instances) {
             e["size"] = {p.size.x, p.size.y, p.size.z};
             if (p.foundation != kKeep) e["foundation"] = kBlockNames[p.foundation];
             if (p.y) e["y"] = p.y;
+            if (!p.markers.empty()) e["markers"] = p.markers.size();
         }
         list.push_back(std::move(e));
     }
@@ -473,9 +475,9 @@ json catalogJson() {
         if (t.loot) e["loot"] = itemType(t.loot).name, e["loot_chance"] = t.lootChance;
         kinds.push_back(std::move(e));
     }
-    for (Block b : kMaterials) {
+    for (int b = 0; b < BlockCount; ++b) {
         materials.push_back(kBlockNames[b]);
-        if (isOpaque(b)) solid.push_back(kBlockNames[b]);
+        if (isOpaque(Block(b))) solid.push_back(kBlockNames[b]);
     }
     return {{"entities", std::move(kinds)}, {"materials", std::move(materials)}, {"solid_materials", std::move(solid)}, {"blocks", kBlockNames}};
 }
@@ -495,6 +497,7 @@ json markerJson(const Marker& m) {
               {"z", int(std::floor(m.pos.z))}, {"y", m.pos.y - 1}, {"radius", m.radius}};
     if (m.kind == MarkerKind::Spawn) j["entity"] = defs().creatureIds[size_t(m.entity)], j["count"] = m.count;
     if (!m.lines.empty()) j["lines"] = m.lines;
+    if (m.owner) j["instance"] = m.owner;  // a prefab instance's: it moves and goes with it
     return j;
 }
 
@@ -578,18 +581,23 @@ json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& 
         in.pos.y = y.value_or(groundTop(g, in.pos.x, in.pos.z));
         Box box = prefabBox(g, p, in);
         budget(volume(box) * kBrushNs * 1e-6, box, "the prefab is too big");
-        EditResult r = placePrefab(g, p, std::move(in), y, list, h);
+        EditResult r = placePrefab(g, p, std::move(in), y, list, h, false, &markers);
         if (r.error) throw BadArgs(r.error);
         out.dirty = r.dirty;
-        return {{"instance", instanceJson(*std::ranges::find(list, r.id, &Instance::id), lib)}, {"undo_steps", h.undo.size()}};
+        json made = json::array();  // the markers the prefab brings
+        for (const Marker& m : markers)
+            if (m.owner == r.id) made.push_back(markerJson(m));
+        return {{"instance", instanceJson(*std::ranges::find(list, r.id, &Instance::id), lib)}, {"markers", std::move(made)},
+                {"undo_steps", h.undo.size()}};
     }
     if (cmd == "remove") {
         uint32_t id = instanceId(a, list);
         Box box = instanceBox(*std::ranges::find(list, id, &Instance::id));
         budget(volume(box) * kBrushNs * 1e-6, box, "the instance is too big");
-        EditResult r = removePrefab(g, id, list, h);
+        size_t had = markers.size();
+        EditResult r = removePrefab(g, id, list, h, &markers);
         out.dirty = r.dirty;
-        return {{"removed", r.id}, {"box", boxJson(r.dirty)}, {"undo_steps", h.undo.size()}};
+        return {{"removed", r.id}, {"box", boxJson(r.dirty)}, {"markers_removed", had - markers.size()}, {"undo_steps", h.undo.size()}};
     }
     if (cmd == "move") {
         uint32_t id = instanceId(a, list);
@@ -605,7 +613,7 @@ json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& 
         if (const char* error = checkPlacement(g, *p, to)) throw BadArgs(error);  // e.g. params from a file
         Box from = instanceBox(in), box = prefabBox(g, *p, to);
         budget((volume(from) + volume(box)) * kBrushNs * 1e-6, merge(from, box), "a far move costs most: remove it and place it again");
-        EditResult r = movePrefab(g, *p, id, {to.pos.x, to.pos.z}, y, to.rotation, list, h);
+        EditResult r = movePrefab(g, *p, id, {to.pos.x, to.pos.z}, y, to.rotation, list, h, &markers);
         if (r.error) throw BadArgs(r.error);
         out.dirty = r.dirty;
         return {{"instance", instanceJson(*std::ranges::find(list, id, &Instance::id), lib)}, {"undo_steps", h.undo.size()}};

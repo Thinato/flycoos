@@ -64,7 +64,10 @@ PREFAB_FORMAT = (
     "map (x right, z down). `.` = Air (clears the world's voxel), space = keep the world's voxel. A blank line right "
     "after `layer` is a row of keep cells; blank lines before the next `layer` are ignored. Lines starting with # are "
     "comments. At most 64 cells per axis. Convention: the front (door) is the last row, +z, at rotation 0. The "
-    "footprint is centered on the placed column.")
+    "footprint is centered on the placed column. Optional header lines `marker: <spawn|poi|region> x=N z=N "
+    "[entity=<kind>] [count=N] [radius=N] [name=<rest of the line>]` (x, z: a cell of the layers, the marker stands on "
+    "the bottom layer), each followed by optional `line: <text>` lines (its dialogue): placing the prefab makes these "
+    "markers, owned by the instance (e.g. prefabs/camp.txt brings two bandits).")
 MARKER_KINDS = ["player_spawn", "spawn", "poi", "region"]
 MARKER_NOTE = (" Markers are authored story data: they stand at the center of column x, z on ground voxel y. Kinds: "
                "`player_spawn` (where the player starts and gets back up after being knocked out; at most one), `spawn` "
@@ -94,18 +97,21 @@ OPS = {
               "keeping the surface material on top (dirt under grass). Pushes ground up through water.",
               obj({**CENTER, "strength": STRENGTH}, ["x", "z"])),
     "lower": ("Lower the ground in a circle by up to `strength` blocks. Under water the removed cells stay water; "
-              "dry land becomes a dry pit even below sea level (water is never created).",
+              "dry land becomes a dry pit even below sea level (water is never created). Cut down to the ground, trees "
+              "and structures leave the ground's surface on top (grass, not leaves); higher up they stay what they are.",
               obj({**CENTER, "strength": STRENGTH}, ["x", "z"])),
     "smooth": ("Smooth the ground in a circle toward each column's 5x5 neighbourhood average.",
                obj({**CENTER, "strength": num("Most blocks moved per column, default 64", 1, 64)}, ["x", "z"])),
-    "flatten": ("Flatten a circle of columns (a hard-edged disc) to ground height `height`.",
+    "flatten": ("Flatten a circle of columns (a hard-edged disc) to ground height `height`. Trees and structures count "
+                "as terrain: flattened down to or below the ground under them, the ground's surface (grass, sand...) ends up "
+                "on top, not leaves or planks; above it they stay what they are (a canopy is cut, not turned to grass).",
                 obj({**CENTER, "height": num("Target ground top y (sea level is 34)", 0, 191),
                      "strength": num("Most blocks moved per column, default 64 (all the way)", 1, 64)},
                     ["x", "z", "height"])),
     "paint": ("Recolor the surface voxel of every column in a circle.",
               obj({**CENTER, "material": SOLID}, ["x", "z", "material"])),
-    "fill": ("Set every voxel in a box (inclusive corners, at most 128^3 voxels) to one material; Air clears, "
-             "Water makes water.",
+    "fill": ("Set every voxel in a box (inclusive corners, at most 128^3 voxels) to one block: any block, terrain or "
+             "building (Planks, Cobble, Thatch, Ember...); Air clears, Water makes still water.",
              obj({"min": xyz("Corner"), "max": xyz("Opposite corner"), "material": MATERIALS},
                  ["min", "max", "material"])),
 }
@@ -142,7 +148,8 @@ TOOLS = {
               "ground voxel `y` (default: the column's highest solid voxel; trees count, so aim at open ground). "
               "Generated prefabs grow like the world's own trees and rocks (trunks reach down to the ground on slopes, "
               "canopies only fill air); structures overwrite their cells, `.` cells clear. Returns the instance: id, "
-              "box, cells changed. Fails if it would change nothing." + INSTANCE_NOTE,
+              "box, cells changed, and `markers`: those the prefab brings (its `marker:` lines), owned by the instance: they turn "
+              "and move with it and go when it's removed. Fails if it would change nothing." + INSTANCE_NOTE,
               obj({"prefab": {"type": "string", "description": "Name from the prefabs tool"},
                    "x": num("Column x of the footprint center", 0, 1023), "z": num("Column z", 0, 1023),
                    "y": num("Ground voxel it stands on (structures: bottom layer at y + 1)", 0, 191),
@@ -154,10 +161,13 @@ TOOLS = {
                                                                "missing ones take their default"}},
                   ["prefab", "x", "z"])),
     "remove": ("Remove a placed instance: every voxel it wrote that still holds what it wrote gets back what was there "
-               "before (anything sculpted over it since stays)." + INSTANCE_NOTE,
+               "before (anything sculpted over it since stays). Its own markers (those its placement made) go with it; "
+               "`markers_removed` counts them." + INSTANCE_NOTE,
                obj({"id": num("Instance id (instances lists them)", 1)}, ["id"])),
     "move": ("Move an instance to another column (and optionally turn it), keeping its id, seed and params: a remove "
-             "and a place in one undo step. Far moves can be over the work budget: then remove and place." + INSTANCE_NOTE,
+             "and a place in one undo step; its own markers keep their spot on it (turned with it). Far moves can be over "
+             "the work budget: then remove and place, but note that this resets its own markers (fresh from the prefab "
+             "file, new ids: renames, lines and hand moves of them are lost)." + INSTANCE_NOTE,
              obj({"id": num("Instance id", 1), "x": num("New column x", 0, 1023), "z": num("New column z", 0, 1023),
                   "y": num("Ground voxel at the new spot (default: found after removing it)", 0, 191),
                   "rotation": {"type": "integer", "enum": [0, 90, 180, 270], "description": "Default: unchanged"}},
@@ -165,7 +175,8 @@ TOOLS = {
     "instances": ("List placed prefab instances (id, prefab, position, rotation, seed, params, box, cells), all of them "
                   "or those whose box touches a region; at most 500 listed, `count` has the total.",
                   obj(REGION)),
-    "markers": ("List the story markers (id, kind, name, x, y, z, radius; spawns also entity, count and any lines), all of them "
+    "markers": ("List the story markers (id, kind, name, x, y, z, radius; spawns also entity, count and any lines; `instance` "
+                "when a prefab instance placed it and owns it), all of them "
                 "or those in a region (a region marker's circle counts), optionally of one kind; at most 500 listed, "
                 "`count` has the total." + MARKER_NOTE,
                 obj({**REGION, "kind": {"type": "string", "enum": MARKER_KINDS}})),

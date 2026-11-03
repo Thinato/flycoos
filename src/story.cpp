@@ -54,6 +54,9 @@ static uint64_t get(const uint8_t* p, int bytes) {
 //   f32 x, y, z, radius | u8 entity | u8 count.
 // "LINE" section (only when a marker has lines; after MARK): u32 count, then per marker with lines,
 //   by ascending id: u32 id | u8 line count | lines (u8 length | text). Older builds skip it.
+// "OWNR" section (only when a prefab instance owns a marker; after MARK): u32 count, then per owned
+//   marker, by ascending id: u32 marker id | u32 instance id (live instances only; never the player_spawn).
+//   Older builds skip it (the markers stay, unowned).
 std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances,
                       const std::vector<Marker>& markers) {
     std::vector<Section> sections;
@@ -81,6 +84,15 @@ std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std:
                 lines.insert(lines.end(), line.begin(), line.end());
             }
         }
+    }
+    auto owned = [&](const Marker& m) {  // by a live instance (else the marker is saved as hand-placed)
+        return m.owner && std::ranges::binary_search(instances, m.owner, {}, &Instance::id);
+    };
+    if (size_t count = size_t(std::ranges::count_if(markers, owned))) {
+        std::vector<uint8_t>& owners = sections.emplace_back(Section{{'O', 'W', 'N', 'R'}, {}}).bytes;
+        put(owners, count, 4);
+        for (const Marker& m : markers)
+            if (owned(m)) put(owners, m.id, 4), put(owners, m.owner, 4);
     }
     return writeWorldFile(path, g, seed, instances, sections);
 }
@@ -152,22 +164,45 @@ static std::string readLines(const uint8_t* p, const uint8_t* end, const Grid& g
     return p == end ? std::string() : "marker lines section size mismatch";
 }
 
+// Reads the OWNR payload [p, end) onto the loaded `markers`; each owner must be a loaded instance.
+static std::string readOwners(const uint8_t* p, const uint8_t* end, const std::vector<Instance>& instances, std::vector<Marker>& markers) {
+    if (end - p < 4 || (end - p - 4) % 8) return "marker owners section size mismatch";
+    uint64_t count = get(p, 4);
+    if (count != uint64_t(end - p - 4) / 8) return "marker owners section size mismatch";
+    uint32_t last = 0;
+    for (p += 4; p < end; p += 8) {
+        uint32_t id = uint32_t(get(p, 4)), owner = uint32_t(get(p + 4, 4));
+        auto m = std::ranges::lower_bound(markers, id, {}, &Marker::id);
+        auto in = std::ranges::lower_bound(instances, owner, {}, &Instance::id);
+        if (m == markers.end() || m->id != id || id <= last || in == instances.end() || in->id != owner || !owner ||
+            m->kind == MarkerKind::PlayerSpawn)  // no prefab places one
+            return std::format("bad owner for marker {}", id);
+        m->owner = owner;
+        last = id;
+    }
+    return {};
+}
+
 std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances,
                       std::optional<std::vector<Marker>>& markers) {
     markers.reset();
     std::vector<Section> sections;
     if (std::string error = readWorldFile(path, g, seed, instances, sections); !error.empty()) return error;
-    const Section* lines = nullptr;  // read once the markers are in
+    const Section *lines = nullptr, *owners = nullptr;  // read once the markers are in
     for (const Section& sec : sections) {
         const uint8_t *p = sec.bytes.data(), *end = p + sec.bytes.size();
         if (std::memcmp(sec.tag, "MARK", 4) == 0) {
             if (std::string error = readMarkers(p, end, g, markers.emplace()); !error.empty()) return error;
-        } else if (std::memcmp(sec.tag, "LINE", 4) == 0) {
-            if (lines) return "duplicate marker lines";
-            lines = &sec;
+        } else if (std::memcmp(sec.tag, "LINE", 4) == 0 || std::memcmp(sec.tag, "OWNR", 4) == 0) {
+            const Section*& seen = sec.tag[0] == 'L' ? lines : owners;
+            if (seen) return "duplicate marker lines or owners";
+            seen = &sec;
         }
     }
-    if (lines && !markers) return "marker lines without markers";
-    if (lines) return readLines(lines->bytes.data(), lines->bytes.data() + lines->bytes.size(), g, *markers);
+    if ((lines || owners) && !markers) return "marker lines or owners without markers";
+    if (lines)
+        if (std::string error = readLines(lines->bytes.data(), lines->bytes.data() + lines->bytes.size(), g, *markers); !error.empty())
+            return error;
+    if (owners) return readOwners(owners->bytes.data(), owners->bytes.data() + owners->bytes.size(), instances, *markers);
     return {};
 }

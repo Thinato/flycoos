@@ -15,7 +15,8 @@ struct Box {
 };
 
 // Brushes work on whole columns inside a circle (center, radius) around the column's ground top,
-// its highest opaque voxel (so trees and rocks count as terrain). Water is never created or
+// its highest opaque voxel (so trees and rocks count as terrain). Cut down to the ground, a tree or
+// structure leaves the natural ground's surface on top (grass, not leaves); see setColumnTop. Water is never created or
 // drained: lowering a column that is under water fills the removed cells with water, lowering dry
 // land leaves a dry pit even below sea level, and raising pushes ground up through water.
 enum class Tool : uint8_t {
@@ -82,7 +83,7 @@ Box redoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances, st
 
 // Markers (sorted by id), one undo step each. putMarker adds `m` with a new id (m.id == 0) or replaces
 // the marker with id m.id; it checks the marker, the caps (markers, NPCs of all spawn markers) and
-// that there's at most one player_spawn.
+// that there's at most one player_spawn. A new marker is hand-placed (owner 0); an edit keeps the owner.
 // removeMarker removes one. Both return the voxel at the marker's (new) position as `dirty`, so the
 // game marks the world unsaved, and the marker's id.
 EditResult putMarker(const Grid& g, std::vector<Marker>& list, EditHistory& h, Marker m);
@@ -98,6 +99,8 @@ EditRecord::Part changedPart(const Grid& g, Box box, const std::vector<Block>& b
 void pushRecord(EditHistory& history, EditRecord rec, bool join);
 // The bounding box of the voxels an instance changed.
 Box instanceBox(const Instance& in);
+// The id a new marker gets: above every id in the list and the history; 0 when they ran out.
+uint32_t nextMarkerId(const std::vector<Marker>& list, const EditHistory& h);
 
 // First opaque voxel along the ray (Amanatides-Woo DDA), with the face it was entered through
 // (normal points back toward the ray; zero if `from` is inside it). Water is passed through.

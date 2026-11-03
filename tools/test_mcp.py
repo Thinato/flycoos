@@ -122,6 +122,9 @@ def main():
         check(listed["paint"]["material"]["enum"] == cat["solid_materials"] and "Grass" in cat["solid_materials"] and
               "Air" not in cat["solid_materials"] and listed["fill"]["material"]["enum"] == cat["materials"] and
               listed["path"]["material"]["enum"] == cat["solid_materials"], "paint, path and fill list the game's materials")
+        check({"Ember", "Planks", "Cobble", "Thatch", "Air", "Water"} <= set(cat["materials"]) and
+              {"Ember", "Planks"} <= set(cat["solid_materials"]) and "Water" not in cat["solid_materials"],
+              "the materials are every block (building blocks too; paint takes the solid ones)")
         offline = subprocess.Popen([sys.executable, os.path.join(ROOT, "tools/flycoos_mcp.py")], cwd=ROOT,
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
                                    env={**os.environ, "FLYCOOS_PORT": "1"})
@@ -175,6 +178,11 @@ def main():
         err, r, _ = tool("undo")
         err2, r2, _ = tool("undo")
         check(not err and not err2 and r2["undo_steps"] == 0 and height() == before, "undo restores the heights")
+        spot = [x, before + 12, z]
+        err, r, _ = tool("fill", min=spot, max=spot, material="Ember")
+        err2, r2, _ = tool("inspect", min=spot, max=spot)
+        check(not err and not err2 and r2["blocks"] == {"Ember": 1}, "fill places a building block (Ember)")
+        tool("undo")
 
         # prefabs: a file written now is usable after a rescan; place, move, remove, undo
         hut = os.path.join(ROOT, "prefabs", "e2e-hut.txt")
@@ -212,6 +220,15 @@ def main():
         check(tool("instances")[1]["count"] == 3, "undo brings the instance back")
         err, msg, _ = tool("remove", id=999)
         check(err and "999" in msg, "remove an unknown id is an error")
+        # a camp brings its own bandits: the instance's markers, removed with it
+        err, r, _ = tool("place", prefab="camp", x=x + 40, z=z)
+        camp_id = r["instance"]["id"] if not err else None
+        made = r.get("markers", []) if not err else []
+        check(len(made) == 1 and made[0]["entity"] == "bandit" and made[0]["count"] == 2 and made[0]["instance"] == camp_id,
+              "a placed camp brings its bandits' spawn marker")
+        err, r, _ = tool("remove", id=camp_id)
+        check(not err and r["markers_removed"] == 1 and tool("markers", kind="spawn")[1]["count"] == 4,
+              "removing the camp takes its marker along")
         # story markers: add each kind, edit, list, map, undo; hostile arguments change nothing
         err, r, _ = tool("markers", kind="spawn")
         check(not err and r["count"] == 4 and {m["entity"] for m in r["markers"]} == {"dummy", "villager", "boar", "bandit"},

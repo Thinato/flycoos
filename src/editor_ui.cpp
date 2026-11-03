@@ -17,9 +17,6 @@ namespace {
 
 constexpr const char* kToolNames[] = {"Raise", "Lower", "Smooth", "Flatten", "Paint", "Fill box", "Prefab", "Marker"};
 static_assert(std::size(kToolNames) == size_t(Tool::Count) + 2);
-constexpr Block kMaterials[] = {Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Rock, Water, Air};  // solid ones first
-constexpr const char* kMaterialNames[] = {"Grass", "Dirt", "Stone", "Sand", "Snow", "Wood", "Leaves", "Rock", "Water", "Air (clear)"};
-constexpr int kSolidMaterials = 8;
 constexpr float kFlashSeconds = 3;
 constexpr float kMarkerRange = 300;  // blocks from the camera
 constexpr size_t kMaxRings = 32;     // marker circles drawn per frame (the nearest)
@@ -138,11 +135,10 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
         ImGui::SetItemTooltip("Ground height to flatten to. Each stroke takes it from where it starts.");
     }
     if (brushTool && (b.tool == Tool::Paint || b.tool == Tool::Fill)) {
-        int count = b.tool == Tool::Fill ? int(std::size(kMaterials)) : kSolidMaterials;
-        int current = int(std::ranges::find(kMaterials, b.block) - std::begin(kMaterials));
-        if (ImGui::BeginCombo("Material", current < count ? kMaterialNames[current] : "?")) {
-            for (int i = 0; i < count; ++i)
-                if (ImGui::Selectable(kMaterialNames[i], i == current)) b.block = kMaterials[i];
+        if (ImGui::BeginCombo("Material", b.block == Air ? "Air (clear)" : kBlockNames[b.block])) {
+            for (int i = 0; i < BlockCount; ++i)  // every block; Paint only solid ones
+                if ((b.tool == Tool::Fill || isOpaque(Block(i))) && ImGui::Selectable(i == Air ? "Air (clear)" : kBlockNames[i], i == b.block))
+                    b.block = Block(i);
             ImGui::EndCombo();
         }
     }
@@ -202,6 +198,12 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
                 ImGui::TextColored(m.id == ed.marked ? ImVec4(0.3f, 1, 0.5f, 1) : ImVec4(0.8f, 0.85f, 0.9f, 1), "#%u %s %s%s%s at %.0f %.0f r %.0f",
                                    m.id, kMarkerKindNames[int(m.kind)], m.name.c_str(), m.kind == MarkerKind::Spawn ? " / " : "",
                                    m.kind == MarkerKind::Spawn ? defs().creatureIds[size_t(m.entity)].c_str() : "", m.pos.x, m.pos.z, m.radius);
+                if (m.owner) {  // made by a prefab instance: it moves and goes with it
+                    auto in = std::ranges::lower_bound(instances, m.owner, {}, &Instance::id);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(of %s #%u)", in != instances.end() && in->id == m.owner ? in->prefab.c_str() : "instance", m.owner);
+                    ImGui::SetItemTooltip("Placed with this prefab instance: moving it moves the marker, removing it removes the marker.");
+                }
                 ImGui::PopID();
             }
     }
@@ -296,9 +298,10 @@ void drawEditorOverlay(const glm::mat4& view, float fovY, glm::vec3 eye, const G
         dl->AddLine(foot, head, uiColor(0, 0, 0, 0.8f), 2);
         dl->AddCircleFilled(head, 6, uiColor(0, 0, 0, 0.8f));
         dl->AddCircleFilled(head, 4.5f, uiColor(rgb[0], rgb[1], rgb[2]));
-        char label[96];
-        std::snprintf(label, sizeof label, "#%u %s%s%s", m.id, m.name.c_str(), m.kind == MarkerKind::Spawn ? " - " : "",
-                      m.kind == MarkerKind::Spawn ? defs().creatureIds[size_t(m.entity)].c_str() : "");
+        char label[128], owner[24] = "";
+        if (m.owner) std::snprintf(owner, sizeof owner, " (of #%u)", m.owner);  // a prefab instance's
+        std::snprintf(label, sizeof label, "#%u %s%s%s%s", m.id, m.name.c_str(), m.kind == MarkerKind::Spawn ? " - " : "",
+                      m.kind == MarkerKind::Spawn ? defs().creatureIds[size_t(m.entity)].c_str() : "", owner);
         ImVec2 at(head.x + 9, head.y - ImGui::GetFontSize() / 2);
         dl->AddText(ImVec2(at.x + 1, at.y + 1), uiColor(0, 0, 0, 0.8f), label);
         dl->AddText(at, m.id == ed.marked ? uiColor(0.3f, 1, 0.5f) : uiColor(1, 1, 1), label);

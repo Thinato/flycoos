@@ -608,3 +608,59 @@
     with damage immunity or a faster walk while returning.
   - Adding behavior means a state or a transition in `think()` (`entity.cpp`) plus its reason;
     tuning means a JSON number and Reload defs.
+
+## ADR-021: Prefab-placed markers, owned by their instance; brushes keep natural ground on top
+
+- **Status:** accepted (2026-11-03)
+- **Context:** three editor gaps from authoring the first act. A camp should bring its own
+  bandits instead of needing a spawn marker placed by hand next to it and kept in step when the
+  camp moves. Flattening under a canopy spread Leaves over the flattened ground, because the brushes
+  took the column's top block as its surface. And `fill`/`paint` over MCP (and the panel) offered
+  only the ten natural blocks, though prefab files could already use every block.
+- **Decision:**
+  - A structure file may declare markers in its header: `marker: <spawn|poi|region> x=N z=N
+    [entity=] [count=] [radius=] [name=<rest>]` at a cell of the layers, with `line:` lines for
+    dialogue, checked by `checkMarker` when the file is parsed. No `player_spawn` (one per world).
+  - `Marker::owner` is the instance whose placement made the marker (0: placed by hand).
+    `placePrefab` makes the prefab's markers (standing on the bottom layer, turned with the
+    footprint, new ids) in the same undo step as the voxels and the instance; `movePrefab` carries
+    the owned ones rigidly and `removePrefab` takes them out, both in the same step. Undo and redo
+    already swap marker entries, so ownership comes back with them. `putMarker` never changes an
+    owner: hand-placed markers stay independent, and an owned marker edited by hand (renamed, given
+    lines, moved) stays its instance's.
+  - Ownership is saved in a new `OWNR` section (marker id, instance id), written only when some
+    marker is owned. `MARK` keeps its layout, so files load both ways without a version bump
+    (ADR-015/016 precedent): older files load with every marker hand-placed, older builds keep the
+    markers and drop the ownership.
+  - Markers are made only by a new placement, never on load: loading doesn't read prefab files. The
+    story's camp (instance 65 in `worlds/story.flyw`) was placed before `camp.txt` declared its
+    bandits, so it brings none, and its NPCs stay the 28 the story was balanced for.
+  - Lowering a column topped by a tree or structure takes the surface material from its highest
+    natural voxel (Grass, Dirt, Stone, Sand, Snow, Rock) under it, and recolors the new top only
+    where it is natural ground: cutting into a canopy leaves leaves, cutting it down to or below the
+    ground leaves grass. A top lying right on natural ground is paint (a Cobble road) and stays the
+    surface; raising keeps the top block as before (raising under a canopy raises the canopy).
+  - `fill` and `paint` (MCP and panel) take every block; the catalog lists them all. Kept: Paint and
+    path need a solid block (an Air or Water top would dig a hole or leave a column whose ground
+    the brushes can't see), and checkEdit still rejects ids past `BlockCount`.
+- **Alternatives considered:**
+  - Re-making markers from the prefab file on load or on move: the story's existing camp would
+    suddenly spawn two more bandits (30 NPCs, a fight the balance test never saw), and a hand edit
+    of an owned marker would be lost on the next move.
+  - Ownership inside `MARK` behind a version bump: every older build would refuse the new files.
+  - Markers as part of the instance record (`INST`): the marker list is what spawns NPCs, gets
+    edited and undone; a second home would drift.
+  - Recomputing owned markers' positions from the declaration on move: drops a hand move of the
+    marker; carrying each marker's current spot on the footprint keeps it.
+  - Skipping only Wood and Leaves for the surface: roofs and planks would still spread.
+  - Always the natural ground's surface, raising too: raising under a tree stacked dirt on the
+    canopy, and sculpting a Cobble road turned it back into dirt.
+- **Consequences:**
+  - A placed camp adds 2 NPCs toward the 256 cap; placing fails (changing nothing) past the marker
+    caps.
+  - Editing a prefab file's markers changes only later placements, like its voxels.
+  - A one-voxel bush or anything else lying right on the ground counts as paint: lowering it
+    spreads it, as before.
+  - A move over the work budget has to be a remove and a place, which makes the instance's markers
+    afresh from the file (new ids, hand edits lost).
+  - Model-color blocks (Skin, Eye...) can now be placed in the world; they are plain colors there.

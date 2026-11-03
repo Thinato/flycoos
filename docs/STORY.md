@@ -53,4 +53,3 @@ The village also has two generic villagers (#2), a training dummy (#1) and boars
 - Night-only spawns for the ghouls.
 - Light from Ember blocks.
 - A trinket slot for the Bone Charm.
-- `flatten` uses the top block as the surface, so flattening under tree canopies spreads Leaves; clear trees first.

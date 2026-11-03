@@ -28,7 +28,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | File | Responsibility |
 |---|---|
 | `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, the world file container (`writeWorldFile`/`readWorldFile`: header, `VOXL`, `INST`, checksum; other sections pass through as `Section`s) |
-| `src/story.h/.cpp` | Story data: `EntityKind` save ids (and the string ids of the ones code names), `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`) and `saveWorld`/`loadWorld` (the container plus markers) |
+| `src/story.h/.cpp` | Story data: `EntityKind` save ids (and the string ids of the ones code names), `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`, `OWNR`) and `saveWorld`/`loadWorld` (the container plus markers) |
 | `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels, prefab instances and markers); `putMarker`/`removeMarker`; `raycast` (voxel DDA); `groundTop` |
 | `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances |
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
@@ -102,6 +102,12 @@ u32 FNV-1a checksum of every byte before it
   text)`. Each marker must exist and pass `checkMarker` with its lines; a second `LINE` section is
   rejected. A file without it (all
   older ones) loads with no lines; older builds skip it and drop the lines.
+- The `OWNR` section (written after `MARK`, only when a prefab instance owns a marker, ADR-021)
+  holds by ascending marker id `u32 count`, then per owned marker `u32 marker id | u32 instance
+  id`, only for owners that are live instances. Each must name a loaded marker (not the
+  player_spawn) and a loaded instance; a second section is rejected. A file
+  without it (all older ones) loads with every marker hand-placed; older builds skip it, so their
+  saves keep the markers but drop the ownership.
 - Later content gets its own sections; old readers skip them, so adding one needs no version bump.
 - Loading rejects, with a message, anything that doesn't parse exactly: wrong magic or version,
   checksum mismatch (any corruption or truncation), bad sizes, block ids or run lengths. A
@@ -125,7 +131,12 @@ in-game editor and remote commands share one entry point:
    falloff that is 1 at the center. Raise/Lower add/remove `strength × falloff` blocks, with a
    stable per-column dither so repeated strokes build slopes instead of terraces. Raised ground
    gets the column's surface block on top and its subsoil (grass → dirt, snow → stone) below;
-   lowered ground gets the old surface block on its new top. Smooth moves toward the 5×5 average
+   lowered ground gets the surface block on its new top where that is natural ground (Grass, Dirt,
+   Stone, Sand, Snow, Rock), so cutting into a canopy leaves leaves. The surface block is the top
+   voxel, except that lowering a column topped by a tree or structure (Wood, Leaves, Planks,
+   Thatch...) takes that of the highest natural voxel under it: flattening a canopy down to or below
+   the ground leaves grass, not leaves. A top that lies right on natural ground counts as paint (a
+   Cobble road) and stays the surface. Smooth moves toward the 5×5 average
    height, Flatten toward a height, both by at most `strength`. Paint sets the top voxel.
 4. Diff the snapshot against the grid. The bounding box of the changes is the **dirty box**
    (empty means nothing changed: no undo record). The undo record is the snapshot cropped to it.
@@ -179,6 +190,16 @@ the screen center.
   and the list always move together; a record's bytes count the instances' cells toward the
   256 MB cap. The returned box covers the instances' boxes too, so a remove whose voxels were all
   sculpted over still marks the world unsaved.
+- **Markers** (ADR-021): a structure file's `marker:` lines (with `line:` lines for dialogue)
+  declare markers at a cell of the layers, each checked by `checkMarker` (but its position) at its
+  own line, with the marker and NPC caps; the other header keys may appear once. Placing with a marker list makes them, standing on the
+  bottom layer (feet at `ground + 2 + y`) and turned with the footprint, with fresh ids and
+  `owner` = the instance id, in the same undo step; it fails (changing nothing) past the marker
+  caps. `movePrefab` carries the owned markers rigidly (each keeps its spot on the footprint, even
+  one moved by hand; clamped into the world) and `removePrefab` takes them out, both in the same
+  step. Hand-placed markers (owner 0) are never touched, and `putMarker` never changes an owner.
+  Loading a world doesn't consult the prefab files, so instances placed before a file declared
+  markers (the story's camp) bring none; only new placements do.
 - **Editor:** tool 7 places `editor.place` on the aimed voxel or selects the instance owning it.
   `instanceAt` scans every instance cell, so the result is cached until the aimed voxel changes or
   the world is edited (`editor.edits`). The panel's instance list draws only its visible rows.
@@ -238,8 +259,8 @@ and for spawns an entity kind, a count and dialogue lines. Kinds:
   draw list. The panel edits a spawn's lines (hidden for the dummy, when Update selected keeps the
   marker's lines) in a multiline box, one per text line (blank ones are
   dropped). Circle heights are cached per marker until the world changes, and only the 32 nearest
-  circles are drawn. The panel lists the markers with Go to and Remove; the debug window's Player
-  tab shows the current region.
+  circles are drawn. The panel lists the markers with Go to and Remove (an instance's own say
+  `(of camp #12)`, their pins `(of #12)`); the debug window's Player tab shows the current region.
 
 ## Command server and MCP bridge
 
@@ -743,4 +764,5 @@ derives the following from the sun height:
 | No shadows: sun light is gated by sky light, which has no direction (wrong under overhangs at low sun) | Cascaded shadow map for sun/moon (M1) |
 | Stepped per-face light (one value per quad, Minecraft's "smooth lighting off"); models get one value | Player-centred RG8 3D light texture sampled per fragment, or per-corner light in a third quad word |
 | Relighting recomputes whole columns (all 192 heights) around an edit | BFS add / two-phase removal on the stored light if edits get big or frequent |
+| A 128³ Ember fill (the biggest `fill`, now that it takes any block) stalls the game ~130–250 ms, mostly relighting 2M emitters (the same box of Stone ~60 ms, Air 30–50 ms; M4, release, story world); the command budget doesn't count relight | Count emitters in the budget, or the BFS relight above |
 | Absolute world-space float positions (jitter far from the origin) | Camera-relative rendering: subtract the camera's chunk origin on the CPU (needed for M1 streaming) |

@@ -34,6 +34,9 @@ struct Prefab {
     std::vector<Block> cells;
     Block foundation = kKeep;  // fills down from the bottom layer's solid cells to the ground
     int y = 0;                 // the bottom layer sits at ground + 1 + y
+    // Structures: markers a placement brings along (`marker:` lines), standing on the bottom layer at
+    // pos x, z: a cell center of the unrotated layers (pos.y unused).
+    std::vector<Marker> markers;
     bool generated() const { return !params.empty(); }
 };
 
@@ -54,19 +57,22 @@ const char* checkPlacement(const Grid& g, const Prefab& p, const Instance& inst)
 // Every voxel that placement may change, clipped to the world; empty if checkPlacement rejects it.
 Box prefabBox(const Grid& g, const Prefab& p, const Instance& inst);
 
-// One undo step each, restoring voxels and the instance list together.
+// One undo step each, restoring voxels, the instance list and `markers` together. The instance's
+// markers (Marker::owner) are made from the prefab's when it's placed, turn and move with it, and go
+// with it; hand-placed ones are never touched. Without `markers` (null) markers are left alone.
 // placePrefab stamps the prefab at column inst.pos.x, z standing on ground voxel `y` (default: the
 // column's highest solid voxel) and adds the instance with its changed cells and a new id (or
-// inst.id if set). It fails if nothing would change, or past kMaxInstances or kMaxInstanceCells.
+// inst.id if set). It fails if nothing would change, past kMaxInstances or kMaxInstanceCells, or
+// past the marker caps (kMaxMarkers, kMaxSpawnedNpcs).
 EditResult placePrefab(Grid& g, const Prefab& p, Instance inst, std::optional<int> y, std::vector<Instance>& list,
-                       EditHistory& h, bool join = false);
+                       EditHistory& h, bool join = false, std::vector<Marker>* markers = nullptr);
 // Puts back what each voxel held before, where it still holds what the prefab wrote (so later
 // edits on top stay).
-EditResult removePrefab(Grid& g, uint32_t id, std::vector<Instance>& list, EditHistory& h);
+EditResult removePrefab(Grid& g, uint32_t id, std::vector<Instance>& list, EditHistory& h, std::vector<Marker>* markers = nullptr);
 // Remove, then place again at `column` with `rotation`, keeping the id, seed and params; the
 // ground is found after the removal. On failure nothing changes, the history included.
 EditResult movePrefab(Grid& g, const Prefab& p, uint32_t id, glm::ivec2 column, std::optional<int> y, int rotation,
-                      std::vector<Instance>& list, EditHistory& h);
+                      std::vector<Instance>& list, EditHistory& h, std::vector<Marker>* markers = nullptr);
 
 // The instance that wrote `cell` and still owns it, or nullptr.
 const Instance* instanceAt(const std::vector<Instance>& list, const Grid& g, glm::ivec3 cell);

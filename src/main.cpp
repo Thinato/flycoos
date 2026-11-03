@@ -410,7 +410,7 @@ static int run(SDL_Window* window, const Options& opt) {
                     Instance in = editor.place;
                     in.pos = aim->cell;
                     uint64_t start = SDL_GetTicksNS();
-                    EditResult r = placePrefab(world, *prefab, in, aim->cell.y, instances, editor.history);
+                    EditResult r = placePrefab(world, *prefab, in, aim->cell.y, instances, editor.history, false, &markers);
                     edited(r.dirty, start, r.error);
                     if (!r.error) editor.selected = r.id, editor.place.seed = uint32_t(SDL_rand_bits());  // the next one differs
                 }
@@ -515,7 +515,7 @@ static int run(SDL_Window* window, const Options& opt) {
         }
         if (editorActions.remove) {
             uint64_t start = SDL_GetTicksNS();
-            EditResult r = removePrefab(world, editorActions.remove, instances, editor.history);
+            EditResult r = removePrefab(world, editorActions.remove, instances, editor.history, &markers);
             edited(r.dirty, start, r.error);
         }
         if (auto it = std::ranges::find(instances, editorActions.goTo, &Instance::id); it != instances.end()) {

@@ -984,6 +984,39 @@ static void editing() {
         CHECK(groundTop(g, 2, 2) == -1);
         CHECK(applyEdit(g, clear, h).dirty.empty());  // nothing left to change: no undo record
     }
+    {  // under trees and structures the brushes keep the natural ground's surface: no spread leaves or roofs
+        Grid g({32, 32, 32});
+        for (int z = 0; z < 32; ++z)
+            for (int x = 0; x < 32; ++x)
+                for (int y = 0; y <= 5; ++y) g.set({x, y, z}, y == 5 ? Grass : Dirt);
+        growTree(g, {16, 5, 16}, 10, 4.5f, 3, {16, 5, 16});
+        for (int y = 6; y <= 8; ++y) g.set({10, y, 16}, y == 8 ? Thatch : Planks);  // a hut's wall and roof
+        CHECK(g.get({16, groundTop(g, 16, 16), 16}) == Leaves && groundTop(g, 16, 16) > 15);
+        EditHistory h;
+        Grid lowered = g;  // lowering into a canopy leaves it a canopy (no grass up in the tree)
+        CHECK(!applyEdit(lowered, {.tool = Tool::Lower, .center = {16, 16}, .radius = 0, .strength = 2}, h).dirty.empty());
+        CHECK(lowered.get({16, groundTop(lowered, 16, 16), 16}) == Leaves);
+        Grid raised = g;  // raising under a tree raises the canopy (no ground stacked on the leaves)
+        int canopy = groundTop(g, 16, 16);
+        CHECK(!applyEdit(raised, {.tool = Tool::Raise, .center = {16, 16}, .radius = 0, .strength = 3}, h).dirty.empty());
+        CHECK(groundTop(raised, 16, 16) == canopy + 3);
+        for (int y = 6; y <= canopy + 3; ++y) CHECK(raised.get({16, y, 16}) != Grass && raised.get({16, y, 16}) != Dirt);
+        Grid road = g;  // a Cobble road painted on the grass stays Cobble when sculpted, down or up
+        for (int x = 2; x <= 8; ++x) road.set({x, 5, 2}, Cobble);
+        CHECK(!applyEdit(road, {.tool = Tool::Lower, .center = {4, 2}, .radius = 0, .strength = 2}, h).dirty.empty());
+        CHECK(groundTop(road, 4, 2) == 3 && road.get({4, 3, 2}) == Cobble);
+        CHECK(!applyEdit(road, {.tool = Tool::Raise, .center = {7, 2}, .radius = 0, .strength = 2}, h).dirty.empty());
+        CHECK(groundTop(road, 7, 2) == 7 && road.get({7, 7, 2}) == Cobble);
+        CHECK(!applyEdit(g, {.tool = Tool::Flatten, .center = {16, 16}, .radius = 10, .strength = 64, .height = 4}, h).dirty.empty());
+        int spread = 0;
+        for (int z = 6; z <= 26; ++z)
+            for (int x = 6; x <= 26; ++x) {
+                if ((x - 16) * (x - 16) + (z - 16) * (z - 16) > 100) continue;
+                CHECK(groundTop(g, x, z) == 4 && g.get({x, 4, z}) == Grass);
+                for (int y = 0; y < 32; ++y) spread += g.get({x, y, z}) != Grass && g.get({x, y, z}) != Dirt && g.get({x, y, z}) != Air;
+            }
+        CHECK(spread == 0);
+    }
     {  // caps and bad input are rejected without touching the world or the history
         Grid g = editWorld();
         uint64_t before = hashCells(g);
@@ -1047,7 +1080,8 @@ static void commands() {
     const nlohmann::json& cat = c.response["result"];
     CHECK(ok(c) && cat["entities"].size() == size_t(EntityKind::Count) && cat["entities"][6]["id"] == "bandit_chief" &&
           cat["entities"][6]["loot"] == "Iron Helm" && cat["entities"][6]["temper"] == "aggressive" && cat["entities"][1]["name"].is_null() &&
-          cat["entities"][1]["wander_radius"] == 12 && cat["solid_materials"].size() == 8 && cat["materials"].size() == 10);
+          cat["entities"][1]["wander_radius"] == 12 && cat["materials"].size() == BlockCount && cat["solid_materials"].size() == BlockCount - 2 &&
+          cat["materials"][Ember] == "Ember");  // every block; solid: all but Air and Water
 
     // apply and path: many ops, one undo step; undo brings back exactly what was there
     uint64_t raised = hashCells(g);
@@ -1233,6 +1267,37 @@ static void commands() {
     CHECK(ok(runCommand(R"({"cmd": "place", "args": {"prefab": "boulder", "x": 10, "z": 10, "y": 5}})", far, farList, marks, fh, prefabs, view)));
     c = runCommand(R"({"cmd": "move", "args": {"id": 1, "x": 1000, "z": 1000, "y": 5}})", far, farList, marks, fh, prefabs, view);
     CHECK(!ok(c) && c.response["error"].get<std::string>().contains("budget") && farList[0].pos.x == 10);
+
+    {  // fill and paint take any block by name, building blocks too; paint and path still need a solid one
+        Grid w({64, 16, 64});
+        for (int z = 0; z < 64; ++z)
+            for (int x = 0; x < 64; ++x) w.set({x, 3, z}, Grass);
+        EditHistory wh;
+        std::vector<Instance> wi;
+        std::vector<Marker> wm;
+        auto send = [&](std::string_view request) { return runCommand(request, w, wi, wm, wh, prefabs, view); };
+        CHECK(ok(send(R"({"cmd": "fill", "args": {"min": [2, 4, 4], "max": [3, 4, 4], "material": "ember"}})")) &&
+              w.get({2, 4, 4}) == Ember && w.get({3, 4, 4}) == Ember);
+        CHECK(ok(send(R"({"cmd": "paint", "args": {"x": 2, "z": 4, "radius": 0, "material": "Planks"}})")) && w.get({2, 4, 4}) == Planks);
+        CHECK(ok(send(R"({"cmd": "path", "args": {"points": [[10, 10], [20, 10]], "width": 1, "material": "Cobble"}})")) &&
+              w.get({15, groundTop(w, 15, 10), 10}) == Cobble);
+        c = send(R"({"cmd": "paint", "args": {"x": 2, "z": 4, "radius": 0, "material": "Water"}})");
+        CHECK(!ok(c) && c.response["error"].get<std::string>().contains("solid") && w.get({2, 4, 4}) == Planks);
+        c = send(R"({"cmd": "fill", "args": {"min": [0, 0, 0], "max": [0, 0, 0], "material": "Lava"}})");
+        CHECK(!ok(c) && c.response["error"].get<std::string>().contains("Ember") && wh.undo.size() == 3);
+        // a camp brings its bandits: place lists them, markers marks them as the instance's, remove takes them along
+        c = send(R"({"cmd": "place", "args": {"prefab": "camp", "x": 32, "z": 32}})");
+        nlohmann::json made = c.response["result"]["markers"];
+        uint32_t camp = ok(c) ? c.response["result"]["instance"]["id"].get<uint32_t>() : 0;
+        CHECK(ok(c) && made.size() == 1 && made[0]["entity"] == "bandit" && made[0]["count"] == 2 && made[0]["instance"] == camp &&
+              wm.size() == 1 && wm[0].owner == camp && wh.undo.size() == 4);
+        c = send(R"({"cmd": "markers"})");
+        CHECK(ok(c) && c.response["result"]["markers"][0]["instance"] == camp);
+        c = send(std::format(R"({{"cmd": "move", "args": {{"id": {}, "x": 30, "z": 34}}}})", camp));
+        CHECK(ok(c) && wm.size() == 1 && wm[0].pos.x == made[0]["x"].get<float>() - 2 + 0.5f && wm[0].pos.z == made[0]["z"].get<float>() + 2 + 0.5f);
+        c = send(std::format(R"({{"cmd": "remove", "args": {{"id": {}}}}})", camp));
+        CHECK(ok(c) && c.response["result"]["markers_removed"] == 1 && wm.empty() && wh.undo.size() == 6);
+    }
 }
 
 static const Prefab& prefabNamed(const PrefabLibrary& lib, std::string_view name) {
@@ -1269,7 +1334,9 @@ static void prefabs() {
         CHECK(!p.generated());
     }
     {  // every kind of error names its line
-        std::string wide = "S = Stone\nlayer\n" + std::string(65, 'S') + "\n", tall = "S = Stone\n";
+        std::string wide = "S = Stone\nlayer\n" + std::string(65, 'S') + "\n", tall = "S = Stone\n", nine, crowd;
+        for (int i = 0; i < 9; ++i) nine += "line: Halt!\n";
+        for (int i = 0; i < 33; ++i) crowd += "marker: spawn x=0 z=0 entity=bandit count=8\n";  // 264 NPCs
         for (int i = 0; i < 65; ++i) tall += "layer\nS\n";
         std::pair<std::string, std::string> bad[] = {
             {"description: x\nS = Lava\nlayer\nS\n", "line 2: unknown block 'Lava'"},
@@ -1288,6 +1355,24 @@ static void prefabs() {
             {"S = Stone\nlayer\n  \n \n", "line 2: empty layer"},
             {wide, "line 3: row longer than 64"},
             {tall, "line 130: more than 64 layers"},
+            {"S = Stone\nmarker: spawn x=1 z=0 entity=bandit\nlayer\nS\n", "line 2: marker cell 1 0 is outside the layers (1 x 1)"},
+            {"marker: player_spawn x=0 z=0\n", "line 1: marker kind must be spawn, poi or region"},
+            {"marker: spawn x=0 z=0\n", "line 1: a spawn marker needs entity="},
+            {"marker: spawn z=0 entity=bandit\n", "line 1: a marker needs x= and z="},
+            {"marker: spawn x=-1 z=0 entity=bandit\n", "line 1: marker x must be a whole number"},
+            {"marker: spawn x=0 z=0 entity=dragon\n", "line 1: unknown entity 'dragon'"},
+            {"marker: region x=0 z=0 colour=red\n", "line 1: unknown marker field 'colour'"},
+            {"marker: poi x=0 z=0 entity=boar\n", "line 1: entity and count are for spawn markers"},
+            {"marker: poi x=0 z 0\n", "line 1: expected key=value, not 'z'"},
+            {"line: hi\n", "line 1: a line belongs to the marker above it"},
+            {"S = Stone\nmarker: poi x=0 z=0\nlayer\nS\n", "line 2: marker: a poi or region needs a name"},
+            {"S = Stone\nmarker: spawn x=0 z=0 entity=bandit count=9\nlayer\nS\n", "line 2: marker: count out of range"},
+            {"S = Stone\nmarker: spawn x=0 z=0 entity=dummy\nline: hi\nlayer\nS\n", "line 3: line: lines are for spawn markers"},
+            {"marker: spawn x=0 z=0 entity=bandit\nline: hi\nline:\n", "line 3: line: each line needs 1..160 bytes"},
+            {"marker: spawn x=0 z=0 entity=bandit\n" + nine, "line 10: line: more than 8 lines"},
+            {crowd, "line 33: the spawn markers make more than 256 NPCs"},
+            {"description: a\nS = Stone\ndescription: b\n", "line 3: 'description' is given twice"},
+            {"y: 1\ny: 1\n", "line 2: 'y' is given twice"},
         };
         for (const auto& [text, error] : bad) {
             Prefab p{.name = "x"};
@@ -1300,6 +1385,12 @@ static void prefabs() {
         CHECK(parsePrefab("y: -2147483648\n", p).starts_with("line 1: y must be"));  // no abs(INT_MIN)
         CHECK(parsePrefab("description: crlf\r\nS = Stone\r\nlayer\r\nSS\r\n", p).empty() && p.size == glm::ivec3(2, 1, 1) &&
               p.description == "crlf");
+        // markers: a cell of the layers, the kind's default radius, name to the end of the line, lines in order
+        CHECK(parsePrefab("marker: region x=1 z=0 radius=40 name= Old  Field \nmarker: spawn x=0 z=0 entity=boar count=2\n"
+                          "line: Grr!\nline: Snort.\nS = Stone\nlayer\nSS\n", p).empty() && p.markers.size() == 2);
+        CHECK(p.markers[0].kind == MarkerKind::Region && p.markers[0].name == "Old  Field" && p.markers[0].radius == 40 &&
+              p.markers[0].pos == glm::vec3(1.5f, 0, 0.5f) && p.markers[1].entity == EntityKind::Boar && p.markers[1].count == 2 &&
+              p.markers[1].radius == typeOf(EntityKind::Boar).wanderRadius && (p.markers[1].lines == std::vector<std::string>{"Grr!", "Snort."}));
     }
     {  // the library: generated prefabs, then regular .txt files directly in the folder; broken files are reported
         fs::path dir = fs::temp_directory_path() / "flycoos_prefab_test";
@@ -1540,6 +1631,83 @@ static void prefabs() {
         std::ifstream noInst(path, std::ios::binary);
         CHECK(std::string((std::istreambuf_iterator<char>(noInst)), {}).find("INST") == std::string::npos);
         fs::remove(path);
+    }
+    {  // prefab markers: a camp brings its bandits, owned by the instance; they turn and move with it, go with it,
+       // and every step is one undo step; hand-placed markers are never touched; files keep who owns what
+        Grid g = plain();
+        std::vector<Instance> list;
+        std::vector<Marker> ms;
+        EditHistory h;
+        const Prefab& camp = prefabNamed(lib, "camp");
+        CHECK(camp.markers.size() == 1 && camp.markers[0].kind == MarkerKind::Spawn && camp.markers[0].entity == EntityKind::Bandit &&
+              camp.markers[0].count == 2 && camp.markers[0].lines.size() == 1);
+        const Marker hand{.kind = MarkerKind::PlayerSpawn, .pos = {5.5f, 4, 5.5f}};
+        CHECK(!putMarker(g, ms, h, hand).error && ms.size() == 1);
+        const glm::ivec3 s = camp.size;
+        // where layer cell (11, 12) lands: cells turn like rotate() (pinned by the rotation test), feet on the bottom layer
+        auto expect = [&](glm::ivec3 pos, int rotation) {
+            glm::ivec2 c = rotation == 0 ? glm::ivec2(11, 12) : glm::ivec2(12, s.x - 1 - 11);  // rotation 1: (x, z) -> (z, s.x - 1 - x)
+            glm::ivec2 half = rotation == 0 ? glm::ivec2(s.x / 2, s.z / 2) : glm::ivec2(s.z / 2, s.x / 2);
+            return glm::vec3(float(pos.x - half.x + c.x) + 0.5f, float(pos.y + camp.y + 2), float(pos.z - half.y + c.y) + 0.5f);
+        };
+        uint64_t empty = hashCells(g);
+        EditResult r = placePrefab(g, camp, at(camp, {30, 0, 30}), std::nullopt, list, h, false, &ms);
+        CHECK(!r.error && ms.size() == 2 && ms[1].owner == r.id && ms[1].id == 2 && ms[1].count == 2 && ms[1].lines == camp.markers[0].lines &&
+              ms[1].pos == expect({30, 3, 30}, 0) && h.undo.size() == 2 && ms[0].owner == 0);
+        Marker renamed = ms[1];
+        renamed.name = "Raiders";
+        renamed.owner = 0;  // putMarker keeps the owner: only the instance's own steps change it
+        CHECK(!putMarker(g, ms, h, renamed).error && ms[1].owner == r.id && ms[1].name == "Raiders" && h.undo.size() == 3);
+        CHECK(!movePrefab(g, camp, r.id, {34, 33}, std::nullopt, 1, list, h, &ms).error && h.undo.size() == 4);
+        const Marker moved = ms[1];
+        CHECK(moved.pos == expect({34, 3, 33}, 1) && moved.name == "Raiders" && ms[0].pos == hand.pos);
+        const uint64_t movedCells = hashCells(g);
+        CHECK(!undoEdit(g, h, list, ms).empty() && ms[1].pos == expect({30, 3, 30}, 0) && list[0].rotation == 0);
+        CHECK(!redoEdit(g, h, list, ms).empty() && ms[1] == moved && hashCells(g) == movedCells);
+        CHECK(!removePrefab(g, r.id, list, h, &ms).error && list.empty() && ms.size() == 1 && ms[0].id == 1 && h.undo.size() == 5);
+        CHECK(!undoEdit(g, h, list, ms).empty() && list.size() == 1 && ms.size() == 2 && ms[1] == moved);
+
+        std::string path = (fs::temp_directory_path() / "flycoos_prefab_markers.flyw").string();
+        CHECK(saveWorld(path.c_str(), g, 5, list, ms).empty());
+        Grid back({64, 32, 64});
+        uint32_t seed = 0;
+        std::vector<Instance> loaded;
+        CHECK(loadWorld(path.c_str(), back, seed, loaded, fileMarks).empty() && fileMarks && *fileMarks == ms && loaded.size() == 1);
+        EditHistory bh;
+        CHECK(!removePrefab(back, r.id, loaded, bh, &*fileMarks).error && fileMarks->size() == 1);  // a loaded camp still takes its bandits
+        std::ifstream saved(path, std::ios::binary);
+        const std::string file((std::istreambuf_iterator<char>(saved)), {});
+        size_t owners = file.rfind("OWNR") + 12;  // past the tag and size: count, marker id, instance id
+        auto patched = [&](size_t at, uint32_t v) {  // the file with one u32 replaced, resealed
+            std::string bytes = file;
+            for (int i = 0; i < 4; ++i) bytes[at + size_t(i)] = char(v >> (8 * i));
+            uint32_t hash = 2166136261u;
+            for (size_t i = 0; i + 4 < bytes.size(); ++i) hash = (hash ^ uint8_t(bytes[i])) * 16777619u;
+            for (int i = 0; i < 4; ++i) bytes[bytes.size() - 4 + size_t(i)] = char(hash >> (8 * i));
+            std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes;
+            return loadWorld(path.c_str(), back, seed, loaded, fileMarks);
+        };
+        CHECK(owners > 12 && patched(owners + 4, 2).empty());  // unchanged: loads
+        CHECK(patched(owners + 8, 99).starts_with("bad owner for marker 2"));  // not an instance
+        CHECK(patched(owners + 4, 1).starts_with("bad owner for marker 1"));   // the player_spawn
+        CHECK(patched(owners + 4, 3).starts_with("bad owner for marker 3"));   // no such marker
+        CHECK(patched(owners, 2).starts_with("marker owners section size mismatch"));
+        CHECK(saveWorld(path.c_str(), g, 5, {}, ms).empty());  // an owner that isn't live: saved as hand-placed
+        CHECK(loadWorld(path.c_str(), back, seed, loaded, fileMarks).empty() && fileMarks->size() == 2 && (*fileMarks)[1].owner == 0);
+        CHECK(saveWorld(path.c_str(), g, 5, list, {hand}).empty());  // nothing owned: no section, so older builds see the same file as before
+        std::ifstream noOwners(path, std::ios::binary);
+        CHECK(std::string((std::istreambuf_iterator<char>(noOwners)), {}).find("OWNR") == std::string::npos);
+        fs::remove(path);
+
+        for (int i = 0; i < 3; ++i) undoEdit(g, h, list, ms);  // move, rename, place (the remove is undone already)
+        CHECK(list.empty() && ms.size() == 1 && ms[0].owner == 0 && hashCells(g) == empty);
+        std::vector<Marker> crowd;  // 256 NPCs already: the camp's two bandits don't fit, and nothing changes
+        for (uint32_t i = 1; i <= 32; ++i)
+            crowd.push_back({.id = i, .kind = MarkerKind::Spawn, .pos = {float(i) + 0.5f, 4, 2.5f}, .entity = EntityKind::Bandit, .count = 8});
+        size_t undos = h.undo.size();
+        CHECK(placePrefab(g, camp, at(camp, {30, 0, 30}), std::nullopt, list, h, false, &crowd).error && list.empty() &&
+              crowd.size() == 32 && hashCells(g) == empty && h.undo.size() == undos);
+        CHECK(!placePrefab(g, camp, at(camp, {30, 0, 30}), std::nullopt, list, h).error && list.size() == 1);  // no list: no markers
     }
 }
 

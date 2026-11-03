@@ -1,6 +1,9 @@
 description: Bandit camp: trampled dirt, two tents facing a campfire, log seats, crates and a red banner
 foundation: Dirt
 y: -1
+# two bandits by the fire, only where the camp is newly placed
+marker: spawn x=11 z=12 entity=bandit count=2 name=Camp raiders
+line: Your coin or your life!
 D = Dirt
 G = Grass
 B = Burlap

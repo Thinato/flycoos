@@ -6,7 +6,7 @@
 #include "world.h"
 
 // Story data: NPC kinds and the markers that place them and the story's places, and their world
-// file sections (MARK, LINE).
+// file sections (MARK, LINE, OWNR).
 
 // NPC kinds: the `save_id` of their record in data/creatures.json, saved in spawn markers: append-only,
 // never renumbered. These are the ones code names, with their string ids; data may add more after Count.
@@ -36,6 +36,9 @@ struct Marker {
     // (none: random villager phrases), and any of them one when it turns on the player (at most every
     // 8 s). Each line is checked like a name.
     std::vector<std::string> lines;
+    // The prefab instance whose placement made it (0: placed by hand). It moves with that instance
+    // and goes when it's removed (prefab.h); putMarker keeps it as it is.
+    uint32_t owner = 0;
     bool operator==(const Marker&) const = default;
 };
 // Whether a marker may carry lines: spawns of any kind but the dummy. Deliberately not tied to NPC
