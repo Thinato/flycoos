@@ -11,7 +11,7 @@ After a long winter road the player reaches the Wayfarer's Shrine, at the edge o
 
 The story is carried by dialogue, region names and place labels, and by one quest, "Torvald's Helm" (below; quests are data, ADR-026).
 
-**Suggested route:** shrine → Ravensford (Maren, Torvald) → Mirrormere (Wenna) → Greywood (Sigrun, wolves) → Greyfang Rise (raiders, Hakon, Iron Helm) → the Barrow (ghouls).
+**Suggested route:** shrine → Ravensford (Maren, Torvald) → Stillmere (Wenna) → Greywood (Sigrun, wolves) → Greyfang Rise (raiders, Hakon, Iron Helm) → the Barrow (ghouls).
 
 ## Places (x, z)
 | Place | Marker | Where | What's there |
@@ -19,14 +19,14 @@ The story is carried by dialogue, region names and place labels, and by one ques
 | Ravensford Vale | region #7, r300 | (520, 500) | The whole act area |
 | Wayfarer's Shrine | poi #6, player_spawn #5 | (514, 498) | Stone wayshrine where the player starts and respawns |
 | Ravensford | region #8, r55 | (560, 408) | Longhouse, 3 cottages, forge, well, market stalls, training yard, palisade with gate (548, 447) |
-| Ravensford Ford | poi #9 | (602, 418) | Bridge over the stream from the north pond to Mirrormere |
-| Mirrormere | region #16, poi #17 | (722, 496), dock (718, 457) | Lake, dock, Wenna's fishing hut |
+| Ravensford Ford | poi #9 | (602, 418) | Bridge over the stream from the north pond to Stillmere |
+| Stillmere | region #16, poi #17 | (722, 496), dock (718, 457) | Lake, dock, Wenna's fishing hut |
 | Greywood | region #19, poi #20 | (400, 452), lodge (410, 450) | Forest, Hunter's Lodge clearing, three wolf pairs, boars |
 | Greyfang Rise | region #28, pois #29, #30 | (632, 625) | Raised crag, Old Watchtower on the summit (y83), Hakon's Camp on a ledge (627, 597), switchback path from (598, 578) |
 | Barrow of King Ulfar | region #31, pois #32, #33 | (290, 603) | Mound with a stone portal, tunnel down to a burial chamber (276, 603), standing-stone ring |
 
 **Roads:**
-- 3-wide Dirt: shrine → gate → green → bridge → Mirrormere dock.
+- 3-wide Dirt: shrine → gate → green → bridge → Stillmere dock.
 - Branch south-east: to the foot of Greyfang Rise.
 - Forest track west: to the lodge, then a faint track south-west to the barrow.
 
@@ -36,7 +36,7 @@ The story is carried by dialogue, region names and place labels, and by one ques
 | Maren Holt, the elder | villager (#12) | Longhouse | Welcome · Hakon holds the Old Watchtower · they took Torvald's iron · see Torvald, mind the Greywood · Sigrun says the barrow was opened |
 | Torvald, the smith | villager (#13) | Forge | His iron is gone · bring back the helm Hakon wears · keep your blade up |
 | Captain Brenna | guard (#14) | Gate | Halt · sheathe your blade inside · bandits sighted near the ford |
-| Edric | guard (#15) | Bridge | Hakon wants the ford · Wenna fishes at Mirrormere |
+| Edric | guard (#15) | Bridge | Hakon wants the ford · Wenna fishes at Stillmere |
 | Old Wenna | villager (#18) | Dock | Fish are biting · pale lights the night the barrow opened · wolves don't come to the shore · find Sigrun |
 | Sigrun, the hunter | villager (#21) | Hunter's Lodge | Quiet · wolves run in pairs · the barrow's seal is broken · the dead walk · bring a good blade |
 | Hakon the Red | bandit_chief (#27) | Watchtower door | Taunts; always drops the Iron Helm |
