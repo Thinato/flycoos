@@ -222,7 +222,7 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.lastDirty = dirty;
         ++editor.edits;
         renderer.updateWorld(world, dirty);
-        syncSpawns(entities, world, markers, worldSeed, player.pos);
+        syncSpawns(entities, world, markers, worldSeed, player.pos, session.timeOfDay);
         editor.unsaved = true;
         editor.quitArmed = false;
     };
@@ -627,7 +627,7 @@ static int run(SDL_Window* window, const Options& opt) {
         }
         if (actions.regenerate || actions.respawnEntities) {
             entities.clear();
-            syncSpawns(entities, world, markers, worldSeed, player.pos);
+            syncSpawns(entities, world, markers, worldSeed, player.pos, session.timeOfDay);
         }
         if (benchmark) actions.saveGame = actions.loadGame = actions.deleteSave = false;
         if (actions.saveGame) saveGame();  // the Save tab's button: also over a save that didn't load

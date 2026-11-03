@@ -75,6 +75,20 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
                          int(defs().creatures.size()));
             ed.mark.entity = EntityKind(entity);
             ImGui::SliderInt("Count", &ed.mark.count, 1, kMaxSpawnCount);
+            bool timed = ed.mark.activeFrom != ed.mark.activeTo;
+            if (ImGui::Checkbox("Only at certain times", &timed) && timed) ed.mark.activeFrom = 0.8f, ed.mark.activeTo = 0.2f;
+            if (!timed) ed.mark.activeFrom = ed.mark.activeTo = 0;  // always: the only equal pair checkMarker takes
+            ImGui::SetItemTooltip("Its NPCs are out from From to To (times of day; past midnight when From > To). Outside\n"
+                                  "it they leave once out of a fight, corpses once looted, and none come back until it opens.");
+            for (auto [label, t] : {std::pair{"From", &ed.mark.activeFrom}, std::pair{"To", &ed.mark.activeTo}}) {
+                if (!timed) break;
+                int minutes = int(*t * 24 * 60);
+                char format[24];
+                std::snprintf(format, sizeof format, "%%.3f (%02d:%02d)", minutes / 60, minutes % 60);
+                ImGui::SliderFloat(label, t, 0, 0.999f, format, ImGuiSliderFlags_AlwaysClamp);
+            }
+        } else {
+            ed.mark.activeFrom = ed.mark.activeTo = 0;  // spawns only
         }
         // Lines for spawns (not the dummy); blank lines are dropped, checkMarker rejects the rest.
         bool lines = takesLines(ed.mark);
@@ -203,6 +217,10 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
                     ImGui::SameLine();
                     ImGui::TextDisabled("(of %s #%u)", in != instances.end() && in->id == m.owner ? in->prefab.c_str() : "instance", m.owner);
                     ImGui::SetItemTooltip("Placed with this prefab instance: moving it moves the marker, removing it removes the marker.");
+                }
+                if (m.activeFrom != m.activeTo) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(out %.3f-%.3f)", m.activeFrom, m.activeTo);
                 }
                 ImGui::PopID();
             }

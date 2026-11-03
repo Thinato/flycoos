@@ -5,8 +5,6 @@
 #include <cmath>
 #include <iterator>
 #include <numbers>
-#include <unordered_map>
-#include <unordered_set>
 #include <string_view>
 
 #include "defs.h"
@@ -141,10 +139,12 @@ std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t se
     return out;
 }
 
-// The entities of spawn marker `m`: the first on the marker, the others on a small spiral around it,
-// each on the first dry ground within a few blocks of the marker's height (else on the marker).
-static void spawnAt(std::vector<Entity>& out, const Grid& world, const Marker& m, uint32_t seed, glm::vec3 face) {
+// The entities of spawn marker `m` in the slots of bit mask `slots`: the first on the marker, the
+// others on a small spiral around it, each on the first dry ground within a few blocks of the
+// marker's height (else on the marker).
+static void spawnAt(std::vector<Entity>& out, const Grid& world, const Marker& m, uint32_t seed, glm::vec3 face, uint32_t slots) {
     for (int i = 0; i < m.count; ++i) {
+        if (!(slots >> i & 1)) continue;
         glm::vec3 pos = clearOfTerrain(world, m.pos);
         glm::vec2 at = xz(m.pos) + (i ? 1.6f * std::sqrt(float(i)) * glm::vec2(std::cos(2.4f * float(i)), std::sin(2.4f * float(i))) : glm::vec2(0));
         glm::ivec2 c(glm::floor(at));
@@ -165,28 +165,57 @@ static void spawnAt(std::vector<Entity>& out, const Grid& world, const Marker& m
 }
 
 void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vector<Marker>& markers, uint32_t seed,
-                glm::vec3 face) {
-    auto spawnOf = [&](uint32_t id) -> const Marker* {
+                glm::vec3 face, float timeOfDay) {
+    // Runs every tick in worlds with timed markers: no hashing, one small buffer, no copies of unchanged lines.
+    auto spawnOf = [&](uint32_t id) -> ptrdiff_t {  // the index of spawn marker `id`, or -1
         auto it = std::ranges::lower_bound(markers, id, {}, &Marker::id);
-        return it != markers.end() && it->id == id && it->kind == MarkerKind::Spawn ? &*it : nullptr;
+        return it != markers.end() && it->id == id && it->kind == MarkerKind::Spawn ? it - markers.begin() : -1;
     };
-    // A marker respawns all of its entities when any is out of date or their number is off.
-    std::unordered_map<uint32_t, int> counts;
-    std::unordered_set<uint32_t> stale;
+    // Outside its marker's window an NPC leaves once it isn't fighting, a corpse once looted (after
+    // kCorpseLinger, so a kill shows) or back up.
+    std::erase_if(entities, [&](const Entity& e) {
+        ptrdiff_t i = spawnOf(e.spawn.id);
+        return i >= 0 && !activeAt(markers[size_t(i)], timeOfDay) && !e.angry() &&
+               (e.body.alive() || (e.loot == NoItem && e.body.deadTime >= kCorpseLinger));
+    });
+    // A marker respawns all of its entities when any is out of date, and spawns the slots it misses
+    // (a window opening, a removed marker undone) while active, keeping the rest as they are.
+    struct Tally {
+        uint32_t slots = 0;  // bit per slot present
+        bool stale = false;
+    };
+    std::vector<Tally> tally(markers.size());
+    bool any = false;  // something to erase or spawn
     for (Entity& e : entities) {
-        const Marker* m = spawnOf(e.spawn.id);
-        if (m && m->lines != e.spawn.lines) e.phrase = -1, e.speechTimer = 0;  // new lines start from the first
-        if (m) e.spawn.name = m->name, e.spawn.lines = m->lines;  // a rename or new lines need no respawn
-        if (!m || m->pos != e.spawn.pos || m->radius != e.spawn.radius || m->entity != e.spawn.entity || m->count != e.spawn.count)
-            stale.insert(e.spawn.id);
-        ++counts[e.spawn.id];
+        ptrdiff_t i = spawnOf(e.spawn.id);
+        if (i < 0) {  // its marker is gone
+            any = true;
+            continue;
+        }
+        const Marker& m = markers[size_t(i)];
+        if (m.lines != e.spawn.lines) e.phrase = -1, e.speechTimer = 0, e.spawn.lines = m.lines;  // new lines start from the first
+        if (m.name != e.spawn.name) e.spawn.name = m.name;  // a rename, new lines or a new window need no respawn
+        e.spawn.activeFrom = m.activeFrom, e.spawn.activeTo = m.activeTo;
+        Tally& t = tally[size_t(i)];
+        uint32_t bit = e.slot >= 0 && e.slot < m.count ? 1u << e.slot : 0;
+        if (m.pos != e.spawn.pos || m.radius != e.spawn.radius || m.entity != e.spawn.entity || m.count != e.spawn.count ||
+            !bit || (t.slots & bit))
+            t.stale = true;
+        t.slots |= bit;
     }
-    for (const Marker& m : markers)
-        if (m.kind == MarkerKind::Spawn && counts[m.id] != m.count) stale.insert(m.id);
-    if (stale.empty()) return;
-    std::erase_if(entities, [&](const Entity& e) { return stale.contains(e.spawn.id); });
-    for (const Marker& m : markers)
-        if (m.kind == MarkerKind::Spawn && stale.contains(m.id)) spawnAt(entities, world, m, seed, face);
+    auto missing = [&](size_t i) {  // the slots marker i spawns now (all once its stale ones are erased)
+        const Marker& m = markers[i];
+        if (m.kind != MarkerKind::Spawn || !activeAt(m, timeOfDay)) return 0u;
+        return ((1u << m.count) - 1) & ~(tally[i].stale ? 0 : tally[i].slots);
+    };
+    for (size_t i = 0; i < markers.size(); ++i) any |= tally[i].stale || missing(i);
+    if (!any) return;
+    std::erase_if(entities, [&](const Entity& e) {
+        ptrdiff_t i = spawnOf(e.spawn.id);
+        return i < 0 || tally[size_t(i)].stale;
+    });
+    for (size_t i = 0; i < markers.size(); ++i)
+        if (uint32_t slots = missing(i)) spawnAt(entities, world, markers[i], seed, face, slots);
 }
 
 glm::vec3 playerSpawn(const Grid& world, const std::vector<Marker>& markers) {

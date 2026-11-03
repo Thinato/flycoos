@@ -42,14 +42,15 @@ There's no quest system yet, so the story is carried by dialogue, region names a
 | Hakon the Red | bandit_chief (#27) | Watchtower door | Taunts; always drops the Iron Helm |
 | Hakon's Raiders | bandit ×2 (#25, #4, #26) | Lower path, camp, behind the tower | "Your coin or your life!" · "Hakon pays well for heads!" |
 | Wolves | wolf ×2 (#22, #23, #24) | Greywood N / W / S | Not named |
-| Barrow Ghouls | ghoul ×2 (#34 stone ring, #35 chamber) | Barrow | "Ulfar... sleeps... no more..." · "Leave... the king's... gold..." |
+| Barrow Ghouls | ghoul ×2 (#34 stone ring, #35 chamber), night only | Barrow | "Ulfar... sleeps... no more..." · "Leave... the king's... gold..." |
 
-The village also has two generic villagers (#2), a training dummy (#1) and boars (#3, ×2): 28 NPCs in all.
+The village also has two generic villagers (#2), a training dummy (#1) and boars (#3, ×2): 28 NPCs in all, 24 by day.
+
+**Night:** the ghoul markers are active from 0.8 to 0.2 (about 19:12 to 04:48; ADR-023). By day the barrow is empty; at dusk the ghouls rise at their markers, and at dawn they go once they're out of a fight (a fight that runs past dawn is finished first; a corpse with loot waits to be looted).
 
 **Balance:** a level-1 player in the Iron set with the Shortsword beats Hakon alone, or one pair of raiders, wolves or ghouls. Three at once is meant to be too much.
 
 ## Follow-ups
 - A quest/journal system ("bring Hakon's helm to Torvald").
-- Night-only spawns for the ghouls.
 - Light from Ember blocks (done: ADR-019).
 - A trinket slot for the Bone Charm (done: ADR-022, +2 spirit).

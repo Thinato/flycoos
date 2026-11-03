@@ -6,7 +6,7 @@
 #include "world.h"
 
 // Story data: NPC kinds and the markers that place them and the story's places, and their world
-// file sections (MARK, LINE, OWNR).
+// file sections (MARK, LINE, OWNR, TIME).
 
 // NPC kinds: the `save_id` of their record in data/creatures.json, saved in spawn markers: append-only,
 // never renumbered. These are the ones code names, with their string ids; data may add more after Count.
@@ -39,11 +39,19 @@ struct Marker {
     // The prefab instance whose placement made it (0: placed by hand). It moves with that instance
     // and goes when it's removed (prefab.h); putMarker keeps it as it is.
     uint32_t owner = 0;
+    // Spawn: when its NPCs are out, as times of day (0..1, 0 midnight; see Session::timeOfDay): from
+    // `activeFrom` up to `activeTo`, past midnight when from > to (0.8, 0.2: at night). Equal (both 0): always.
+    float activeFrom = 0, activeTo = 0;
     bool operator==(const Marker&) const = default;
 };
 // Whether a marker may carry lines: spawns of any kind but the dummy. Deliberately not tied to NPC
 // traits, so saved worlds keep loading when a kind's traits change.
 inline bool takesLines(const Marker& m) { return m.kind == MarkerKind::Spawn && m.entity != EntityKind::TrainingDummy; }
+// Whether a marker's NPCs are out at time of day `t` (0..1): always without a window, else in [from, to).
+inline bool activeAt(const Marker& m, float t) {
+    if (m.activeFrom == m.activeTo) return true;
+    return m.activeFrom < m.activeTo ? t >= m.activeFrom && t < m.activeTo : t >= m.activeFrom || t < m.activeTo;
+}
 
 // Caps, enforced when adding, editing and loading.
 constexpr size_t kMaxMarkers = 4096;

@@ -5,6 +5,7 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <utility>
@@ -43,8 +44,9 @@ std::optional<Block> blockNamed(std::string_view name) {
     return std::nullopt;
 }
 
-// A `marker:` value: "<spawn|poi|region> x=N z=N [entity=id] [count=N] [radius=N] [name=rest of the line]",
-// x, z a cell of the layers. Returns why it's wrong, or "". The parser checks the rest once the size is known.
+// A `marker:` value: "<spawn|poi|region> x=N z=N [entity=id] [count=N] [radius=N] [active=FROM-TO]
+// [name=rest of the line]", x, z a cell of the layers, FROM and TO times of day (Marker::activeFrom).
+// Returns why it's wrong, or "". The parser checks the rest once the size is known.
 std::string parseMarker(std::string_view v, Marker& m) {
     std::string_view kind = v.substr(0, v.find(' '));
     auto k = std::ranges::find(kMarkerKindNames, kind);
@@ -69,10 +71,19 @@ std::string parseMarker(std::string_view v, Marker& m) {
             entity = true;
             continue;
         }
+        if (key == "active") {  // e.g. 0.8-0.2: at night
+            size_t dash = value.find('-');
+            std::string from(value.substr(0, dash)), to(dash == value.npos ? "" : value.substr(dash + 1));
+            char *fromEnd, *toEnd;
+            m.activeFrom = std::strtof(from.c_str(), &fromEnd);
+            m.activeTo = std::strtof(to.c_str(), &toEnd);
+            if (from.empty() || to.empty() || *fromEnd || *toEnd) return "marker active must be FROM-TO, times of day 0..1 (e.g. active=0.8-0.2)";
+            continue;
+        }
         int n = 0;
         auto [last, ec] = std::from_chars(value.data(), value.data() + value.size(), n);
         if (key != "x" && key != "z" && key != "count" && key != "radius")
-            return std::format("unknown marker field '{}' (x, z, entity, count, radius, name)", key);
+            return std::format("unknown marker field '{}' (x, z, entity, count, radius, active, name)", key);
         if (ec != std::errc() || last != value.data() + value.size() || n < 0 || n > 1 << 16)
             return std::format("marker {} must be a whole number", key);
         if (key == "x") m.pos.x = float(n) + 0.5f, x = true;

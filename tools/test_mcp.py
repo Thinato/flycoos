@@ -290,7 +290,19 @@ def main():
         tool("undo")
         listed = [m for m in tool("markers", kind="spawn")[1]["markers"] if m["id"] == elder_id]
         check(listed and len(listed[0].get("lines", [])) == 2, "undo brings the lines back")
-        for marker in (elder, chief, pack):
+        # active windows (time-of-day spawns): set, listed, refused when bad, cleared
+        err, ghouls, _ = tool("mark", kind="spawn", x=x + 20, z=z + 8, entity="ghoul", count=2, active=[0.8, 0.2])
+        check(not err and ghouls["marker"]["active"] == [0.8, 0.2], "mark a night-only spawn (active [0.8, 0.2])")
+        ghouls_id = ghouls["marker"]["id"] if not err else 0
+        steps = tool("state")[1]["undo_steps"]
+        for args in (dict(active=[0.5, 0.5]), dict(active=[1.5, 0.2]), dict(active=[0.8]), dict(active="night")):
+            err, msg, _ = tool("edit_marker", id=ghouls_id, **args)
+            check(err, f"edit_marker refuses {args} ({msg})")
+        err, msg, _ = tool("mark", kind="poi", name="Sign", x=x, z=z, active=[0.8, 0.2])
+        check(err and tool("state")[1]["undo_steps"] == steps, f"windows are for spawns, refused ones change nothing ({msg})")
+        err, r, _ = tool("edit_marker", id=ghouls_id, active=[])
+        check(not err and "active" not in r["marker"], "active: [] makes it always active")
+        for marker in (elder, chief, pack, ghouls):
             tool("unmark", id=marker["marker"]["id"])
         steps = tool("state")[1]["undo_steps"]
         err, msg, _ = tool("edit_marker", id=999999, name="x")

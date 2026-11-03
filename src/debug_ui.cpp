@@ -331,6 +331,20 @@ static void worldTab(GameSettings& g, Session& sim, const RenderStats& s, DebugA
                        ImGuiSliderFlags_Logarithmic);
     ImGui::Text("Simulated %.1f s, seed %u (spawns, damage rolls)", sim.elapsed, sim.seed);
 
+    ImGui::SeparatorText("Timed spawns");  // spawn markers with an active window (Marker::activeFrom)
+    bool anyTimed = false;
+    for (const Marker& m : sim.markers) {
+        if (m.activeFrom == m.activeTo) continue;
+        anyTimed = true;
+        bool active = activeAt(m, sim.timeOfDay);
+        int from = int(m.activeFrom * 24 * 60), to = int(m.activeTo * 24 * 60);
+        auto out = std::ranges::count(sim.entities, m.id, [](const Entity& e) { return e.spawn.id; });
+        ImGui::TextColored(active ? ImVec4(0.4f, 1, 0.5f, 1) : ImVec4(0.6f, 0.6f, 0.65f, 1), "#%u %s: %s %02d:%02d-%02d:%02d, %d/%d out",
+                           m.id, m.name.empty() ? defs().creatureIds[size_t(m.entity)].c_str() : m.name.c_str(), active ? "active" : "inactive",
+                           from / 60, from % 60, to / 60, to % 60, int(out), m.count);
+    }
+    if (!anyTimed) ImGui::TextDisabled("None: every spawn marker is always active (the editor's Marker tool sets windows).");
+
     ImGui::SeparatorText("Generation");
     ImGui::InputScalar("Seed", ImGuiDataType_U32, &g.seed);
     if (ImGui::Button("Regenerate world")) actions.regenerate = true;

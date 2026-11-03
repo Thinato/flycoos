@@ -497,6 +497,8 @@ json markerJson(const Marker& m) {
               {"z", int(std::floor(m.pos.z))}, {"y", m.pos.y - 1}, {"radius", m.radius}};
     if (m.kind == MarkerKind::Spawn) j["entity"] = defs().creatureIds[size_t(m.entity)], j["count"] = m.count;
     if (!m.lines.empty()) j["lines"] = m.lines;
+    if (m.activeFrom != m.activeTo)  // rounded: 0.8, not the float's 0.800000011920929
+        j["active"] = {std::round(double(m.activeFrom) * 1e4) / 1e4, std::round(double(m.activeTo) * 1e4) / 1e4};
     if (m.owner) j["instance"] = m.owner;  // a prefab instance's: it moves and goes with it
     return j;
 }
@@ -513,6 +515,18 @@ void markerArgs(const json& a, const Grid& g, Marker& m, bool create) {
             throw BadArgs("'lines' must be an array of at most 8 strings");
         m.lines.clear();
         for (const json& line : lines) m.lines.push_back(line.get<std::string>());
+    }
+    if (a.contains("active")) {  // checkMarker (in putMarker) checks the window
+        const json& t = a["active"];
+        if (!t.is_array() || (!t.empty() && t.size() != 2))
+            throw BadArgs("'active' must be [from, to] (times of day 0..1, e.g. [0.8, 0.2]: at night) or [] (always)");
+        auto time = [](const json& v) {
+            double d = v.is_number() ? v.get<double>() : NAN;
+            if (!(d >= 0 && d < 1)) throw BadArgs("'active' times must be times of day from 0 up to, not including, 1 (0 midnight, 0.5 noon)");
+            return std::min(float(d), std::nextafter(1.0f, 0.0f));  // e.g. 0.99999999 would round up to 1
+        };
+        m.activeFrom = t.empty() ? 0 : time(t[0]);
+        m.activeTo = t.empty() ? 0 : time(t[1]);
     }
     if (create || a.contains("x") || a.contains("z") || a.contains("y")) {
         int x = integer(a, "x", 0, g.size.x - 1, create ? std::nullopt : std::optional(int(std::floor(m.pos.x))));

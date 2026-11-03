@@ -262,9 +262,12 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
         auto e = std::ranges::find_if(s.entities, [&](const Entity& e) { return e.spawn.id == n.marker && e.slot == n.slot; });
         if (e == s.entities.end() || e->kind != n.kind) {
             ++r.droppedNpcs;
-            bool marker = std::ranges::any_of(s.markers, [&](const Marker& m) { return m.id == n.marker && m.kind == MarkerKind::Spawn; });
-            r.notes.push_back(std::format("dropped NPC {} of marker {} ({}): {}", n.slot, n.marker, defs().creatureIds[size_t(n.kind)],
-                                          !marker ? "the marker is gone" : e == s.entities.end() ? "it spawns fewer now" : "it spawns another kind now"));
+            auto m = std::ranges::find_if(s.markers, [&](const Marker& m) { return m.id == n.marker && m.kind == MarkerKind::Spawn; });
+            const char* why = m == s.markers.end()                ? "the marker is gone"
+                              : e != s.entities.end()              ? "it spawns another kind now"
+                              : !activeAt(*m, s.timeOfDay)         ? "its marker is out of its active window at this time of day"
+                                                                   : "it spawns fewer now";
+            r.notes.push_back(std::format("dropped NPC {} of marker {} ({}): {}", n.slot, n.marker, defs().creatureIds[size_t(n.kind)], why));
             continue;
         }
         // Where it was, unless its home moved away since (the marker did): then it starts at home.

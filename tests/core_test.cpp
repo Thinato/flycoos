@@ -3,6 +3,8 @@
 #include <bit>
 #include <chrono>
 #include <climits>
+#include <cstdlib>
+#include <unistd.h>  // mkdtemp
 #include <filesystem>
 #include <format>
 #include <limits>
@@ -1889,7 +1891,7 @@ static void markers() {
     EditHistory h;
     std::vector<Instance> none;
     std::vector<Entity> npcs;
-    auto sync = [&] { syncSpawns(npcs, g, list, 1, {16, 4, 16}); };
+    auto sync = [&] { syncSpawns(npcs, g, list, 1, {16, 4, 16}, 0.5f); };
     Marker boars = marker(MarkerKind::Spawn, "Boar Den", {10.5f, 4, 20.5f}, 6);
     boars.entity = EntityKind::Boar;
     boars.count = 3;
@@ -2023,7 +2025,7 @@ static void markers() {
     Grid w = editWorld();
     std::vector<Marker> defaults = defaultMarkers(w, 9);
     std::vector<Entity> before = spawnEntities(w, findSpawn(w), 9), after;
-    syncSpawns(after, w, defaults, 9, findSpawn(w));
+    syncSpawns(after, w, defaults, 9, findSpawn(w), 0.5f);
     CHECK(defaults.size() == 4 && after.size() == before.size());
     for (size_t i = 0; i < std::min(before.size(), after.size()); ++i)
         CHECK(after[i].kind == before[i].kind && after[i].home == before[i].home && after[i].name == before[i].name &&
@@ -2126,7 +2128,7 @@ static void markers() {
         glm::vec3 p = playerSpawn(t, ms);
         CHECK(p.y == 9 && !overlapsSolid(t, p));
         std::vector<Entity> es;
-        syncSpawns(es, t, ms, 1, p);
+        syncSpawns(es, t, ms, 1, p, 0.5f);
         CHECK(es.size() == 1 && es[0].body.pos.y == 9 && !overlapsSolid(t, es[0].body.pos));
         for (int y = 9; y < 12; ++y) t.set({10, y, 10}, Stone);  // built over since: freed on the next update
         Player far;
@@ -2134,7 +2136,7 @@ static void markers() {
         updateEntities(es, t, far, 1 / 60.0f);
         CHECK(!overlapsSolid(t, es[0].body.pos));
         ms[1].name = "Renamed";
-        syncSpawns(es, t, ms, 1, p);
+        syncSpawns(es, t, ms, 1, p, 0.5f);
         CHECK(es[0].spawn.name == "Renamed" && es[0].body.pos.y >= 12);  // a rename doesn't respawn
     }
     // mark's default ground is under a tree's canopy, not on it.
@@ -2207,7 +2209,7 @@ static void storyNpcs() {
         CHECK(sheet(player)[Stat::Armor] == (geared ? 37 : 0) && player.inv.equipped[SlotMainHand] == (geared ? Shortsword : NoItem));
         Marker m{.id = 1, .kind = MarkerKind::Spawn, .pos = {26.5f, 4, 32.5f}, .radius = 3, .entity = kind, .count = count};
         std::vector<Entity> es;
-        syncSpawns(es, g, {m}, seed, player.pos);
+        syncSpawns(es, g, {m}, seed, player.pos, 0.5f);
         std::mt19937 rng(seed);
         for (int i = 0; i < 120 * 60; ++i) {
             updateEntities(es, g, player, 1 / 60.0f);
@@ -2263,7 +2265,7 @@ static void storyNpcs() {
                 .entity = EntityKind::BanditChief, .count = 1, .lines = {"You walked into the wrong camp.", "Is that all?"}};
     CHECK(!checkMarker(g, camp));
     std::vector<Entity> es;
-    syncSpawns(es, g, {camp}, 1, {20, 4, 12});
+    syncSpawns(es, g, {camp}, 1, {20, 4, 12}, 0.5f);
     Entity& hakon = es[0];
     CHECK(hakon.displayName() == "Hakon the Red" && hakon.speech() == nullptr);
     Player player;
@@ -2279,7 +2281,7 @@ static void storyNpcs() {
     Marker post{.id = 4, .kind = MarkerKind::Spawn, .name = "Gate", .pos = {30.5f, 4, 30.5f}, .radius = 4,
                 .entity = EntityKind::Guard, .count = 1, .lines = {"Halt.", "Have at you!", "Move along."}};
     std::vector<Entity> gs;
-    syncSpawns(gs, g, {post}, 1, {34, 4, 30});
+    syncSpawns(gs, g, {post}, 1, {34, 4, 30}, 0.5f);
     Entity& guard = gs[0];
     player.pos = guard.body.pos + glm::vec3(2, 0, 0);
     CHECK(talkTarget(gs, player) == &guard);
@@ -2340,7 +2342,7 @@ static void markerLines() {
     EditHistory h;
     std::vector<Instance> none;
     std::vector<Entity> npcs;
-    auto sync = [&] { syncSpawns(npcs, g, list, 1, {16, 4, 16}); };
+    auto sync = [&] { syncSpawns(npcs, g, list, 1, {16, 4, 16}, 0.5f); };
     CHECK(!putMarker(g, list, h, town).error);
     sync();
     CHECK(npcs.size() == 1 && npcs[0].displayName() == "Maren Holt" && npcs[0].name != "Maren Holt");
@@ -2689,7 +2691,7 @@ static void fightReplay() {
     CHECK(sheet(player)[Stat::Armor] == 37 && player.inv.equipped[SlotMainHand] == Shortsword);
     Marker m{.id = 1, .kind = MarkerKind::Spawn, .pos = {26.5f, 4, 32.5f}, .radius = 3, .entity = EntityKind::Bandit};
     std::vector<Entity> es;
-    syncSpawns(es, g, {m}, 1, player.pos);
+    syncSpawns(es, g, {m}, 1, player.pos, 0.5f);
     CHECK(es.size() == 1);
     Entity& bandit = es[0];
     std::mt19937 rng(1);
@@ -2725,7 +2727,7 @@ static void fightReplay() {
     // The bandit chief always drops his iron helm, whatever the seed.
     for (uint32_t seed : {1u, 2u, 3u}) {
         std::vector<Entity> chief;
-        syncSpawns(chief, g, {{.id = 1, .kind = MarkerKind::Spawn, .pos = {26.5f, 4, 32.5f}, .entity = EntityKind::BanditChief}}, seed, player.pos);
+        syncSpawns(chief, g, {{.id = 1, .kind = MarkerKind::Spawn, .pos = {26.5f, 4, 32.5f}, .entity = EntityKind::BanditChief}}, seed, player.pos, 0.5f);
         CHECK(chief.size() == 1 && damage(chief[0], 1000) && !chief[0].body.alive());
         same(std::format("chief seed {}", seed), "loot", chief[0].loot, IronHelm);
     }
@@ -2742,7 +2744,7 @@ static void boarReplay() {
     player.pos = {14.5f, 4, 20.5f};
     Marker m{.id = 1, .kind = MarkerKind::Spawn, .pos = {10.5f, 4, 20.5f}, .entity = EntityKind::Boar};
     std::vector<Entity> es;
-    syncSpawns(es, g, {m}, 2, player.pos);
+    syncSpawns(es, g, {m}, 2, player.pos, 0.5f);
     CHECK(es.size() == 1);
     Entity& boar = es[0];
     std::mt19937 rng(2);
@@ -2813,7 +2815,7 @@ static void npcAi() {
     const glm::vec3 home{26.5f, 4, 32.5f};
     auto spawn = [&](EntityKind kind) {
         es.clear();
-        syncSpawns(es, g, {{.id = 1, .kind = MarkerKind::Spawn, .pos = home, .radius = 3, .entity = kind}}, 1, player.pos);
+        syncSpawns(es, g, {{.id = 1, .kind = MarkerKind::Spawn, .pos = home, .radius = 3, .entity = kind}}, 1, player.pos, 0.5f);
         CHECK(es.size() == 1);
         return &es[0];
     };
@@ -2933,7 +2935,7 @@ static void npcAi() {
     {
         Marker m{.id = 2, .kind = MarkerKind::Spawn, .pos = home, .radius = 3, .entity = EntityKind::Guard, .count = 1, .lines = {"Halt."}};
         std::vector<Entity> gs;
-        syncSpawns(gs, g, {m}, 1, player.pos);
+        syncSpawns(gs, g, {m}, 1, player.pos, 0.5f);
         setState(gs[0], AiState::Chase, "forced");
         CHECK(gs[0].speech() == nullptr && gs[0].shoutTimer == 0);
         setState(gs[0], AiState::Wander, "forced");
@@ -3342,6 +3344,251 @@ static void playerSaves() {
     fs::remove_all(dir);
 }
 
+// Time-of-day spawns (ADR-023): a spawn marker's active window, its NPCs coming and going with it
+// through step(), and the window in world files, commands and prefab files.
+static void timedSpawns() {
+    Grid g = meadow();  // grass top at y = 3 (feet at 4), pond at x >= 32
+    Marker night{.id = 2, .kind = MarkerKind::Spawn, .name = "Ring", .pos = {20.5f, 4, 40.5f}, .radius = 3,
+                 .entity = EntityKind::Ghoul, .count = 2, .activeFrom = 0.8f, .activeTo = 0.2f};
+    // Windows: [from, to), across midnight when from > to; none (both 0) is always.
+    CHECK(!checkMarker(g, night));
+    for (float t : {0.8f, 0.9f, 0.0f, 0.1999f}) CHECK(activeAt(night, t));
+    for (float t : {0.2f, 0.5f, 0.7999f}) CHECK(!activeAt(night, t));
+    Marker day = night;
+    day.id = 3, day.activeFrom = 0.25f, day.activeTo = 0.75f;
+    CHECK(!checkMarker(g, day) && activeAt(day, 0.25f) && activeAt(day, 0.5f) && !activeAt(day, 0.75f) && !activeAt(day, 0.1f));
+    Marker always = night;
+    always.activeFrom = always.activeTo = 0;
+    CHECK(!checkMarker(g, always) && activeAt(always, 0) && activeAt(always, 0.5f) && activeAt(always, 0.99f));
+    for (auto [from, to] : std::initializer_list<std::pair<float, float>>{{0.5f, 0.5f}, {-0.1f, 0.2f}, {0.8f, 1}, {NAN, 0.2f}, {0.8f, INFINITY}}) {
+        Marker m = night;
+        m.activeFrom = from, m.activeTo = to;
+        CHECK(checkMarker(g, m));
+    }
+    Marker well{.id = 1, .kind = MarkerKind::Poi, .name = "Well", .pos = {5.5f, 4, 5.5f}, .radius = 8, .activeFrom = 0.8f, .activeTo = 0.2f};
+    CHECK(checkMarker(g, well));  // windows are for spawns
+    well.activeFrom = well.activeTo = 0;
+
+    // step(): none by day; they come as the window opens and leave as it closes.
+    Session s{.world = meadow(), .seed = 4};
+    s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {5.5f, 4, 5.5f}}, night};
+    s.timeOfDay = 0.5f;
+    startSession(s);
+    CHECK(s.entities.empty());
+    s.timeOfDay = 0.79f;
+    step(s, {}, kTick);
+    CHECK(s.entities.empty());
+    s.timeOfDay = 0.8f - 2e-6f;  // a tick is ~3.9e-6 of a day
+    step(s, {}, kTick);
+    CHECK(s.entities.size() == 2 && s.entities[0].home == night.pos && s.entities[0].kind == EntityKind::Ghoul);
+    s.timeOfDay = 1 - 1e-5f;
+    for (int i = 0; i < 10; ++i) step(s, {}, kTick);  // past midnight: the same ones stay
+    CHECK(s.timeOfDay < 0.1f && s.entities.size() == 2 && s.entities[0].stateTime > 0.1f);
+    s.timeOfDay = 0.2f - 2e-6f;
+    step(s, {}, kTick);
+    CHECK(s.entities.empty());
+    for (int i = 0; i < 60; ++i) step(s, {}, kTick);
+    CHECK(s.entities.empty());  // and none come back by day
+
+    // A fight outlasts the window: the fighter finishes it, then leaves; the other leaves at once,
+    // and the marker doesn't fill up again by day.
+    s.timeOfDay = 0.9f;
+    step(s, {}, kTick);
+    CHECK(s.entities.size() == 2);
+    s.entities[1].calmTimer = 1000;  // doesn't attack on sight: stays out of the fight
+    s.player.teleport(s.entities[0].body.pos + glm::vec3(2, 0, 0));
+    for (int i = 0; i < 30 && !s.entities[0].angry(); ++i) step(s, {}, kTick);
+    CHECK(s.entities.size() == 2 && s.entities[0].angry() && !s.entities[1].angry());
+    s.timeOfDay = 0.5f;
+    step(s, {}, kTick);
+    CHECK(s.entities.size() == 1 && s.entities[0].angry());  // mid-fight: stays
+    for (int i = 0; i < 20; ++i) step(s, {}, kTick);
+    CHECK(s.entities.size() == 1);
+    // The window opens again mid-fight: only the missing slot spawns, the fighter keeps its state.
+    int fighter = s.entities[0].slot;
+    uint32_t fighterTransitions = s.entities[0].transitions;
+    s.entities[0].body.health = 33;
+    s.timeOfDay = 0.9f;
+    step(s, {}, kTick);
+    auto bySlot = [&](int slot) -> Entity* {
+        auto it = std::ranges::find(s.entities, slot, &Entity::slot);
+        return it != s.entities.end() ? &*it : nullptr;
+    };
+    Entity *kept = bySlot(fighter), *fresh = bySlot(1 - fighter);
+    CHECK(s.entities.size() == 2 && kept && fresh && kept->angry() && kept->body.health < 34 && kept->transitions >= fighterTransitions);
+    CHECK(fresh && fresh->body.health == float(maxHealth(sheet(fresh->body))) && glm::distance(fresh->home, night.pos) < 4);
+    s.timeOfDay = 0.5f;
+    s.player.teleport({5.5f, 4, 5.5f});  // beyond its leash: it gives up, and goes
+    int ticks = 0;
+    for (; ticks < 120 && !s.entities.empty(); ++ticks) step(s, {}, kTick);
+    CHECK(s.entities.empty() && ticks < 120);
+
+    // Player saves (.flys, ADR-025): a save made at night keeps a wounded ghoul; one loaded where the
+    // window no longer covers the save's time (the clock comes from the save) says why it's dropped.
+    {
+        std::string save = (std::filesystem::temp_directory_path() / "flycoos_timed.flys").string();
+        Session a{.world = meadow(), .seed = 4};
+        a.markers = s.markers;
+        a.timeOfDay = 0.9f;
+        startSession(a);
+        CHECK(a.entities.size() == 2);
+        a.entities[1].body.health = 20;
+        int wounded = a.entities[1].slot;
+        CHECK(savePlayer(save.c_str(), a, "w.flyw", 7).empty());
+        Session b{.world = meadow(), .seed = 4};
+        b.markers = s.markers;
+        b.timeOfDay = 0.5f;  // whatever the game had: the save's clock wins
+        SaveReport r;
+        CHECK(loadPlayer(save.c_str(), b, 7, r).empty() && r.npcs == 2 && r.droppedNpcs == 0 && b.timeOfDay == 0.9f);
+        auto it = std::ranges::find(b.entities, wounded, &Entity::slot);
+        CHECK(it != b.entities.end() && it->body.health == 20);
+        Session c{.world = meadow(), .seed = 4};
+        c.markers = s.markers;
+        c.markers[1].activeFrom = 0.25f, c.markers[1].activeTo = 0.75f;  // the world made them day-only since
+        SaveReport cr;
+        CHECK(loadPlayer(save.c_str(), c, 7, cr).empty() && c.entities.empty() && cr.npcs == 0 && cr.droppedNpcs == 2);
+        CHECK(std::ranges::count_if(cr.notes, [](const std::string& n) { return n.contains("out of its active window"); }) == 2);
+        std::filesystem::remove(save), std::filesystem::remove(save + ".bak");
+    }
+
+    // Corpses: an empty one lies kCorpseLinger (a kill out of the window shows), one with loot until
+    // it's looted or back up; none come back by day.
+    s.timeOfDay = 0.9f;
+    step(s, {}, kTick);
+    CHECK(s.entities.size() == 2);
+    s.timeOfDay = 0.5f;
+    CHECK(damage(s.entities[1], 10000));
+    s.entities[1].loot = NoItem;  // whatever the drop roll said
+    step(s, {}, kTick);
+    CHECK(s.entities.size() == 1 && !s.entities[0].body.alive());  // the living one left, the corpse lies
+    for (int i = 0; i < int(kCorpseLinger * 60) - 3; ++i) step(s, {}, kTick);
+    CHECK(s.entities.size() == 1);
+    for (int i = 0; i < 4; ++i) step(s, {}, kTick);
+    CHECK(s.entities.empty());
+    s.timeOfDay = 0.9f;
+    step(s, {}, kTick);
+    CHECK(s.entities.size() == 2);
+    for (Entity& e : s.entities) {
+        CHECK(damage(e, 10000));
+        e.loot = BoneCharm;
+    }
+    s.timeOfDay = 0.5f;
+    for (int i = 0; i < int(kCorpseLinger * 60) + 2; ++i) step(s, {}, kTick);
+    CHECK(s.entities.size() == 2);
+    s.player.teleport(s.entities[1].body.pos + (s.entities[1].body.pos - s.entities[0].body.pos) * 0.3f);  // the nearer corpse
+    SimInput loot;
+    loot.interact = true;
+    step(s, loot, kTick);  // looted past kCorpseLinger: it goes at once
+    CHECK(s.entities.size() == 1 && s.entities[0].loot == BoneCharm && s.player.inv.containers[0][2] == BoneCharm);
+    for (int i = 0; i < int(typeOf(EntityKind::Ghoul).respawnSeconds * 60) + 2; ++i) step(s, {}, kTick);
+    CHECK(s.entities.empty());
+
+    // Files: windows round-trip in their TIME section; without it (older files) every marker is always active.
+    std::string path = (std::filesystem::temp_directory_path() / "flycoos_times_test.flyw").string();
+    std::vector<Marker> list = {well, night, day};
+    std::optional<std::vector<Marker>> loaded;
+    std::vector<Instance> instances;
+    uint32_t seed = 0;
+    Grid fg({64, 32, 64}), back({32, 32, 32});
+    CHECK(saveWorld(path.c_str(), fg, 5, {}, list).empty());
+    CHECK(loadWorld(path.c_str(), back, seed, instances, loaded).empty() && loaded && *loaded == list);
+    std::ifstream in(path, std::ios::binary);
+    const std::string file((std::istreambuf_iterator<char>(in)), {});
+    in.close();
+    CHECK(file.contains("TIME"));
+    auto u32 = [](uint32_t v) { return std::string{char(v), char(v >> 8), char(v >> 16), char(v >> 24)}; };
+    auto seal = [&](std::string head, std::string payload) {  // `head`, then `payload` as TIME (none: no section)
+        std::string bytes = head;
+        if (!payload.empty()) {
+            bytes += "TIME";
+            for (int i = 0; i < 8; ++i) bytes += char(uint64_t(payload.size()) >> (8 * i));
+            bytes += payload;
+        }
+        uint32_t hash = 2166136261u;
+        for (char c : bytes) hash = (hash ^ uint8_t(c)) * 16777619u;
+        for (int i = 0; i < 4; ++i) bytes += char(hash >> (8 * i));
+        std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes;
+        return loadWorld(path.c_str(), back, seed, instances, loaded);
+    };
+    std::string head = file.substr(0, file.rfind("TIME"));
+    CHECK(seal(head, "").empty() && loaded && loaded->size() == 3 &&
+          std::ranges::all_of(*loaded, [](const Marker& m) { return m.activeFrom == 0 && m.activeTo == 0 && activeAt(m, 0.5f); }));
+    auto times = [&](uint32_t id, float from, float to) { return u32(id) + u32(std::bit_cast<uint32_t>(from)) + u32(std::bit_cast<uint32_t>(to)); };
+    CHECK(seal(head, u32(1) + times(3, 0.1f, 0.3f)).empty() && (*loaded)[2].activeFrom == 0.1f && (*loaded)[1].activeFrom == 0);
+    for (const std::string& hostile : {
+             u32(1) + times(9, 0.8f, 0.2f),                          // no such marker
+             u32(1) + times(1, 0.8f, 0.2f),                          // a poi
+             u32(1) + times(2, 0.5f, 0.5f),                          // no window
+             u32(1) + times(2, 0, 0),                                // no window either
+             u32(1) + times(2, 1.5f, 0.2f),                          // not a time of day
+             u32(1) + times(2, NAN, 0.2f),                           // NaN
+             u32(2) + times(3, 0.8f, 0.2f) + times(2, 0.8f, 0.2f),  // ids not ascending
+             u32(2) + times(2, 0.8f, 0.2f) + times(2, 0.8f, 0.2f),  // twice
+             u32(2) + times(2, 0.8f, 0.2f),                          // truncated
+             u32(1) + times(2, 0.8f, 0.2f) + "x",                    // trailing bytes
+             std::string("ab"),                                      // no count
+         }) {
+        std::string error = seal(head, hostile);
+        CHECK(!error.empty() && error.contains("times"));
+    }
+    {  // two TIME sections; one without markers
+        std::string first = u32(1) + times(2, 0.8f, 0.2f), section = "TIME";
+        for (int i = 0; i < 8; ++i) section += char(uint64_t(first.size()) >> (8 * i));
+        CHECK(seal(head + section + first, u32(1) + times(3, 0.8f, 0.2f)).contains("duplicate"));
+        CHECK(seal(file.substr(0, file.rfind("MARK")), first).contains("without markers"));
+    }
+    std::filesystem::remove(path);
+
+    // Commands: mark and edit_marker set the window, markers lists it, bad ones change nothing.
+    std::vector<Marker> marks;
+    EditHistory ch;
+    PrefabLibrary lib = loadPrefabs("no-such-folder");
+    GameView view;
+    auto run = [&](std::string_view request) { return runCommand(request, g, instances, marks, ch, lib, view); };
+    auto ok = [&](const Command& c) { return c.response["ok"].get<bool>(); };
+    Command c = run(R"({"cmd": "mark", "args": {"kind": "spawn", "x": 20, "z": 40, "entity": "ghoul", "count": 2, "active": [0.8, 0.2]}})");
+    CHECK(ok(c) && marks.size() == 1 && marks[0].activeFrom == 0.8f && marks[0].activeTo == 0.2f);
+    CHECK(ok(c) && c.response["result"]["marker"]["active"] == nlohmann::json::array({0.8, 0.2}));  // rounded, not 0.800000011920929
+    CHECK(ok(run(R"({"cmd": "mark", "args": {"kind": "poi", "name": "Well", "x": 5, "z": 5}})")) && ch.undo.size() == 2);
+    c = run(R"({"cmd": "markers", "args": {"kind": "spawn"}})");
+    CHECK(ok(c) && c.response["result"]["markers"][0]["active"] == nlohmann::json::array({0.8, 0.2}));
+    c = run(R"({"cmd": "markers", "args": {"kind": "poi"}})");
+    CHECK(ok(c) && !c.response["result"]["markers"][0].contains("active"));
+    for (const char* hostile : {
+             R"({"cmd": "edit_marker", "args": {"id": 1, "active": "night"}})",
+             R"({"cmd": "edit_marker", "args": {"id": 1, "active": [0.5]}})",
+             R"({"cmd": "edit_marker", "args": {"id": 1, "active": [0.1, 0.2, 0.3]}})",
+             R"({"cmd": "edit_marker", "args": {"id": 1, "active": [0.5, 0.5]}})",
+             R"({"cmd": "edit_marker", "args": {"id": 1, "active": [1.5, 0.2]}})",
+             R"({"cmd": "edit_marker", "args": {"id": 1, "active": [1, 0.2]}})",
+             R"({"cmd": "edit_marker", "args": {"id": 1, "active": [0.8, "x"]}})",
+             R"({"cmd": "edit_marker", "args": {"id": 2, "active": [0.8, 0.2]}})",
+             R"({"cmd": "mark", "args": {"kind": "region", "name": "Vale", "x": 9, "z": 9, "active": [0.8, 0.2]}})",
+         }) {
+        c = run(hostile);
+        CHECK(!ok(c) && c.dirty.empty());
+    }
+    CHECK(marks.size() == 2 && ch.undo.size() == 2 && marks[0].activeFrom == 0.8f);
+    c = run(R"({"cmd": "edit_marker", "args": {"id": 1, "active": []}})");
+    CHECK(ok(c) && marks[0].activeFrom == 0 && marks[0].activeTo == 0 && !c.response["result"]["marker"].contains("active"));
+    CHECK(ok(run(R"({"cmd": "edit_marker", "args": {"id": 1, "active": [0.25, 0.75]}})")) && marks[0].activeFrom == 0.25f);
+    CHECK(ok(run(R"({"cmd": "edit_marker", "args": {"id": 1, "name": "Ring"}})")) && marks[0].activeTo == 0.75f);  // left out: kept
+    CHECK(ok(run(R"({"cmd": "undo"})")) && ok(run(R"({"cmd": "undo"})")) && ok(run(R"({"cmd": "undo"})")) && marks[0].activeFrom == 0.8f);
+    c = run(R"({"cmd": "edit_marker", "args": {"id": 1, "active": [0.99999999, 0.2]}})");  // rounds to 1.0f as a float
+    CHECK(ok(c) && marks[0].activeFrom < 1 && marks[0].activeFrom > 0.9999f && !checkMarker(g, marks[0]));
+
+    // Prefab files: `active=FROM-TO` on a marker line.
+    Prefab p{.name = "x"};
+    CHECK(parsePrefab("S = Stone\nmarker: spawn x=0 z=0 entity=ghoul active=0.8-0.2 name=Ring\nlayer\nS\n", p).empty() &&
+          p.markers.size() == 1 && p.markers[0].activeFrom == 0.8f && p.markers[0].activeTo == 0.2f && p.markers[0].name == "Ring");
+    for (const char* bad : {"active=0.8", "active=0.8-", "active=-0.2", "active=x-0.2", "active=0.8-0.2x", "active=0.5-0.5", "active=0.8-1.5"}) {
+        Prefab q{.name = "x"};
+        CHECK(!parsePrefab(std::format("S = Stone\nmarker: spawn x=0 z=0 entity=ghoul {}\nlayer\nS\n", bad), q).empty());
+    }
+    Prefab q{.name = "x"};
+    CHECK(parsePrefab("S = Stone\nmarker: poi x=0 z=0 active=0.8-0.2 name=Well\nlayer\nS\n", q).contains("for spawn markers"));
+}
+
 // The fixed tick: N ticks of a scripted input end in exactly the same state, and bodies are drawn
 // between their last two ticks (but never slid across a teleport).
 static void ticks() {
@@ -3600,7 +3847,7 @@ static void dataFiles() {
     std::optional<std::vector<Marker>> loaded;
     CHECK(loadWorld(sowWorld.c_str(), back, seed, instances, loaded).empty() && loaded && *loaded == marks);
     std::vector<Entity> sows;
-    if (loaded) syncSpawns(sows, back, *loaded, 1, {});
+    if (loaded) syncSpawns(sows, back, *loaded, 1, {}, 0.5f);
     CHECK(sows.size() == 1 && sows[0].kind == EntityKind(8) && std::string_view(sows[0].name) == "Boar");
     setDefs(std::move(shipped));  // the other tests see exactly the shipped items and creatures
     // Without that kind the world is refused, saying why.
@@ -3756,6 +4003,13 @@ static void lighting() {
 }
 
 int main() {
+    // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
+    // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
+    std::string tmp = (std::filesystem::temp_directory_path() / "flycoos-core-test-XXXXXX").string();
+    if (!mkdtemp(tmp.data()) || setenv("TMPDIR", tmp.c_str(), 1) != 0) {
+        std::println(stderr, "FAIL cannot make a temp folder {}", tmp);
+        return 1;
+    }
     {  // every test reads the shipped item definitions, as the game does
         Defs shipped;
         std::string error;
@@ -3792,8 +4046,11 @@ int main() {
     boarReplay();
     npcAi();
     session();
+    timedSpawns();
     ticks();
     playerSaves();
+    std::error_code ec;
+    std::filesystem::remove_all(tmp, ec);
     if (failures) std::println(stderr, "{} check(s) failed", failures);
     else std::println("all checks passed");
     return failures ? 1 : 0;

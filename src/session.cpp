@@ -1,5 +1,6 @@
 #include "session.h"
 
+#include <algorithm>
 #include <cmath>
 
 void startSession(Session& s) {
@@ -11,7 +12,7 @@ void startSession(Session& s) {
     s.player.teleport(playerSpawn(s.world, s.markers));
     giveItem(s.player.inv, Shortsword);
     giveItem(s.player.inv, Satchel);
-    syncSpawns(s.entities, s.world, s.markers, s.seed, s.player.pos);
+    syncSpawns(s.entities, s.world, s.markers, s.seed, s.player.pos, s.timeOfDay);
     s.rng.seed(s.seed);
 }
 
@@ -46,6 +47,8 @@ StepResult step(Session& s, const SimInput& in, float dt) {
         updateCombat(p, s.entities, dt, s.rng, s.armorK);
     }
     s.timeOfDay = std::fmod(s.timeOfDay + dt / kDayLength * s.timeScale * in.timeRate, 1.0f);
+    if (std::ranges::any_of(s.markers, [](const Marker& m) { return m.activeFrom != m.activeTo; }))  // timed spawns come and go
+        syncSpawns(s.entities, s.world, s.markers, s.seed, p.pos, s.timeOfDay);
     const Marker* region = regionAt(s.markers, p.pos);  // its name shows for a few seconds on entering
     if (uint32_t id = region ? region->id : 0; id != s.regionId) s.regionId = id, s.regionSince = s.elapsed;
     return r;

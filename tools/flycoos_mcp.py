@@ -65,14 +65,14 @@ PREFAB_FORMAT = (
     "after `layer` is a row of keep cells; blank lines before the next `layer` are ignored. Lines starting with # are "
     "comments. At most 64 cells per axis. Convention: the front (door) is the last row, +z, at rotation 0. The "
     "footprint is centered on the placed column. Optional header lines `marker: <spawn|poi|region> x=N z=N "
-    "[entity=<kind>] [count=N] [radius=N] [name=<rest of the line>]` (x, z: a cell of the layers, the marker stands on "
-    "the bottom layer), each followed by optional `line: <text>` lines (its dialogue): placing the prefab makes these "
+    "[entity=<kind>] [count=N] [radius=N] [active=FROM-TO] [name=<rest of the line>]` (x, z: a cell of the layers, the marker stands on "
+    "the bottom layer; active: a spawn's window as times of day, e.g. active=0.8-0.2 at night), each followed by optional `line: <text>` lines (its dialogue): placing the prefab makes these "
     "markers, owned by the instance (e.g. prefabs/camp.txt brings two bandits).")
 MARKER_KINDS = ["player_spawn", "spawn", "poi", "region"]
 MARKER_NOTE = (" Markers are authored story data: they stand at the center of column x, z on ground voxel y. Kinds: "
                "`player_spawn` (where the player starts and gets back up after being knocked out; at most one), `spawn` "
                "(`count` NPCs of kind `entity` that wander within `radius` of it and respawn there; editing its place, "
-               "radius, entity or count respawns them, a new name or new lines don't), `poi` (a named place; its name shows to a player within `radius`), `region` (a named circle; "
+               "radius, entity or count respawns them, a new name, new lines or a new active window don't), `poi` (a named place; its name shows to a player within `radius`), `region` (a named circle; "
                "walking into it shows its name, the smallest wins when they nest). One call is one undo step, shared "
                "with the user's undo.")
 MARKER_FIELDS = {
@@ -89,6 +89,11 @@ MARKER_FIELDS = {
                              "(guards too) shouts the next one when it turns on the player, at most every 8 s. Up to 8 lines of 1..160 bytes, checked like names. With "
                              "lines and count 1 the NPC is called by the marker's name (e.g. a named story character). "
                              "[] clears them"},
+    "active": {"type": "array", "maxItems": 2, "items": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+               "description": "Spawn only: [from, to], when its NPCs are out, as times of day (0 midnight, 0.25 sunrise, 0.5 "
+                              "noon, 0.75 sunset; past midnight when from > to, e.g. [0.8, 0.2] at night). Outside it none "
+                              "spawn, and those out leave once out of a fight (not mid-fight; corpses once looted). "
+                              "Default, or []: always"},
 }
 INSTANCE_NOTE = (" One call is one undo step (voxels and the instance list together), shared with the user's undo. The "
                  "change flashes in the game.")
@@ -175,7 +180,8 @@ TOOLS = {
     "instances": ("List placed prefab instances (id, prefab, position, rotation, seed, params, box, cells), all of them "
                   "or those whose box touches a region; at most 500 listed, `count` has the total.",
                   obj(REGION)),
-    "markers": ("List the story markers (id, kind, name, x, y, z, radius; spawns also entity, count and any lines; `instance` "
+    "markers": ("List the story markers (id, kind, name, x, y, z, radius; spawns also entity, count and any lines and "
+                "`active` window; `instance` "
                 "when a prefab instance placed it and owns it), all of them "
                 "or those in a region (a region marker's circle counts), optionally of one kind; at most 500 listed, "
                 "`count` has the total." + MARKER_NOTE,
@@ -183,7 +189,7 @@ TOOLS = {
     "mark": ("Add a story marker; returns it with its id." + MARKER_NOTE,
              obj({"kind": {"type": "string", "enum": MARKER_KINDS}, **MARKER_FIELDS}, ["kind", "x", "z"])),
     "edit_marker": ("Change a marker's name, place (x, z, y; a new column without y stands on its ground), radius, or "
-                    "a spawn's entity, count and lines. Fields you leave out stay; the kind can't change (remove it and mark "
+                    "a spawn's entity, count, lines and active window. Fields you leave out stay; the kind can't change (remove it and mark "
                     "again)." + MARKER_NOTE,
                     obj({"id": num("Marker id (markers lists them)", 1), **MARKER_FIELDS}, ["id"])),
     "unmark": ("Remove a story marker (a spawn's NPCs go with it)." + MARKER_NOTE,

@@ -741,6 +741,58 @@
   - The debug Player tab shows the sheet: every stat's base and final value, and each modifier with
     its source. The Character window shows final attributes with what gear adds in green.
 
+## ADR-023: Time-of-day spawns: an active window on spawn markers
+
+- **Status:** accepted (2026-11-03)
+- **Context:** Act 1's barrow ghouls should walk only at night ("the dead walk at the treeline"),
+  and later content wants the same for other kinds (night wolves, day-only traders). The clock is
+  already one number, `Session::timeOfDay` (0..1, 0 midnight), which the debug slider, `--time`
+  and the MCP `time`/`time_of_day` fields use.
+- **Decision:**
+  - A spawn marker may carry an active window, `Marker::activeFrom`/`activeTo`, in the same 0..1
+    times of day: its NPCs are out in `[from, to)`, past midnight when from > to (`activeAt`).
+    Equal means always; both 0 is the default, and `checkMarker` refuses other equal pairs (so a
+    window round-trips exactly), times outside [0, 1) or NaN, and windows on other kinds.
+  - `syncSpawns` takes the time of day. An inactive marker spawns nothing. Its living NPCs leave
+    once they aren't fighting (the ADR-020 states Chase, Windup, Recover, `Entity::angry()`); one
+    in a fight finishes it (wins, gives up at the leash, loses the player) and then leaves. Its
+    corpses stay while they hold loot, and leave once looted or when they get back up (the
+    respawn timer), so nothing respawns out of the window; an empty corpse lies `kCorpseLinger`
+    (3 s) first, so a kill made out of the window still shows its death pose. When the window opens only the
+    marker's missing slots (`Entity::slot`, ADR-025) spawn: one still out keeps its state. Every
+    marker missing slots fills them that way (a removed marker undone too); only a changed marker
+    (place, radius, kind, count) respawns all of its NPCs, as before.
+  - A player save keeps the time of day it was made at, so its NPCs load as they were. Where the
+    save's time is outside a marker's window (the window changed since), its saved NPCs are
+    dropped with the note "its marker is out of its active window at this time of day".
+  - `step()` calls `syncSpawns` every tick, after combat, but only while some marker has a window:
+    worlds without one run exactly as before.
+  - Saved in a new `TIME` section (marker id, from, to), written only when a marker has a window;
+    `MARK` keeps its layout (ADR-015/016/021 precedent). Older files load with every spawn always
+    active; older builds skip the section and drop the windows.
+  - Set from the editor's Marker tool (a checkbox and From/To sliders with the clock time), MCP
+    `mark`/`edit_marker` `active: [from, to]` (`[]`: always; each time in [0, 1), kept below 1 after
+    the float cast; `markers` lists it, rounded), and
+    prefab `marker:` lines (`active=0.8-0.2`). The debug window's World tab lists the timed
+    markers, active or not, with how many of their NPCs are out.
+- **Alternatives considered:**
+  - Hours on a 24 h clock: a second time unit next to the one Session, the renderer and MCP use.
+  - A window on the creature kind (data/creatures.json): every ghoul everywhere would be night-only,
+    and a story can't place a day ghoul; the marker is where authored placement already lives.
+  - Despawning the whole group only once none of them fights: simpler counting, but calm members
+    would linger by day next to a fight; leaving one by one is what the story wants.
+  - "Return home, then vanish": walking back first looks nicer but needs a new AI state and reason
+    in `think()`; vanishing once out of combat is enough while nobody watches the barrow at dawn.
+  - A separate per-tick pass beside `syncSpawns`: it would duplicate the marker lookup and the
+    count rules; one function keeps edits and time changes on the same path.
+- **Consequences:**
+  - With a timed marker the world pays one `syncSpawns` per tick: a binary search per NPC and one
+    small per-marker tally buffer, no hashing, and lines and names are copied only when they change.
+  - A saved corpse with loot of such a marker is dropped with the rest, loot included; restoring it
+    would need spawning a single slot from the loader, not worth it for a window edit.
+  - Act 1: the two ghoul markers (#34, #35) get `[0.8, 0.2]`; by day the act has 24 NPCs, at night 28.
+    The balance tests fight ghouls directly and don't depend on the clock.
+
 ## ADR-025: A separate `.flys` player save, keyed by stable ids
 
 - **Status:** accepted (2026-11-03)

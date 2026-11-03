@@ -91,6 +91,7 @@ constexpr float kTalkRange = 3.5f;   // blocks between feet; also how close you 
 constexpr float kPunchReach = 2.0f;  // blocks between feet
 constexpr float kFleeSeconds = 4;    // how long a fleeing NPC runs before it heads home
 constexpr float kPlayerRespawnSeconds = 5;
+constexpr float kCorpseLinger = 3;  // seconds an empty corpse of an inactive spawn marker (ADR-023) lies before it goes
 
 // The training dummy, a villager, a boar and a bandit on grass beside `near` (usually the player
 // spawn). The bandit's camp is far enough away that it can't see `near`.
@@ -98,9 +99,13 @@ std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t se
 // The NPCs of every spawn marker. Entities whose marker is gone or changed (position, radius, kind
 // or count) are replaced by fresh ones at the marker; the rest are left alone (a new name or new
 // lines only update their copy of the marker), so it's cheap to call after anything that may have
-// changed the markers. New ones face `face`.
+// changed the markers. New ones face `face`. A marker with an active window (Marker::activeFrom)
+// spawns only inside it at `timeOfDay` (then only the slots it misses: those still out keep their
+// state); outside it its NPCs leave once out of a fight (Chase, Windup,
+// Recover), its corpses once looted (kCorpseLinger after death at the earliest) or back up, and the
+// rest of its NPCs stay away.
 void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vector<Marker>& markers, uint32_t seed,
-                glm::vec3 face);
+                glm::vec3 face, float timeOfDay);
 // Where the player starts and gets back up: the player_spawn marker, else findSpawn, out of the terrain.
 glm::vec3 playerSpawn(const Grid& world, const std::vector<Marker>& markers);
 // Spawn markers for the NPCs that worlds had before markers existed: one per spawnEntities entity

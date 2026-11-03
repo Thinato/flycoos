@@ -30,7 +30,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | File | Responsibility |
 |---|---|
 | `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, the world file container (`writeWorldFile`/`readWorldFile`: header, `VOXL`, `INST`, checksum; other sections pass through as `Section`s), `fnv1a` and `replaceFile` (temp and rename; durable for player saves) shared with `save.cpp` |
-| `src/story.h/.cpp` | Story data: `EntityKind` save ids (and the string ids of the ones code names), `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`, `OWNR`) and `saveWorld`/`loadWorld` (the container plus markers) |
+| `src/story.h/.cpp` | Story data: `EntityKind` save ids (and the string ids of the ones code names), `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`, `OWNR`, `TIME`), `activeAt` and `saveWorld`/`loadWorld` (the container plus markers) |
 | `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels, prefab instances and markers); `putMarker`/`removeMarker`; `raycast` (voxel DDA); `groundTop` |
 | `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances |
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
@@ -126,6 +126,11 @@ u32 FNV-1a checksum of every byte before it
   holds `u32` the highest marker id ever used (`EditHistory::markerIds`), so new markers never
   reuse a removed one's id: player saves key NPCs by marker id. A file without it falls back to
   the highest live id; a second one, a bad size or 2³²−1 is rejected.
+- The `TIME` section (written after `MARK`, only when a spawn marker has an active window,
+  ADR-023) holds by ascending marker id `u32 count`, then per such marker `u32 id | f32 activeFrom |
+  f32 activeTo`. Each must name a loaded spawn marker and a real window (from ≠ to) that passes
+  `checkMarker`; a second section is rejected. A file without it (all older ones) loads with every
+  spawn always active; older builds skip it, so their saves drop the windows.
 - Later content gets its own sections; old readers skip them, so adding one needs no version bump.
 - Loading rejects, with a message, anything that doesn't parse exactly: wrong magic or version,
   checksum mismatch (any corruption or truncation), bad sizes, block ids or run lengths. A
@@ -252,7 +257,7 @@ the screen center.
   256 MB cap. The returned box covers the instances' boxes too, so a remove whose voxels were all
   sculpted over still marks the world unsaved.
 - **Markers** (ADR-021): a structure file's `marker:` lines (with `line:` lines for dialogue)
-  declare markers at a cell of the layers, each checked by `checkMarker` (but its position) at its
+  declare markers at a cell of the layers (a spawn's window as `active=FROM-TO`, ADR-023), each checked by `checkMarker` (but its position) at its
   own line, with the marker and NPC caps; the other header keys may appear once. Placing with a marker list makes them, standing on the
   bottom layer (feet at `ground + 2 + y`) and turned with the footprint, with fresh ids and
   `owner` = the instance id, in the same undo step; it fails (changing nothing) past the marker
@@ -269,7 +274,7 @@ the screen center.
 
 Story markers say where things are and what places are called (ADR-015). A `Marker` is an id, a
 kind, a name, a position (feet: x, z at a column center, y the top of the ground voxel), a radius,
-and for spawns an entity kind, a count and dialogue lines. Kinds:
+and for spawns an entity kind, a count, dialogue lines and an active window. Kinds:
 
 | Kind | Radius | Effect |
 |---|---|---|
@@ -283,7 +288,8 @@ and for spawns an entity kind, a count and dialogue lines. Kinds:
   characters (required for poi and region), finite position inside the world (y up to the world
   height), radius 0–512, and up to 8 lines of 1–160 bytes (checked like names) only on spawn
   markers, not the dummy's (`takesLines`; deliberately not tied to NPC traits, so saved worlds keep
-  loading when a kind's traits change). The list holds at most 4096 markers, one player spawn, and spawn counts
+  loading when a kind's traits change), and an active window only on spawn markers: two times of day
+  in [0, 1), different unless both 0 (always). The list holds at most 4096 markers, one player spawn, and spawn counts
   adding up to at most 256 NPCs (every NPC is simulated each frame); ids are never 0 or 2³²−1 and
   don't wrap.
 - **Edits** (`putMarker`, `removeMarker`) are one undo step each: an `EditRecord` carries `(id,
@@ -300,6 +306,22 @@ and for spawns an entity kind, a count and dialogue lines. Kinds:
   lifted until the body is free (`clearOfTerrain`), for the player's spawn and for NPCs, whose
   update also frees one buried by a later edit. A rename or new lines only update the NPCs' copy of
   the marker (new lines start over from the first).
+- **Active windows** (ADR-023): a spawn marker's `activeFrom`/`activeTo` are times of day (0..1,
+  like `Session::timeOfDay`; 0 midnight, 0.5 noon). `activeAt` is true in `[from, to)`, past
+  midnight when from > to (0.8, 0.2: at night), and always when they're equal (both 0, the default).
+  `syncSpawns` takes the time of day: an inactive marker spawns nothing, and its NPCs leave once
+  they aren't fighting (`Entity::angry()`: Chase, Windup, Recover), its corpses once looted (an
+  empty one after `kCorpseLinger`, 3 s, so a kill shows) or back up; the missing ones don't come
+  back until the window opens again. Then only the missing slots (`Entity::slot`) spawn, so one
+  still out (a fighter, a corpse with loot) keeps its state; any marker missing slots fills them
+  the same way, and only a changed marker respawns all of its NPCs. A player save loaded where the
+  save's time is outside a marker's window drops that marker's saved NPCs with a note saying so.
+  `step()` runs `syncSpawns` every tick
+  when any marker has a window (worlds without one pay nothing; a per-marker tally buffer, no
+  hashing), after combat, so a corpse that
+  gets back up by day goes before it's drawn. Editing or the debug slider jumping the clock apply
+  on the next tick. The debug window's World tab lists the timed markers, active or not, and how
+  many of their NPCs are out.
 - **Lines** (ADR-016): talkers say the marker's next line on each E (cycling) instead of a random phrase;
   anyone that fights (guards too) says the next one when it enters `Chase` from calm (`setState`), at most every
   8 s, so hits from outside its territory (where it gives up at once) don't make it shout per hit;
@@ -369,7 +391,8 @@ remesh path and screen.
   (at most 500) with their name and pixel, since the map has digits only. A circle that misses the
   image or covers all of it isn't drawn, and one has at most as many points as the image's outline
   has pixels, so 1024 huge regions don't slow a small map. Default ground `y` is under any tree;
-  ids must be whole numbers.
+  ids must be whole numbers. A spawn's `active: [from, to]` sets its window (`[]`: always), listed
+  as `active` (rounded to 4 decimals) only when it has one.
 - **`path`:** samples the polyline every half brush radius, takes the ground height under each
   sample (ignoring trees), averages it over ±(16 + width) blocks along the path (or uses a fixed
   height), subtracts `depth`, and emits Flatten discs at full strength, then Paint discs.

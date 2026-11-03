@@ -20,6 +20,10 @@ const char* checkMarker(const Grid& g, const Marker& m) {
           m.pos.y <= float(g.size.y)))
         return "position outside the world";  // NaN fails every comparison
     if (!(m.radius >= 0 && m.radius <= kMaxMarkerRadius)) return "radius out of range (0..512)";
+    if (!(m.activeFrom >= 0 && m.activeFrom < 1 && m.activeTo >= 0 && m.activeTo < 1))
+        return "active times must be times of day in 0..1 (0 midnight, 0.5 noon)";
+    if (m.activeFrom == m.activeTo && m.activeFrom != 0) return "an active window needs two different times (none: always)";
+    if (m.activeFrom != m.activeTo && m.kind != MarkerKind::Spawn) return "an active window is for spawn markers";
     if (m.lines.empty()) return nullptr;
     if (!takesLines(m)) return "lines are for spawn markers, not the dummy: clear them first (lines: [])";
     if (m.lines.size() > kMaxMarkerLines) return "more than 8 lines";
@@ -59,6 +63,8 @@ static uint64_t get(const uint8_t* p, int bytes) {
 //   Older builds skip it (the markers stay, unowned).
 // "MKID" section (only when a removed marker had a higher id than every live one): u32 the highest
 //   marker id ever used, so new markers never reuse a removed one's id. Older builds skip it.
+// "TIME" section (only when a spawn marker has an active window; after MARK): u32 count, then per such
+//   marker, by ascending id: u32 id | f32 activeFrom, activeTo. Older builds skip it (always active).
 std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances,
                       const std::vector<Marker>& markers, uint32_t markerIds) {
     std::vector<Section> sections;
@@ -97,6 +103,13 @@ std::string saveWorld(const char* path, const Grid& g, uint32_t seed, const std:
             if (owned(m)) put(owners, m.id, 4), put(owners, m.owner, 4);
     }
     if (markerIds > (markers.empty() ? 0 : markers.back().id)) put(sections.emplace_back(Section{{'M', 'K', 'I', 'D'}, {}}).bytes, markerIds, 4);
+    auto timed = [](const Marker& m) { return m.activeFrom != m.activeTo; };
+    if (size_t count = size_t(std::ranges::count_if(markers, timed))) {
+        std::vector<uint8_t>& times = sections.emplace_back(Section{{'T', 'I', 'M', 'E'}, {}}).bytes;
+        put(times, count, 4);
+        for (const Marker& m : markers)
+            if (timed(m)) put(times, m.id, 4), put(times, std::bit_cast<uint32_t>(m.activeFrom), 4), put(times, std::bit_cast<uint32_t>(m.activeTo), 4);
+    }
     return writeWorldFile(path, g, seed, instances, sections);
 }
 
@@ -186,13 +199,29 @@ static std::string readOwners(const uint8_t* p, const uint8_t* end, const std::v
     return {};
 }
 
+// Reads the TIME payload [p, end) onto the loaded `markers`: each a real window on a spawn marker.
+static std::string readTimes(const uint8_t* p, const uint8_t* end, const Grid& g, std::vector<Marker>& markers) {
+    if (end - p < 4 || (end - p - 4) % 12 || get(p, 4) != uint64_t(end - p - 4) / 12) return "marker times section size mismatch";
+    uint32_t last = 0;
+    for (p += 4; p < end; p += 12) {
+        uint32_t id = uint32_t(get(p, 4));
+        auto m = std::ranges::lower_bound(markers, id, {}, &Marker::id);
+        if (m == markers.end() || m->id != id || id <= last) return std::format("bad times for marker {}", id);
+        m->activeFrom = std::bit_cast<float>(uint32_t(get(p + 4, 4)));
+        m->activeTo = std::bit_cast<float>(uint32_t(get(p + 8, 4)));
+        if (m->activeFrom == m->activeTo || checkMarker(g, *m)) return std::format("bad times for marker {}", id);
+        last = id;
+    }
+    return {};
+}
+
 std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Instance>& instances,
                       std::optional<std::vector<Marker>>& markers, uint32_t* markerIds) {
     markers.reset();
     if (markerIds) *markerIds = 0;
     std::vector<Section> sections;
     if (std::string error = readWorldFile(path, g, seed, instances, sections); !error.empty()) return error;
-    const Section *lines = nullptr, *owners = nullptr;  // read once the markers are in
+    const Section *lines = nullptr, *owners = nullptr, *times = nullptr;  // read once the markers are in
     bool markerIdsSeen = false;
     for (const Section& sec : sections) {
         const uint8_t *p = sec.bytes.data(), *end = p + sec.bytes.size();
@@ -202,16 +231,19 @@ std::string loadWorld(const char* path, Grid& g, uint32_t& seed, std::vector<Ins
             if (sec.bytes.size() != 4 || get(p, 4) == UINT32_MAX || markerIdsSeen) return "bad marker id mark";
             markerIdsSeen = true;
             if (markerIds) *markerIds = uint32_t(get(p, 4));
-        } else if (std::memcmp(sec.tag, "LINE", 4) == 0 || std::memcmp(sec.tag, "OWNR", 4) == 0) {
-            const Section*& seen = sec.tag[0] == 'L' ? lines : owners;
-            if (seen) return "duplicate marker lines or owners";
+        } else if (std::memcmp(sec.tag, "LINE", 4) == 0 || std::memcmp(sec.tag, "OWNR", 4) == 0 || std::memcmp(sec.tag, "TIME", 4) == 0) {
+            const Section*& seen = sec.tag[0] == 'L' ? lines : sec.tag[0] == 'O' ? owners : times;
+            if (seen) return "duplicate marker lines, owners or times";
             seen = &sec;
         }
     }
-    if ((lines || owners) && !markers) return "marker lines or owners without markers";
+    if ((lines || owners || times) && !markers) return "marker lines, owners or times without markers";
     if (lines)
         if (std::string error = readLines(lines->bytes.data(), lines->bytes.data() + lines->bytes.size(), g, *markers); !error.empty())
             return error;
-    if (owners) return readOwners(owners->bytes.data(), owners->bytes.data() + owners->bytes.size(), instances, *markers);
+    if (owners)
+        if (std::string error = readOwners(owners->bytes.data(), owners->bytes.data() + owners->bytes.size(), instances, *markers); !error.empty())
+            return error;
+    if (times) return readTimes(times->bytes.data(), times->bytes.data() + times->bytes.size(), g, *markers);
     return {};
 }

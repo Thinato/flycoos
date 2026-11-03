@@ -88,7 +88,7 @@ Not yet scheduled into a milestone; see docs/STORY.md for where Act 1 needs each
 - [ ] Skills that improve with use (e.g. one-handed improves by fighting with a one-handed weapon)
 - [ ] Dynamic lighting: Ember/torches/campfires emit light at night; dark interiors (barrow)
 - [ ] Occlusion-based color ramping (ambient occlusion that darkens and shifts block colors)
-- [ ] Time-of-day spawns (e.g. ghouls only at night)
+- [x] Time-of-day spawns (e.g. ghouls only at night): an active window on spawn markers (ADR-023)
 - [x] Trinket slot (Bone Charm), and gear attributes on top of base stats (stat pipeline, ADR-022)
 - [x] Bigger block palette: 64 colors, and Brick, MossyCobble, DarkPlanks, Hay, Clay, Slate and a
       Lantern (light 11) to build with (ADR-019)
