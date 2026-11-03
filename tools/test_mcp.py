@@ -51,14 +51,20 @@ def main():
             failures.append(what)
 
     next_id = iter(range(1, 1000))
+    notices = []  # notifications the bridge sent
 
-    def rpc(method, params=None):
+    def rpc(method, params=None, server=None):
+        server = server or bridge
         msg = {"jsonrpc": "2.0", "id": next(next_id), "method": method, "params": params or {}}
-        bridge.stdin.write(json.dumps(msg) + "\n")
-        bridge.stdin.flush()
-        reply = json.loads(bridge.stdout.readline())
+        server.stdin.write(json.dumps(msg) + "\n")
+        server.stdin.flush()
+        while "id" not in (reply := json.loads(server.stdout.readline())):
+            notices.append(reply["method"])
         assert reply["id"] == msg["id"], reply
         return reply["result"]
+
+    def schemas(server=None):
+        return {t["name"]: t["inputSchema"]["properties"] for t in rpc("tools/list", server=server)["tools"]}
 
     def tool(name, /, **args):  # positional-only: markers take a `name` argument
         r = rpc("tools/call", {"name": name, "arguments": args})
@@ -82,7 +88,8 @@ def main():
         init = rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "1"}})
         check(init["protocolVersion"] == "2025-06-18" and "tools" in init["capabilities"], "initialize")
         bridge.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
-        names = {t["name"] for t in rpc("tools/list")["tools"]}
+        first = schemas()
+        names = set(first)
         check({"state", "raise", "path", "apply", "undo", "save", "screenshot", "map", "heights", "inspect", "goto",
                "prefabs", "place", "remove", "move", "instances", "markers", "mark", "edit_marker", "unmark"} <= names,
               f"tools/list ({len(names)} tools)")
@@ -99,6 +106,32 @@ def main():
         if err:
             raise RuntimeError(state)
         x, z = int(state["player"][0]) + 20, int(state["player"][2]) + 20
+
+        # the bridge lists the game's NPC kinds and materials (its catalog command), not its own copies
+        unfilled = "enum" not in first["mark"]["entity"]
+        check(unfilled == ("notifications/tools/list_changed" in notices),
+              f"a tool list made before the game answered is followed by list_changed once it does (first list {'un' if unfilled else ''}filled)")
+        listed = schemas()
+        with socket.create_connection(("127.0.0.1", PORT), timeout=10) as s:
+            s.sendall(b'{"id": 1, "cmd": "catalog"}\n')
+            cat = json.loads(s.makefile().readline())["result"]
+        kinds = [e["id"] for e in cat["entities"]]
+        check(listed["mark"]["entity"]["enum"] == kinds == listed["edit_marker"]["entity"]["enum"] and
+              kinds[:8] == ["dummy", "villager", "boar", "bandit", "wolf", "guard", "bandit_chief", "ghoul"] and
+              "bandit_chief (Lv 3" in listed["mark"]["entity"]["description"], f"mark lists the game's {len(kinds)} NPC kinds")
+        check(listed["paint"]["material"]["enum"] == cat["solid_materials"] and "Grass" in cat["solid_materials"] and
+              "Air" not in cat["solid_materials"] and listed["fill"]["material"]["enum"] == cat["materials"] and
+              listed["path"]["material"]["enum"] == cat["solid_materials"], "paint, path and fill list the game's materials")
+        offline = subprocess.Popen([sys.executable, os.path.join(ROOT, "tools/flycoos_mcp.py")], cwd=ROOT,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                                   env={**os.environ, "FLYCOOS_PORT": "1"})
+        try:
+            alone = schemas(offline)
+        finally:
+            offline.stdin.close()
+            offline.wait(5)
+        check("enum" not in alone["mark"]["entity"] and "couldn't get the names from the game" in alone["mark"]["entity"]["description"] and
+              "enum" not in alone["paint"]["material"], "without the game the tool list says the names come from it")
 
         def height():
             return tool("heights", x0=x, z0=z, x1=x, z1=z)[1]["heights"][0][0]

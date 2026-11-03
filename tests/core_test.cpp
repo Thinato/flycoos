@@ -1039,6 +1039,12 @@ static void commands() {
     CHECK(groundTop(g, 20, 20) == before + 5 && h.undo.size() == 1);
     c = run(R"({"cmd": "heights", "args": {"x0": 20, "z0": 20, "x1": 20, "z1": 20}})");
     CHECK(ok(c) && c.response["result"]["heights"][0][0] == before + 5);
+    // catalog: what the MCP bridge builds its schemas from, read from the loaded defs
+    c = run(R"({"cmd": "catalog"})");
+    const nlohmann::json& cat = c.response["result"];
+    CHECK(ok(c) && cat["entities"].size() == size_t(EntityKind::Count) && cat["entities"][6]["id"] == "bandit_chief" &&
+          cat["entities"][6]["loot"] == "Iron Helm" && cat["entities"][6]["temper"] == "aggressive" && cat["entities"][1]["name"].is_null() &&
+          cat["entities"][1]["wander_radius"] == 12 && cat["solid_materials"].size() == 8 && cat["materials"].size() == 10);
 
     // apply and path: many ops, one undo step; undo brings back exactly what was there
     uint64_t raised = hashCells(g);
@@ -2639,6 +2645,7 @@ static void dataFiles() {
 
     fs::path dir = fs::temp_directory_path() / "flycoos_defs_test";
     fs::create_directories(dir);
+    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json", dir / "creatures.json", fs::copy_options::overwrite_existing);
     std::ostringstream all;
     all << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json").rdbuf();
     std::string base = all.str();
@@ -2714,7 +2721,98 @@ static void dataFiles() {
     write("[");
     CHECK(!reloadDefs(dir, error) && error.find("not valid JSON") != std::string::npos);
     CHECK(defs().items.size() == 13 && std::string_view(itemType(ItemId(12)).name) == "Dented Helm");
-    setDefs(std::move(shipped));  // the other tests see exactly the shipped items
+
+    // Creatures: save ids are the EntityKind values from 0; weapon and loot name items, model a body
+    // model, temper one of three. Null removes an inherited name: the kind gets random villager names.
+    write(base + R"(,{"id": "dented_helm", "save_id": 12, "copy_from": "iron_helm", "name": "Dented Helm"}])");
+    std::ostringstream allCreatures;
+    allCreatures << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
+    std::string creatures = allCreatures.str();
+    creatures.erase(creatures.rfind(']'));
+    auto writeCreatures = [&](std::string_view text) { std::ofstream(dir / "creatures.json") << text; };
+    std::string scarecrow = creatures;
+    scarecrow.replace(scarecrow.find(R"("id": "dummy")"), std::string_view(R"("id": "dummy")").size(), R"("id": "scarecrow")");
+    CHECK(shipped.creatures.size() == size_t(EntityKind::Count) && shipped.creatureById.at("ghoul") == EntityKind::Ghoul &&
+          shipped.creatures[1].name == nullptr && shipped.creatureIds[1] == "villager");
+    writeCreatures(creatures + R"(,{"id": "boar_sow", "save_id": 8, "copy_from": "boar", "name": null, "stats": {"stamina": 14}, "loot": "wolf_pelt"}])");
+    CHECK(loadDefs(dir, grown, error) && grown.creatures.size() == 9 && grown.creatureById.at("boar_sow") == EntityKind(8));
+    if (!error.empty()) std::println(stderr, "FAIL grown creatures: {}", error);
+    const EntityType& sow = grown.creatures[8];
+    CHECK(sow.name == nullptr && sow.stats.stamina == 14 && sow.stats.strength == 2 && sow.model == ModelBoar &&
+          sow.temper == Temper::Passive && sow.loot == WolfPelt && sow.lootChance == 0.75f && sow.respawnSeconds == 30);
+    for (auto [text, want] : std::initializer_list<std::pair<std::string, std::string_view>>{
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "loot": "boar_hide"}])",
+              "record 8 'a': field 'loot': unknown item \"boar_hide\""},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit", "weapon": 3}])", "field 'weapon': unknown item 3"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit", "weapon": "boar_skin"}])",
+              "field 'weapon': 'boar_skin' is not a main_hand item"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "model": "dragon"}])", "record 8 'a': field 'model': must be one of"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "model": "sword"}])", "field 'model': must be one of"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "temper": "angry"}])",
+              "field 'temper': must be one of harmless, passive, aggressive"},
+             {creatures + R"(,{"id": "a", "save_id": 3, "copy_from": "boar"}])", "field 'save_id': 3 is already 'bandit'"},
+             {creatures + R"(,{"id": "a", "save_id": -1, "copy_from": "boar"}])", "field 'save_id': -1 is out of range 0..255"},
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar"}])", "no record has save_id 8 (save ids run 0..9"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "aggro_range": 5}])",
+              "field 'aggro_range': only aggressive creatures attack on sight"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "loot": null}])", "field 'loot_chance': no 'loot' to drop"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "stats": {"luck": 3}}])", "field 'stats.luck': unknown field"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "stats": {"stamina": null}}])", "field 'stats.stamina': missing"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "attackable": 1}])", "field 'attackable': must be true or false"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "stats": {"stamina": 0}}])", "field 'stats.stamina': 0 is out of range 1..1000"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "chase_speed": null}])",
+              "field 'chase_speed': missing (a creature that fights chases)"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "loot_chance": 1.5}])", "field 'loot_chance': 1.5 is out of range"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "health": 50}])", "record 8 'a': field 'health': unknown field"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "model": "boar", "temper": "passive", "respawn_seconds": 5}])", "field 'level': missing"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "respawn_seconds": null}])", "field 'respawn_seconds': missing"},
+             {creatures + R"(,{"id": "wolf", "save_id": 8, "copy_from": "boar"}])", "record 8 'wolf': field 'id': duplicate of record 4"},
+             {scarecrow + "]",
+              "save_id 0 must be 'dummy' (code names it), not 'scarecrow'"},
+             {creatures, "not valid JSON"},
+         }) {
+        writeCreatures(text);
+        Defs d;
+        CHECK(!loadDefs(dir, d, error) && d.creatures.empty());  // a failed load leaves its target alone
+        if (error.find(want) == std::string::npos || error.find("creatures.json") == std::string::npos)
+            std::println(stderr, "FAIL creature defs error: got \"{}\", want \"{}\"", error, want), ++failures;
+    }
+    // Reloading may add creatures but never drop or repurpose one: spawn markers hold their save ids.
+    writeCreatures(creatures + R"(,{"id": "boar_sow", "save_id": 8, "copy_from": "boar"}])");
+    CHECK(reloadDefs(dir, error) && defs().creatures.size() == 9 && std::string_view(typeOf(EntityKind(8)).name) == "Boar");
+    writeCreatures(creatures + R"(,{"id": "boar_runt", "save_id": 8, "copy_from": "boar"}])");
+    CHECK(!reloadDefs(dir, error) && error.find("creature save_id 8 is now 'boar_runt', was 'boar_sow'") != std::string::npos);
+    writeCreatures(creatures + "]");
+    CHECK(!reloadDefs(dir, error) && error.find("8 creatures, fewer than the 9 loaded") != std::string::npos);
+    CHECK(defs().creatures.size() == 9 && defs().creatureIds[8] == "boar_sow");
+    // A kind only data has works end to end: marked by its id, listed, saved, loaded and spawned.
+    Grid g({32, 32, 32});  // world files hold whole chunks
+    for (int z = 0; z < 32; ++z)
+        for (int x = 0; x < 32; ++x) g.set({x, 3, z}, Grass);
+    std::vector<Marker> marks;
+    std::vector<Instance> instances;
+    EditHistory history;
+    PrefabLibrary prefabs = loadPrefabs("no-such-folder");
+    auto run = [&](std::string_view request) { return runCommand(request, g, instances, marks, history, prefabs, GameView{}).response; };
+    nlohmann::json r = run(R"({"cmd": "mark", "args": {"kind": "spawn", "x": 10, "z": 10, "entity": "boar_sow"}})");
+    CHECK(r["ok"] == true && marks.size() == 1 && marks[0].entity == EntityKind(8) && r["result"]["marker"]["entity"] == "boar_sow" &&
+          marks[0].radius == 10);
+    r = run(R"({"cmd": "catalog"})");
+    CHECK(r["result"]["entities"].size() == 9 && r["result"]["entities"][8]["id"] == "boar_sow");
+    std::string sowWorld = (dir / "sow.flyw").string();
+    std::string saved = saveWorld(sowWorld.c_str(), g, 1, instances, marks);
+    CHECK(saved.empty());
+    if (!saved.empty()) std::println(stderr, "FAIL save: {}", saved);
+    Grid back({1, 1, 1});
+    uint32_t seed = 0;
+    std::optional<std::vector<Marker>> loaded;
+    CHECK(loadWorld(sowWorld.c_str(), back, seed, instances, loaded).empty() && loaded && *loaded == marks);
+    std::vector<Entity> sows;
+    if (loaded) syncSpawns(sows, back, *loaded, 1, {});
+    CHECK(sows.size() == 1 && sows[0].kind == EntityKind(8) && std::string_view(sows[0].name) == "Boar");
+    setDefs(std::move(shipped));  // the other tests see exactly the shipped items and creatures
+    // Without that kind the world is refused, saying why.
+    CHECK(loadWorld(sowWorld.c_str(), back, seed, instances, loaded) == "bad marker 1: unknown entity kind");
     fs::remove_all(dir);
 }
 

@@ -152,9 +152,8 @@ static void entitiesTab(std::vector<Entity>& entities, const Player& player, Deb
         if (!ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) continue;
         ImGui::PushID(int(i));
         attributes(e.body, false);
-        static const char* tempers[] = {"harmless", "passive", "aggressive"};
         ImGui::Text("Attackable %s   Wanders %s   Talks %s   Temper %s", t.attackable ? "yes" : "no",
-                    t.wanders ? "yes" : "no", t.talks ? "yes" : "no", tempers[int(t.temper)]);
+                    t.wanders ? "yes" : "no", t.talks ? "yes" : "no", kTemperNames[int(t.temper)]);
         if (t.temper != Temper::Harmless) {
             ImGui::Text("%s   aggro %.0f   leash %.0f from home   chase %.1f b/s", e.angry ? "ANGRY" : "calm",
                         t.aggroRange, kLeashRadius, t.chaseSpeed);
@@ -229,6 +228,24 @@ static void dataTab(std::string& status) {
             if (t.attack.speed > 0) ImGui::Text("%d-%d / %.2f", t.attack.minDamage, t.attack.maxDamage, t.attack.speed);
             ImGui::TableNextColumn();
             if (t.bagSlots || t.armor) ImGui::Text("%d / %d", t.bagSlots, t.armor);
+        }
+        ImGui::EndTable();
+    }
+    ImGui::SeparatorText("Creatures (data/creatures.json)");
+    if (ImGui::BeginTable("creatures", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+        for (const char* h : {"save", "id", "lvl / hp", "temper", "weapon", "drops"}) ImGui::TableSetupColumn(h);
+        ImGui::TableHeadersRow();
+        for (size_t k = 0; k < d.creatures.size(); ++k) {
+            const EntityType& t = d.creatures[k];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(), ImGui::Text("%zu", k);
+            ImGui::TableNextColumn(), ImGui::TextUnformatted(d.creatureIds[k].c_str());
+            ImGui::SetItemTooltip("%s", t.name ? t.name : "(a random villager name)");
+            ImGui::TableNextColumn(), ImGui::Text("%d / %d", t.level, maxHealth(t.stats));
+            ImGui::TableNextColumn(), ImGui::TextUnformatted(kTemperNames[int(t.temper)]);
+            ImGui::TableNextColumn(), ImGui::TextUnformatted(t.weapon ? itemType(t.weapon).name : "-");
+            ImGui::TableNextColumn();
+            if (t.loot) ImGui::Text("%s %.0f%%", itemType(t.loot).name, t.lootChance * 100);
         }
         ImGui::EndTable();
     }

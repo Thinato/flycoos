@@ -14,7 +14,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
-#include "entity.h"
+#include "defs.h"
 
 using json = nlohmann::json;
 
@@ -460,10 +460,30 @@ json prefabsJson(PrefabLibrary& lib, const std::vector<Instance>& instances) {
             {"blocks", kBlockNames}, {"instances", instances.size()}};
 }
 
+// What the MCP bridge builds its tool schemas from: the NPC kinds (the loaded defs) and the material names.
+json catalogJson() {
+    const Defs& d = defs();
+    json kinds = json::array(), materials = json::array(), solid = json::array();
+    for (size_t k = 0; k < d.creatures.size(); ++k) {
+        const EntityType& t = d.creatures[k];
+        json e = {{"id", d.creatureIds[k]}, {"name", t.name ? json(t.name) : json()}, {"level", t.level}, {"health", maxHealth(t.stats)},
+                  {"temper", kTemperNames[int(t.temper)]}, {"attackable", t.attackable}, {"talks", t.talks},
+                  {"wander_radius", t.wanderRadius}, {"chase_speed", t.chaseSpeed}, {"aggro_range", t.aggroRange}};
+        if (t.weapon) e["weapon"] = itemType(t.weapon).name;
+        if (t.loot) e["loot"] = itemType(t.loot).name, e["loot_chance"] = t.lootChance;
+        kinds.push_back(std::move(e));
+    }
+    for (Block b : kMaterials) {
+        materials.push_back(kBlockNames[b]);
+        if (isOpaque(b)) solid.push_back(kBlockNames[b]);
+    }
+    return {{"entities", std::move(kinds)}, {"materials", std::move(materials)}, {"solid_materials", std::move(solid)}, {"blocks", kBlockNames}};
+}
+
 // The index of a[key] in `names`.
-template <size_t N> int named(const json& a, const char* key, const char* const (&names)[N]) {
+template <class Names> int named(const json& a, const char* key, const Names& names) {
     std::string s = str(a, key, ""), all;
-    for (size_t i = 0; i < N; ++i) {
+    for (size_t i = 0; i < std::size(names); ++i) {
         if (s == names[i]) return int(i);
         all += (i ? ", " : "") + std::string(names[i]);
     }
@@ -473,7 +493,7 @@ template <size_t N> int named(const json& a, const char* key, const char* const 
 json markerJson(const Marker& m) {
     json j = {{"id", m.id}, {"kind", kMarkerKindNames[int(m.kind)]}, {"name", m.name}, {"x", int(std::floor(m.pos.x))},
               {"z", int(std::floor(m.pos.z))}, {"y", m.pos.y - 1}, {"radius", m.radius}};
-    if (m.kind == MarkerKind::Spawn) j["entity"] = kEntityKindNames[int(m.entity)], j["count"] = m.count;
+    if (m.kind == MarkerKind::Spawn) j["entity"] = defs().creatureIds[size_t(m.entity)], j["count"] = m.count;
     if (!m.lines.empty()) j["lines"] = m.lines;
     return j;
 }
@@ -497,7 +517,7 @@ void markerArgs(const json& a, const Grid& g, Marker& m, bool create) {
         int y = integer(a, "y", -1, g.size.y - 1, groundUnderTrees(g, x, z));
         m.pos = {float(x) + 0.5f, float(y + 1), float(z) + 0.5f};
     }
-    if (a.contains("entity")) m.entity = EntityKind(named(a, "entity", kEntityKindNames));
+    if (a.contains("entity")) m.entity = EntityKind(named(a, "entity", defs().creatureIds));
     if (create && m.kind == MarkerKind::Spawn && !a.contains("entity")) throw BadArgs("a spawn marker needs 'entity'");
     m.count = integer(a, "count", 1, kMaxSpawnCount, m.count);
     float fallback = m.kind == MarkerKind::Spawn ? typeOf(m.entity).wanderRadius : m.kind == MarkerKind::Poi ? 16 : m.kind == MarkerKind::Region ? 32 : 0;
@@ -544,6 +564,7 @@ json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& 
         return json::object();
     }
     if (cmd == "prefabs") return prefabsJson(lib, list);
+    if (cmd == "catalog") return catalogJson();
     if (cmd == "place") {
         const Prefab& p = prefabNamed(a, lib);
         Instance in;

@@ -3,7 +3,8 @@
 
 Dependency-free: speaks the JSON-RPC subset of MCP that tools need (initialize, ping, tools/list,
 tools/call) and forwards each tool call as one command to the game's command server on
-127.0.0.1 (newline-delimited JSON, see docs/ARCHITECTURE.md). Register it with the repo's .mcp.json.
+127.0.0.1 (newline-delimited JSON, see docs/ARCHITECTURE.md). The NPC kinds and materials in the
+tool schemas come from the game (its `catalog` command). Register it with the repo's .mcp.json.
 """
 import base64
 import json
@@ -20,8 +21,13 @@ IMAGES = os.path.realpath(os.path.join(tempfile.gettempdir(), "flycoos"))  # whe
 
 WORLD = ("World: 1024 x 192 x 1024 voxels, y is up, x and z run 0..1023, sea level y=34 (water surface at 34). "
          "Heights are the y of a column's highest solid voxel (trees and rocks count as terrain).")
-SOLID = ["Grass", "Dirt", "Stone", "Sand", "Snow", "Wood", "Leaves", "Rock"]
-MATERIALS = SOLID + ["Water", "Air"]
+# Schemas that list what the game defines (materials, NPC kinds): fill() sets them from the game's
+# `catalog` command on every tools/list. Without it they say where the names come from.
+NOT_LISTED = " (couldn't get the names from the game when this tool list was made; a wrong name's error lists them)"
+UNFILLED = {"solid": "A solid block name, e.g. Grass", "materials": "A block name, e.g. Stone, Water or Air",
+            "entity": "Spawn only: the NPC kind"}
+SOLID = {"type": "string", "description": UNFILLED["solid"] + NOT_LISTED}
+MATERIALS = {"type": "string", "description": UNFILLED["materials"] + NOT_LISTED}
 EDIT_NOTE = (" One call is one undo step, shared with the user's in-game undo (Ctrl+Z). The edit flashes in the game."
              " A call over the work budget (~50 ms of game time: big brushes, long wide paths, spread-out ops) is refused;"
              " split it.")
@@ -60,7 +66,6 @@ PREFAB_FORMAT = (
     "comments. At most 64 cells per axis. Convention: the front (door) is the last row, +z, at rotation 0. The "
     "footprint is centered on the placed column.")
 MARKER_KINDS = ["player_spawn", "spawn", "poi", "region"]
-ENTITIES = ["dummy", "villager", "boar", "bandit", "wolf", "guard", "bandit_chief", "ghoul"]
 MARKER_NOTE = (" Markers are authored story data: they stand at the center of column x, z on ground voxel y. Kinds: "
                "`player_spawn` (where the player starts and gets back up after being knocked out; at most one), `spawn` "
                "(`count` NPCs of kind `entity` that wander within `radius` of it and respawn there; editing its place, "
@@ -71,13 +76,9 @@ MARKER_FIELDS = {
     "name": {"type": "string", "description": "Up to 48 bytes of UTF-8, no control or invisible characters; required for poi and region"},
     "x": num("Column x", 0, 1023), "z": num("Column z", 0, 1023),
     "y": num("Ground voxel it stands on (default: the column's ground, under any tree)", -1, 191),
-    "radius": num("Blocks, 0..512. Spawn: wander area (default the kind's: villager 12, boar 10, bandit 5, wolf 10, "
-                  "guard 6, bandit_chief 6, ghoul 4); "
-                  "poi: label range (default 16); region: the circle (default 32)", 0, 512, False),
-    "entity": {"type": "string", "enum": ENTITIES, "description": "Spawn only: the NPC kind. Friendly: dummy, "
-               "villager (talks). Fight back when hit: boar (Lv 1), guard (Lv 4, talks). Attack on sight: wolf (Lv 1, "
-               "fast, packs), bandit (Lv 2), ghoul (Lv 3, slow), bandit_chief (Lv 3, drops an Iron Helm). A level-1 "
-               "player in the Iron set with a sword beats the chief alone or a pair of wolves or ghouls, not three"},
+    "radius": num("Blocks, 0..512. Spawn: wander area (default the kind's, see entity); poi: label range (default 16); region: "
+                  "the circle (default 32)", 0, 512, False),
+    "entity": {"type": "string", "description": UNFILLED["entity"] + NOT_LISTED},
     "count": num("Spawn only: how many NPCs, default 1 (all spawn markers together make at most 256)", 1, 8),
     "lines": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1, "maxLength": 160},
               "description": "Spawn only, not for the dummy: what its NPCs say, in order and round again. Talkers "
@@ -102,10 +103,10 @@ OPS = {
                      "strength": num("Most blocks moved per column, default 64 (all the way)", 1, 64)},
                     ["x", "z", "height"])),
     "paint": ("Recolor the surface voxel of every column in a circle.",
-              obj({**CENTER, "material": {"type": "string", "enum": SOLID}}, ["x", "z", "material"])),
+              obj({**CENTER, "material": SOLID}, ["x", "z", "material"])),
     "fill": ("Set every voxel in a box (inclusive corners, at most 128^3 voxels) to one material; Air clears, "
              "Water makes water.",
-             obj({"min": xyz("Corner"), "max": xyz("Opposite corner"), "material": {"type": "string", "enum": MATERIALS}},
+             obj({"min": xyz("Corner"), "max": xyz("Opposite corner"), "material": MATERIALS},
                  ["min", "max", "material"])),
 }
 
@@ -131,7 +132,7 @@ TOOLS = {
                   "follow_terrain": {"type": "boolean", "description": "Default true; false flattens to `height`"},
                   "height": num("Ground y when follow_terrain is false", 0, 191),
                   "depth": num("Blocks below the graded height (river bed), default 0", 0, 64),
-                  "material": {"type": "string", "enum": SOLID, "description": "Surface to paint, e.g. Dirt or Stone"}},
+                  "material": SOLID},
                  ["points"])),
     "prefabs": ("List the prefabs `place` can put into the world: generated ones (tree, pine, bush, boulder, spire) with "
                 "their params and ranges, and structures from text files in prefabs/ with their size. Rescans the folder "
@@ -212,32 +213,85 @@ NOT_RUNNING = ("The flycoos game isn't running (nothing listens on 127.0.0.1:{po
                "the repo root, e.g. `./build/release/flycoos --world worlds/<name>.flyw`, then retry.")
 
 
-def game(cmd, args):
-    """Sends one command to the game; returns (ok, result or error message)."""
+def game(cmd, args, timeout=TIMEOUT):
+    """Sends one command to the game; returns (ok, result or error message, whether the game answered)."""
     try:
-        with socket.create_connection(("127.0.0.1", PORT), timeout=5) as s:
-            s.settimeout(TIMEOUT)
+        with socket.create_connection(("127.0.0.1", PORT), timeout=min(5, timeout)) as s:
+            s.settimeout(timeout)
             s.sendall((json.dumps({"id": 1, "cmd": cmd, "args": args}) + "\n").encode())
             data = b""
             while not data.endswith(b"\n"):
                 chunk = s.recv(1 << 16)
                 if not chunk:
-                    return False, "the game closed the connection"
+                    return False, "the game closed the connection", False
                 data += chunk
     except ConnectionRefusedError:
-        return False, NOT_RUNNING.format(port=PORT)
+        return False, NOT_RUNNING.format(port=PORT), False
     except TimeoutError:
-        return False, f"the game didn't answer within {TIMEOUT} s (is it busy, minimized, or serving another client?)"
+        return False, f"the game didn't answer within {timeout:g} s (is it busy, minimized, or serving another client?)", False
     except OSError as e:
-        return False, f"cannot reach the game: {e}"
+        return False, f"cannot reach the game: {e}", False
     reply = json.loads(data)
-    return (True, reply["result"]) if reply.get("ok") else (False, reply.get("error", "unknown error"))
+    return (True, reply["result"], True) if reply.get("ok") else (False, reply.get("error", "unknown error"), True)
+
+
+TEMPERS = {"harmless": "Friendly", "passive": "Fight back when hit", "aggressive": "Attack on sight"}
+CATALOG_TIMEOUT = 2  # seconds: tools/list must not hang on a busy game
+NO_CATALOG = False  # the game answered `catalog` with an error (an older build): stop asking
+
+
+def fetch():
+    """The schema values from the game's catalog: (solid, materials, kind ids, kind description), or None."""
+    global NO_CATALOG
+    if NO_CATALOG:
+        return None
+    try:
+        ok, cat, answered = game("catalog", {}, CATALOG_TIMEOUT)
+        if not ok:
+            NO_CATALOG = answered
+            return None
+        groups = {}
+        for e in cat["entities"]:
+            traits = [f"Lv {e['level']}", f"{e['health']} HP"] + (["talks"] if e["talks"] else [])
+            traits += [f"sees {e['aggro_range']:g}"] if e["aggro_range"] else []
+            traits += [f"chases at {e['chase_speed']:g} b/s"] if e["chase_speed"] else []
+            traits += [f"wields {e['weapon']}"] if "weapon" in e else []
+            traits += [f"drops {e['loot']} {e['loot_chance']:.0%}"] if "loot" in e else []
+            traits += [f"wanders {e['wander_radius']:g}"] if e["wander_radius"] else []
+            groups.setdefault(e["temper"], []).append(f"{e['id']} ({', '.join(traits)})")
+        order = sorted(groups, key=lambda t: list(TEMPERS).index(t) if t in TEMPERS else len(TEMPERS))
+        kinds = ("Spawn only: the NPC kind (wanders: its default radius; the player walks 5 and runs 9 b/s). " +
+                 ". ".join(f"{TEMPERS.get(t, t)}: {', '.join(groups[t])}" for t in order))
+        return (list(cat["solid_materials"]), list(cat["materials"]), [e["id"] for e in cat["entities"]], kinds)
+    except Exception:  # a malformed catalog: the game answered, but not usefully
+        NO_CATALOG = True
+        return None
+
+
+def fill(values):
+    """Sets the material and NPC kind schemas from fetch()'s values, or back to unlisted for None."""
+    for schema, key, i, desc in ((SOLID, "solid", 0, "A solid block"),
+                                 (MATERIALS, "materials", 1, "A block; Air clears, Water makes water"),
+                                 (MARKER_FIELDS["entity"], "entity", 2, None)):
+        if values is None:
+            schema.pop("enum", None)
+            schema["description"] = UNFILLED[key] + NOT_LISTED
+        else:
+            schema.update(enum=values[i], description=desc or values[3])
+
+
+LISTED = None  # the catalog values the last tools/list showed (None: unfilled)
+NOTICES = []  # notifications to send before the current reply
 
 
 def call(name, args):
     if name not in TOOLS:
         return {"content": [{"type": "text", "text": f"unknown tool {name}"}], "isError": True}
-    ok, result = game(name, args)
+    global LISTED
+    ok, result, _ = game(name, args)
+    if ok and LISTED is None and (values := fetch()):  # the game is up now: the client should list the tools again
+        LISTED = values
+        NOTICES.append({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
     if not ok:
         return {"content": [{"type": "text", "text": result}], "isError": True}
     content = []
@@ -252,11 +306,12 @@ def call(name, args):
 
 
 def handle(msg):
+    global LISTED
     method, params = msg.get("method"), msg.get("params") or {}
     if method == "initialize":
         asked = params.get("protocolVersion")
         return {"protocolVersion": asked if asked in KNOWN_PROTOCOLS else PROTOCOL,
-                "capabilities": {"tools": {"listChanged": False}},
+                "capabilities": {"tools": {"listChanged": True}},
                 "serverInfo": {"name": "flycoos", "version": "0.1.0"},
                 "instructions": "Shape the flycoos story world in the running game together with the user. " + WORLD +
                                 " Look before and after editing (map, heights, screenshot); every edit is undoable. Houses, camps, trees "
@@ -265,6 +320,8 @@ def handle(msg):
     if method == "ping":
         return {}
     if method == "tools/list":
+        LISTED = fetch()
+        fill(LISTED)
         return {"tools": [{"name": n, "description": d, "inputSchema": s} for n, (d, s) in TOOLS.items()]}
     if method == "tools/call":
         return call(params.get("name"), params.get("arguments") or {})
@@ -293,7 +350,8 @@ def main():
                     reply["error"] = {"code": -32601, "message": f"method not found: {e}"}
                 except Exception as e:  # keep serving after a bug in one call
                     reply["error"] = {"code": -32603, "message": f"internal error: {e}"}
-        sys.stdout.write(json.dumps(reply) + "\n")
+        sys.stdout.write("".join(json.dumps(m) + "\n" for m in NOTICES + [reply]))
+        NOTICES.clear()
         sys.stdout.flush()
 
 

@@ -8,7 +8,8 @@
 // Story data: NPC kinds and the markers that place them and the story's places, and their world
 // file sections (MARK, LINE).
 
-// NPC kinds (their traits are in entity.cpp). Saved in spawn markers: only append.
+// NPC kinds: the `save_id` of their record in data/creatures.json, saved in spawn markers: append-only,
+// never renumbered. These are the ones code names, with their string ids; data may add more after Count.
 enum class EntityKind : uint8_t { TrainingDummy, Villager, Boar, Bandit, Wolf, Guard, BanditChief, Ghoul, Count };
 inline constexpr const char* kEntityKindNames[] = {"dummy", "villager", "boar", "bandit", "wolf", "guard", "bandit_chief", "ghoul"};
 

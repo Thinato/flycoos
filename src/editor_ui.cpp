@@ -10,6 +10,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 
+#include "defs.h"
 #include "hud.h"
 
 namespace {
@@ -73,7 +74,8 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
         ImGui::SliderFloat("Radius##marker", &ed.mark.radius, 0, kMaxMarkerRadius, "%.0f", ImGuiSliderFlags_Logarithmic);
         ImGui::SetItemTooltip("Spawn: how far its NPCs wander. Poi: its label shows within it. Region: the circle.");
         if (ed.mark.kind == MarkerKind::Spawn) {
-            ImGui::Combo("Entity", &entity, kEntityKindNames, int(EntityKind::Count));
+            ImGui::Combo("Entity", &entity, [](void*, int i) { return defs().creatureIds[size_t(i)].c_str(); }, nullptr,
+                         int(defs().creatures.size()));
             ed.mark.entity = EntityKind(entity);
             ImGui::SliderInt("Count", &ed.mark.count, 1, kMaxSpawnCount);
         }
@@ -199,7 +201,7 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
                 ImGui::SameLine();
                 ImGui::TextColored(m.id == ed.marked ? ImVec4(0.3f, 1, 0.5f, 1) : ImVec4(0.8f, 0.85f, 0.9f, 1), "#%u %s %s%s%s at %.0f %.0f r %.0f",
                                    m.id, kMarkerKindNames[int(m.kind)], m.name.c_str(), m.kind == MarkerKind::Spawn ? " / " : "",
-                                   m.kind == MarkerKind::Spawn ? kEntityKindNames[int(m.entity)] : "", m.pos.x, m.pos.z, m.radius);
+                                   m.kind == MarkerKind::Spawn ? defs().creatureIds[size_t(m.entity)].c_str() : "", m.pos.x, m.pos.z, m.radius);
                 ImGui::PopID();
             }
     }
@@ -296,7 +298,7 @@ void drawEditorOverlay(const glm::mat4& view, float fovY, glm::vec3 eye, const G
         dl->AddCircleFilled(head, 4.5f, uiColor(rgb[0], rgb[1], rgb[2]));
         char label[96];
         std::snprintf(label, sizeof label, "#%u %s%s%s", m.id, m.name.c_str(), m.kind == MarkerKind::Spawn ? " - " : "",
-                      m.kind == MarkerKind::Spawn ? kEntityKindNames[int(m.entity)] : "");
+                      m.kind == MarkerKind::Spawn ? defs().creatureIds[size_t(m.entity)].c_str() : "");
         ImVec2 at(head.x + 9, head.y - ImGui::GetFontSize() / 2);
         dl->AddText(ImVec2(at.x + 1, at.y + 1), uiColor(0, 0, 0, 0.8f), label);
         dl->AddText(at, m.id == ed.marked ? uiColor(0.3f, 1, 0.5f) : uiColor(1, 1, 1), label);

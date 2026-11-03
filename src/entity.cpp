@@ -7,42 +7,14 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "defs.h"
+
 namespace {
 
 constexpr float kTau = 2 * std::numbers::pi_v<float>;
 constexpr float kSpeechSeconds = 5;
 constexpr float kShoutSeconds = 8;  // at least this long between shouts
 constexpr float kBodyRadius = 0.8f;  // player-to-entity distance kept by separate()
-
-constexpr EntityType kTypes[] = {
-    // name             lvl  sta str agi int spi   attackable wanders talks model
-    //                  temper              aggro wander chase weapon  loot      chance respawn
-    {"Training Dummy",  1,   {10,  0,  0,  0, 10}, true,      false,  false, ModelDummy,
-                        Temper::Harmless,   0,    0,     0,    NoItem, NoItem,   0,     5},
-    {nullptr,           5,   {25,  5,  5,  5,  5}, false,     true,   true,  ModelVillager,
-                        Temper::Harmless,   0,    12,    0,    NoItem, NoItem,   0,     30},
-    // The player's level and attributes, and so the same health and unarmed damage.
-    {"Boar",            1,   {10,  2,  2,  2,  2}, true,      true,   false, ModelBoar,
-                        Temper::Passive,    0,    10,    6,    NoItem, BoarSkin, 0.75f, 30},
-    // A bit tougher than a new player: more health and strength, and a quick knife.
-    {"Bandit",          2,   {12,  3,  2,  2,  2}, true,      true,   false, ModelBandit,
-                        Temper::Aggressive, 10,   5,     5.5f, Knife,  Knife,    0.4f,  30},
-    // The story is won at level 1 in the Iron set: with a sword, a pair of wolves or ghouls or the
-    // chief alone leaves the player at about a quarter of their health, a pair of wolves or ghouls
-    // a quarter to two fifths (storyNpcs test).
-    // Wolves hunt in packs: weak alone, quick on their feet (they outrun a walking player).
-    {"Wolf",            1,   { 8,  2,  4,  2,  2}, true,      true,   false, ModelWolf,
-                        Temper::Aggressive, 12,   10,    7.5f, NoItem, WolfPelt, 0.6f,  30},
-    // Keeps the peace: only fights back, but well armed and much tougher than the player.
-    {"Guard",           4,   {16,  5,  3,  2,  4}, true,      true,   true,  ModelGuard,
-                        Temper::Passive,    0,    6,     6,    Shortsword, NoItem, 0,   60},
-    // Leads the bandits: his sword does the work. Always carries an iron helm.
-    {"Bandit Chief",    3,   {11,  1,  2,  2,  2}, true,      true,   false, ModelChief,
-                        Temper::Aggressive, 10,   6,     5.5f, Shortsword, IronHelm, 1, 120},
-    // Shambles out of old graves: gaunt and slow, claws at you, sees you coming from close by only.
-    {"Barrow Ghoul",    3,   { 7,  2,  2,  2,  2}, true,      true,   false, ModelGhoul,
-                        Temper::Aggressive, 8,    4,     4,    NoItem, BoneCharm, 0.3f, 45},
-};
 
 constexpr const char* kNames[] = {
     "Alda", "Bram", "Corin", "Dessa", "Edric", "Fenna", "Garrick", "Hilde", "Ivo", "Juna",
@@ -139,8 +111,7 @@ Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 fa
 
 }  // namespace
 
-const EntityType& typeOf(EntityKind kind) { return kTypes[int(kind)]; }
-static_assert(std::size(kTypes) == size_t(EntityKind::Count) && std::size(kEntityKindNames) == size_t(EntityKind::Count));
+const EntityType& typeOf(EntityKind kind) { return defs().creatures[size_t(kind)]; }
 
 const char* Entity::speech() const {
     if (speechTimer <= 0 || phrase < 0) return nullptr;

@@ -413,7 +413,7 @@
   to each other, and tuning should not need a recompile. Inventories, spawn markers and future
   saves store numeric ids, so moving tables to data must not renumber anything.
 - **Decision:**
-  - One JSON file per definition type in `data/` (`items.json` first; `creatures.json` next), each
+  - One JSON file per definition type in `data/` (`items.json`, `creatures.json`), each
     an array of records with a required snake_case string `id`. nlohmann/json is already a
     dependency of the core.
   - A two-pass loader (`loadDefs` in `defs.cpp`): pass one parses every file into `id → json`;
@@ -431,14 +431,26 @@
     retired item keeps its record. The `ItemId` constants code names (`Shortsword`, `IronHelm`)
     stay as save ids, so callers didn't change; data may add ids after them. A table in
     `defs.cpp` pairs each constant with its string id, and loading fails on a mismatch.
+  - Creatures (step 6) work the same way. Their save ids are the `EntityKind` values, from 0
+    (the `u8` spawn markers store), so every `.flyw` loads unchanged; the constants code names
+    keep their string ids in `kEntityKindNames` (the names markers and MCP already used), which
+    loading checks. A creature names its `weapon` and `loot` by item id (resolved through the item
+    pass), its `model` by name (painters stay code; an unknown name is an error) and its temper by
+    name; `name: null` means random villager names. `checkMarker` accepts any loaded kind, so data
+    may add kinds after `Count`.
+  - The MCP bridge stops duplicating game data: a `catalog` command returns the loaded kinds with
+    their traits and the material names, and the bridge builds its enums and kind descriptions
+    from it, fetched on every tools/list. Without an answer it lists the tools without those
+    enums and sends `tools/list_changed` after the next tool call that reaches the game.
   - Data is found in `data/` in the working folder (`dataDir()`), like `prefabs/`, else in the
     source tree (`FLYCOOS_SOURCE_DIR`, a compile definition of the core), so a build runs from any
     folder. A `core_test` case loads every
     shipped file and asserts zero errors (the CI-less stand-in for a schema), next to the pinned
     table values.
   - The debug window's Data tab reloads the files between ticks (`reloadDefs`). It keeps the old
-    registry when loading fails, when the new files have fewer items than are loaded, or when a
-    loaded save id would get a different string id: live inventories hold those ids.
+    registry when loading fails, when the new files have fewer items or creatures than are loaded,
+    or when a loaded save id would get a different string id: live inventories and spawn markers
+    hold those ids.
   - `Block` stays a C++ enum: the 32-entry palette is full, the shader duplicates `kWater`, and
     generated terrain is pinned by hashes. Model painters and item icons stay code, referenced by
     id, until voxel model files are worth authoring.
@@ -455,6 +467,11 @@
 - **Consequences:**
   - Tuning an item is a JSON edit and a Reload defs; adding one needs an icon and model in code to
     look right (it works without them).
+  - Adding an NPC kind is one record when it reuses a body model and existing items: the editor,
+    the `mark` command and the MCP schemas read the loaded kinds. A new body still needs a `Model`
+    and painter in code, and a kind code refers to needs an `EntityKind` constant.
+  - Living NPCs copy some traits at spawn (name, level, stats, wander radius, chase speed, weapon),
+    so a reload changes those only for NPCs spawned after it.
   - The registry is a global the item functions read; swapping it mid-tick would be unsafe, so only
     the startup and the debug UI set it.
   - Reordering records changes nothing; deleting one leaves a gap that fails loading instead of

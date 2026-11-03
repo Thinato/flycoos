@@ -6,11 +6,12 @@
 #include <format>
 #include <string_view>
 
+#include "defs.h"
 #include "text.h"
 
 const char* checkMarker(const Grid& g, const Marker& m) {
     if (m.kind >= MarkerKind::Count) return "unknown marker kind";
-    if (m.entity >= EntityKind::Count) return "unknown entity kind";
+    if (size_t(m.entity) >= defs().creatures.size()) return "unknown entity kind";
     if (m.count < 1 || m.count > kMaxSpawnCount) return "count out of range (1..8)";
     if (m.name.size() > kMaxMarkerName) return "name longer than 48 bytes";
     if (!validName(m.name)) return "name must be UTF-8 text without control, bidi or zero-width characters";
@@ -111,7 +112,8 @@ static std::string readMarkers(const uint8_t* p, const uint8_t* end, const Grid&
         m.count = int(take(1));
         if (truncated) break;
         bool secondPlayerSpawn = m.kind == MarkerKind::PlayerSpawn && std::ranges::find(out, MarkerKind::PlayerSpawn, &Marker::kind) != out.end();
-        if (m.id == 0 || m.id == UINT32_MAX || (!out.empty() && m.id <= out.back().id) || checkMarker(g, m) || secondPlayerSpawn)
+        if (const char* why = checkMarker(g, m)) return std::format("bad marker {}: {}", m.id, why);
+        if (m.id == 0 || m.id == UINT32_MAX || (!out.empty() && m.id <= out.back().id) || secondPlayerSpawn)
             return std::format("bad marker {}", m.id);
         if (m.kind == MarkerKind::Spawn && (npcs += m.count) > kMaxSpawnedNpcs)
             return std::format("spawn markers make more than {} NPCs", kMaxSpawnedNpcs);

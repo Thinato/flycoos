@@ -10,8 +10,9 @@
 
 // How an NPC treats the player. Harmless ones never fight back.
 enum class Temper { Harmless, Passive, Aggressive };  // passive: fights back once hit; aggressive: attacks on sight
+inline constexpr const char* kTemperNames[] = {"harmless", "passive", "aggressive"};  // their ids in data/creatures.json
 
-// Fixed traits per kind.
+// Fixed traits per kind, from data/creatures.json (ADR-018).
 struct EntityType {
     const char* name;  // null: a random villager name
     int level;
@@ -29,6 +30,7 @@ struct EntityType {
     float lootChance;
     float respawnSeconds; // dead this long, then back at home fully healed
 };
+// From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);
 
 struct Entity {

@@ -129,12 +129,13 @@ json flatten(const File& f, size_t i, size_t top, size_t depth = 0) {  // top: t
     return out;
 }
 
-// Save ids of one file: 1..255 (they are saved as a byte), unique, and no gaps.
+// Save ids of one file: first..255 (they are saved as a byte), unique, and no gaps.
 struct SaveIds {
-    std::vector<int> owner{-1};  // record index by save id; -1 = none
+    size_t first = 1;        // items start at 1 (0 is NoItem), creatures at 0 (EntityKind values)
+    std::vector<int> owner;  // record index by save id; -1 = none
 
     size_t claim(const Record& r) {
-        auto save = size_t(r.number(r.fields, "save_id", 1, 255));
+        auto save = size_t(r.number(r.fields, "save_id", double(first), 255));
         if (save >= owner.size()) owner.resize(save + 1, -1);
         if (owner[save] >= 0)
             throw r.fail("save_id", std::format("{} is already '{}'", save, r.file.records[size_t(owner[save])].first));
@@ -143,8 +144,9 @@ struct SaveIds {
     }
     // Ids are append-only, so a gap is a deleted record (retire one by keeping it).
     void checkNoGaps(const File& f) const {
-        for (size_t s = 1; s < owner.size(); ++s)
-            if (owner[s] < 0) throw Bad(std::format("{}: no record has save_id {} (save ids run 1..{} with no gaps)", f.path, s, owner.size() - 1));
+        for (size_t s = first; s < owner.size(); ++s)
+            if (owner[s] < 0)
+                throw Bad(std::format("{}: no record has save_id {} (save ids run {}..{} with no gaps)", f.path, s, first, owner.size() - 1));
     }
 };
 
@@ -202,6 +204,81 @@ void loadItems(const File& f, Defs& d) {
     for (size_t s = 0; s < d.items.size(); ++s) d.items[s].name = d.itemNames[s].c_str();
 }
 
+// ---- Creatures (after items: they name their weapon and loot).
+
+// Model painters are code (model.cpp); creatures name the body models.
+constexpr std::pair<Model, const char*> kModelIds[] = {
+    {ModelPlayer, "player"}, {ModelVillager, "villager"}, {ModelDummy, "dummy"}, {ModelBoar, "boar"}, {ModelBandit, "bandit"},
+    {ModelWolf, "wolf"},     {ModelGuard, "guard"},       {ModelChief, "chief"}, {ModelGhoul, "ghoul"},
+};
+// kEntityKindNames (story.h) are the ids code names (EntityKind constants) and the records they must be.
+static_assert(std::size(kEntityKindNames) == size_t(EntityKind::Count));
+
+void loadCreatures(const File& f, Defs& d) {
+    SaveIds saves{.first = 0};
+    for (size_t i = 0; i < f.records.size(); ++i) {
+        Record r{f, i, flatten(f, i, i)};
+        r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
+                 "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds"});
+        size_t save = saves.claim(r);
+        auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
+        auto flag = [&](const char* key) {
+            if (!r.fields.contains(key)) return false;
+            if (!r.fields[key].is_boolean()) throw r.fail(key, "must be true or false");
+            return r.fields[key].get<bool>();
+        };
+        auto item = [&](const char* key) {
+            if (!given(key)) return NoItem;
+            const json& v = r.fields[key];
+            auto it = v.is_string() ? d.itemById.find(v.get<std::string>()) : d.itemById.end();
+            if (it == d.itemById.end()) throw r.fail(key, std::format("unknown item {}", v.dump()));
+            return it->second;
+        };
+        EntityType t{};
+        std::string name = given("name") ? r.text("name") : "";  // none: a random villager name
+        t.level = int(r.number(r.fields, "level", 1, 100));
+        if (!r.fields.contains("stats") || !r.fields["stats"].is_object())
+            throw r.fail("stats", "must be an object {stamina, strength, agility, intellect, spirit}");
+        const json& st = r.fields["stats"];
+        for (const auto& [k, v] : st.items())
+            if (k != "stamina" && k != "strength" && k != "agility" && k != "intellect" && k != "spirit") throw r.fail("stats." + k, "unknown field");
+        t.stats = {int(r.number(st, "stats.stamina", 1, 1000)), int(r.number(st, "stats.strength", 0, 1000)),
+                   int(r.number(st, "stats.agility", 0, 1000)), int(r.number(st, "stats.intellect", 0, 1000)),
+                   int(r.number(st, "stats.spirit", 0, 1000))};
+        t.attackable = flag("attackable"), t.wanders = flag("wanders"), t.talks = flag("talks");
+        const json* m = r.fields.contains("model") && r.fields["model"].is_string() ? &r.fields["model"] : nullptr;
+        auto model = std::ranges::find(kModelIds, m ? m->get<std::string>() : "", [](auto& p) { return std::string_view(p.second); });
+        if (model == std::end(kModelIds)) throw r.fail("model", "must be one of player, villager, dummy, boar, bandit, wolf, guard, chief, ghoul");
+        t.model = model->first;
+        const json* tp = r.fields.contains("temper") && r.fields["temper"].is_string() ? &r.fields["temper"] : nullptr;
+        auto temper = std::ranges::find(kTemperNames, tp ? tp->get<std::string>() : "");
+        if (temper == std::end(kTemperNames)) throw r.fail("temper", "must be one of harmless, passive, aggressive");
+        t.temper = Temper(temper - std::begin(kTemperNames));
+        t.aggroRange = float(r.number(r.fields, "aggro_range", 0, 64, 0, false));
+        if (t.aggroRange > 0 && t.temper != Temper::Aggressive) throw r.fail("aggro_range", "only aggressive creatures attack on sight");
+        t.wanderRadius = float(r.number(r.fields, "wander_radius", 0, kMaxMarkerRadius, 0, false));
+        t.chaseSpeed = float(r.number(r.fields, "chase_speed", 0, 30, 0, false));
+        if (t.chaseSpeed <= 0 && t.temper != Temper::Harmless) throw r.fail("chase_speed", "missing (a creature that fights chases)");
+        t.weapon = item("weapon");
+        if (t.weapon && d.items[t.weapon].slot != SlotMainHand) throw r.fail("weapon", std::format("'{}' is not a main_hand item", d.itemIds[t.weapon]));
+        t.loot = item("loot");
+        t.lootChance = float(r.number(r.fields, "loot_chance", 0, 1, 0, false));
+        if (t.lootChance > 0 && !t.loot) throw r.fail("loot_chance", "no 'loot' to drop");
+        t.respawnSeconds = float(r.number(r.fields, "respawn_seconds", 0, 3600, kRequired, false));
+        if (d.creatures.size() <= save) d.creatures.resize(save + 1), d.creatureIds.resize(save + 1), d.creatureNames.resize(save + 1);
+        d.creatures[save] = t;
+        d.creatureIds[save] = r.id();
+        d.creatureNames[save] = std::move(name);
+        d.creatureById.emplace(r.id(), EntityKind(save));
+    }
+    saves.checkNoGaps(f);
+    for (size_t k = 0; k < size_t(EntityKind::Count); ++k)
+        if (k >= d.creatureIds.size() || d.creatureIds[k] != kEntityKindNames[k])
+            throw Bad(std::format("{}: save_id {} must be '{}' (code names it), not '{}'", f.path, k, kEntityKindNames[k],
+                                  k < d.creatureIds.size() ? d.creatureIds[k] : "missing"));
+    for (size_t s = 0; s < d.creatures.size(); ++s) d.creatures[s].name = d.creatureNames[s].empty() ? nullptr : d.creatureNames[s].c_str();
+}
+
 }  // namespace
 
 std::filesystem::path dataDir() {
@@ -213,8 +290,10 @@ std::filesystem::path dataDir() {
 bool loadDefs(const std::filesystem::path& dir, Defs& out, std::string& err) {
     try {
         File items = parseFile(dir / "items.json");  // pass 1: every file before any reference is resolved
+        File creatures = parseFile(dir / "creatures.json");
         Defs d;
         loadItems(items, d);  // pass 2, in reference order: items first
+        loadCreatures(creatures, d);
         out = std::move(d);
         err.clear();
         return true;
@@ -230,16 +309,24 @@ void setDefs(Defs&& d) { gDefs = std::move(d); }
 bool reloadDefs(const std::filesystem::path& dir, std::string& err) {
     Defs d;
     if (!loadDefs(dir, d, err)) return false;
-    if (d.items.size() < gDefs.items.size()) {
-        err = std::format("{} items, fewer than the {} loaded: inventories may hold the missing ones", d.items.size() - 1,
-                          gDefs.items.size() - 1);
-        return false;
-    }
-    for (size_t s = 1; s < gDefs.itemIds.size(); ++s)
-        if (d.itemIds[s] != gDefs.itemIds[s]) {
-            err = std::format("save_id {} is now '{}', was '{}': save ids are never reused", s, d.itemIds[s], gDefs.itemIds[s]);
+    // Inventories hold item save ids, spawn markers creature ones.
+    auto kept = [&](const std::vector<std::string>& now, const std::vector<std::string>& was, size_t first, const char* what,
+                    const char* holders) {
+        if (now.size() < was.size()) {
+            err = std::format("{} {}s, fewer than the {} loaded: {} may hold the missing ones", now.size() - first, what,
+                              was.size() - first, holders);
             return false;
         }
+        for (size_t s = first; s < was.size(); ++s)
+            if (now[s] != was[s]) {
+                err = std::format("{} save_id {} is now '{}', was '{}': save ids are never reused", what, s, now[s], was[s]);
+                return false;
+            }
+        return true;
+    };
+    if (!kept(d.itemIds, gDefs.itemIds, 1, "item", "inventories") ||
+        !kept(d.creatureIds, gDefs.creatureIds, 0, "creature", "spawn markers"))
+        return false;
     setDefs(std::move(d));
     return true;
 }

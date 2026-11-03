@@ -28,15 +28,15 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | File | Responsibility |
 |---|---|
 | `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, the world file container (`writeWorldFile`/`readWorldFile`: header, `VOXL`, `INST`, checksum; other sections pass through as `Section`s) |
-| `src/story.h/.cpp` | Story data: `EntityKind`, `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`) and `saveWorld`/`loadWorld` (the container plus markers) |
+| `src/story.h/.cpp` | Story data: `EntityKind` save ids (and the string ids of the ones code names), `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`) and `saveWorld`/`loadWorld` (the container plus markers) |
 | `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels, prefab instances and markers); `putMarker`/`removeMarker`; `raycast` (voxel DDA); `groundTop` |
 | `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances |
-| `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
+| `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO (`meshRegion`), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
 | `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (stats, health, swing and damage timers, `Inventory`); walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
-| `src/entity.h/.cpp` | NPC entities: per-kind traits and temper, spawning (`syncSpawns` from spawn markers, `defaultMarkers`), wander and chase AI, talking, damage both ways, loot |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits and temper (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), wander and chase AI, talking, damage both ways, loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in); `startSession` (starting gear, spawns), `step(Session&, SimInput, dt)` (one `kTick`: interaction, swing, movement, NPCs and combat, time of day, region enter, the knocked-out player's respawn) |
 | `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` (records by string id, `copy_from`, field and range checks), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
@@ -276,6 +276,9 @@ remesh path and screen.
   `prefabBox` (20 ns per voxel plus the remeshed chunk columns); `remove` by the instance's box;
   `move` by the old and new boxes together (the new one at the ground before the removal: an
   estimate), so far moves are refused with advice to remove and place again.
+- **`catalog`:** the loaded NPC kinds (string id, name or null, level, health, temper, attackable,
+  talks, wander radius, chase speed, aggro range, weapon and loot with chance) and the material
+  names (all, and the solid ones), plus every block name. The MCP bridge builds its schemas from it.
 - **Marker commands:** `markers` (optionally of one kind and in a region, a region's circle
   counting), `mark`, `edit_marker`, `unmark`. Markers stand at the center of column `x`, `z` on
   ground voxel `y` (default the column's top). `map` draws them as dots labelled with their id
@@ -303,7 +306,12 @@ remesh path and screen.
   tools/list, tools/call; protocol 2025-06-18, accepting the client's version if it knows it). Each
   tool is one game command over a fresh connection; `screenshot` and `map` return the PNG as image
   content, read only from `$TMPDIR/flycoos` (where the game writes them and deletes them after an
-  hour). Lines that aren't UTF-8 JSON get -32700, non-objects and requests without a method -32600.
+  hour). The NPC kinds (`entity` enum and a description of each kind's traits) and the materials in
+  the schemas come from the game's `catalog`, fetched afresh on every tools/list (2 s timeout).
+  A list made without it (game not running or too busy) has no enums and says so; the next tool
+  call that reaches the game then fetches the catalog and sends `notifications/tools/list_changed`.
+  A game that answers `catalog` with an error (an older build) isn't asked again. The catalog fetch
+  never changes a tool call's own result. Lines that aren't UTF-8 JSON get -32700, non-objects and requests without a method -32600.
 
 ## Meshing (`meshRegion`)
 
@@ -520,9 +528,11 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   renumber or reuse one). Code names an item only through the `ItemId` constants; an item that code
   must name gets one, at its save id, plus its row in `kNamedItems` (defs.cpp). Its icon (`inventory_ui.cpp`) and worn or held model
   (`model.cpp`) are code; without them it shows no icon.
-- The debug window's **Data** tab lists the loaded items and has **Reload defs**: it reloads
-  `data/` between ticks and keeps the old definitions (showing the error) when the files are bad,
-  drop an item or give a loaded save id another string id.
+- The debug window's **Data** tab lists the loaded items and creatures and has **Reload defs**: it
+  reloads `data/` between ticks and keeps the old definitions (showing the error) when the files
+  are bad, drop an item or creature, or give a loaded save id another string id. Living NPCs keep
+  the name, level, stats, wander radius, chase speed and weapon they spawned with; the other
+  traits apply at once (the Entities tab's respawn picks up all of them).
 
   | Item | Slot | Notes |
   |---|---|---|
@@ -555,7 +565,17 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
 ## Entities
 
 - An `Entity` is a kind, a name, a level and a `Player` body (position, animation, health). Fixed
-  traits per kind live in one table (`kTypes` in entity.cpp):
+  traits per kind are defined in `data/creatures.json` (ADR-018), loaded after the items, into a
+  table indexed by save id (= `EntityKind`, from 0). A record:
+  `{"id": "wolf", "save_id": 4, "name": "Wolf", "level": 1, "stats": {"stamina": 8, "strength": 2,
+  "agility": 4, "intellect": 2, "spirit": 2}, "attackable": true, "wanders": true, "model": "wolf",
+  "temper": "aggressive", "aggro_range": 12, "wander_radius": 10, "chase_speed": 7.5, "loot":
+  "wolf_pelt", "loot_chance": 0.6, "respawn_seconds": 30}`. Required: `level`, all five `stats`,
+  `model` (a body model: player, villager, dummy, boar, bandit, wolf, guard, chief, ghoul),
+  `temper` (harmless, passive, aggressive) and `respawn_seconds`. `name` null or absent gives each
+  NPC a random villager name; flags default to false, ranges and speeds to 0; `weapon` (a main_hand
+  item's id) and `loot` (any item's id) to none. `aggro_range` is for aggressive kinds only, a
+  `loot_chance` needs `loot`, kinds that fight need a `chase_speed`, and stamina is at least 1. `copy_from` works as for items.
 
   | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Temper | Weapon | Drops | Talks |
   |---|---|---|---|---|---|---|---|---|
@@ -576,6 +596,14 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | unused:13
   and chief 6, bandit 5, ghoul 4), a chase speed (ghoul 4, bandit and chief 5.5, boar and guard 6,
   wolf 7.5 b/s; the player walks 5 and runs 9) and a respawn time (30 s; guard 60, ghoul 45, chief
   120). Against the whole Iron set (armor 37) a wolf hits for 2–3, a ghoul 2–5, the chief 5–8.
+- **Adding an NPC kind:** append a record to `data/creatures.json` with the next `save_id` (spawn
+  markers save it: never renumber or reuse one). Reload defs in the Data tab, then place it with a
+  spawn marker: the editor's Entity list, `mark`/`edit_marker` and the MCP schemas all read the
+  loaded kinds. Code changes only for: a new body (a `Model` value and its painter in `model.cpp`,
+  its name in `kModelIds` in `defs.cpp`, its nameplate height in `hud.cpp` if it isn't humanoid
+  height); new loot (an item record, plus its icon in `inventory_ui.cpp`); or a kind that code must
+  name (an `EntityKind` constant at its save id and its string id in `kEntityKindNames`, which
+  loading checks).
 - **Models:** the wolf is a quadruped on the boar's animation with its own part sizes (longer
   legs, snout and ears, a tail in the torso's grid); the guard wears the iron helm and gauntlets
   and a tabard over the cuirass; the chief is the bandit's rig drawn 1.25× wide and 1.12× tall; the
