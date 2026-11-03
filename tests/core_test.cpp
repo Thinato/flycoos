@@ -11,6 +11,7 @@
 #include <ranges>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 
 #include "commands.h"
 #include "edit.h"
@@ -2208,6 +2209,240 @@ static void raycasting() {
     CHECK(hits > 50);
 }
 
+// One field of a pinned table row: on a mismatch says which row and field, and both values.
+template <class T>
+static void same(std::string_view row, std::string_view field, const T& got, const T& want) {
+    if (got == want) return;
+    if constexpr (std::is_enum_v<T>) std::println(stderr, "FAIL {}.{}: got {}, want {}", row, field, int(got), int(want));
+    else std::println(stderr, "FAIL {}.{}: got {}, want {}", row, field, got, want);
+    ++failures;
+}
+static std::string_view str(const char* s) { return s ? s : "<null>"; }
+
+// Characterization: every field of the entity and item tables, and the ids saved in world files and
+// inventories. Moving the tables to data files must keep every value.
+static void tables() {
+    // Saved as u8 in spawn markers and inventories: append-only, never renumbered.
+    same("EntityKind", "Count", int(EntityKind::Count), 8);
+    for (auto [kind, id, name] : {std::tuple{EntityKind::TrainingDummy, 0, "dummy"}, {EntityKind::Villager, 1, "villager"},
+                                  {EntityKind::Boar, 2, "boar"}, {EntityKind::Bandit, 3, "bandit"}, {EntityKind::Wolf, 4, "wolf"},
+                                  {EntityKind::Guard, 5, "guard"}, {EntityKind::BanditChief, 6, "bandit_chief"},
+                                  {EntityKind::Ghoul, 7, "ghoul"}}) {
+        same(name, "id", int(kind), id);
+        same(name, "kEntityKindNames", std::string_view(kEntityKindNames[id]), std::string_view(name));
+    }
+    same("ItemId", "ItemCount", int(ItemCount), 12);
+    for (auto [item, id] : {std::pair{NoItem, 0}, {Shortsword, 1}, {Satchel, 2}, {Knife, 3}, {BoarSkin, 4}, {IronHelm, 5},
+                            {IronCuirass, 6}, {IronGauntlets, 7}, {IronGreaves, 8}, {IronSabatons, 9}, {WolfPelt, 10},
+                            {BoneCharm, 11}})
+        same(itemType(item).name, "id", int(item), id);
+    same("EquipSlot", "EquipCount", int(EquipCount), 7);
+    for (auto [slot, id, name] : {std::tuple{SlotHead, 0, "Head"}, {SlotChest, 1, "Chest"}, {SlotHands, 2, "Hands"},
+                                  {SlotLegs, 3, "Legs"}, {SlotFeet, 4, "Feet"}, {SlotMainHand, 5, "Main Hand"},
+                                  {SlotOffHand, 6, "Off Hand"}}) {
+        same(name, "id", int(slot), id);
+        same(name, "kSlotNames", std::string_view(kSlotNames[id]), std::string_view(name));
+    }
+    same("SlotBag", "id", int(SlotBag), 7);
+    same("SlotNone", "id", int(SlotNone), 8);
+
+    struct WantType {
+        const char* name; int level; Stats stats; bool attackable, wanders, talks; Model model; Temper temper;
+        float aggroRange, wanderRadius, chaseSpeed; ItemId weapon, loot; float lootChance, respawnSeconds;
+    };
+    constexpr WantType kWantTypes[] = {
+        // name            lvl  sta str agi int spi   attackable wanders talks model
+        //                 temper              aggro wander chase weapon      loot       chance respawn
+        {"Training Dummy", 1, {10, 0, 0, 0, 10}, true,  false, false, ModelDummy,
+                           Temper::Harmless,   0,    0,     0,    NoItem,     NoItem,    0,     5},
+        {nullptr,          5, {25, 5, 5, 5, 5},  false, true,  true,  ModelVillager,
+                           Temper::Harmless,   0,    12,    0,    NoItem,     NoItem,    0,     30},
+        {"Boar",           1, {10, 2, 2, 2, 2},  true,  true,  false, ModelBoar,
+                           Temper::Passive,    0,    10,    6,    NoItem,     BoarSkin,  0.75f, 30},
+        {"Bandit",         2, {12, 3, 2, 2, 2},  true,  true,  false, ModelBandit,
+                           Temper::Aggressive, 10,   5,     5.5f, Knife,      Knife,     0.4f,  30},
+        {"Wolf",           1, {8, 2, 4, 2, 2},   true,  true,  false, ModelWolf,
+                           Temper::Aggressive, 12,   10,    7.5f, NoItem,     WolfPelt,  0.6f,  30},
+        {"Guard",          4, {16, 5, 3, 2, 4},  true,  true,  true,  ModelGuard,
+                           Temper::Passive,    0,    6,     6,    Shortsword, NoItem,    0,     60},
+        {"Bandit Chief",   3, {11, 1, 2, 2, 2},  true,  true,  false, ModelChief,
+                           Temper::Aggressive, 10,   6,     5.5f, Shortsword, IronHelm,  1,     120},
+        {"Barrow Ghoul",   3, {7, 2, 2, 2, 2},   true,  true,  false, ModelGhoul,
+                           Temper::Aggressive, 8,    4,     4,    NoItem,     BoneCharm, 0.3f,  45},
+    };
+    static_assert(std::size(kWantTypes) == size_t(EntityKind::Count));
+    for (int k = 0; k < int(EntityKind::Count); ++k) {
+        const EntityType& t = typeOf(EntityKind(k));
+        const WantType& w = kWantTypes[k];
+        std::string_view row = kEntityKindNames[k];
+#define SAME(field) same(row, #field, t.field, w.field)
+        same(row, "name", str(t.name), str(w.name));
+        SAME(level), SAME(stats.stamina), SAME(stats.strength), SAME(stats.agility), SAME(stats.intellect), SAME(stats.spirit);
+        SAME(attackable), SAME(wanders), SAME(talks), SAME(model), SAME(temper);
+        SAME(aggroRange), SAME(wanderRadius), SAME(chaseSpeed), SAME(weapon), SAME(loot), SAME(lootChance), SAME(respawnSeconds);
+#undef SAME
+    }
+
+    struct WantItem { const char* name; EquipSlot slot; Attack attack; int bagSlots, armor; };
+    constexpr WantItem kWantItems[] = {
+        // name             slot          attack         bag slots  armor
+        {"",                SlotNone,     {0, 0, 0},     0,         0},
+        {"Iron Shortsword", SlotMainHand, {6, 10, 1.0f}, 0,         0},
+        {"Canvas Satchel",  SlotBag,      {0, 0, 0},     6,         0},
+        {"Rusty Knife",     SlotMainHand, {3, 6, 0.75f}, 0,         0},
+        {"Boar Skin",       SlotNone,     {0, 0, 0},     0,         0},
+        {"Iron Helm",       SlotHead,     {0, 0, 0},     0,         6},
+        {"Iron Cuirass",    SlotChest,    {0, 0, 0},     0,         12},
+        {"Iron Gauntlets",  SlotHands,    {0, 0, 0},     0,         4},
+        {"Iron Greaves",    SlotLegs,     {0, 0, 0},     0,         10},
+        {"Iron Sabatons",   SlotFeet,     {0, 0, 0},     0,         5},
+        {"Wolf Pelt",       SlotNone,     {0, 0, 0},     0,         0},
+        {"Bone Charm",      SlotNone,     {0, 0, 0},     0,         0},
+    };
+    static_assert(std::size(kWantItems) == ItemCount);
+    for (int i = 0; i < ItemCount; ++i) {
+        const ItemType& t = itemType(ItemId(i));
+        const WantItem& w = kWantItems[i];
+        std::string row = std::format("item {} ({})", i, w.name);
+#define SAME(field) same(row, #field, t.field, w.field)
+        same(row, "name", str(t.name), str(w.name));
+        SAME(slot), SAME(attack.minDamage), SAME(attack.maxDamage), SAME(attack.speed), SAME(bagSlots), SAME(armor);
+#undef SAME
+    }
+    same("kPunch", "attack", std::tuple{kPunch.minDamage, kPunch.maxDamage, kPunch.speed}, std::tuple{1, 4, 1.0f});
+    same("itemType", "out of range", str(itemType(ItemId(200)).name), str(itemType(NoItem).name));
+    CHECK(&itemType(ItemId(200)) == &itemType(NoItem));
+    same("inventory", "kBackpackSlots", kBackpackSlots, 12);
+    same("inventory", "kBagBarSlots", kBagBarSlots, 4);
+    same("stats", "kArmorK", kArmorK, 40.0f);
+    same("stats", "kMaxArmorReduction", kMaxArmorReduction, 0.8f);
+    same("stats", "kHealthPerStamina", kHealthPerStamina, 10);
+    same("stats", "kHastePerAgility", kHastePerAgility, 0.01f);
+    same("stats", "kRegenPerSpirit", kRegenPerSpirit, 0.5f);
+    same("stats", "kCombatSeconds", kCombatSeconds, 5.0f);
+    Stats s;
+    same("Stats{}", "attributes", std::tuple{s.stamina, s.strength, s.agility, s.intellect, s.spirit}, std::tuple{10, 2, 2, 2, 2});
+}
+
+// Characterization: a seeded fight replayed frame by frame at a fixed 60 fps. A level-1 player in the
+// whole Iron set with the shortsword stands and swings at a bandit that spawns 6 blocks away and
+// charges. Every hit (frame, who was hit, how hard), the bandit's death frame, its loot and the
+// player's health are pinned: any change to combat, stats, AI, physics or the RNG draws shows here.
+// The numbers also depend on libc++'s std::uniform_*_distribution (the project only builds on macOS):
+// another standard library draws different rolls from the same mt19937 stream.
+static void fightReplay() {
+    Grid g = meadow();
+    Player player;
+    player.pos = {20.5f, 4, 32.5f};
+    for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, Shortsword}) {
+        giveItem(player.inv, id);
+        quickMove(player.inv, {SlotRef::Item, 0, 0});
+    }
+    CHECK(armor(player.inv) == 37 && player.inv.equipped[SlotMainHand] == Shortsword);
+    Marker m{.id = 1, .kind = MarkerKind::Spawn, .pos = {26.5f, 4, 32.5f}, .radius = 3, .entity = EntityKind::Bandit};
+    std::vector<Entity> es;
+    syncSpawns(es, g, {m}, 1, player.pos);
+    CHECK(es.size() == 1);
+    Entity& bandit = es[0];
+    std::mt19937 rng(1);
+    std::vector<std::tuple<int, char, int>> hits;  // frame, 'p'layer or 'b'andit hit, damage
+    int deathFrame = -1;
+    for (int frame = 0; frame < 60 * 60 && deathFrame < 0 && player.alive(); ++frame) {
+        float playerHealth = player.health, banditHealth = bandit.body.health;
+        updateEntities(es, g, player, 1 / 60.0f);
+        separate(player, g, es);
+        glm::vec2 toBandit{bandit.body.pos.x - player.pos.x, bandit.body.pos.z - player.pos.z};
+        if (glm::length(toBandit) < kPunchReach - 0.1f) startPunch(player, glm::normalize(toBandit));
+        updateCombat(player, es, 1 / 60.0f, rng);
+        if (player.health < playerHealth) hits.emplace_back(frame, 'p', player.lastDamage);
+        if (bandit.body.health < banditHealth) hits.emplace_back(frame, 'b', bandit.body.lastDamage);
+        if (!bandit.body.alive()) deathFrame = frame;
+    }
+    // The bandit hits for 3-5 (knife 3-6 + round(3 x 0.75) strength = 5-8, less 37 armor vs level 2: 32%),
+    // the player for 8-12 (sword 6-10 + 2 strength); the bandit has 120 health.
+    const std::vector<std::tuple<int, char, int>> want{
+        {57, 'b', 11}, {60, 'p', 3},   {104, 'p', 3}, {115, 'b', 9},  {148, 'p', 5}, {174, 'b', 8},  {192, 'p', 3},
+        {233, 'b', 9}, {236, 'p', 3},  {280, 'p', 5}, {292, 'b', 12}, {324, 'p', 5}, {351, 'b', 9},  {368, 'p', 5},
+        {409, 'b', 12}, {412, 'p', 5}, {457, 'p', 4}, {468, 'b', 10}, {501, 'p', 3}, {527, 'b', 11}, {545, 'p', 3},
+        {586, 'b', 10}, {589, 'p', 3}, {633, 'p', 4}, {645, 'b', 10}, {677, 'p', 3}, {704, 'b', 9},
+    };
+    CHECK(hits == want);
+    if (hits != want)
+        for (auto [frame, who, amount] : hits) std::println(stderr, "  got {{{}, '{}', {}}}", frame, who, amount);
+    same("fightReplay", "deathFrame", deathFrame, 704);
+    if (std::abs(player.health - 43) >= 0.01f) same("fightReplay", "player.health", player.health, 43.0f);
+    same("fightReplay", "bandit.loot", bandit.loot, NoItem);  // the 40% knife roll fails for this seed
+    CHECK(!takeLoot(bandit, player.inv) && freeSlots(player.inv) == kBackpackSlots);
+
+    // The bandit chief always drops his iron helm, whatever the seed.
+    for (uint32_t seed : {1u, 2u, 3u}) {
+        std::vector<Entity> chief;
+        syncSpawns(chief, g, {{.id = 1, .kind = MarkerKind::Spawn, .pos = {26.5f, 4, 32.5f}, .entity = EntityKind::BanditChief}}, seed, player.pos);
+        CHECK(chief.size() == 1 && damage(chief[0], 1000) && !chief[0].body.alive());
+        same(std::format("chief seed {}", seed), "loot", chief[0].loot, IronHelm);
+    }
+}
+
+// Characterization of the passive temper and the leash, before the AI becomes a state machine. A
+// bare-handed player stands by a boar (seed 2, fixed 60 fps): it ignores them until punched once, then
+// chases and fights back; the player doesn't swing again. Then the player steps beyond the leash: the
+// boar calms down and walks home.
+static void boarReplay() {
+    Grid g = meadow();
+    Player player;
+    player.pos = {14.5f, 4, 20.5f};
+    Marker m{.id = 1, .kind = MarkerKind::Spawn, .pos = {10.5f, 4, 20.5f}, .entity = EntityKind::Boar};
+    std::vector<Entity> es;
+    syncSpawns(es, g, {m}, 2, player.pos);
+    CHECK(es.size() == 1);
+    Entity& boar = es[0];
+    std::mt19937 rng(2);
+    std::vector<std::tuple<int, char, int>> hits;  // frame, 'p'layer or 'b'oar hit, damage
+    int frame = 0;
+    auto run = [&](int frames, bool punch) {
+        for (int end = frame + frames; frame < end; ++frame) {
+            float playerHealth = player.health, boarHealth = boar.body.health;
+            updateEntities(es, g, player, 1 / 60.0f);
+            separate(player, g, es);
+            if (punch) startPunch(player, glm::normalize(glm::vec2(boar.body.pos.x - player.pos.x, boar.body.pos.z - player.pos.z)));
+            punch = false;
+            updateCombat(player, es, 1 / 60.0f, rng);
+            if (player.health < playerHealth) hits.emplace_back(frame, 'p', player.lastDamage);
+            if (boar.body.health < boarHealth) hits.emplace_back(frame, 'b', boar.body.lastDamage);
+        }
+    };
+    run(120, false);  // two seconds side by side: no fight
+    CHECK(hits.empty() && !boar.angry);
+    player.pos = boar.body.pos + glm::vec3(1.2f, 0, 0);
+    run(60, true);  // one punch
+    CHECK(boar.angry);
+    run(5 * 60, false);  // it fights back
+    CHECK(boar.angry);
+    same("boarReplay", "boar health", boar.body.health, 97.0f);  // one punch, no regen in combat
+    same("boarReplay", "player health", player.health, 71.0f);
+    player.pos = boar.home + glm::vec3(0, 0, 15);  // backs off, still in its territory
+    run(3 * 60, false);  // it runs after them and keeps biting
+    CHECK(boar.angry);
+    auto near = [](float got, float want) { return std::abs(got - want) < 0.01f; };
+    if (!near(glm::distance(boar.body.pos, boar.home), 13.75f))
+        same("boarReplay", "chase distance from home", glm::distance(boar.body.pos, boar.home), 13.75f);
+    player.pos = boar.home + glm::vec3(0, 0, kLeashRadius + 5);  // out of its territory: calms at once
+    run(1, false);
+    CHECK(!boar.angry);
+    run(10 * 60, false);  // walks back home, both heal out of combat
+    CHECK(!boar.angry);
+    if (!near(glm::distance(boar.body.pos, boar.home), 0.067f))
+        same("boarReplay", "distance from home", glm::distance(boar.body.pos, boar.home), 0.067f);
+    same("boarReplay", "boar health", boar.body.health, 100.0f);
+    if (!near(player.health, 70.62f)) same("boarReplay", "player health", player.health, 70.62f);
+    const std::vector<std::tuple<int, char, int>> want{
+        {128, 'b', 3}, {137, 'p', 6}, {195, 'p', 4}, {254, 'p', 3}, {313, 'p', 5}, {372, 'p', 6}, {431, 'p', 5}, {624, 'p', 6},
+    };
+    CHECK(hits == want);
+    if (hits != want)
+        for (auto [f, who, amount] : hits) std::println(stderr, "  got {{{}, '{}', {}}}", f, who, amount);
+}
+
 int main() {
     meshing();
     packing();
@@ -2227,6 +2462,9 @@ int main() {
     storyNpcs();
     markerLines();
     raycasting();
+    tables();
+    fightReplay();
+    boarReplay();
     if (failures) std::println(stderr, "{} check(s) failed", failures);
     else std::println("all checks passed");
     return failures ? 1 : 0;
