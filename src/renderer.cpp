@@ -25,13 +25,14 @@ struct FrameUniforms {
     glm::vec4 lightParams;  // x sun gate, y light falloff, z dark ambient, w voxel light on
     glm::vec4 emberColor;   // rgb linear, times strength
     glm::vec4 palette[64];
+    glm::vec4 toneA[64], toneB[64];  // rgb linear patch variants; toneA.w size (voxels), toneB.w strength
 };
 struct DrawUniforms {
     glm::mat4 model;
-    glm::vec4 hashOffset;
+    glm::vec4 modelLight;  // x models: light + 1 (0: a chunk)
     glm::uvec4 firstQuad;  // x used
 };
-static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 64 * 16);
+static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 3 * 64 * 16);
 static_assert(sizeof(DrawUniforms) == 64 + 16 + 16);
 static_assert(BlockCount <= 64);  // also: shaders/world.metal packs block ids into 6 bits
 
@@ -393,8 +394,12 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     }
     u.lightParams = {settings.sunGate, settings.lightFalloff, settings.darkAmbient, settings.voxelLight};
     u.emberColor = glm::vec4(lin(settings.emberColor) * settings.emberStrength, 0);
-    for (int b = 0; b < BlockCount; ++b)
+    for (int b = 0; b < BlockCount; ++b) {
+        const BlockTone& t = settings.tones[size_t(b)];
         u.palette[b] = glm::vec4(lin({kPalette[b][0], kPalette[b][1], kPalette[b][2]}), 1);
+        u.toneA[b] = glm::vec4(lin({t.a[0], t.a[1], t.a[2]}), std::max(t.size * settings.patchSize, 2.0f));  // smaller reads as per-voxel noise
+        u.toneB[b] = glm::vec4(lin({t.b[0], t.b[1], t.b[2]}), t.strength * settings.patchStrength);
+    }
     SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
     SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);
 
@@ -446,8 +451,8 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
         SDL_BindGPUVertexStorageBuffers(pass, 0, &world_[k], 1);
         for (const ChunkDraw* c : visible)
             if (const Slot& s = c->slot[k]; s.count)
-                draw({glm::translate(glm::mat4(1), glm::vec3(c->origin)), glm::vec4(glm::vec3(c->origin), 0),
-                      glm::uvec4(s.first, 0, 0, 0)}, s.count);
+                draw({glm::translate(glm::mat4(1), glm::vec3(c->origin)), glm::vec4(0), glm::uvec4(s.first, 0, 0, 0)},
+                     s.count);
     };
     auto drawModels = [&] {
         SDL_BindGPUVertexStorageBuffers(pass, 0, &models_, 1);
@@ -459,7 +464,7 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
             float lit = float(std::max(skyLight(a), skyLight(b)) << 4 | std::max(blockLight(a), blockLight(b))) + 1;
             for (size_t p = 0; p < PartCount; ++p) {
                 auto [first, count] = parts_[size_t(inst.parts[p])][p];
-                if (count) draw({inst.pose[p], glm::vec4(glm::vec3(float(p) * 37), lit), glm::uvec4(first, 0, 0, 0)}, count);
+                if (count) draw({inst.pose[p], glm::vec4(lit, 0, 0, 0), glm::uvec4(first, 0, 0, 0)}, count);
             }
         }
     };

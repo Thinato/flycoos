@@ -26,22 +26,23 @@ struct Frame {
     float4 lightParams;   // voxel light: x sun gate, y falloff, z dark ambient, w on (else all open sky)
     float4 emberColor;    // rgb block light color (linear, times strength)
     float4 palette[64];
+    float4 toneA[64];     // patch variants (ADR-028), rgb linear; w patch size in voxels
+    float4 toneB[64];     // rgb linear; w strength (0: plain)
 };
 struct Draw {
     float4x4 model;
-    float4 hashOffset;    // xyz shift the per-voxel color jitter so chunks/parts don't repeat; w models: light + 1
+    float4 modelLight;    // x models: light + 1 (0: a chunk)
     uint4 firstQuad;      // x: index of this draw's first quad in the storage buffer
 };
 
 struct VOut {
     float4 position [[position]];
     float3 worldPos;
-    float3 voxelPos;
     float3 normal;
     float ao;  // aoCurve value: 1 open, lower in corners
     // block id in bits 0-5, the quad's light (sky << 4 | block) in bits 6-13, quad index in bits
-    // 14-31 (for the greedy-quads debug view). Packed into one output because every extra vertex
-    // output costs bandwidth on tile-based GPUs (~15% here).
+    // 14-30 (for the greedy-quads debug view), bit 31 set for models (flat colour). Packed into one
+    // output because every extra vertex output costs bandwidth on tile-based GPUs (~15% here).
     uint blockAndQuad [[flat]];
 };
 
@@ -61,7 +62,8 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     float3 p = float3(q.x & 63, (q.x >> 6) & 63, (q.x >> 12) & 63);
     float w = float(((q.x >> 18) & 63) + 1), h = float(((q.x >> 24) & 63) + 1);
     uint face = q.y & 7, block = (q.y >> 11) & 255;
-    uint lit = d.hashOffset.w > 0.0 ? uint(d.hashOffset.w) - 1 : (q.y >> 19) & 255;  // models: the light where they stand
+    bool model = d.modelLight.x > 0.0;
+    uint lit = model ? uint(d.modelLight.x) - 1 : (q.y >> 19) & 255;  // models: the light where they stand
     float ao[4] = {float((q.y >> 3) & 3), float((q.y >> 5) & 3), float((q.y >> 7) & 3), float((q.y >> 9) & 3)};
 
     uint axis = face >> 1, ua = (axis + 1) % 3, va = (axis + 2) % 3;
@@ -80,10 +82,9 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     VOut out;
     out.position = f.viewProj * world;
     out.worldPos = world.xyz;
-    out.voxelPos = local - kNormals[face] * 0.5 + d.hashOffset.xyz;
     out.normal = normalize((d.model * float4(kNormals[face], 0.0)).xyz);
     out.ao = f.aoCurve[uint(ao[c])];
-    out.blockAndQuad = block | lit << 6 | (d.firstQuad.x + vid / 6) << 14;  // ponytail: quad index wraps past 256K quads (debug color only)
+    out.blockAndQuad = block | lit << 6 | ((d.firstQuad.x + vid / 6) & 0x1FFFFu) << 14 | uint(model) << 31;  // ponytail: quad index wraps past 128K quads (debug color only)
     return out;
 }
 
@@ -152,12 +153,56 @@ static float3 light(constant Frame& f, VOut in, float3 albedo) {
     return skyLit + emberLit * emberShare + albedo * f.lightParams.z * (1.0 - sky) * in.ao;
 }
 
-// Distinct, fairly bright color per id (PCG hash).
-static float3 idColor(uint n) {
+static uint pcg(uint n) {
     n = n * 747796405u + 2891336453u;
     n = ((n >> ((n >> 28u) + 4u)) ^ n) * 277803737u;
-    n = (n >> 22u) ^ n;
+    return (n >> 22u) ^ n;
+}
+
+// Distinct, fairly bright color per id.
+static float3 idColor(uint n) {
+    n = pcg(n);
     return float3(n & 255u, (n >> 8) & 255u, (n >> 16) & 255u) / 255.0 * 0.75 + 0.25;
+}
+
+// Gradient directions for noise (Perlin's 12 cube edges, 4 repeated to make 16).
+constant float3 kGrad[16] = {{1, 1, 0}, {-1, 1, 0}, {1, -1, 0}, {-1, -1, 0}, {1, 0, 1}, {-1, 0, 1}, {1, 0, -1},
+                             {-1, 0, -1}, {0, 1, 1}, {0, -1, 1}, {0, 1, -1}, {0, -1, -1}, {1, 1, 0}, {-1, 1, 0},
+                             {0, -1, 1}, {0, -1, -1}};
+
+// Two independent gradient-noise values (about -1..1) from lattice corner i + o, offset r from
+// it: one PCG hash per corner picks a gradient for each field. `seed`: the block.
+static float2 corner(int3 i, int3 o, float3 r, uint seed) {
+    int3 c = i + o;
+    uint n = pcg(uint(c.x) * 73856093u ^ uint(c.y) * 19349663u ^ uint(c.z) * 83492791u ^ seed * 2654435761u);
+    float3 d = r - float3(o);
+    return float2(dot(kGrad[n & 15u], d), dot(kGrad[(n >> 16) & 15u], d));
+}
+
+// Two smooth gradient-noise fields (Perlin, quintic fade). Value noise was tried first: its
+// trilinear blend makes axis-aligned bands that read as stripes once quantised per voxel.
+static float2 noise2(float3 p, uint seed) {
+    int3 i = int3(floor(p));
+    float3 r = fract(p);
+    float3 u = r * r * r * (r * (r * 6.0 - 15.0) + 10.0);
+    float2 x00 = mix(corner(i, int3(0, 0, 0), r, seed), corner(i, int3(1, 0, 0), r, seed), u.x);
+    float2 x10 = mix(corner(i, int3(0, 1, 0), r, seed), corner(i, int3(1, 1, 0), r, seed), u.x);
+    float2 x01 = mix(corner(i, int3(0, 0, 1), r, seed), corner(i, int3(1, 0, 1), r, seed), u.x);
+    float2 x11 = mix(corner(i, int3(0, 1, 1), r, seed), corner(i, int3(1, 1, 1), r, seed), u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+
+// One colour per voxel (docs/ART.md): the block's palette colour, faded toward its two variants by
+// two smooth noise fields sampled at the voxel cell, so neighbours step gently and a face is uniform.
+// Colour is per block, so material edges stay sharp. Models and strength-0 blocks are flat.
+static float3 albedoOf(constant Frame& f, VOut in) {
+    uint block = in.blockAndQuad & 63u;
+    float3 c = f.palette[block].rgb;
+    float strength = f.toneB[block].w;
+    if (strength <= 0.0 || (in.blockAndQuad >> 31) != 0u) return c;
+    float3 cell = floor(in.worldPos - in.normal * 0.5) + 0.5;  // chunks draw in world voxel coords
+    float2 t = saturate(smoothstep(0.0, 0.4, noise2(cell / f.toneA[block].w, block)) * strength);
+    return mix(mix(c, f.toneA[block].rgb, t.x), f.toneB[block].rgb, t.y);
 }
 
 // Light levels debug view (display values): sky blue-white, block orange, shaded a little by facing.
@@ -175,9 +220,9 @@ fragment float4 voxel_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) 
     if (mode == 5) return float4(lightLevels(in), 1.0);
     float3 albedo;
     if (mode == 0) {  // normal path; `mode` is uniform, so this branch is coherent and cheap
-        albedo = f.palette[in.blockAndQuad & 63u].rgb * (0.9 + 0.2 * hash3(floor(in.voxelPos)));
+        albedo = albedoOf(f, in);
     } else if (mode == 1) {  // greedy quads
-        albedo = idColor(in.blockAndQuad >> 14);
+        albedo = idColor((in.blockAndQuad >> 14) & 0x1FFFFu);
     } else {  // chunks: 32^3 cell containing the surface (nudged inside along the normal)
         uint3 cell = uint3(int3(floor((in.worldPos - in.normal * 0.01) / 32.0)));
         albedo = idColor(cell.x * 73856093u ^ cell.y * 19349663u ^ cell.z * 83492791u);

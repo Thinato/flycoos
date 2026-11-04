@@ -17,7 +17,8 @@ Skyrim and the *structure and social play* of MMOs such as World of Warcraft.
    and talents rather than a fixed class, group dungeons and bosses, and gear progression that
    rewards playing together.
 5. **Readable voxel art.** Every object is made of flat-colored voxels, lit softly (ambient
-   occlusion, warm sun, cool shadows). The art is distinct from any existing game.
+   occlusion, warm sun, cool shadows). The art is distinct from any existing game. Colour rules:
+   [ART.md](ART.md).
 
 ## What we take from each inspiration
 

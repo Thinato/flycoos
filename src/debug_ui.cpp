@@ -94,6 +94,23 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
     ImGui::Text("Light %.1f MiB in %d chunks, filled in %.2f s; last relight %.2f ms", double(s.lightBytes) / (1 << 20),
                 s.lightChunks, s.lightSeconds, s.relightMs);
 
+    ImGui::SeparatorText("Colour patches (docs/ART.md)");
+    ImGui::SliderFloat("Patch strength", &r.patchStrength, 0, 2, "%.2f");
+    ImGui::SetItemTooltip("Times every block's strength. 0: each block exactly its palette colour.");
+    ImGui::SliderFloat("Patch size", &r.patchSize, 0.25f, 4, "%.2f");
+    static int block = Grass;
+    ImGui::Combo("Block", &block, kBlockNames, BlockCount);
+    BlockTone& t = r.tones[size_t(block)];
+    ImGui::ColorButton("Main", {kPalette[block][0], kPalette[block][1], kPalette[block][2], 1});
+    ImGui::SameLine();
+    ImGui::Text("main (kPalette)");
+    ImGui::ColorEdit3("Variant a", t.a);
+    ImGui::ColorEdit3("Variant b", t.b);
+    ImGui::SliderFloat("Size (voxels)", &t.size, 1, 64, "%.0f");
+    ImGui::SliderFloat("Strength", &t.strength, 0, 1, "%.2f");
+    ImGui::SetItemTooltip("Runtime only: copy tuned values into kTones (src/world.h).");
+    if (ImGui::Button("Reset tones")) r.tones = std::to_array(kTones);
+
     ImGui::SeparatorText("This frame");
     ImGui::Text("Chunks drawn   %d / %d", s.chunksDrawn, s.chunksTotal);
     ImGui::Text("Quads drawn    %zu / %zu", s.quadsDrawn, s.opaqueQuads + s.waterQuads);

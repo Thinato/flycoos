@@ -1071,3 +1071,56 @@
   - Gear tiers must keep the level band: once NPCs wear armor, the player's level pierces it.
   - Kill XP doesn't fall off for low-level foes; farming respawns is slow (30 s+) but possible.
   - Debug "Hit for 10" and "Kill" give no XP (they bypass `resolveHit`, as before).
+
+## ADR-028: One colour per voxel: smooth material patches instead of per-voxel jitter
+
+- **Status:** accepted (2026-11-03)
+- **Context:** `voxel_fs` multiplied every voxel's palette colour by a random ±10% from a hash of its
+  cell. Every surface, models included, looked sandy: salt-and-pepper speckle with no structure. The
+  user's art rules (docs/ART.md) are one colour per voxel, gradients instead of random noise, sharp
+  edges between materials, soft patches inside a material, and flat models.
+- **Decision:**
+  - **Tones as data.** `kTones` in `world.h`, next to `kPalette`, gives each block two variant
+    colours (sRGB), a patch size in voxels and a strength 0..1: natural blocks clear (0.6–1),
+    man-made faint (0.25–0.35), plain 0 (Water, Ember, Lantern, model-only blocks). The renderer
+    uploads them linearised in two new Frame arrays beside the palette, `toneA` (w: size times the
+    global size) and `toneB` (w: strength times the global strength); the globals are baked on the
+    CPU, so the shader reads no extra uniform.
+  - **Smooth noise per voxel.** `albedoOf` reads two independent gradient-noise (Perlin) fields
+    (one lookup over a lattice `size` voxels apart, quintic fade; one PCG hash per lattice corner,
+    seeded by the block, picks a gradient for each field from its low and high bits) at the voxel's
+    cell centre `floor(worldPos - normal / 2) + 0.5`, maps each through
+    `smoothstep(0, 0.4, n) * strength` and fades the palette colour toward variant a, then variant
+    b. The main colour is the most common one, in round patches (measured on a CPU copy: ~25% of voxels pure
+    main, ~45% including those within a 0.2 mix of it). Colour is per block, so material edges
+    stay sharp.
+  - **Stone soft, Rock crisp** (user's call after review). Ground Stone (terrain, mountains,
+    subsoil) fades softly: size 10 and lower contrast keep the brightness step between neighbouring
+    voxels at most ~26% (p99 ~13%; it was 62% / 32% at size 6). Rock (pillars, spires, boulders)
+    keeps small high-contrast spots. Builders pick Rock vs Stone by the look they want.
+  - **World space.** Chunks draw with a translation, so `worldPos` is the world voxel position and
+    patches run on across chunk borders. The `voxelPos` vertex output and the per-draw jitter
+    offset (`hashOffset.xyz`) are gone; the Draw uniform's vec4 is now `modelLight` (x: light + 1,
+    0 for chunks).
+  - **Flat models.** Model draws set bit 31 of the flat `blockAndQuad` output (the greedy-quads
+    debug index keeps bits 14-30); `albedoOf` returns the palette colour for them. Every model,
+    held item and creature goes through `drawModels`, which sets the flag.
+  - **Tuning.** Render tab "Colour patches": global strength 0..2 (0: the flat palette) and size
+    0.25..4, and per block its variants, size and strength (runtime only; `RenderSettings::tones`).
+    `--patches S` sets the global strength from the command line.
+- **Alternatives considered:**
+  - Value noise (trilinear blend of hashed values), the first version: where two lattice corners
+    are alike the blend is constant along that axis, so a field reads as axis-aligned bands, and
+    one colour per voxel turns them into long stripes along the view (seen in review on the
+    meadow). Gradient noise has round features at the same cost.
+  - Two separate scalar noise lookups (16 hashes): a second lattice would decorrelate the two
+    fields' grid, but doubles the cost; one lattice with two gradients per corner looks the same.
+  - Per-vertex or per-quad colour: greedy quads span many voxels, so it can't give one colour per
+    voxel.
+  - Terrain-aware patches (dry on hilltops, lush near water): wanted later, not now (docs/ART.md).
+  - A fragment-side Draw uniform for the model flag: another push per draw; a spare bit is free.
+- **Consequences:**
+  - Patched fragments pay 8 integer hashes, 16 float3 dot products and 7 float2 lerps; plain
+    blocks and models branch out early. Fewer vertex outputs (no `voxelPos`) save bandwidth on the tile-based GPU.
+  - The greedy-quads debug colour wraps at 128K quads instead of 256K.
+  - A new block needs a `kTones` entry in its class (`core_test` `tones()` checks the classes).

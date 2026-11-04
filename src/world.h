@@ -68,6 +68,36 @@ inline constexpr float kPalette[BlockCount][3] = {
     {1.00f, 0.80f, 0.45f},  // Lantern
 };
 
+// Patch tones (docs/ART.md, ADR-028), indexed by Block: inside a block, soft patches about `size`
+// voxels across fade its kPalette colour toward variant a and variant b (sRGB). `strength` 0..1:
+// natural blocks clear, man-made faint, 0 plain (water, light sources, model-only blocks).
+struct BlockTone { float a[3], b[3]; float size, strength; };
+inline constexpr BlockTone kTones[BlockCount] = {
+    {},                                                     // Air
+    {{0.60f, 0.68f, 0.26f}, {0.20f, 0.46f, 0.17f}, 24, 0.9f},  // Grass: dry yellow-green, lush dark green
+    {{0.36f, 0.24f, 0.14f}, {0.56f, 0.42f, 0.27f}, 12, 0.7f},  // Dirt: damp, dry
+    {{0.60f, 0.60f, 0.62f}, {0.41f, 0.41f, 0.44f}, 10, 1.0f},  // Stone (ground): soft lighter, darker grey
+    {{0.88f, 0.82f, 0.60f}, {0.74f, 0.62f, 0.40f}, 20, 0.6f},  // Sand: pale, warm
+    {{0.82f, 0.87f, 0.96f}, {1.00f, 1.00f, 1.00f}, 24, 0.6f},  // Snow: cool shadow, pure white
+    {{0.30f, 0.19f, 0.10f}, {0.50f, 0.35f, 0.20f}, 5, 0.8f},   // Wood: dark spots, lighter brown
+    {{0.38f, 0.60f, 0.20f}, {0.12f, 0.36f, 0.14f}, 12, 0.8f},  // Leaves: yellow-green, dark green
+    {},                                                     // Water
+    {}, {}, {}, {}, {}, {},                                 // Skin, Tunic, Belt, Boots, Hair, Eye
+    {{0.66f, 0.64f, 0.60f}, {0.39f, 0.37f, 0.34f}, 5, 1.0f},   // Rock: lighter, darker grey
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},         // Robe .. Plate (models)
+    {{0.56f, 0.40f, 0.24f}, {0.70f, 0.56f, 0.38f}, 6, 0.3f},   // Planks: darker, faded
+    {{0.36f, 0.36f, 0.36f}, {0.54f, 0.53f, 0.51f}, 5, 0.3f},   // Cobble
+    {{0.46f, 0.36f, 0.20f}, {0.64f, 0.54f, 0.34f}, 8, 0.3f},   // Thatch
+    {},                                                     // Ember
+    {{0.50f, 0.25f, 0.19f}, {0.66f, 0.42f, 0.34f}, 5, 0.3f},   // Brick
+    {{0.30f, 0.40f, 0.23f}, {0.46f, 0.48f, 0.42f}, 6, 0.35f},  // MossyCobble: mossier, bare stone
+    {{0.40f, 0.26f, 0.16f}, {0.55f, 0.40f, 0.28f}, 6, 0.3f},   // DarkPlanks
+    {{0.80f, 0.62f, 0.24f}, {0.94f, 0.80f, 0.44f}, 6, 0.25f},  // Hay
+    {{0.64f, 0.44f, 0.32f}, {0.78f, 0.60f, 0.47f}, 8, 0.25f},  // Clay
+    {{0.28f, 0.30f, 0.35f}, {0.42f, 0.44f, 0.48f}, 8, 0.25f},  // Slate
+    {},                                                     // Lantern
+};
+
 constexpr int kChunk = 32;
 constexpr glm::ivec3 kWorldSize{1024, 192, 1024};  // ponytail: dense grid (192 MiB); chunk streaming in M1
 constexpr int kSeaLevel = 34;

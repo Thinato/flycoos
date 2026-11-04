@@ -48,6 +48,9 @@ struct RenderSettings {
     glm::vec3 emberColor{1.0f, 0.8f, 0.6f};
     float emberStrength = 1.5f;
     float darkAmbient = 0.03f;  // ambient left where no light reaches
+    // Colour patches (ADR-028): every tone's strength and size times these; tones edited live.
+    float patchStrength = 1, patchSize = 1;  // strength 0: the flat palette
+    std::array<BlockTone, BlockCount> tones = std::to_array(kTones);
 };
 
 class Renderer {

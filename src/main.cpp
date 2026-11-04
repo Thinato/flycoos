@@ -45,6 +45,7 @@ struct Options {
 
 [[noreturn]] static void usage() {
     std::println(stderr, "usage: flycoos [--world PATH] [--new-game] [--seed N] [--time 0..1] [--debug] [--view shaded|quads|chunks|ao|normals|light|wire]\n"
+                         "               [--patches STRENGTH (colour patches, 0 flat palette, default 1)]\n"
                          "               [--port N | --no-serve]\n"
                          "               [--frames N [--screenshot out.bmp] [--look YAW PITCH]]");
     std::exit(2);
@@ -73,6 +74,11 @@ static Options parseArgs(int argc, char** argv) {
             o.port = std::atoi(argv[++i]);
             if (o.port < 1 || o.port > 65535) usage();
         } else if (a == "--no-serve") o.serve = false;
+        else if (a == "--patches" && hasValue) {
+            char* end = nullptr;
+            o.render.patchStrength = std::strtof(argv[++i], &end);
+            if (end == argv[i] || *end || !std::isfinite(o.render.patchStrength) || o.render.patchStrength < 0) usage();
+        }
         else if (a == "--view" && hasValue) {
             std::string_view v = argv[++i];
             constexpr std::string_view names[ViewModeCount] = {"shaded", "quads", "chunks", "ao", "normals", "light"};

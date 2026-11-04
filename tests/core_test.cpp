@@ -1,5 +1,6 @@
 // Assert-style checks for the engine core. Not using <cassert>: release builds define NDEBUG.
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <climits>
@@ -85,6 +86,27 @@ static void meshing() {
         for (Quad q : left.opaque) hasInnerFace |= unpack(q).face == 0;
         CHECK(!hasInnerFace);
     }
+}
+
+// Colour patch tones (ADR-028, docs/ART.md): plain blocks have none, man-made ones are fainter
+// than every natural one, and every patched block has a patch size. Every block is in one class.
+static void tones() {
+    constexpr Block plain[] = {Air, Water, Ember, Lantern, Skin, Tunic, Belt, Boots, Hair, Eye, Robe, DarkHair, Straw,
+                               Burlap, Steel, Iron, Hide, Tusk, Snout, Hood, Leather, Plate};
+    constexpr Block made[] = {Planks, DarkPlanks, Brick, Cobble, MossyCobble, Thatch, Hay, Clay, Slate};
+    constexpr Block natural[] = {Grass, Leaves, Dirt, Sand, Snow, Stone, Rock, Wood};
+    std::array<int, BlockCount> seen{};
+    for (Block b : plain) {
+        ++seen[b];
+        CHECK(kTones[b].strength == 0);
+    }
+    for (Block m : made) {
+        ++seen[m];
+        for (Block n : natural) CHECK(kTones[m].strength > 0 && kTones[m].strength < kTones[n].strength);
+    }
+    for (Block n : natural) ++seen[n];
+    CHECK(std::ranges::all_of(seen, [](int n) { return n == 1; }));  // a new block must pick a class
+    for (const BlockTone& t : kTones) CHECK(t.strength >= 0 && t.strength <= 1 && (t.strength == 0 || t.size > 0));
 }
 
 // The world's chunk meshes come from core (meshChunks/remeshChunks); the renderer only uploads them.
@@ -4886,6 +4908,7 @@ int main() {
     }
     dataFiles();
     meshing();
+    tones();
     chunkMeshes();
     packing();
     lighting();

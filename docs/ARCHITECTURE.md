@@ -520,8 +520,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   repacked from the CPU copy of the meshes (no remeshing). See ADR-012.
   Measured (M4, release): an edit touching 1–8 chunks applies and re-uploads in 1–2 ms, a radius-32
   brush (18 chunks) in ~2.7 ms; 400 random brushes averaged 2.7 ms with one repack, worst ~10 ms.
-- **Per-draw data:** one 96-byte uniform push per chunk (`model` matrix, color-jitter offset,
-  `firstQuad`). Frame data (matrices, lighting, 64-entry palette) is pushed once per frame to
+- **Per-draw data:** one 96-byte uniform push per chunk (`model` matrix, `modelLight`,
+  `firstQuad`). Frame data (matrices, lighting, 64-entry palette and patch tones) is pushed once per frame to
   vertex and fragment slot 0. The projection is built from the swapchain size inside `render()`.
 - **Binding order** (SDL_gpu.h, MSL): `voxel_vs` has `buffer(0)` Frame, `buffer(1)` Draw and
   `buffer(2)` quads. The fragment shaders use `buffer(0)` Frame.
@@ -538,13 +538,19 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - **Debug views:** `Frame.debug.x` selects shaded, greedy quads (color per merged quad), chunks
   (color per 32³ cell), AO only, normals, or light levels (sky blue-white, block orange;
   `--view light`). The branch is on a uniform, so it's coherent. The quad's light and index ride in
-  the existing flat `blockAndQuad` output (block id bits 0-5, light 6-13, quad index 14-31) rather
-  than new ones: on Apple's tile-based GPUs every extra vertex output costs bandwidth, and two extra
-  outputs measured ~15% slower frames.
+  the existing flat `blockAndQuad` output (block id bits 0-5, light 6-13, quad index 14-30, bit 31
+  set for models) rather than new ones: on Apple's tile-based GPUs every extra vertex output costs
+  bandwidth, and two extra outputs measured ~15% slower frames.
 - **Color:** the swapchain is `SDR_LINEAR` (sRGB format), so all lighting is in linear space. The
   palette is sRGB in `kPalette` and converted at upload. Output goes through an ACES filmic tonemap.
 - **Shading:** a directional light (sun by day, moon by night) plus a hemispheric sky/ground
-  ambient, multiplied by AO. A ±10% per-voxel brightness jitter comes from a hash of the voxel cell.
+  ambient, multiplied by AO.
+- **Albedo (ADR-028, [ART.md](ART.md)):** one colour per voxel. `albedoOf` fades the block's palette
+  colour toward its two `kTones` variants by two smooth gradient-noise fields (lattice `size` voxels
+  apart) read once at the voxel's cell centre, `floor(worldPos - normal / 2) + 0.5` (chunks draw in
+  world voxel coordinates, so patches cross chunk borders). No per-voxel random term. Strength-0
+  blocks and models (bit 31) take the plain palette colour. Tones upload linearised as
+  `Frame.toneA/toneB`, the Render tab's global strength and size baked in.
 - **Lighting (occlusion ramp):** the vertex shader maps each corner's AO level 0..3 through
   `Frame.aoCurve` (default `0.35, 0.62, 0.82, 1`) into the existing `ao` output, giving `o` (1 = open).
   `light()` first shades albedo toward `Frame.shadowTint.rgb` by `shadowTint.a * (1 - o)`, so corners
@@ -552,7 +558,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   much. The CPU fades the tint to 30% at night (moonlight is already blue). Both uniforms come from
   `RenderSettings` (debug UI Render tab, Lighting); off sends the old linear curve and no tint.
 - **Voxel light (ADR-019):** each quad carries the sky and block light of the voxel in front of it
-  (models: one value sampled where they stand, sent in the Draw uniforms' `hashOffset.w`). `light()`
+  (models: one value sampled where they stand, sent in the Draw uniforms' `modelLight.x`). `light()`
   maps a level through `curve(l) = x / (f - (f-1) x)`, `x = l/15` (`Frame.lightParams.y`, default
   2), and:
   - multiplies `curve(sky)` into `o`, so ambient and the cool tint follow sky visibility: roofed
@@ -1000,6 +1006,23 @@ The whole refactor plus the backlog costs about +0.27 ms (+7–8%) per frame, wh
 light breaks greedy merges (+5% quads, ADR-019), the light arrays add ~47 MiB plus ~10 MiB of
 quads, and the light fill adds ~0.3 s to startup. Everything else (Session, fixed tick, data files,
 AI, stats, quests, progression) is not measurable in frame time.
+
+### Perf A/B 2026-11-04: 8009332 vs colour patches (working tree)
+
+Same flags as above (`--frames 900 --look 0 -20`, 1600×900, `--no-serve`), up to 6 alternating runs per
+cell, each binary run from its own checkout; the story world is a scratch copy. Runs with mean > 6 ms
+(120 Hz present pin) or a 1000 ms hitch were discarded: 2 of 6 (story day, base and candidate each),
+3 of 6 (generated, base and candidate each), 2 of 6 base / 1 of 6 candidate (story night), so some cells
+rest on only 3-5 runs and the machine was heat-drifting. The candidate with `--patches 0` ran once.
+
+| Scene | 8009332 | Colour patches | Delta |
+|---|---|---|---|
+| Generated world, seed 1337, day | 3.75 ms (3 runs) | 4.22 ms (3 runs) | +0.47 ms (+13%) |
+| Story world, day (`--time 0.4`) | 3.77 ms (4 runs) | 4.04 ms (4 runs) | +0.27 ms (+7%) |
+| Story world, night (`--time 0.9`) | 3.65 ms (4 runs) | 4.00 ms (5 runs) | +0.35 ms (+10%) |
+| Generated, candidate `--patches 0` | – | 3.28 ms (1 run) | – |
+
+The patch noise costs about +0.3-0.5 ms per frame (+7-13%) in the fragment shader; the quad counts are unchanged, and `--patches 0` brought the frame time back to (or below) the baseline, but that is a single run.
 
 ## Known ceilings
 
