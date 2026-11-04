@@ -49,7 +49,7 @@ static glm::ivec3 unpackPos(uint32_t k) { return {int(k & 2047), int(k >> 22), i
 // box of voxels whose light changed.
 static void relightColumns(const Grid& g, Light& light, glm::ivec2 lo, glm::ivec2 hi, Box* changed) {
     assert(g.size.x <= 2048 && g.size.z <= 2048 && g.size.y <= 1024);  // packPos
-    // Sky top of each column (one past its highest non-air voxel), for the columns and a ring around.
+    // Sky top of each column (one past its highest voxel that isn't air or a plant), for the columns and a ring around.
     glm::ivec2 tlo = glm::max(lo - 1, glm::ivec2(0)), thi = glm::min(hi + 1, glm::ivec2(g.size.x, g.size.z) - 1);
     int tw = thi.x - tlo.x + 1;
     std::vector<int16_t> tops(size_t(tw) * size_t(thi.y - tlo.y + 1));
@@ -59,7 +59,7 @@ static void relightColumns(const Grid& g, Light& light, glm::ivec2 lo, glm::ivec
         for (int y = g.size.y - 1, left = tw; y >= 0 && left; --y) {
             const Block* cells = &g.cells[g.index({tlo.x, y, tlo.y + row})];
             for (int x = 0; x < tw; ++x)
-                if (top[x] < 0 && cells[x] != Air) top[x] = int16_t(y + 1), --left;
+                if (top[x] < 0 && !isClear(cells[x])) top[x] = int16_t(y + 1), --left;
         }
         std::replace(top, top + tw, int16_t(-1), int16_t(0));
     });

@@ -301,6 +301,7 @@ static int run(SDL_Window* window, const Options& opt) {
     std::vector<double> frameMs;
     frameMs.reserve(size_t(opt.frames));
     uint64_t last = SDL_GetTicksNS();
+    double wallSeconds = 0;  // real time, unpaused and unscaled (the grass's wind)
     double titleTimer = 0;
     float tickTime = 0;          // frame time not yet simulated, < kTick between frames
     bool interactQueued = false;  // E pressed, not yet seen by a step
@@ -369,6 +370,8 @@ static int run(SDL_Window* window, const Options& opt) {
                     int tool = int(e.key.key - SDLK_1);  // the brushes, then Prefab, then Marker
                     editor.prefabTool = tool == int(Tool::Count);
                     editor.markerTool = tool == int(Tool::Count) + 1;
+                    if (tool < int(Tool::Count) && editor.brush.tool != Tool::Plant && Tool(tool) == Tool::Plant && !isPlant(editor.brush.block))
+                        editor.brush.block = ShortGrass;  // not Fill's Air
                     if (tool < int(Tool::Count)) editor.brush.tool = Tool(tool);
                     editor.corner.reset();
                 } else if (editor.active && editor.prefabTool && e.key.key == SDLK_R) {
@@ -464,6 +467,7 @@ static int run(SDL_Window* window, const Options& opt) {
         fp.view = glm::lookAtRH(fp.eye, camTarget, glm::vec3(0, 1, 0));
         fp.fovY = glm::radians(game.fovDegrees);
         fp.timeOfDay = session.timeOfDay;
+        fp.seconds = wallSeconds += dt;
         fp.underwater = underWater(world, fp.eye);
 
         // Editor: LMB applies the brush where the crosshair (the screen center) meets the ground.
@@ -520,6 +524,7 @@ static int run(SDL_Window* window, const Options& opt) {
                     op.max = fillCell(editor, *aim);
                     editor.corner.reset();
                 }
+                if (op.tool == Tool::Plant) op.strength = editor.density;
                 if (op.tool == Tool::Flatten && punchQueued) editor.brush.height = op.height = aim->cell.y;  // a stroke flattens to where it starts
                 op.center = {aim->cell.x, aim->cell.z};
                 uint64_t start = SDL_GetTicksNS();
@@ -727,9 +732,9 @@ static int run(SDL_Window* window, const Options& opt) {
     mean /= double(ms.size());
     std::ranges::sort(ms);
     std::println("frames {} (after {} warm-up) | mean {:.3f} ms ({:.0f} fps) | p99 {:.3f} ms | max {:.3f} ms | "
-                 "chunks drawn {}/{}",
+                 "chunks drawn {}/{} | plants {} ({} quads)",
                  ms.size(), warmup, mean, 1000.0 / mean, ms[ms.size() * 99 / 100], ms.back(), s.chunksDrawn,
-                 s.chunksTotal);
+                 s.chunksTotal, s.plantsDrawn, s.plantQuadsDrawn);
     return 0;
 }
 

@@ -25,6 +25,7 @@
 #include "light.h"
 #include "mesher.h"
 #include "notes.h"
+#include "plants.h"
 #include "prefab.h"
 #include "save.h"
 #include "trees.h"
@@ -94,9 +95,11 @@ static void meshing() {
 // than every natural one, and every patched block has a patch size. Every block is in one class.
 static void tones() {
     constexpr Block plain[] = {Air, Water, Ember, Lantern, Skin, Tunic, Belt, Boots, Hair, Eye, Robe, DarkHair, Straw,
-                               Burlap, Steel, Iron, Hide, Tusk, Snout, Hood, Leather, Plate};
+                               Burlap, Steel, Iron, Hide, Tusk, Snout, Hood, Leather, Plate,
+                               ShortGrass, TallGrass, FlowerWhite, FlowerYellow, FlowerRed, FlowerViolet,  // drawn as models
+                               PetalWhite, PetalYellow, PetalRed, PetalViolet, Stem, FlowerHeart};
     constexpr Block made[] = {Planks, DarkPlanks, Brick, Cobble, MossyCobble, Thatch, Hay, Clay, Slate};
-    constexpr Block natural[] = {Grass, Dirt, Sand, Snow, Stone, Rock, Wood, BirchBark, PineBark, AraucariaBark};
+    constexpr Block natural[] = {Grass, Dirt, Sand, Snow, Stone, Rock, Wood, BirchBark, PineBark, AraucariaBark, Blade, TallBlade};
     std::array<int, BlockCount> seen{};
     for (int k = 0; k < int(Leaf::Count); ++k)  // leaves: natural, and the 4 shades get strictly lighter
         for (int s = 0; s < kLeafShades; ++s) {
@@ -302,7 +305,7 @@ static void generation() {
     generateTerrain(b, 7);
     generateTerrain(c, 8);
     CHECK(a.cells == b.cells);
-    CHECK(fnv(a) == 0x41eabed1u);  // recorded before trees and rocks became shared prefab generators
+    CHECK(fnv(a) == 0x5f37c62bu);  // recorded with the meadow (ADR-030); without its plants still 0x41eabed1, from before trees and rocks became shared prefab generators
     CHECK(a.cells != c.cells);
     glm::vec3 spawn = findSpawn(a);
     CHECK(a.get(glm::ivec3(glm::floor(spawn)) - glm::ivec3(0, 1, 0)) == Grass);
@@ -328,7 +331,7 @@ static void regions() {
             sum[size_t(z + 1) * (n + 1) + x + 1] = (tree || rock) + sum[size_t(z) * (n + 1) + x + 1] +
                                                    sum[size_t(z + 1) * (n + 1) + x] - sum[size_t(z) * (n + 1) + x];
         }
-    CHECK(fnv(g) == 0x4cab0bf9u);  // recorded with the five tree species (ADR-029); spires and boulders as before
+    CHECK(fnv(g) == 0x784e8dd7u);  // recorded with the meadow (ADR-030); without its plants 0x4cab0bf9, the five tree species (ADR-029)
     CHECK(forest > n * n / 20);   // > 5% of columns under trees
     CHECK(rocky > n * n / 200);   // > 0.5% of columns with rocks
     constexpr int kOpen = 96;
@@ -1202,6 +1205,7 @@ static EditOp randomOp(std::mt19937& rng, const Grid& g) {
     op.strength = pick(1, 8);
     op.height = pick(0, g.size.y - 1);
     op.block = kBlocks[pick(op.tool == Tool::Paint ? 1 : 0, op.tool == Tool::Paint ? 7 : 9)];
+    if (op.tool == Tool::Plant) op.block = std::array{Air, ShortGrass, TallGrass, FlowerRed}[size_t(pick(0, 3))];
     op.min = {pick(-4, g.size.x), pick(0, g.size.y), pick(-4, g.size.z)};
     op.max = op.min + glm::ivec3(pick(-6, 6), pick(-6, 6), pick(-6, 6));
     return op;
@@ -1388,7 +1392,7 @@ static void commands() {
     const nlohmann::json& cat = c.response["result"];
     CHECK(ok(c) && cat["entities"].size() == size_t(EntityKind::Count) && cat["entities"][6]["id"] == "bandit_chief" &&
           cat["entities"][6]["loot"] == "Iron Helm" && cat["entities"][6]["temper"] == "aggressive" && cat["entities"][1]["name"].is_null() &&
-          cat["entities"][1]["wander_radius"] == 12 && cat["materials"].size() == BlockCount && cat["solid_materials"].size() == BlockCount - 2 &&
+          cat["entities"][1]["wander_radius"] == 12 && cat["materials"].size() == BlockCount && cat["solid_materials"].size() == BlockCount - 8 &&
           cat["materials"][Ember] == "Ember" && cat["materials"][Lantern] == "Lantern" &&
           std::ranges::count(cat["solid_materials"], "Slate") == 1);  // every block; solid: all but Air and Water
 
@@ -5138,6 +5142,140 @@ static void debugNotes() {
     CHECK(lines[0]["player"] == c["player"]);
 }
 
+// Grass and flowers (ADR-030): plant blocks are air to everything but drawing, ride on the ground
+// through brushes, go where their grass goes, and the meadow is deterministic.
+static void plants() {
+    auto field = [] {  // grass at y 3 on stone, a short-grass plant on every column
+        Grid g({16, 16, 16});
+        for (int z = 0; z < 16; ++z)
+            for (int x = 0; x < 16; ++x) {
+                for (int y = 0; y < 4; ++y) g.set({x, y, z}, y == 3 ? Grass : Stone);
+                g.set({x, 4, z}, ShortGrass);
+            }
+        return g;
+    };
+    for (Block b : {ShortGrass, TallGrass, FlowerWhite, FlowerYellow, FlowerRed, FlowerViolet})
+        CHECK(isPlant(b) && isClear(b) && !isOpaque(b) && lightCost(b) == 1);
+    for (Block b : {Air, Grass, Water, Blade, PetalRed, Stem}) CHECK(!isPlant(b));
+    {  // no collision, not ground, open sky passes
+        Grid g = field();
+        Player p;
+        p.pos = {5.5f, 6, 8.5f};
+        for (int i = 0; i < 240; ++i) updatePlayer(p, g, {}, 1 / 120.0f);
+        CHECK(p.onGround && std::abs(p.pos.y - 4) < 0.01f && !overlapsSolid(g, p.pos));
+        CHECK(groundTop(g, 5, 8) == 3 && groundUnderTrees(g, 5, 8) == 3);
+        glm::vec3 spawn = findSpawn(g);
+        CHECK(spawn.y == 4);
+        Light l;
+        fillLight(g, l);
+        CHECK(skyLight(l.get({5, 4, 8})) == kMaxLight);  // the grass's top face is as bright as without plants
+    }
+    {  // meshing: no faces for plants, the grass under them still has its top, each plant listed once
+        Grid g = field();
+        g.set({2, 4, 2}, FlowerRed);
+        g.set({7, 4, 7}, Water);  // a water cell among plants keeps its side faces
+        Mesh m = meshRegion(g, {0, 0, 0}, g.size);
+        CHECK(m.plants.size() == 255);  // 256 cells, one of them water
+        int grassTops = 0;
+        for (Quad q : m.opaque) {
+            QuadInfo i = unpack(q);
+            grassTops += i.block == Grass && i.face == 2 ? i.w * i.h : 0;
+            CHECK(!isPlant(i.block));
+        }
+        CHECK(grassTops == 256);  // under the water cell too
+        CHECK(std::ranges::count_if(m.water, [](Quad q) { return unpack(q).face == 2; }) == 1 && m.water.size() == 5);
+        auto red = std::ranges::find(m.plants, uint32_t(2 | 4 << 10 | 2 << 18), &PlantInstance::cell);
+        CHECK(red != m.plants.end() && (red->info >> 8) == Poppies && (red->info & 255) == kMaxLight << 4);
+    }
+    {  // edits: plants ride raised and lowered ground, and go where their grass goes
+        Grid g = field();
+        EditHistory h;
+        applyEdit(g, {.tool = Tool::Raise, .center = {8, 8}, .radius = 2, .strength = 3}, h);
+        CHECK(g.get({8, 6, 8}) == Grass && g.get({8, 7, 8}) == ShortGrass && g.get({8, 4, 8}) == Dirt);
+        applyEdit(g, {.tool = Tool::Lower, .center = {8, 8}, .radius = 2, .strength = 3}, h);
+        CHECK(g.get({8, 3, 8}) == Grass && g.get({8, 4, 8}) == ShortGrass && g.get({8, 5, 8}) == Air);
+        applyEdit(g, {.tool = Tool::Paint, .center = {3, 3}, .radius = 0, .block = Sand}, h);
+        CHECK(g.get({3, 3, 3}) == Sand && g.get({3, 4, 3}) == Air && g.get({4, 4, 3}) == ShortGrass);
+        EditResult r = applyEdit(g, {.tool = Tool::Fill, .min = {12, 3, 12}, .max = {12, 3, 12}, .block = Air}, h);
+        CHECK(g.get({12, 4, 12}) == Air && r.dirty.hi.y == 4);  // the plant above the hole is part of the step
+        applyEdit(g, {.tool = Tool::Fill, .min = {13, 4, 13}, .max = {13, 4, 13}, .block = Planks}, h);
+        CHECK(g.get({13, 4, 13}) == Planks);
+        std::vector<Instance> none;
+        std::vector<Marker> noMarks;
+        while (!h.undo.empty()) undoEdit(g, h, none, noMarks);
+        CHECK(g.cells == field().cells);
+    }
+    {  // the meadow: deterministic, Tool::Plant and growMeadow agree, nothing on sand, under trees or water
+        Grid g({64, 96, 64});
+        generateTerrain(g, 11);
+        Grid bare = g;
+        for (Block& b : bare.cells) b = isPlant(b) ? Air : b;
+        Grid again = bare;
+        EditHistory h;
+        growMeadow(again, {0, 0}, {63, 63}, ShortGrass, 1, h);
+        CHECK(again.cells == g.cells);
+        std::vector<Instance> none;
+        std::vector<Marker> noMarks;
+        undoEdit(again, h, none, noMarks);
+        CHECK(again.cells == bare.cells);
+        Grid brushed = bare;
+        applyEdit(brushed, {.tool = Tool::Plant, .center = {20, 20}, .radius = 12, .strength = 10, .block = ShortGrass}, h);
+        for (int z = 10; z <= 30; ++z)
+            for (int x = 10; x <= 30; ++x)
+                if ((x - 20) * (x - 20) + (z - 20) * (z - 20) <= 144) CHECK(brushed.get({x, groundTop(g, x, z) + 1, z}) == g.get({x, groundTop(g, x, z) + 1, z}));
+        std::array<int, BlockCount> kinds{};
+        for (int y = 1; y < g.size.y; ++y)
+            for (int z = 0; z < g.size.z; ++z)
+                for (int x = 0; x < g.size.x; ++x)
+                    if (Block b = g.get({x, y, z}); isPlant(b)) {
+                        ++kinds[b];
+                        CHECK(g.get({x, y - 1, z}) == Grass && groundTop(g, x, z) == y - 1);
+                    }
+        CHECK(kinds[ShortGrass] > kinds[TallGrass] && kinds[TallGrass] > 0);
+        Grid cleared = g;
+        growMeadow(cleared, {0, 0}, {63, 63}, Air, 1, h);
+        CHECK(cleared.cells == bare.cells);
+        Grid canopy = bare;  // a plant left under a crown (placed before its tree) is cleared too
+        int cx = 5, cz = 5, gy = groundTop(canopy, cx, cz);
+        canopy.set({cx, gy + 1, cz}, ShortGrass);
+        canopy.set({cx, gy + 6, cz}, Leaves);
+        plantColumn(canopy, cx, cz, Air, 1);
+        CHECK(canopy.get({cx, gy + 1, cz}) == Air);
+    }
+    {  // several tiles, off the tile grid: the same as planting column by column, and one undo restores it
+        Grid g({160, 96, 160});
+        generateTerrain(g, 12);
+        for (Block& b : g.cells) b = isPlant(b) ? Air : b;
+        Grid by = g, start = g;
+        for (int z = 7; z <= 130; ++z)
+            for (int x = 10; x <= 140; ++x) plantColumn(by, x, z, FlowerYellow, 2);
+        EditHistory h;
+        EditResult r = growMeadow(g, {140, 130}, {10, 7}, FlowerYellow, 2, h);  // corners in any order
+        CHECK(g.cells == by.cells && h.undo.size() == 1 && h.undo[0].parts.size() > 4 && !r.dirty.empty());
+        std::vector<Instance> none;
+        std::vector<Marker> noMarks;
+        undoEdit(g, h, none, noMarks);
+        CHECK(g.cells == start.cells);
+    }
+    {  // a plant drowned by a water fill goes; lowering the lakebed after keeps it under water
+        Grid g = field();
+        EditHistory h;
+        applyEdit(g, {.tool = Tool::Fill, .min = {6, 5, 6}, .max = {10, 7, 10}, .block = Water}, h);
+        CHECK(g.get({8, 4, 8}) == Air);
+        applyEdit(g, {.tool = Tool::Fill, .min = {1, 0, 1}, .max = {1, 1, 1}, .block = ShortGrass}, h);
+        CHECK(g.get({1, 0, 1}) == Air && g.get({1, 1, 1}) == Air);  // plants need grass, at y 0 too
+    }
+    {  // models: every one has quads, none on the ground, and the far one is cheaper
+        for (int m = 0; m < PlantModelCount; ++m) {
+            std::vector<Quad> near = plantQuads(PlantModel(m), false), far = plantQuads(PlantModel(m), true);
+            CHECK(!near.empty() && far.size() <= near.size());
+            for (Quad q : near) CHECK(!(unpack(q).face == 3 && unpack(q).pos.y == 0));
+        }
+        CHECK(plantModel(TallGrass, {1, 2, 3}) >= TallTuft0 && plantModel(TallGrass, {1, 2, 3}) <= TallTuft2 &&
+              plantModel(FlowerViolet, {1, 2, 3}) == Bellflowers);
+    }
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -5173,6 +5311,7 @@ int main() {
     worldFiles();
     instanceCells();
     trees();
+    plants();
     editing();
     commands();
     prefabs();

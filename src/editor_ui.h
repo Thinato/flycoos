@@ -14,6 +14,7 @@ struct Editor {
     bool active = false;
     bool cursor = false;  // Q: the cursor is free for the panel (brushes and mouse look pause)
     EditOp brush;         // tool and settings; center (and Fill's corners) come from the crosshair
+    int density = 10;     // Plant: density x 10, the op's strength (kept apart so other brushes keep theirs)
     std::optional<glm::ivec3> corner;  // Fill: first corner, waiting for the second click
     EditHistory history;
     std::string path;     // save target

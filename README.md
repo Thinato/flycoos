@@ -96,7 +96,7 @@ the brush on the ground. Fly up to aim farther away.
 | Input | Action |
 |---|---|
 | Left mouse | Apply the brush at the crosshair (hold: 8 times a second). Fill box: click two corners. Prefab: place, or select the prefab you aim at. Marker: place, or select the marker there |
-| 1–8 | Tool: Raise, Lower, Smooth, Flatten, Paint, Fill box, Prefab, Marker |
+| 1–9 | Tool: Raise, Lower, Smooth, Flatten, Paint, Fill box, Plant, Prefab, Marker |
 | R | Prefab tool: rotate the next structure a quarter turn |
 | Delete / Backspace | Remove the selected prefab instance (Prefab tool) or marker (Marker tool) |
 | `[` `]` | Brush radius |
@@ -110,6 +110,10 @@ the brush on the ground. Fly up to aim farther away.
   height, taken from where each stroke starts. Strength caps the blocks moved per application.
 - **Paint** recolors the surface; **Fill box** sets a box of voxels (Air clears). Both take any
   block, building blocks (Planks, Cobble, Thatch, Ember...) too; Paint only solid ones.
+- **Plant** grows grass and flowers on the open grass in its circle: the meadow mix, or only tall
+  grass or one flower, at a density (1 is the generator's meadow), or clears them. Painting the same
+  spot again changes nothing: every column has its own roll. Plants don't collide, and go with
+  their grass: raised and lowered with it, cleared where it's dug out or painted over.
 - Brushes act on each column's highest solid voxel, so trees and rocks are treated as terrain. The
   surface they keep on top is the top block, but cutting a tree or structure down to or below the
   ground under it leaves the ground's surface (grass, not leaves); a painted road stays a road.
@@ -149,7 +153,9 @@ server. If the game isn't running, the tools say how to start it.
 | `state` | World file, size, seed, unsaved flag, undo/redo depth, player and camera, editor mode, time of day |
 | `raise` `lower` `smooth` `flatten` `paint` | The editor's brushes at a column `x`, `z` with `radius`, `strength`, `height` (flatten), `material` (paint) |
 | `fill` | Set a box (`min`, `max`, at most 128³) to any block (Planks, Cobble, Ember... too); Air clears, Water makes water |
-| `apply` | Up to 256 of the ops above in one call (within one command's work budget, see below) |
+| `plant` | The Plant brush: grass and flowers in a circle, `kind` (ShortGrass for the meadow mix, TallGrass, a flower, or Air to clear) and `density` |
+| `meadow` | The Plant brush over a region (default the whole world), one undo step |
+| `apply` | Up to 256 of the brush and fill ops above in one call (within one command's work budget, see below) |
 | `path` | A road or river bed along `[x, z]` points: `width`, `follow_terrain` (graded) or a fixed `height`, `depth`, `material` |
 | `undo` `redo` | One shared history: Claude's edits and yours undo in order, each command is one step |
 | `save` | Save to the world file, or a copy to `path` (a `.flyw` in `worlds/` or the world file's folder) |

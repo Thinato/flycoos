@@ -60,6 +60,13 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
     ImGui::SameLine();
     ImGui::Checkbox("Characters", &r.character);
 
+    ImGui::Checkbox("Plants", &r.plants);
+    ImGui::SetItemTooltip("Grass and flowers (plants.h). Off: their cells look empty (A/B their cost).");
+    ImGui::SliderFloat("Plant radius", &r.plantRadius, 16, 160, "%.0f blocks");
+    ImGui::SetItemTooltip("Plants are drawn this far from the eye, growing in over the last 12 blocks; the detailed model within %.0f.", kPlantNear);
+    ImGui::SliderFloat("Wind", &r.sway, 0, 3, "%.1f");
+    ImGui::SetItemTooltip("How fast the grass sways: 0 holds it still, leaning.");
+
     ImGui::SeparatorText("Culling");
     ImGui::Checkbox("Frustum culling", &r.frustumCulling);
     ImGui::Checkbox("Freeze culling", &r.freezeCulling);
@@ -117,6 +124,7 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
     ImGui::Text("Chunks drawn   %d / %d", s.chunksDrawn, s.chunksTotal);
     ImGui::Text("Quads drawn    %zu / %zu", s.quadsDrawn, s.opaqueQuads + s.waterQuads);
     ImGui::Text("Draw calls     %d", s.drawCalls);
+    ImGui::Text("Plants drawn   %zu (%zu quads)", s.plantsDrawn, s.plantQuadsDrawn);
 }
 
 // Health, the five attributes and what derives from them; shared by the Player and Entities tabs.

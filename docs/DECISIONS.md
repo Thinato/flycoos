@@ -1186,3 +1186,59 @@
     by hand first, it regrows small. Replant first.
   - `generation`/`regions` checksums were re-recorded; the greedy-quads debug colour wraps at
     64K quads.
+
+## ADR-030: Grass and flowers as plant blocks drawn as instanced voxel models
+
+- **Status:** accepted (2026-11-04)
+- **Context:** Debug note 3: the plains look empty; the user wants tall grass and flowers, not
+  bushes. They chose small voxel models (like the characters), a mixed meadow (mostly ankle-high,
+  knee-high patches, bare gaps, flowers in clusters), plants saved in the world and paintable, and
+  the bushes removed from the story world.
+- **Decision:**
+  - **Plants are blocks.** `ShortGrass`, `TallGrass` and four flowers (`isPlant`) stand in the cell
+    above a grass voxel. To everything but drawing they are air: `isOpaque` is false, they cost 1
+    light like air and don't end a column's open sky, and `isClear` (air or a plant) replaces the
+    `== Air` checks for ground finding, surfaces, spawn room and leaf growth. They save, load and
+    undo like any voxel; the world file only gains block ids.
+  - **They go with their grass.** Brushes that move a column's top carry its plant along
+    (`setColumnTop`); after every edit, plants in the touched box (and the layers just above and
+    under a fill) that no longer stand on Grass, or have water over them, are cleared; clearing also
+    reaches a plant left under a tree's crown. Placing a block in a plant's cell replaces it.
+  - **Models.** The block says what grows; the model (3 short tufts, 3 tall tufts, daisies,
+    buttercups, poppies, bellflowers), a quarter-turn and an offset of up to 0.15 come from a hash
+    of the cell (`plantHash`, the same in C++ and the shader). Models are 10³ grids of model-only
+    blocks (`Blade`, `TallBlade`, petals, `Stem`, `FlowerHeart`; a plant block can't be meshed as a
+    cube), meshed by `meshRegion` without the faces on the ground. Blades are straight with their top
+    quarter stepped one voxel out, so they merge into few quads.
+  - **Instanced drawing.** `meshRegion` lists a chunk's plants (`PlantInstance`: cell, light,
+    model) instead of making faces, so edits and light changes refresh them with the chunk. Each
+    frame the renderer counting-sorts the plants of the visible chunks within `plantRadius` (64) by
+    model and detail, uploads them (one cycled transfer buffer) and draws each model once with
+    instancing. Within `kPlantNear` (24 blocks) plants use the detailed model, beyond it a far one
+    with half the blades, all straight. `plant_vs` sways the upper voxels in the wind and grows
+    plants in over the radius' last 12 blocks; lighting uses a normal tilted up toward the ground's,
+    and blades take the Grass colour patch under their root (`plant_fs`), so a tuft matches its ground.
+  - **Placement.** `meadowPlant` (soft noise: lush stretches and bare gaps, tall-grass patches,
+    flower clusters of one kind per area) is shared by the generator, the editor's Plant brush
+    (`Tool::Plant`: density, a kind or the mix, or clear) and the `meadow` command (a region, one undo
+    step recorded in 64×64 tiles, no work budget). Plants grow only on grass that is the column's
+    highest opaque voxel with air above: not under trees, roofs or water. The meadow's noise has
+    fixed seeds, so every world gets the same pattern: the brush and the generator agree, and
+    terrain makes worlds differ anyway.
+- **Alternatives considered:**
+  - Plants derived from the terrain at draw time (no saved data, edits follow for free): the user
+    chose saved and paintable.
+  - Plants baked into the chunk meshes: quads are whole voxels (6-bit positions), and sub-voxel
+    models would need a second quad format and far more memory.
+  - One draw per plant, like characters: thousands of draw calls.
+  - Bent blades in the near model too: 80 quads per model on average; at 45% uniform density
+    (357k quads) they cost +0.7 ms.
+- **Consequences:**
+  - Prototype (story world, a plant on 45% of open grass, benchmark view): 357k quads +0.7 ms;
+    with straight-kinked blades, far models and no ground faces 130k quads, +0.29 ms.
+  - The story world after removing the 8 bush instances and `meadow` over the whole map:
+    147k short, 81k tall grass and 32k flowers; 4.35 → 4.92 MB. In the benchmark view about 2.8k
+    plants (97k quads): +0.2–0.3 ms on 2.3 ms (M4, A/B against e100595).
+  - Generated worlds grow the meadow last (22% of all columns of a 512² seed-42 world); the
+    `generation`/`regions` checksums were re-recorded (without plants they are the old ones).
+  - Prefab placement doesn't check plants: a plant left on a prefab's path tile stays.

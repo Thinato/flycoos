@@ -232,6 +232,16 @@ def main():
         err, r, _ = tool("replant", dry_run=True)
         check(not err and r["dry_run"] and r["removed_trees"] == 0 and tool("state")[1]["undo_steps"] == steps,
               f"replant dry run counts and changes nothing ({r if err else r['planted']} to plant)")
+        err, r, _ = tool("plant", x=x + 60, z=z, radius=6)
+        again = tool("plant", x=x + 60, z=z, radius=6)
+        check(not err and not again[0] and not again[1]["changed"], "plant is a brush; the same call again changes nothing")
+        err, msg, _ = tool("plant", x=x + 60, z=z, kind="Stone")
+        check(err and "plant" in msg, "plant refuses a non-plant kind")
+        steps = tool("state")[1]["undo_steps"]
+        err, r, _ = tool("meadow", x0=x + 50, z0=z - 10, x1=x + 70, z1=z + 10, kind="Air")
+        check(not err and r["plants"] == 0 and tool("state")[1]["undo_steps"] == steps + int(r["changed"]), "meadow clears a region")
+        if not err and r["changed"]:
+            tool("undo")
         err, msg, _ = tool("remove", id=999)
         check(err and "999" in msg, "remove an unknown id is an error")
         # a camp brings its own bandits: the instance's markers, removed with it

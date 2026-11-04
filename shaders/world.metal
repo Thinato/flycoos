@@ -52,18 +52,12 @@ constant float3 kNormals[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0,
 constant uint kTri[2][6] = {{0, 1, 2, 0, 2, 3}, {1, 2, 3, 1, 3, 0}};
 constant uint kReverse[6] = {0, 2, 1, 3, 5, 4};
 
-vertex VOut voxel_vs(uint vid [[vertex_id]],
-                     constant Frame& f [[buffer(0)]],
-                     constant Draw& d [[buffer(1)]],
-                     const device uint2* quads [[buffer(2)]]) {
-    // Draws always start at vertex 0 (SDL_gpu.h: first_vertex + vertex_id isn't portable),
-    // so the quad offset comes from the Draw uniforms.
-    uint2 q = quads[d.firstQuad.x + vid / 6];
+// Vertex `vid` (0..5 within its quad) of packed quad q (src/mesher.h), in the meshed region's voxels.
+struct QuadVertex { float3 local; uint face, block; float ao; };
+static QuadVertex quadVertex(constant Frame& f, uint2 q, uint vid) {
     float3 p = float3(q.x & 63, (q.x >> 6) & 63, (q.x >> 12) & 63);
     float w = float(((q.x >> 18) & 63) + 1), h = float(((q.x >> 24) & 63) + 1);
-    uint face = q.y & 7, block = (q.y >> 11) & 255;
-    bool model = d.modelLight.x > 0.0;
-    uint lit = model ? uint(d.modelLight.x) - 1 : (q.y >> 19) & 255;  // models: the light where they stand
+    uint face = q.y & 7;
     float ao[4] = {float((q.y >> 3) & 3), float((q.y >> 5) & 3), float((q.y >> 7) & 3), float((q.y >> 9) & 3)};
 
     uint axis = face >> 1, ua = (axis + 1) % 3, va = (axis + 2) % 3;
@@ -71,11 +65,29 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     uint k = positive ? vid % 6 : kReverse[vid % 6];
     uint c = kTri[ao[0] + ao[2] < ao[1] + ao[3] ? 1 : 0][k];
 
-    float3 local = p;
-    if (positive) local[axis] += 1.0;
-    local[ua] += (c == 1 || c == 2) ? w : 0.0;
-    local[va] += (c >= 2) ? h : 0.0;
-    float4 world = d.model * float4(local, 1.0);
+    QuadVertex v;
+    v.local = p;
+    if (positive) v.local[axis] += 1.0;
+    v.local[ua] += (c == 1 || c == 2) ? w : 0.0;
+    v.local[va] += (c >= 2) ? h : 0.0;
+    v.face = face;
+    v.block = (q.y >> 11) & 255;
+    v.ao = f.aoCurve[uint(ao[c])];
+    return v;
+}
+
+vertex VOut voxel_vs(uint vid [[vertex_id]],
+                     constant Frame& f [[buffer(0)]],
+                     constant Draw& d [[buffer(1)]],
+                     const device uint2* quads [[buffer(2)]]) {
+    // Draws always start at vertex 0 (SDL_gpu.h: first_vertex + vertex_id isn't portable),
+    // so the quad offset comes from the Draw uniforms.
+    uint2 q = quads[d.firstQuad.x + vid / 6];
+    QuadVertex v = quadVertex(f, q, vid);
+    uint face = v.face, block = v.block;
+    bool model = d.modelLight.x > 0.0;
+    uint lit = model ? uint(d.modelLight.x) - 1 : (q.y >> 19) & 255;  // models: the light where they stand
+    float4 world = d.model * float4(v.local, 1.0);
     // Water surface sits a bit below the block top. Lower only vertices at sea level, so side faces
     // split at chunk borders don't open gaps inside a water wall.
     if (block == kWater && world.y > f.fog.w - 0.01) world.y -= 0.12;
@@ -83,7 +95,7 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     out.position = f.viewProj * world;
     out.worldPos = world.xyz;
     out.normal = normalize((d.model * float4(kNormals[face], 0.0)).xyz);
-    out.ao = f.aoCurve[uint(ao[c])];
+    out.ao = v.ao;
     out.blockAndQuad = block | lit << 7 | ((d.firstQuad.x + vid / 6) & 0xFFFFu) << 15 | uint(model) << 31;  // ponytail: quad index wraps past 64K quads (debug color only)
     return out;
 }
@@ -218,22 +230,26 @@ static float3 lightLevels(VOut in) {
     return pow(saturate(c * (0.8 + 0.2 * normalize(in.normal).y)), 2.2);
 }
 
-fragment float4 voxel_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
+// The lit, fogged colour of a surface whose albedo (shaded view) is `albedo`, or a debug view of it.
+static float4 shade(constant Frame& f, VOut in, float3 albedo) {
     uint mode = uint(f.debug.x);
     // Unlit debug views are written as display values: the sRGB target would otherwise brighten them.
     if (mode == 3) return float4(float3(pow(mix(0.05, 1.0, rawAO(f, in.ao)), 2.2)), 1.0);  // raw AO, independent of the curve
     if (mode == 4) return float4(pow(normalize(in.normal) * 0.5 + 0.5, 2.2), 1.0);  // normals as color
     if (mode == 5) return float4(lightLevels(in), 1.0);
-    float3 albedo;
-    if (mode == 0) {  // normal path; `mode` is uniform, so this branch is coherent and cheap
-        albedo = albedoOf(f, in);
-    } else if (mode == 1) {  // greedy quads
+    if (mode == 1) {  // greedy quads
         albedo = idColor((in.blockAndQuad >> 15) & 0xFFFFu);
-    } else {  // chunks: 32^3 cell containing the surface (nudged inside along the normal)
+    } else if (mode == 2) {  // chunks: 32^3 cell containing the surface (nudged inside along the normal)
         uint3 cell = uint3(int3(floor((in.worldPos - in.normal * 0.01) / 32.0)));
         albedo = idColor(cell.x * 73856093u ^ cell.y * 19349663u ^ cell.z * 83492791u);
     }
     return float4(tonemap(applyFog(f, light(f, in, albedo), in.worldPos)), 1.0);
+}
+
+fragment float4 voxel_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
+    float3 albedo = 0.0;
+    if (uint(f.debug.x) == 0) albedo = albedoOf(f, in);  // `mode` is uniform, so this branch is coherent and cheap
+    return shade(f, in, albedo);
 }
 
 fragment float4 wire_fs(VOut in [[stage_in]]) {
@@ -249,6 +265,79 @@ fragment float4 water_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) 
     float spec = pow(saturate(dot(reflect(v, n), f.lightDir.xyz)), 120.0);
     color += f.lightColor.rgb * spec * 0.6;
     return float4(tonemap(applyFog(f, color, in.worldPos)), mix(0.78, 0.95, fresnel));
+}
+
+// ---- Plants (src/plants.h): instanced models of grass and flowers ----
+
+constant uint kGrass = 1;  // Block::Grass
+
+struct PlantOut {
+    float4 position [[position]];
+    float3 worldPos;
+    float3 normal;
+    float ao;
+    uint blockAndQuad [[flat]];  // as VOut's
+    uint cell [[flat]];          // the plant's cell, packed like PlantInstance::cell
+};
+
+// Must match plantHash in src/plants.cpp.
+static uint plantHash(int3 c) {
+    return pcg(uint(c.x) * 73856093u ^ uint(c.y) * 19349663u ^ uint(c.z) * 83492791u);
+}
+
+static float2 turn(float2 v, uint t) { return t == 0 ? v : t == 1 ? float2(-v.y, v.x) : t == 2 ? -v : float2(v.y, -v.x); }
+
+// Instance iid of this draw's model (firstQuad: x its first quad, y its first instance). The model
+// stands on the bottom centre of its cell, turned a quarter-turn step and shifted a little by the
+// cell's hash; its upper voxels sway in the wind (debug.z: the wind's phase, 0..2 pi), and it grows in
+// over the last 12 blocks of the radius (debug.w).
+vertex PlantOut plant_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
+                         constant Frame& f [[buffer(0)]],
+                         constant Draw& d [[buffer(1)]],
+                         const device uint2* quads [[buffer(2)]],
+                         const device uint2* plants [[buffer(3)]]) {
+    QuadVertex v = quadVertex(f, quads[d.firstQuad.x + vid / 6], vid);
+    uint2 p = plants[d.firstQuad.y + iid];
+    int3 cell = int3(p.x & 1023u, (p.x >> 10) & 255u, (p.x >> 18) & 1023u);
+    uint h = plantHash(cell);
+    float3 root = float3(cell) + float3(0.5, 0.0, 0.5) + float3(float((h >> 8) & 15u) - 7.5, 0.0, float((h >> 12) & 15u) - 7.5) * 0.02;
+    float grow = 1.0 - smoothstep(f.debug.w - 12.0, f.debug.w, distance(root.xz, f.eye.xz));
+    float3 l = (v.local - float3(5.0, 0.0, 5.0)) * 0.1 * grow;  // plant voxels to blocks, around the root
+    float2 xz = turn(l.xz, h & 3u);
+    float gust = sin(f.debug.z + dot(root.xz, float2(0.13, 0.09))) * 0.5 + 0.5;
+    xz += float2(0.8, 0.6) * (l.y * l.y) * (0.12 + 0.28 * gust);  // tops lean downwind, more in gusts
+    float3 n = kNormals[v.face];
+    n.xz = turn(n.xz, h & 3u);
+    n = normalize(n + float3(0.0, 1.5, 0.0));  // lit mostly like the ground they grow from, so blades don't read as dark specks
+
+    PlantOut out;
+    out.worldPos = root + float3(xz.x, l.y, xz.y);
+    out.position = f.viewProj * float4(out.worldPos, 1.0);
+    out.normal = n;
+    out.ao = v.ao * mix(0.75, 1.0, saturate(v.local.y / 4.0));  // a little darker near the ground
+    out.blockAndQuad = v.block | (p.y & 255u) << 7 | ((d.firstQuad.x + vid / 6) & 0xFFFFu) << 15;
+    out.cell = p.x;
+    return out;
+}
+
+// Blades take the colour patch of the Grass under their root (their tones match Grass's size), so a
+// tuft matches the ground it grows from; petals and stems are flat.
+fragment float4 plant_fs(PlantOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
+    VOut v;
+    v.position = in.position;
+    v.worldPos = in.worldPos;
+    v.normal = in.normal;
+    v.ao = in.ao;
+    v.blockAndQuad = in.blockAndQuad;
+    uint block = in.blockAndQuad & 127u;
+    float3 c = f.palette[block].rgb;
+    float strength = f.toneB[block].w;
+    if (strength > 0.0 && uint(f.debug.x) == 0) {
+        float3 ground = float3(int3(int(in.cell & 1023u), int((in.cell >> 10) & 255u) - 1, int((in.cell >> 18) & 1023u))) + 0.5;
+        float2 t = saturate(smoothstep(0.0, 0.4, noise2(ground / f.toneA[block].w, kGrass)) * strength);
+        c = mix(mix(c, f.toneA[block].rgb, t.x), f.toneB[block].rgb, t.y);
+    }
+    return shade(f, v, c);
 }
 
 // ---- Sky: fullscreen triangle, drawn first without depth ----

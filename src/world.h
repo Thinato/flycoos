@@ -25,6 +25,9 @@ enum Block : uint8_t { Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water,
                        MapleRed0, MapleRed1, MapleRed2, MapleRed3, MapleOrange0, MapleOrange1, MapleOrange2, MapleOrange3,
                        MapleGold0, MapleGold1, MapleGold2, MapleGold3,
                        BirchBark, PineBark, AraucariaBark,  // trunks (oak and maple use Wood)
+                       // Plants (isPlant): stand in the cell above the ground, drawn as small models (plants.h)
+                       ShortGrass, TallGrass, FlowerWhite, FlowerYellow, FlowerRed, FlowerViolet,
+                       Blade, TallBlade, PetalWhite, PetalYellow, PetalRed, PetalViolet, Stem, FlowerHeart,  // plant models
                        BlockCount };  // the palette holds 128 (shaders/world.metal packs ids into 7 bits)
 
 // Leaf kinds; a tree's crown steps through 4 shades of its kind, darkest at the bottom (docs/ART.md).
@@ -44,7 +47,10 @@ inline constexpr auto kLeafOf = [] {
 constexpr bool isLeaf(Block b) { return kLeafOf[b].shade >= 0; }
 constexpr bool isTreeBlock(Block b) { return b == Wood || b == BirchBark || b == PineBark || b == AraucariaBark || isLeaf(b); }
 
-inline bool isOpaque(Block b) { return b != Air && b != Water; }
+// Plants don't collide, don't stop light and aren't ground: to everything but drawing they are air.
+constexpr bool isPlant(Block b) { return b >= ShortGrass && b <= FlowerViolet; }
+inline bool isOpaque(Block b) { return b != Air && b != Water && !isPlant(b); }
+constexpr bool isClear(Block b) { return b == Air || isPlant(b); }  // nothing in the way
 
 inline constexpr const char* kBlockNames[BlockCount] = {
     "Air", "Grass", "Dirt", "Stone", "Sand", "Snow", "Wood", "Leaves", "Water", "Skin", "Tunic", "Belt", "Boots", "Hair",
@@ -54,7 +60,9 @@ inline constexpr const char* kBlockNames[BlockCount] = {
     "PineNeedles0", "PineNeedles1", "PineNeedles2", "PineNeedles3",
     "AraucariaLeaves0", "AraucariaLeaves1", "AraucariaLeaves2", "AraucariaLeaves3",
     "MapleRed0", "MapleRed1", "MapleRed2", "MapleRed3", "MapleOrange0", "MapleOrange1", "MapleOrange2", "MapleOrange3",
-    "MapleGold0", "MapleGold1", "MapleGold2", "MapleGold3", "BirchBark", "PineBark", "AraucariaBark"};
+    "MapleGold0", "MapleGold1", "MapleGold2", "MapleGold3", "BirchBark", "PineBark", "AraucariaBark",
+    "ShortGrass", "TallGrass", "FlowerWhite", "FlowerYellow", "FlowerRed", "FlowerViolet",
+    "Blade", "TallBlade", "PetalWhite", "PetalYellow", "PetalRed", "PetalViolet", "Stem", "FlowerHeart"};
 
 // Leaf shades are the kind's colour (and patch tones) times kLeafRamp[shade]; shade 2 is the kind's
 // own colour. Oak's is the old Leaves colour, so old worlds keep their look.
@@ -120,6 +128,15 @@ inline constexpr auto kPalette = [] {
     p[BirchBark] = {0.86f, 0.84f, 0.78f};
     p[PineBark] = {0.36f, 0.22f, 0.14f};
     p[AraucariaBark] = {0.40f, 0.33f, 0.28f};
+    // A plant block's colour is its main one (it never draws as a cube); its models use the model blocks after it.
+    p[ShortGrass] = p[Blade] = {0.42f, 0.68f, 0.26f};  // blades: a little lighter than the ground (docs/ART.md)
+    p[TallGrass] = p[TallBlade] = {0.40f, 0.64f, 0.24f};
+    p[FlowerWhite] = p[PetalWhite] = {0.95f, 0.94f, 0.88f};
+    p[FlowerYellow] = p[PetalYellow] = {0.98f, 0.80f, 0.20f};
+    p[FlowerRed] = p[PetalRed] = {0.84f, 0.16f, 0.12f};
+    p[FlowerViolet] = p[PetalViolet] = {0.58f, 0.38f, 0.84f};
+    p[Stem] = {0.28f, 0.52f, 0.18f};
+    p[FlowerHeart] = {0.96f, 0.74f, 0.18f};
     return p;
 }();
 
@@ -165,6 +182,9 @@ inline constexpr auto kTones = [] {
     t[BirchBark] = {{0.24f, 0.23f, 0.22f}, {0.95f, 0.94f, 0.90f}, 4, 0.9f};  // dark knots, bright white
     t[PineBark] = {{0.26f, 0.15f, 0.09f}, {0.48f, 0.32f, 0.20f}, 5, 0.8f};
     t[AraucariaBark] = {{0.30f, 0.24f, 0.20f}, {0.52f, 0.44f, 0.38f}, 4, 0.8f};  // scaly plates
+    // Blades follow the Grass patches under them (same size; plant_fs samples Grass's noise at the root).
+    t[Blade] = {{0.66f, 0.72f, 0.30f}, {0.24f, 0.52f, 0.19f}, 24, 0.9f};
+    t[TallBlade] = {{0.64f, 0.70f, 0.28f}, {0.22f, 0.48f, 0.18f}, 24, 0.9f};
     return t;
 }();
 

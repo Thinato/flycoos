@@ -5,6 +5,7 @@
 struct RenderStats {
     size_t opaqueQuads = 0, waterQuads = 0, quadsDrawn = 0;
     int chunksTotal = 0, chunksDrawn = 0, drawCalls = 0;
+    size_t plantsDrawn = 0, plantQuadsDrawn = 0;  // plants near the eye, and their models' quads
     double genSeconds = 0, meshSeconds = 0;  // last world generation / meshing + upload
     double lightSeconds = 0;  // last world light fill (fillLight)
     size_t lightBytes = 0;    // light arrays allocated (light.h)

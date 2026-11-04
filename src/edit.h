@@ -26,6 +26,7 @@ enum class Tool : uint8_t {
     Flatten,  // move columns toward ground top `height`, at most `strength` blocks
     Paint,    // recolor the surface voxel of every column to `block`
     Fill,     // set every voxel in [min, max] to `block` (Air clears)
+    Plant,    // replant every column with meadowPlant(block, strength / 10) (plants.h); block Air clears
     Count
 };
 
@@ -36,7 +37,7 @@ struct EditOp {
     int radius = 6;           // brushes, 0..kMaxBrushRadius
     int strength = 2;         // brushes, 1..kMaxStrength
     int height = kSeaLevel;   // Flatten: target ground top y
-    Block block = Grass;      // Fill and Paint (Paint needs an opaque block)
+    Block block = Grass;      // Fill and Paint (Paint needs an opaque block), Plant (Air or a plant)
 };
 
 constexpr int kMaxBrushRadius = 32;
@@ -79,6 +80,9 @@ Box editBox(const Grid& g, const EditOp& op);
 // Applies the op. If anything changed, pushes an undo record (or, with `join`, adds to the last one)
 // and clears the redo stack; the oldest records go past kMaxUndo steps or kMaxUndoBytes.
 EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join = false);
+// Tool::Plant over every column of [lo, hi] (x, z; inclusive, corners in any order) as one undo step, kept small by
+// recording it in 64 x 64 tiles: grows `kind` at `density` (plantColumn), Air clears.
+EditResult growMeadow(Grid& g, glm::ivec2 lo, glm::ivec2 hi, Block kind, float density, EditHistory& history);
 // Restore the boxes, instances and markers of the last undo/redo record exactly; return their
 // bounding box (a marker counts as the voxel at its position; empty when there's no record).
 Box undoEdit(Grid& g, EditHistory& history, std::vector<Instance>& instances, std::vector<Marker>& markers);

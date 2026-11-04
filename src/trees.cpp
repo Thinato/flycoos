@@ -230,7 +230,7 @@ void growShape(Grid& g, glm::ivec3 at, const TreeShape& t, uint32_t seed) {
         glm::vec3 e = cl.radii * (1 + kBump);
         each(cl.c - e, cl.c + e, [&](glm::ivec3 p, glm::vec3 c) {
             glm::vec3 q = (c - cl.c) / cl.radii;
-            if (glm::length(q) + kBump * noise.GetNoise(c.x, c.y, c.z) > 1 || g.get(at + p) != Air) return;
+            if (glm::length(q) + kBump * noise.GetNoise(c.x, c.y, c.z) > 1 || !isClear(g.get(at + p))) return;
             int shade = std::clamp(int((c.y - t.crownLo) / span * kLeafShades), 0, kLeafShades - 1);
             g.set(at + p, leafBlock(t.leaf, shade));
             placed.push_back(at + p);

@@ -35,7 +35,7 @@ constexpr int kMaxPathSamples = 4096;  // brush positions per `path`
 constexpr int kMaxSamples = 4096;      // `heights` columns
 constexpr size_t kMaxListed = 500;     // `instances` and `markers` entries
 constexpr int kMaxShot[2] = {1600, 900};
-constexpr std::string_view kTools[] = {"raise", "lower", "smooth", "flatten", "paint", "fill"};
+constexpr std::string_view kTools[] = {"raise", "lower", "smooth", "flatten", "paint", "fill", "plant"};
 static_assert(std::size(kTools) == size_t(Tool::Count));
 
 // Numbers are accepted as floats too (rounded where needed) and range-checked before converting.
@@ -88,7 +88,7 @@ Box merge(const Box& a, const Box& b) { return a.empty() ? b : b.empty() ? a : B
 
 EditOp parseOp(std::string_view tool, const json& a, const Grid& g) {
     auto it = std::ranges::find(kTools, tool);
-    if (it == std::end(kTools)) throw BadArgs(std::format("unknown tool '{}' (raise, lower, smooth, flatten, paint, fill)", tool));
+    if (it == std::end(kTools)) throw BadArgs(std::format("unknown tool '{}' (raise, lower, smooth, flatten, paint, fill, plant)", tool));
     EditOp op;
     op.tool = Tool(it - std::begin(kTools));
     if (op.tool == Tool::Fill) {
@@ -102,6 +102,10 @@ EditOp parseOp(std::string_view tool, const json& a, const Grid& g) {
         op.strength = integer(a, "strength", 1, kMaxStrength, full ? kMaxStrength : 4);
         if (op.tool == Tool::Flatten) op.height = integer(a, "height", 0, g.size.y - 1);
         if (op.tool == Tool::Paint) op.block = material(a, "material");
+        if (op.tool == Tool::Plant) {
+            op.block = a.contains("kind") ? material(a, "kind") : ShortGrass;
+            op.strength = int(std::lround(number(a, "density", 0.1, 6.4, 1) * 10));
+        }
     }
     if (const char* error = checkEdit(g, op)) throw BadArgs(error);
     return op;
@@ -167,7 +171,7 @@ std::vector<EditOp> pathOps(const json& a, const Grid& g) {
     std::vector<int> ground, heights;  // ground under the trees, so a forest doesn't lift the road
     for (glm::ivec2 c : centers) {
         int y = groundTop(g, c.x, c.y);
-        while (y > 0 && (isTreeBlock(g.get({c.x, y, c.y})) || g.get({c.x, y, c.y}) == Air)) --y;
+        while (y > 0 && (isTreeBlock(g.get({c.x, y, c.y})) || isClear(g.get({c.x, y, c.y})))) --y;
         ground.push_back(y);
     }
     int window = int(std::ceil(float(16 + 2 * radius) / step));  // samples on each side to average over
@@ -194,7 +198,7 @@ std::pair<glm::ivec2, glm::ivec2> region(const json& a, const Grid& g) {
     return {glm::clamp(glm::min(p, q), glm::ivec2(0), hi), glm::clamp(glm::max(p, q), glm::ivec2(0), hi)};
 }
 
-// Highest non-air (surface) and opaque (ground) voxel of every step-th column from lo, -1 if none.
+// Highest voxel that isn't air or a plant (surface) and opaque (ground) voxel of every step-th column from lo, -1 if none.
 // Scans layers top-down so reads run along x rows instead of striding down each column.
 struct Columns {
     int nx, nz;
@@ -211,7 +215,7 @@ Columns columns(const Grid& g, glm::ivec2 lo, glm::ivec2 hi, int step) {
             for (int i = 0; i < c.nx; ++i) {
                 size_t k = size_t(j) * size_t(c.nx) + size_t(i);
                 Block b = row[i * step];
-                if (c.ground[k] >= 0 || b == Air) continue;
+                if (c.ground[k] >= 0 || isClear(b)) continue;
                 if (c.surface[k] < 0) c.surface[k] = y;
                 if (isOpaque(b)) c.ground[k] = y, --left;
             }
@@ -631,6 +635,21 @@ json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& 
         if (r.error) throw BadArgs(r.error);
         out.dirty = r.dirty;
         return {{"instance", instanceJson(*std::ranges::find(list, id, &Instance::id), lib)}, {"undo_steps", h.undo.size()}};
+    }
+    if (cmd == "meadow") {  // like replant: one undo step for a region, no work budget (whole world: about a second)
+        bool all = !a.contains("x0") && !a.contains("z0") && !a.contains("x1") && !a.contains("z1");
+        auto [lo, hi] = all ? std::pair(glm::ivec2(0), glm::ivec2(g.size.x - 1, g.size.z - 1)) : region(a, g);
+        Block kind = a.contains("kind") ? material(a, "kind") : ShortGrass;
+        if (kind != Air && !isPlant(kind)) throw BadArgs("kind must be a plant (ShortGrass for the meadow mix) or Air to clear");
+        float density = float(number(a, "density", 0.1, 6.4, 1));
+        EditResult e = growMeadow(g, lo, hi, kind, density, h);
+        out.dirty = e.dirty;
+        int64_t plants = 0;
+        if (!e.dirty.empty())
+            for (int y = e.dirty.lo.y; y <= e.dirty.hi.y; ++y)
+                for (int z = e.dirty.lo.z; z <= e.dirty.hi.z; ++z)
+                    for (int x = e.dirty.lo.x; x <= e.dirty.hi.x; ++x) plants += isPlant(g.get({x, y, z}));
+        return {{"changed", !e.dirty.empty()}, {"plants", plants}, {"box", boxJson(e.dirty)}, {"undo_steps", h.undo.size()}};
     }
     if (cmd == "replant") {  // a one-off for worlds made before ADR-029: no work budget, it may take a few seconds
         bool all = !a.contains("x0") && !a.contains("z0") && !a.contains("x1") && !a.contains("z1");

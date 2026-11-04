@@ -30,6 +30,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | File | Responsibility |
 |---|---|
 | `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, `growRock`, `plantTrees` (the generator's tree sites), `findSpawn`, `Instance`, the world file container (`writeWorldFile`/`readWorldFile`: header, `VOXL`, `INST`/`INS2`, checksum; other sections pass through as `Section`s), `fnv1a` and `replaceFile` (temp and rename; durable for player saves) shared with `save.cpp` |
+| `src/plants.h/.cpp` | Grass and flowers (ADR-030): `PlantModel`s and their voxel grids (`buildPlant`, near and far; `plantQuads` meshed without ground faces), `plantHash`/`plantModel` (the model a cell draws), `meadowPlant` (the meadow's noise) and `plantColumn` (shared by the generator, `Tool::Plant` and `growMeadow`) |
 | `src/trees.h/.cpp` | Tree species (ADR-029): `planTree` (a `TreeShape` of bark capsules and leaf clumps), `planBush`, `shapeBox`, `growShape` (draws it, leaf shades by height in the crown); `kFullGrown`, `kSpeciesPrefab`, `TreeSite` |
 | `src/story.h/.cpp` | Story data: `EntityKind` save ids (and the string ids of the ones code names), `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`, `OWNR`, `TIME`), `activeAt` and `saveWorld`/`loadWorld` (the container plus markers) |
 | `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels, prefab instances and markers); `putMarker`/`removeMarker`; `raycast` (voxel DDA); `groundTop` |
@@ -37,7 +38,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`), `fillLight` (whole world) and `relight` (the columns around an edit; returns the box whose light changed), `lightCost`/`emission` per block |
-| `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
+| `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`; plants become `PlantInstance`s, not faces), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
 | `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (base stats, level, health, swing and damage timers, `Inventory`); `Progress`; `collect`/`sheet` (its modifiers and final stats, optionally with a weapon skill's conditional modifiers), `skillOf`; walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
 | `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch`; `Skill` and the progression formulas (skill XP per use and per level, character XP and level costs, default kill XP; ADR-027) |
 | `src/progress.h/.cpp` | Progression (ADR-027): `SkillDef`/`TalentDef` (filled by the loader), `Progress` (character XP, skill levels, talent ranks), `addSkillXp`/`addCharacterXp`, `canLearn`/`learn`/`respec`, `talentPoints`, `progressModifiers` (what `collect` adds) |
@@ -50,7 +51,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C), Bags (B), Journal (J) and Progress (K) windows: slots, drag and drop, right-click equip, tooltips, attributes; quests with the current entry and checked objectives; level, skills and the talent trees |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, poi labels and the region name (`drawPlaces`) |
-| `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, the world's `Light` (filled by `uploadWorld`, relit by `updateWorld`), uploads of the core's chunk and model meshes, render targets, frustum culling, day/night lighting, screenshots |
+| `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, the world's `Light` (filled by `uploadWorld`, relit by `updateWorld`), uploads of the core's chunk and model meshes, instanced plants (each frame's near ones, per model), render targets, frustum culling, day/night lighting, screenshots |
 | `src/text.h` | `validName`: UTF-8 display text without control, bidi or zero-width characters (marker names and lines, item names) |
 | `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh, light and remesh times, light memory), for the debug and editor UIs without `renderer.h` |
 | `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
@@ -64,7 +65,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 - `Grid` stores one `Block` byte per voxel: 1024×192×1024 = 192 MiB. There is no per-chunk storage.
   Chunks (32³) exist only as meshing and draw units.
 - **Blocks** (`Block` in `world.h`): the id is the palette index and the saved byte, so new blocks
-  only append. The renderer holds 128 (7 bits in the shader's flat output, ADR-019, widened in ADR-029); 69 are used.
+  only append. The renderer holds 128 (7 bits in the shader's flat output, ADR-019, widened in ADR-029); 83 are used.
 
   | Ids | Blocks | Used by |
   |---|---|---|

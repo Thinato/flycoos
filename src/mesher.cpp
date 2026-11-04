@@ -2,6 +2,8 @@
 
 #include <cassert>
 
+#include "plants.h"
+
 Quad pack(const QuadInfo& q) {
     uint32_t ao = 0;
     for (int c = 0; c < 4; ++c) ao |= uint32_t(q.ao[c]) << (2 * c);
@@ -46,6 +48,17 @@ Mesh meshRegion(const Grid& g, glm::ivec3 o, glm::ivec3 e, const Light* light) {
             for (int x = 0; x < e.x && empty; ++x) empty = g.get(o + glm::ivec3(x, y, z)) == Air;
     if (empty) return mesh;
 
+    for (int y = 0; y < e.y; ++y)
+        for (int z = 0; z < e.z; ++z)
+            for (int x = 0; x < e.x; ++x) {
+                glm::ivec3 p = o + glm::ivec3(x, y, z);
+                Block b = g.get(p);
+                if (!isPlant(b) || p.x >= 1024 || p.y >= 256 || p.z >= 1024) continue;  // PlantInstance's 28 bits (bigger worlds load)
+                uint32_t lit = light ? light->get(p) : kMaxLight << 4;
+                mesh.plants.push_back({uint32_t(p.x) | uint32_t(p.y) << 10 | uint32_t(p.z) << 18,
+                                       lit | uint32_t(plantModel(b, p)) << 8});
+            }
+
     std::vector<uint32_t> mask;  // per (u,v): 0 = no face, else light<<17 | 1<<16 | ao<<8 | block
     for (int face = 0; face < 6; ++face) {
         int a = face / 2, u = (a + 1) % 3, v = (a + 2) % 3;
@@ -60,9 +73,9 @@ Mesh meshRegion(const Grid& g, glm::ivec3 o, glm::ivec3 e, const Light* light) {
                     glm::ivec3 p = o;
                     p[a] += d; p[u] += i; p[v] += j;
                     Block b = g.get(p);
-                    if (b == Air) continue;
+                    if (b == Air || isPlant(b)) continue;
                     Block nb = g.get(p + n);
-                    bool visible = b == Water ? nb == Air : !isOpaque(nb);
+                    bool visible = b == Water ? isClear(nb) : !isOpaque(nb);
                     if (!visible) continue;
                     uint32_t ao = b == Water ? 0xFF : faceAO(g, p + n, U, V);
                     uint32_t lit = light ? light->get(p + n) : kMaxLight << 4;

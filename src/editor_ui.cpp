@@ -15,7 +15,7 @@
 
 namespace {
 
-constexpr const char* kToolNames[] = {"Raise", "Lower", "Smooth", "Flatten", "Paint", "Fill box", "Prefab", "Marker"};
+constexpr const char* kToolNames[] = {"Raise", "Lower", "Smooth", "Flatten", "Paint", "Fill box", "Plant", "Prefab", "Marker"};
 static_assert(std::size(kToolNames) == size_t(Tool::Count) + 2);
 constexpr float kFlashSeconds = 3;
 constexpr float kMarkerRange = 300;  // blocks from the camera
@@ -38,6 +38,7 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
                   const std::optional<RayHit>& aim, const RenderStats& s, EditorActions& actions) {
     EditOp& b = ed.brush;
     if (b.tool == Tool::Paint && !isOpaque(b.block)) b.block = Grass;  // Paint needs a solid block
+    if (b.tool == Tool::Plant && !isClear(b.block)) b.block = ShortGrass;  // Plant a plant, or Air
     const Prefab* prefab = ed.prefabs.find(ed.place.prefab);
     if (!prefab && !ed.prefabs.prefabs.empty()) prefab = &ed.prefabs.prefabs[0];  // e.g. its file was removed
     if (prefab && (ed.place.prefab != prefab->name || ed.place.params.size() != prefab->params.size())) {
@@ -61,6 +62,7 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
     ed.prefabTool = tool == int(Tool::Count);
     ed.markerTool = tool == int(Tool::Count) + 1;
     bool brushTool = tool < int(Tool::Count);
+    if (brushTool && b.tool != Tool::Plant && Tool(tool) == Tool::Plant && !isPlant(b.block)) b.block = ShortGrass;  // not Fill's Air
     if (brushTool) b.tool = Tool(tool);
     if (ed.markerTool) {
         int kind = int(ed.mark.kind), entity = int(ed.mark.entity);
@@ -141,8 +143,19 @@ void editorWindow(Editor& ed, const std::vector<Instance>& instances, const std:
     if (brushTool && b.tool != Tool::Fill) {
         ImGui::SliderInt("Radius", &b.radius, 0, kMaxBrushRadius);
         ImGui::SetItemTooltip("[ and ] change it too.");
+    }
+    if (brushTool && b.tool != Tool::Fill && b.tool != Tool::Plant) {
         ImGui::SliderInt("Strength", &b.strength, 1, 16);
         ImGui::SetItemTooltip("Blocks per application at the center; holding the button applies 8 times a second.");
+    }
+    if (brushTool && b.tool == Tool::Plant) {
+        float density = float(ed.density) / 10;
+        if (ImGui::SliderFloat("Density", &density, 0.1f, 3, "%.1f")) ed.density = std::clamp(int(std::lround(density * 10)), 1, kMaxStrength);
+        ImGui::SetItemTooltip("1 is the generator's meadow. Painting again changes nothing: every column has its own roll.");
+        constexpr Block kinds[] = {ShortGrass, TallGrass, FlowerWhite, FlowerYellow, FlowerRed, FlowerViolet, Air};
+        constexpr const char* names[] = {"Meadow (grass and flowers)", "Tall grass", "White flowers", "Yellow flowers", "Red flowers", "Violet flowers", "Clear plants"};
+        int k = int(std::ranges::find(kinds, b.block) - std::begin(kinds));
+        if (ImGui::Combo("Grow", &k, names, int(std::size(names)))) b.block = kinds[k];
     }
     if (brushTool && b.tool == Tool::Flatten) {
         ImGui::SliderInt("Height", &b.height, 0, kWorldSize.y - 1);

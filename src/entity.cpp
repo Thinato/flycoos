@@ -152,7 +152,7 @@ static void spawnAt(std::vector<Entity>& out, const Grid& world, const Marker& m
         glm::ivec2 c(glm::floor(at));
         for (int y = int(m.pos.y) + 3; i && y > int(m.pos.y) - 4; --y) {
             auto block = [&](int dy) { return world.get({c.x, y + dy, c.y}); };
-            if (isOpaque(block(-1)) && block(0) == Air && block(1) == Air) {
+            if (isOpaque(block(-1)) && isClear(block(0)) && isClear(block(1))) {
                 pos = {float(c.x) + 0.5f, float(y), float(c.y) + 0.5f};
                 break;
             }

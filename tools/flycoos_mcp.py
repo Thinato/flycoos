@@ -53,6 +53,14 @@ def obj(props, required=()):
 CENTER = {"x": num("Column x of the brush center", 0, 1023), "z": num("Column z of the brush center", 0, 1023),
           "radius": num("Brush radius in blocks (circle), default 6", 0, 32)}
 STRENGTH = num("Most blocks moved per column (at the center; falls off toward the rim), default 4", 1, 64)
+PLANTS = ["ShortGrass", "TallGrass", "FlowerWhite", "FlowerYellow", "FlowerRed", "FlowerViolet", "Air"]
+PLANT_ARGS = {"kind": {"type": "string", "enum": PLANTS,
+                       "description": "ShortGrass (default): the meadow mix of short and tall grass and flower clusters; "
+                                      "another plant: only that kind, where the mix would grow something; Air: clear plants"},
+              "density": num("1 (default) is the generator's meadow; scales every column's chance", 0.1, 6.4, False)}
+PLANT_NOTE = (" Plants grow on grass open to the sky (not under trees, water or roofs), one in the cell above the ground: "
+              "they don't collide or count as ground, and go with their grass (raised, lowered, painted over, dug out). "
+              "Every column has its own roll, so the same call twice changes nothing.")
 REGION = {"x0": num("Region corner x"), "z0": num("Region corner z"), "x1": num("Opposite corner x"),
           "z1": num("Opposite corner z")}
 PREFAB_FORMAT = (
@@ -115,6 +123,8 @@ OPS = {
                     ["x", "z", "height"])),
     "paint": ("Recolor the surface voxel of every column in a circle.",
               obj({**CENTER, "material": SOLID}, ["x", "z", "material"])),
+    "plant": ("Replant a circle (a hard-edged disc) of columns with grass and flowers." + PLANT_NOTE,
+              obj({**CENTER, **PLANT_ARGS}, ["x", "z"])),
     "fill": ("Set every voxel in a box (inclusive corners, at most 128^3 voxels) to one block: any block, terrain or "
              "building (Planks, Cobble, Thatch, Ember...); Air clears, Water makes still water.",
              obj({"min": xyz("Corner"), "max": xyz("Opposite corner"), "material": MATERIALS},
@@ -127,7 +137,7 @@ TOOLS = {
               obj({})),
     **{k: (d + EDIT_NOTE, s) for k, (d, s) in OPS.items()},
     "apply": ("Apply a list of edits (up to 256) as one undo step. Each op is an object with `tool` (raise, lower, "
-              "smooth, flatten, paint, fill) and that tool's arguments. All ops are checked first; if one is invalid "
+              "smooth, flatten, paint, fill, plant) and that tool's arguments. All ops are checked first; if one is invalid "
               "nothing changes." + EDIT_NOTE,
               obj({"ops": {"type": "array", "minItems": 1, "maxItems": 256,
                            "items": {"type": "object", "required": ["tool"],
@@ -177,6 +187,10 @@ TOOLS = {
                   "y": num("Ground voxel at the new spot (default: found after removing it)", 0, 191),
                   "rotation": {"type": "integer", "enum": [0, 90, 180, 270], "description": "Default: unchanged"}},
                  ["id", "x", "z"])),
+    "meadow": ("Replant a region (default the whole world) with grass and flowers, like the plant tool on every column; "
+               "for the whole map at once (no work budget: about a second). Returns how many plants the changed box holds."
+               + PLANT_NOTE + INSTANCE_NOTE.replace("(voxels and the instance list together)", ""),
+               obj({**REGION, **PLANT_ARGS})),
     "replant": ("One-off for worlds made before the tree species (ADR-029): in a region (default the whole world), "
                 "remove the old generator's baked trees (clusters of Wood and Leaves not owned by an instance; posts or "
                 "hedges with only one of the two stay), regrow the old tree, pine and bush instances standing there in "

@@ -86,8 +86,9 @@ bool inFrustum(const glm::mat4& m, glm::vec3 lo, glm::vec3 hi) {
 Renderer::~Renderer() {
     if (!device_) return;
     SDL_WaitForGPUIdle(device_);
-    for (auto* p : {sky_, opaque_, water_, wire_}) if (p) SDL_ReleaseGPUGraphicsPipeline(device_, p);
-    for (auto* b : {world_[0], world_[1], models_}) if (b) SDL_ReleaseGPUBuffer(device_, b);
+    for (auto* p : {sky_, opaque_, water_, wire_, plants_}) if (p) SDL_ReleaseGPUGraphicsPipeline(device_, p);
+    for (auto* b : {world_[0], world_[1], models_, plantInstances_}) if (b) SDL_ReleaseGPUBuffer(device_, b);
+    if (plantTransfer_) SDL_ReleaseGPUTransferBuffer(device_, plantTransfer_);
     for (auto* t : {msaaColor_, depth_, resolved_}) if (t) SDL_ReleaseGPUTexture(device_, t);
     SDL_ReleaseWindowFromGPUDevice(device_, window_);
     SDL_DestroyGPUDevice(device_);
@@ -140,14 +141,17 @@ bool Renderer::init(SDL_Window* window, bool vsync) {
     SDL_GPUShader* skyVs = shader(src, "sky_vs", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader* skyFs = shader(src, "sky_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
     SDL_GPUShader* wireFs = shader(src, "wire_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
-    if (voxelVs && voxelFs && waterFs && skyVs && skyFs && wireFs) {
+    SDL_GPUShader* plantVs = shader(src, "plant_vs", SDL_GPU_SHADERSTAGE_VERTEX, 2, 2);
+    SDL_GPUShader* plantFs = shader(src, "plant_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
+    if (voxelVs && voxelFs && waterFs && skyVs && skyFs && wireFs && plantVs && plantFs) {
         sky_ = pipeline(skyVs, skyFs, false, false, false, SDL_GPU_CULLMODE_NONE);
         opaque_ = pipeline(voxelVs, voxelFs, true, true, false, SDL_GPU_CULLMODE_BACK);
         water_ = pipeline(voxelVs, waterFs, true, false, true, SDL_GPU_CULLMODE_NONE);
         wire_ = pipeline(voxelVs, wireFs, true, false, false, SDL_GPU_CULLMODE_BACK, SDL_GPU_FILLMODE_LINE);
+        plants_ = pipeline(plantVs, plantFs, true, true, false, SDL_GPU_CULLMODE_BACK);
     }
-    for (auto* s : {voxelVs, voxelFs, waterFs, skyVs, skyFs, wireFs}) if (s) SDL_ReleaseGPUShader(device_, s);
-    if (!sky_ || !opaque_ || !water_ || !wire_) {
+    for (auto* s : {voxelVs, voxelFs, waterFs, skyVs, skyFs, wireFs, plantVs, plantFs}) if (s) SDL_ReleaseGPUShader(device_, s);
+    if (!sky_ || !opaque_ || !water_ || !wire_ || !plants_) {
         std::println(stderr, "pipeline creation failed: {}", SDL_GetError());
         return false;
     }
@@ -335,6 +339,11 @@ void Renderer::uploadModels() {
             parts_[size_t(model)][size_t(p)] = {uint32_t(quads.size()), uint32_t(m.opaque.size())};
             quads.insert(quads.end(), m.opaque.begin(), m.opaque.end());
         }
+    for (size_t k = 0; k < plantParts_.size(); ++k) {
+        std::vector<Quad> q = plantQuads(PlantModel(k / 2), k % 2);
+        plantParts_[k] = {uint32_t(quads.size()), uint32_t(q.size())};
+        quads.insert(quads.end(), q.begin(), q.end());
+    }
     if (models_) SDL_ReleaseGPUBuffer(device_, models_);
     models_ = upload(quads.data(), uint32_t(quads.size() * sizeof(Quad)));
 }
@@ -384,7 +393,8 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     u.eye = glm::vec4(frame.eye, 0);
     ambience(frame.timeOfDay, u);
     if (!settings.fog) u.fog.x = 0;
-    u.debug = {float(settings.viewMode), frame.underwater && settings.fog ? 1 : 0, 0, 0};
+    u.debug = {float(settings.viewMode), frame.underwater && settings.fog ? 1 : 0,
+               float(windPhase_), settings.plantRadius};
     if (settings.occlusionRamp) {
         u.aoCurve = settings.aoCurve;
         // Moonlight is already blue, so the cool tint fades to 30% at night.
@@ -406,6 +416,76 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     }
     SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
     SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);
+
+    // Cull chunks once; the same visible list serves every pass. A frozen cull keeps using the
+    // view from when it was frozen (on screen only).
+    if (onScreen && !settings.freezeCulling) cullViewProj_ = u.viewProj;
+    const glm::mat4& cull = onScreen ? cullViewProj_ : u.viewProj;
+    std::vector<const ChunkDraw*> visible;
+    for (const ChunkDraw& c : chunks_)
+        if ((c.slot[0].count || c.slot[1].count || !meshes_[size_t(&c - chunks_.data())].plants.empty()) &&
+            (!settings.frustumCulling || inFrustum(cull, glm::vec3(c.origin) - 1.0f, glm::vec3(c.origin + kChunk) + 1.0f)))  // plants reach out a little
+            visible.push_back(&c);
+    stats.chunksDrawn = int(visible.size());
+    stats.quadsDrawn = 0;
+    stats.drawCalls = 0;
+
+    // Plants of the visible chunks within the radius, grouped by model and detail (a counting sort
+    // on the plantParts_ index), staged for this frame's instanced draws.
+    constexpr size_t kPlantDraws = 2 * PlantModelCount;
+    std::array<uint32_t, kPlantDraws + 1> plantFirst{};
+    plantStage_.clear();
+    if (settings.plants) {
+        glm::vec2 eye(frame.eye.x, frame.eye.z);
+        float r2 = settings.plantRadius * settings.plantRadius, near2 = kPlantNear * kPlantNear;
+        auto inRadius = [&](const ChunkDraw* c) {  // the chunk's box comes within the radius (horizontally)
+            glm::vec2 lo(c->origin.x, c->origin.z), d = glm::max(lo - eye, glm::vec2(0)) + glm::max(eye - lo - float(kChunk), glm::vec2(0));
+            return glm::dot(d, d) < r2;
+        };
+        auto draw = [&](PlantInstance p) {
+            glm::vec2 d = glm::vec2(float(p.cell & 1023) + 0.5f, float(p.cell >> 18 & 1023) + 0.5f) - eye;
+            return size_t(p.info >> 8) * 2 + (glm::dot(d, d) > near2);
+        };
+        std::vector<const std::vector<PlantInstance>*> lists;
+        for (const ChunkDraw* c : visible)
+            if (const std::vector<PlantInstance>& l = meshes_[size_t(c - chunks_.data())].plants; !l.empty() && inRadius(c))
+                lists.push_back(&l);
+        for (const auto* l : lists)
+            for (PlantInstance p : *l) ++plantFirst[draw(p) + 1];
+        for (size_t k = 1; k <= kPlantDraws; ++k) plantFirst[k] += plantFirst[k - 1];
+        plantStage_.resize(plantFirst[kPlantDraws]);
+        std::array<uint32_t, kPlantDraws + 1> next = plantFirst;
+        for (const auto* l : lists)
+            for (PlantInstance p : *l) plantStage_[next[draw(p)]++] = p;
+    }
+    stats.plantsDrawn = plantStage_.size();
+    stats.plantQuadsDrawn = 0;
+    if (!plantStage_.empty()) {
+        uint32_t n = uint32_t(plantStage_.size()), bytes = n * uint32_t(sizeof(PlantInstance));
+        if (n > plantCap_) {
+            if (plantInstances_) SDL_ReleaseGPUBuffer(device_, plantInstances_);
+            if (plantTransfer_) SDL_ReleaseGPUTransferBuffer(device_, plantTransfer_);
+            uint32_t cap = n + n / 2 + 1024;
+            plantInstances_ = upload(nullptr, 0, cap * uint32_t(sizeof(PlantInstance)));
+            SDL_GPUTransferBufferCreateInfo ti{};
+            ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+            ti.size = cap * uint32_t(sizeof(PlantInstance));
+            plantTransfer_ = SDL_CreateGPUTransferBuffer(device_, &ti);
+            plantCap_ = plantTransfer_ ? cap : 0;  // failed: try again next frame
+        }
+        // Cycling: frames still in flight keep the buffers they were given.
+        if (void* mapped = plantTransfer_ ? SDL_MapGPUTransferBuffer(device_, plantTransfer_, true) : nullptr) {
+            std::memcpy(mapped, plantStage_.data(), bytes);
+            SDL_UnmapGPUTransferBuffer(device_, plantTransfer_);
+            SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+            SDL_GPUTransferBufferLocation src{plantTransfer_, 0};
+            SDL_GPUBufferRegion dst{plantInstances_, 0, bytes};
+            SDL_UploadToGPUBuffer(copy, &src, &dst, true);
+            SDL_EndGPUCopyPass(copy);
+        } else {
+            plantStage_.clear();
+        }
+    }
 
     SDL_GPUColorTargetInfo color{};
     color.clear_color = {0.03f, 0.03f, 0.04f, 1};  // visible only with the sky off
@@ -432,18 +512,6 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
     }
 
-    // Cull chunks once; the same visible list serves every pass. A frozen cull keeps using the
-    // view from when it was frozen (on screen only).
-    if (onScreen && !settings.freezeCulling) cullViewProj_ = u.viewProj;
-    const glm::mat4& cull = onScreen ? cullViewProj_ : u.viewProj;
-    std::vector<const ChunkDraw*> visible;
-    for (const ChunkDraw& c : chunks_)
-        if ((c.slot[0].count || c.slot[1].count) &&
-            (!settings.frustumCulling || inFrustum(cull, glm::vec3(c.origin), glm::vec3(c.origin + kChunk))))
-            visible.push_back(&c);
-    stats.chunksDrawn = int(visible.size());
-    stats.quadsDrawn = 0;
-    stats.drawCalls = 0;
 
     auto draw = [&](const DrawUniforms& d, uint32_t count) {
         SDL_PushGPUVertexUniformData(cmd, 1, &d, sizeof d);
@@ -473,9 +541,29 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
         }
     };
 
+    auto drawPlants = [&] {  // one instanced draw per plant model
+        SDL_GPUBuffer* buffers[2] = {models_, plantInstances_};
+        SDL_BindGPUVertexStorageBuffers(pass, 0, buffers, 2);
+        for (size_t k = 0; k < kPlantDraws; ++k) {
+            uint32_t count = plantFirst[k + 1] - plantFirst[k];
+            auto [first, quads] = plantParts_[k];
+            if (!count || !quads) continue;
+            DrawUniforms d{glm::mat4(1), glm::vec4(0), glm::uvec4(first, plantFirst[k], 0, 0)};
+            SDL_PushGPUVertexUniformData(cmd, 1, &d, sizeof d);
+            SDL_DrawGPUPrimitives(pass, quads * 6, count, 0, 0);
+            stats.quadsDrawn += size_t(quads) * count;
+            stats.plantQuadsDrawn += size_t(quads) * count;
+            ++stats.drawCalls;
+        }
+    };
+
     SDL_BindGPUGraphicsPipeline(pass, opaque_);
     drawChunks(0);
     if (settings.character) drawModels();
+    if (!plantStage_.empty()) {
+        SDL_BindGPUGraphicsPipeline(pass, plants_);
+        drawPlants();
+    }
     if (settings.wireframe) {  // quad edges on top: shows how the greedy mesher merged faces
         SDL_BindGPUGraphicsPipeline(pass, wire_);
         drawChunks(0);
@@ -490,6 +578,8 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
 
 bool Renderer::render(const FrameParams& frame, const RenderSettings& settings, ImDrawData* ui,
                       const char* screenshotPath) {
+    windPhase_ = std::fmod(windPhase_ + std::clamp(frame.seconds - windSeconds_, 0.0, 0.25) * 1.4 * settings.sway, 2 * std::numbers::pi);
+    windSeconds_ = frame.seconds;
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
     if (!cmd) {
         std::println(stderr, "command buffer acquire failed: {}", SDL_GetError());

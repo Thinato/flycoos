@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <tuple>
 #include <utility>
+
+#include "plants.h"
 
 int groundTop(const Grid& g, int x, int z) {
     for (int y = g.size.y - 1; y >= 0; --y)
@@ -13,7 +16,7 @@ int groundTop(const Grid& g, int x, int z) {
 
 int groundUnderTrees(const Grid& g, int x, int z) {
     int y = groundTop(g, x, z);
-    for (Block b; y > 0 && (isTreeBlock(b = g.get({x, y, z})) || b == Air);) --y;
+    for (Block b; y > 0 && (isTreeBlock(b = g.get({x, y, z})) || isClear(b));) --y;
     return y;
 }
 
@@ -41,7 +44,8 @@ void setColumnTop(Grid& g, int x, int z, int to) {
     int top = groundTop(g, x, z);
     if (top < 0) return;
     to = std::clamp(to, 0, g.size.y - 1);
-    Block surface = g.get({x, top, z});
+    Block surface = g.get({x, top, z}), plant = g.get({x, top + 1, z});
+    if (isPlant(plant)) g.set({x, top + 1, z}, Air);  // moves with the surface (applyEdit clears it if that's no longer grass)
     bool painted = top > 0 && natural(g.get({x, top - 1, z}));
     for (int y = top - 1; to < top && !natural(surface) && !painted && y >= 0; --y)
         if (Block b = g.get({x, y, z}); natural(b)) {
@@ -52,10 +56,20 @@ void setColumnTop(Grid& g, int x, int z, int to) {
         for (int y = top; y < to; ++y) g.set({x, y, z}, subsoil(surface));
         g.set({x, to, z}, surface);
     } else if (to < top) {
-        Block fill = g.get({x, top + 1, z}) == Water ? Water : Air;  // a lakebed stays under water
+        Block fill = g.get({x, top + 1 + int(isPlant(plant)), z}) == Water ? Water : Air;  // a lakebed stays under water
         for (int y = to + 1; y <= top; ++y) g.set({x, y, z}, fill);
         if (natural(g.get({x, to, z}))) g.set({x, to, z}, surface);
     }
+    if (isPlant(plant) && g.get({x, to + 1, z}) == Air) g.set({x, to + 1, z}, plant);
+}
+
+// Plants need grass under them and air or plants above: clears those in b that lost either (a fill
+// of water over them drowns them).
+void clearUnsupported(Grid& g, Box b) {
+    for (int y = b.lo.y; y <= b.hi.y; ++y)
+        for (int z = b.lo.z; z <= b.hi.z; ++z)
+            for (int x = b.lo.x; x <= b.hi.x; ++x)
+                if (isPlant(g.get({x, y, z})) && (g.get({x, y - 1, z}) != Grass || g.get({x, y + 1, z}) == Water)) g.set({x, y, z}, Air);
 }
 
 // Brush weight: 1 at the center, easing to 0 just past `radius` columns away.
@@ -101,6 +115,7 @@ void brush(Grid& g, const EditOp& op, Box box) {
                 break;
             }
             case Tool::Paint: g.set({x, top, z}, op.block); continue;
+            case Tool::Plant: plantColumn(g, x, z, op.block, float(op.strength) / 10); continue;
             default: break;
             }
             setColumnTop(g, x, z, to);
@@ -183,6 +198,7 @@ const char* checkEdit(const Grid& g, const EditOp& op) {
         return "center out of range";  // keeps center +- radius from overflowing
     if (op.tool == Tool::Flatten && (op.height < 0 || op.height >= g.size.y)) return "height out of range";
     if (op.tool == Tool::Paint && !isOpaque(op.block)) return "paint needs a solid block";
+    if (op.tool == Tool::Plant && op.block != Air && !isPlant(op.block)) return "plant needs a plant (or Air to clear)";
     return nullptr;
 }
 
@@ -264,14 +280,43 @@ EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join)
     Box box = editBox(g, op);
     if (box.empty()) return {};
 
-    std::vector<Block> before = readBox(g, box);
+    Box touched = box;  // and the plants just above a fill, which may lose their ground, or just under it (drowned)
+    touched.lo.y = std::max(touched.lo.y - 1, 0), touched.hi.y = std::min(touched.hi.y + 1, g.size.y - 1);
+    std::vector<Block> before = readBox(g, touched);
     if (op.tool == Tool::Fill) rows(g, box, [&](size_t i, size_t) { std::fill_n(&g.cells[i], box.size().x, op.block); });
     else brush(g, op, box);
+    clearUnsupported(g, touched);
 
     EditRecord rec;
-    rec.parts.push_back(changedPart(g, box, before));
+    rec.parts.push_back(changedPart(g, touched, before));
     Box dirty = rec.parts[0].box;
     if (!dirty.empty()) pushRecord(history, std::move(rec), join);
+    return {dirty};
+}
+
+EditResult growMeadow(Grid& g, glm::ivec2 lo, glm::ivec2 hi, Block kind, float density, EditHistory& history) {
+    constexpr int kTile = 64;
+    std::tie(lo, hi) = std::pair(glm::max(glm::min(lo, hi), glm::ivec2(0)), glm::min(glm::max(lo, hi), glm::ivec2(g.size.x, g.size.z) - 1));
+    EditRecord rec;
+    Box dirty;
+    for (int tz = lo.y; tz <= hi.y; tz += kTile)
+        for (int tx = lo.x; tx <= hi.x; tx += kTile) {
+            glm::ivec2 a(tx, tz), b = glm::min(a + kTile - 1, hi);
+            Box tile{glm::ivec3(a.x, g.size.y - 1, a.y), glm::ivec3(b.x, 0, b.y)};  // y: the plant cells' range
+            for (int z = a.y; z <= b.y; ++z)
+                for (int x = a.x; x <= b.x; ++x)
+                    if (int top = groundTop(g, x, z); top >= 0 && top + 1 < g.size.y)
+                        tile.lo.y = std::min(tile.lo.y, groundUnderTrees(g, x, z) + 1), tile.hi.y = std::max(tile.hi.y, top + 1);
+            if (tile.empty()) continue;
+            std::vector<Block> before = readBox(g, tile);
+            for (int z = a.y; z <= b.y; ++z)
+                for (int x = a.x; x <= b.x; ++x) plantColumn(g, x, z, kind, density);
+            EditRecord::Part part = changedPart(g, tile, before);
+            if (part.box.empty()) continue;
+            dirty = dirty.empty() ? part.box : Box{glm::min(dirty.lo, part.box.lo), glm::max(dirty.hi, part.box.hi)};
+            rec.parts.push_back(std::move(part));
+        }
+    if (!rec.parts.empty()) pushRecord(history, std::move(rec), false);
     return {dirty};
 }
 

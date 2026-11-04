@@ -17,6 +17,7 @@
 
 #include <FastNoiseLite.h>
 
+#include "plants.h"
 #include "trees.h"
 
 void parallelFor(int count, const std::function<void(int)>& fn) {
@@ -43,7 +44,7 @@ static float jitter(glm::ivec3 p, uint32_t seed) {
 
 static int topY(const Grid& g, int x, int z) {
     for (int y = g.size.y - 1; y >= 0; --y)
-        if (g.get({x, y, z}) != Air) return y;
+        if (!isClear(g.get({x, y, z}))) return y;
     return -1;
 }
 
@@ -186,6 +187,10 @@ void generateTerrain(Grid& g, uint32_t seed) {
             float rocky = regions(x, z).y;
             if (chance < 0.4f * rocky + 0.006f) placeRock(g, x, z, rnd, rocky > 0.5f && (rnd >> 4) % 4 != 0, seed);
         }
+    // Grass and flowers last, on the open grass the trees and rocks left (each row its own columns).
+    parallelFor(g.size.z, [&](int z) {
+        for (int x = 0; x < g.size.x; ++x) plantColumn(g, x, z, ShortGrass, 1);
+    });
 }
 
 glm::vec3 findSpawn(const Grid& g) { return findSpawn(g, {g.size.x / 2, g.size.z / 2}); }

@@ -1,4 +1,4 @@
-# Art direction: voxel colour and trees
+# Art direction: voxel colour, trees, grass and flowers
 
 How voxels get their colour. These rules hold for every block, model and future asset; the
 renderer implements them (ADR-028, `kTones` in `src/world.h`, `albedoOf` in `shaders/world.metal`).
@@ -122,6 +122,26 @@ Where they grow (the generator and `replant`): lowland forests mix oak (45%), ma
 birch (30%); conifers take high ground (above 70) and rocky land; Araucárias stand in groves on
 high, flat ground (48 and up, the ground within 2 of level over 4 columns); a rare lone oak grows on
 the plains. Anything can be placed anywhere by hand as a prefab.
+
+## Grass and flowers
+
+Plains are meadows, not lawns (ADR-030; `src/plants.cpp`): small voxel models at the characters'
+scale (a voxel is 1/10 block), standing in the cell above the grass.
+
+1. **Mixed meadow.** Mostly ankle-high short grass (0.2–0.4 blocks), knee-high tall grass
+   (0.5–0.8) in patches, bare gaps between lush stretches, and flowers in clusters of one kind
+   (white daisies, yellow buttercups, red poppies, violet bellflowers) with a lone flower here and
+   there. Never an even carpet.
+2. **Blades match their ground.** Blades are a little lighter than the grass they grow from and
+   take the Grass colour patch under their root (their tones share Grass's patch size); they are lit
+   with a normal tilted up toward the ground's, so they don't read as dark specks. Roots are a
+   little darker. Petals, hearts and stems are flat colours.
+3. **Straight blades, one step.** A blade is a straight column with its top quarter stepped one
+   voxel away from the tuft's middle: tufts read as fanning out and stay cheap to draw.
+4. **Alive, not busy.** Upper voxels sway gently with slow gusts across the field; plants grow in at
+   the edge of the draw distance instead of popping.
+5. **Where they grow.** Only on grass open to the sky: not under trees, roofs or water, not on
+   sand, paths or rock. No bushes on the plains.
 
 ## Visual reference
 

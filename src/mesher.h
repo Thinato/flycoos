@@ -28,10 +28,19 @@ struct QuadInfo {
 Quad pack(const QuadInfo& q);
 QuadInfo unpack(Quad q);
 
-struct Mesh { std::vector<Quad> opaque, water; };
+// A plant (isPlant) to draw as a model (plants.h): its cell x:10 | y:8 | z:10, then the cell's
+// light (sky << 4 | block) | PlantModel << 8. Decoded in shaders/world.metal (plant_vs).
+struct PlantInstance {
+    uint32_t cell, info;
+    bool operator==(const PlantInstance&) const = default;
+};
+static_assert(kWorldSize.x <= 1024 && kWorldSize.y <= 256 && kWorldSize.z <= 1024, "PlantInstance packs cells in 28 bits");
+
+struct Mesh { std::vector<Quad> opaque, water; std::vector<PlantInstance> plants; };
 
 // Greedy-meshes the region [origin, origin+extent) of g (extent <= 32 per axis).
-// Neighbours outside the region are read from g, so chunk borders and AO are seamless.
+// Neighbours outside the region are read from g, so chunk borders and AO are seamless. Plants
+// make no faces; they are listed in `plants` instead.
 // Without `light` every face is under open sky (character models).
 Mesh meshRegion(const Grid& g, glm::ivec3 origin, glm::ivec3 extent, const Light* light = nullptr);
 

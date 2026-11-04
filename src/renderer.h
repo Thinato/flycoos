@@ -10,6 +10,7 @@
 #include "light.h"
 #include "mesher.h"
 #include "model.h"
+#include "plants.h"
 #include "render_stats.h"
 
 struct ImDrawData;
@@ -25,6 +26,7 @@ struct FrameParams {
     glm::vec3 eye{};
     float timeOfDay = 0.3f;  // 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset
     bool underwater = false; // the eye is under water (underWater): blue fog and sky
+    double seconds = 0;      // real time (benchmarks: ticks), for the grass swaying in the wind
     std::vector<ModelInstance> models;  // player and NPCs
 };
 
@@ -53,6 +55,10 @@ struct RenderSettings {
     float patchStrength = 1, patchSize = 1;  // strength 0: the flat palette
     std::array<BlockTone, BlockCount> tones = kTones;
     float leafShade = 1;  // tree crowns: 0 every shade its kind's colour, 1 the kLeafRamp steps (docs/ART.md)
+    // Plants (plants.h): drawn within plantRadius blocks of the eye, growing in over its last 12.
+    bool plants = true;
+    float plantRadius = 64;
+    float sway = 1;  // wind: 0 still
 };
 
 class Renderer {
@@ -109,7 +115,7 @@ private:
     SDL_GPUDevice* device_ = nullptr;
     SDL_GPUTextureFormat colorFormat_{};
     SDL_GPUSampleCount samples_ = SDL_GPU_SAMPLECOUNT_1;
-    SDL_GPUGraphicsPipeline *sky_ = nullptr, *opaque_ = nullptr, *water_ = nullptr, *wire_ = nullptr;
+    SDL_GPUGraphicsPipeline *sky_ = nullptr, *opaque_ = nullptr, *water_ = nullptr, *wire_ = nullptr, *plants_ = nullptr;
     glm::mat4 cullViewProj_{1};
     SDL_GPUBuffer* models_ = nullptr;
     std::array<SDL_GPUBuffer*, 2> world_{};  // opaque, water quads of every chunk
@@ -120,4 +126,11 @@ private:
     std::vector<Mesh> meshes_;       // CPU copy of every chunk's mesh, for repacking
     Light light_;                    // the world's light, kept in step with it by updateWorld
     std::array<std::array<std::pair<uint32_t, uint32_t>, PartCount>, ModelCount> parts_{};  // first quad, quad count
+    std::array<std::pair<uint32_t, uint32_t>, 2 * PlantModelCount> plantParts_{};  // [model * 2 + far], in models_ too
+    // This frame's plants near the eye, grouped by plantParts_ index, uploaded to plantInstances_ every frame.
+    std::vector<PlantInstance> plantStage_;
+    SDL_GPUBuffer* plantInstances_ = nullptr;
+    SDL_GPUTransferBuffer* plantTransfer_ = nullptr;
+    uint32_t plantCap_ = 0;  // instances both hold
+    double windPhase_ = 0, windSeconds_ = 0;  // advanced by render() at the Wind speed, kept in 0..2 pi
 };
