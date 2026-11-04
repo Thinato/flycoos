@@ -737,5 +737,7 @@ std::string writePng(const char* name, int w, int h, const uint8_t* rgb) {
         if (it->path().extension() == ".png" && it->last_write_time(ec) < old) std::filesystem::remove(it->path(), ec);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     std::string path = std::filesystem::absolute(dir / std::format("{}-{}-{}.png", name, ms, counter++), ec).string();
-    return !ec && stbi_write_png(path.c_str(), w, h, 3, rgb, w * 3) ? path : "";
+    return !ec && writePngFile(path.c_str(), w, h, rgb) ? path : "";
 }
+
+bool writePngFile(const char* path, int w, int h, const uint8_t* rgb) { return stbi_write_png(path, w, h, 3, rgb, w * 3); }

@@ -48,3 +48,4 @@ Command runCommand(std::string_view request, Grid& world, std::vector<Instance>&
 // Writes an RGB8 image to a new PNG in the system temp folder and returns its absolute path, or ""
 // on failure.
 std::string writePng(const char* name, int w, int h, const uint8_t* rgb);
+bool writePngFile(const char* path, int w, int h, const uint8_t* rgb);  // an RGB8 image to `path`

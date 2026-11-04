@@ -19,6 +19,7 @@
 #include "editor_ui.h"
 #include "hud.h"
 #include "inventory_ui.h"
+#include "notes.h"
 #include "renderer.h"
 #include "save.h"
 #include "server.h"
@@ -36,7 +37,7 @@ struct Options {
     const char* screenshot = nullptr;
     bool fixedLook = false;  // --look: fixed camera angles instead of the benchmark orbit
     float lookYaw = 0, lookPitch = 0;
-    bool debug = false;  // --debug: start with the debug window open
+    bool debug = false;  // --debug: start with the debug window open; F2 writes a debug note
     bool newGame = false;  // --new-game: don't load the world's player save (quitting still writes it)
     int port = 47800;    // command server (127.0.0.1 only)
     bool serve = true;   // --no-serve turns it off; benchmarks never serve
@@ -256,8 +257,15 @@ static int run(SDL_Window* window, const Options& opt) {
     glm::vec3 camTarget = player.pos + glm::vec3(0, 1.4f, 0);
     float camDist = game.cameraDistance;  // actual distance after terrain collision
     bool characterOpen = false, bagsOpen = false, journalOpen = false, progressOpen = false;
+    // The debug note box (notes.h): while it's open the simulation doesn't step. What it saves is
+    // taken the frame it opens: the state, and a screenshot without the UI.
+    bool noteOpen = false, noteFocus = false;
+    char noteText[4096] = "";
+    nlohmann::json noteState;
+    std::vector<uint8_t> noteShot;
+    int noteW = 0, noteH = 0;
     // Any open window frees the cursor and stops mouse look and attacks; the keyboard still plays.
-    auto menus = [&] { return ui.open || characterOpen || bagsOpen || journalOpen || progressOpen || editor.cursor; };
+    auto menus = [&] { return ui.open || characterOpen || bagsOpen || journalOpen || progressOpen || noteOpen || editor.cursor; };
     auto updateMouseMode = [&] { SDL_SetWindowRelativeMouseMode(window, !benchmark && !menus()); };
     updateMouseMode();
     PlayerTuning walking;  // movement settings from before entering the editor
@@ -317,12 +325,13 @@ static int run(SDL_Window* window, const Options& opt) {
             ui.processEvent(e);
             if (e.type == SDL_EVENT_QUIT) return quit();
             // Editor shortcuts (Ctrl or Cmd); undo and redo repeat while held.
-            if (e.type == SDL_EVENT_KEY_DOWN && (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) && !ui.wantsKeyboard()) {
+            // While the note box is open only Esc (cancel) reaches the game: typing isn't hotkeys.
+            if (e.type == SDL_EVENT_KEY_DOWN && (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) && !ui.wantsKeyboard() && !noteOpen) {
                 if (e.key.key == SDLK_Z) ((e.key.mod & SDL_KMOD_SHIFT) ? editorActions.redo : editorActions.undo) = true;
                 else if (e.key.key == SDLK_Y) editorActions.redo = true;
                 else if (e.key.key == SDLK_S && !e.key.repeat) editorActions.save = true;
             }
-            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && !ui.wantsKeyboard()) {
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && !ui.wantsKeyboard() && (!noteOpen || e.key.key == SDLK_ESCAPE)) {
                 if (e.key.key == SDLK_PERIOD) {
                     ui.open = !ui.open;
                     updateMouseMode();
@@ -350,6 +359,9 @@ static int run(SDL_Window* window, const Options& opt) {
                     }
                 } else if (e.key.key == SDLK_F9 && !benchmark) {
                     actions.loadGame = true;
+                } else if (e.key.key == SDLK_F2 && opt.debug && !benchmark && !noteOpen) {
+                    noteOpen = noteFocus = true;
+                    updateMouseMode();
                 } else if (editor.active && e.key.key == SDLK_Q) {
                     editor.cursor = !editor.cursor;
                     updateMouseMode();
@@ -371,6 +383,7 @@ static int run(SDL_Window* window, const Options& opt) {
                     // Esc closes the debug window, then the others, then quits (twice with unsaved edits).
                     if (!menus() && (!editor.unsaved || editor.quitArmed)) return quit();
                     if (!menus()) editor.quitArmed = true;
+                    else if (noteOpen) noteOpen = false, noteText[0] = 0;
                     else if (ui.open) ui.open = false;
                     else characterOpen = bagsOpen = journalOpen = progressOpen = editor.cursor = false;
                     updateMouseMode();
@@ -402,13 +415,14 @@ static int run(SDL_Window* window, const Options& opt) {
         // Left mouse attacks toward where the camera looks; holding it keeps swinging.
         // A press that began in a window (e.g. a drag) doesn't attack once the window closes.
         if (menus()) punchQueued = pressInGame = false;
+        if (noteOpen) interactQueued = false;
         bool punchHeld = pressInGame && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK);
         sim.aim = forward;
         sim.editing = editor.active;
         sim.timeRate = benchmark ? 0 : key(SDL_SCANCODE_T) ? 60.0f : 1.0f;
         // Fixed 60 Hz simulation (ADR-017): as many ticks as the frame time covers, at most 0.25 s
         // worth after a stall. A click or E press is held until one tick takes it.
-        tickTime += std::min(dt, 0.25f);
+        if (!noteOpen) tickTime += std::min(dt, 0.25f);
         bool respawned = false;
         ui.ticks = 0;
         for (; tickTime >= kTick; tickTime -= kTick, ++ui.ticks) {
@@ -525,12 +539,20 @@ static int run(SDL_Window* window, const Options& opt) {
         pushModel(player, ModelPlayer);
         for (const Entity& npc : entities) pushModel(npc.body, npc.type().model);
 
+        GameView view{editor.path, worldSeed, editor.unsaved, editor.active, editor.follow, player.pos, fp.eye,
+                      glm::degrees(camYaw), glm::degrees(camPitch), game.fovDegrees, session.timeOfDay};
+        if (noteOpen && noteFocus) {  // just opened: no tick ran this frame
+            noteState = noteContext(session, view);
+            noteState["frame_ms"] = std::round(realDt * 1e5) / 100;
+            noteState["chunks_drawn"] = s.chunksDrawn;
+            SDL_GetWindowSize(window, &noteW, &noteH);
+            if (!renderer.snapshot(fp, render, uint32_t(noteW), uint32_t(noteH), noteShot)) noteShot.clear();
+        }
+
         // One remote command per frame, run here so it shares the editor's undo history and remesh
         // path, and its log line and highlight show this frame.
         if (std::optional<std::string> request = server.take()) {
             uint64_t start = SDL_GetTicksNS();
-            GameView view{editor.path, worldSeed, editor.unsaved, editor.active, editor.follow, player.pos, fp.eye,
-                          glm::degrees(camYaw), glm::degrees(camPitch), game.fovDegrees, session.timeOfDay};
             Command c = runCommand(*request, world, instances, markers, editor.history, editor.prefabs, view);
             nlohmann::json& response = c.response;
             if (!c.dirty.empty()) {
@@ -587,6 +609,19 @@ static int run(SDL_Window* window, const Options& opt) {
         journalWindow(journalOpen, session);
         progressWindow(progressOpen, player);
         editorWindow(editor, instances, markers, aim, s, editorActions);
+        if (noteOpen) {
+            NoteAction note = noteWindow(noteText, sizeof noteText, noteFocus);
+            noteFocus = false;
+            if (note == NoteAction::Save) {
+                std::string error;
+                int n = saveNote("debug_notes", noteText, std::move(noteState), noteShot, noteW, noteH, error);
+                notice = n ? std::format("Debug note {} saved (debug_notes/notes.jsonl)", n) : "Debug note not saved: " + error;
+                noticeAt = SDL_GetTicksNS();
+                std::println("{}", notice);
+                if (!n) note = NoteAction::None;  // stays open with the text: try again, or copy it out
+            }
+            if (note != NoteAction::None) noteOpen = false, noteText[0] = 0;
+        }
         ImDrawData* uiDraw = ui.end(game, render, session, s, actions);
         if (menus() != wasOpen) updateMouseMode();  // closed with a window's X button
         bool lastFrame = benchmark && frame + 1 >= opt.frames;

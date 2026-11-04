@@ -24,6 +24,7 @@
 #include "entity.h"
 #include "light.h"
 #include "mesher.h"
+#include "notes.h"
 #include "prefab.h"
 #include "save.h"
 #include "trees.h"
@@ -5096,6 +5097,41 @@ static void progression() {
     fs::remove_all(dir);
 }
 
+// Debug notes: the state they keep, and the file they go to.
+static void debugNotes() {
+    Session s{.world = meadow(), .seed = 1};
+    s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}},
+                 {.id = 2, .kind = MarkerKind::Region, .name = "Pond", .pos = {10.5f, 4, 10.5f}, .radius = 6},
+                 {.id = 3, .kind = MarkerKind::Spawn, .name = "Camp", .pos = {16.5f, 4, 10.5f}, .radius = 3, .entity = EntityKind::Bandit}};
+    startSession(s);
+    SimInput still;
+    still.editing = true;  // NPCs stay put
+    for (int i = 0; i < 30; ++i) step(s, still, kTick);
+    for (int i = 0; i < 15; ++i) s.eventLog.push_back(std::format("event {}", i));
+    GameView view{.path = "worlds/test.flyw", .eye = {1, 2, 3}};
+    nlohmann::json c = noteContext(s, view);
+    CHECK(c["world"] == "worlds/test.flyw" && c["seed"] == 1 && c["region"] == "#2 Pond");
+    CHECK(c["player"]["motion"] == "on_ground" && c["player"]["block_below"] == kBlockNames[Grass] && !c["player"]["in_combat"]);
+    CHECK(c["player"]["max_health"] == maxHealth(sheet(s.player)) && c["player"]["bags"].size() == 2);
+    CHECK(c["nearby_npcs"].size() == 1 && c["nearby_npcs"][0]["kind"] == "bandit" && c["nearby_npcs"][0]["spawn"] == "#3 Camp");
+    CHECK(c["recent_events"].size() == kNoteEvents && c["recent_events"].back() == "event 14");
+    CHECK(c["camera"]["eye"] == nlohmann::json({1, 2, 3}));
+    s.player.health = 0;
+    CHECK(noteContext(s, view)["player"]["motion"] == "knocked_out");
+
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "notes";
+    std::string error;
+    std::vector<uint8_t> rgb(2 * 2 * 3, 200);
+    CHECK(saveNote(dir, "fell through \"the\" floor", c, rgb, 2, 2, error) == 1);
+    CHECK(saveNote(dir, "second", c, {}, 0, 0, error) == 2 && error.empty());
+    std::ifstream in(dir / "notes.jsonl");
+    std::vector<nlohmann::json> lines;
+    for (std::string l; std::getline(in, l);) lines.push_back(nlohmann::json::parse(l));
+    CHECK(lines.size() == 2 && lines[0]["note"] == "fell through \"the\" floor" && lines[1]["note"] == "second");
+    CHECK(std::filesystem::exists(lines[0]["screenshot"].get<std::string>()) && lines[1]["screenshot"] == "");
+    CHECK(lines[0]["player"] == c["player"]);
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -5148,6 +5184,7 @@ int main() {
     playerSaves();
     quests();
     conditions();
+    debugNotes();
     progression();
     std::error_code ec;
     std::filesystem::remove_all(tmp, ec);

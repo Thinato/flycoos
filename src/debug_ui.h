@@ -24,6 +24,12 @@ struct DebugActions {
     bool saveGame = false, loadGame = false, deleteSave = false;  // the player save (F5, F9)
 };
 
+// The debug note box (F2 in a --debug session, see notes.h), centered on the screen: Enter (or Save)
+// returns Save with `text` filled in, Esc (or Cancel) returns Cancel. `focus`: put the cursor in the
+// text field (the frame it opens).
+enum class NoteAction { None, Save, Cancel };
+NoteAction noteWindow(char* text, size_t size, bool focus);
+
 // Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Progression, Items, Entities, Quests, Data, Camera, World, Save,
 // Stats.
 // Also owns the ImGui frame the in-game HUD draws into.

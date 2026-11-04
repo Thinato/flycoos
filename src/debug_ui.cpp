@@ -562,6 +562,28 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
     ImGui::End();
 }
 
+NoteAction noteWindow(char* text, size_t size, bool focus) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, {0.5f, 0.5f});
+    ImGui::SetNextWindowSize({520, 0}, ImGuiCond_Always);
+    NoteAction action = NoteAction::None;
+    if (ImGui::Begin("Debug note (game paused)", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::TextWrapped("What happened? The game's state and a screenshot from when this opened go with the note "
+                           "(debug_notes/notes.jsonl). Enter saves, Shift+Enter starts a new line, Esc cancels.");
+        if (focus) ImGui::SetKeyboardFocusHere();
+        bool enter = ImGui::InputTextMultiline("##note", text, size, {-1, 6 * ImGui::GetTextLineHeightWithSpacing()},
+                                               ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
+        bool empty = !*text;
+        ImGui::BeginDisabled(empty);
+        if ((ImGui::Button("Save") || enter) && !empty) action = NoteAction::Save;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) action = NoteAction::Cancel;
+    }
+    ImGui::End();
+    return action;
+}
+
 void DebugUI::begin(float dt, bool cursor) {
     frameMs_[frameIndex_++ % frameMs_.size()] = dt * 1000;
     // Without a free cursor the game owns the (hidden, relative-mode) mouse.

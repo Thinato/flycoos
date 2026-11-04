@@ -57,6 +57,7 @@ GPU debug layer.
 | K | Progress: level and XP, skills, talent trees (click a highlighted talent to learn it) |
 | `.` | Open/close the debug window |
 | Tab | Enter/leave the world editor (see below) |
+| F2 | With `--debug`: write a debug note. The game pauses; the note goes to `debug_notes/notes.jsonl` with the game's state (player, combat, nearby NPCs, quests, latest events) and a screenshot from that moment |
 | F5 / F9 | Save / load the game (the player save next to the world file, e.g. `worlds/story.flys`) |
 | Esc | Close the open windows, otherwise quit (asks twice with unsaved world edits); quitting saves the game (see below) |
 
@@ -278,7 +279,7 @@ unless a text field has focus.
 | `--frames N` | Benchmark: the player walks a circle and the camera orbits; exits after N frames and prints frame-time stats. Vsync is off. Each frame is exactly one 60 Hz tick of game time, so a run is the same at any frame rate. |
 | `--screenshot out.bmp` | With `--frames`: save the last frame as a BMP |
 | `--look YAW PITCH` | With `--frames`: fixed camera angles in degrees instead of the orbit (yaw 0 looks toward −Z, −90 toward +X; negative pitch looks up) |
-| `--debug` | Start with the debug window open (it's also captured by `--screenshot`) |
+| `--debug` | Start with the debug window open (it's also captured by `--screenshot`); F2 writes debug notes |
 | `--port N` | Command server port on 127.0.0.1 (default 47800); see "Shaping the world with Claude" |
 | `--no-serve` | No command server (benchmarks never start one) |
 | `--view MODE` | Start in a debug view: `shaded`, `quads`, `chunks`, `ao`, `normals`, `light` (light levels), or `wire` (wireframe) |
@@ -308,7 +309,8 @@ src/item.*       items, inventory (equipment, backpack, bags), move/equip rules
 src/inventory_ui.*  Character (C), Bags (B), Journal (J) and Progress (K) windows
 src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, place names
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
-src/debug_ui.*   Dear ImGui debug window (toggle with .)
+src/debug_ui.*   Dear ImGui debug window (toggle with .), and the debug note box
+src/notes.*      debug notes: the game state a note keeps, debug_notes/notes.jsonl
 src/editor_ui.*  Editor panel, crosshair and brush preview (Tab)
 src/main.cpp     window, input, camera, main loop, benchmark mode, runs remote commands
 data/            definition files: items.json, creatures.json (ADR-018), quests/*.json (ADR-026)

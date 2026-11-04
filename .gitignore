@@ -7,3 +7,5 @@ imgui.ini
 *.flys
 *.flys.bak
 *.flys.tmp
+# debug notes (F2 with --debug): notes.jsonl and screenshots
+debug_notes/
