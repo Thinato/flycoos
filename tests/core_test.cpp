@@ -231,8 +231,14 @@ static void physics() {
         Input in;
         in.move = {1, 0};
         in.jump = true;
-        for (int i = 0; i < 1200; ++i) updatePlayer(p, g, in, 1 / 120.0f);
+        for (int i = 0; i < 120; ++i) updatePlayer(p, g, in, 1 / 120.0f);
+        CHECK(p.inWater && p.swimAmount > 0.99f);  // swim pose in the pool: leaning into a crawl, hands off the walk swing
+        Player walker = p;
+        walker.swimAmount = 0;
+        CHECK(poseModel(p, ModelPlayer)[HandL] != poseModel(walker, ModelPlayer)[HandL]);
+        for (int i = 120; i < 1200; ++i) updatePlayer(p, g, in, 1 / 120.0f);
         CHECK(p.pos.x > 10.5f);
+        CHECK(p.swimAmount < 0.01f);  // out on the shore
         CHECK(p.pos.y >= 10.0f);
     }
     {  // flight: jump rises without gravity; collision still applies unless noclip
@@ -4133,7 +4139,7 @@ static void lighting() {
     fillLight(g, fresh);
     CHECK(sameLight(l, fresh));
 
-    // Leaves and water pass light at a cost of 1 and 2 per block, but only air passes open sky down for free.
+    // Leaves and water pass light at a cost of 1 per block, but only air passes open sky down for free.
     {
         Grid w({8, 16, 8});
         for (int z = 0; z < 8; ++z)
@@ -4144,7 +4150,7 @@ static void lighting() {
         Light wl;
         fillLight(w, wl);
         CHECK(skyLight(wl.get({1, 11, 1})) == 14 && skyLight(wl.get({1, 9, 1})) == 12);  // leaves
-        CHECK(skyLight(wl.get({6, 11, 6})) == 13 && skyLight(wl.get({6, 9, 6})) == 9);   // water
+        CHECK(skyLight(wl.get({6, 11, 6})) == 14 && skyLight(wl.get({6, 9, 6})) == 12);  // water
     }
 
     {  // light from outside the relit columns comes back in through their border

@@ -119,6 +119,7 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     bool walking = speed > 0.3f && !flying;
     p.gaitAmount = approach(p.gaitAmount, walking ? std::min(speed / t.walkSpeed, 1.4f) : 0, 10, dt);
     p.airAmount = approach(p.airAmount, (p.onGround || p.inWater) && !flying ? 0.0f : 1.0f, 12, dt);
+    p.swimAmount = approach(p.swimAmount, p.inWater && !flying ? 1.0f : 0.0f, 6, dt);
     // Face where we're trying to go; a punch keeps facing where it was aimed.
     if (!p.punching() && glm::length(glm::vec2(p.vel.x, p.vel.z)) > 0.3f) {
         float diff = std::remainder(std::atan2(p.vel.x, p.vel.z) - p.yaw, kTau);

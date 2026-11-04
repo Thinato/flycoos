@@ -464,6 +464,7 @@ static int run(SDL_Window* window, const Options& opt) {
         fp.view = glm::lookAtRH(fp.eye, camTarget, glm::vec3(0, 1, 0));
         fp.fovY = glm::radians(game.fovDegrees);
         fp.timeOfDay = session.timeOfDay;
+        fp.underwater = underWater(world, fp.eye);
 
         // Editor: LMB applies the brush where the crosshair (the screen center) meets the ground.
         std::optional<RayHit> aim;
@@ -572,6 +573,7 @@ static int run(SDL_Window* window, const Options& opt) {
                 shotFrame.view = glm::lookAtRH(c.shot->eye, c.shot->target, glm::vec3(0, 1, 0));
                 shotFrame.fovY = glm::radians(c.shot->fovDegrees);
                 shotFrame.timeOfDay = c.shot->timeOfDay;
+                shotFrame.underwater = underWater(world, c.shot->eye);
                 uint64_t shotStart = SDL_GetTicksNS();
                 std::vector<uint8_t> rgb;
                 std::string path;

@@ -271,6 +271,27 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
     rot[FootL].x = -s * 0.35f * a;
     rot[FootR].x = s * 0.35f * a;
 
+    if (float sw = p.swimAmount; sw > 0) {  // swimming: a crawl while moving, treading water while still
+        float t = p.breathPhase * 2;          // treading: hands sweep out and in at the sides, slow kicks
+        glm::vec3 tread[PartCount]{};
+        tread[Torso] = {0, breathe * 0.25f, 0};
+        tread[Head] = {0, breathe * 0.35f, 0};
+        tread[HandL] = {1.5f + 1.2f * std::sin(t), 3, 1.5f + std::cos(t)};
+        tread[HandR] = {-1.5f - 1.2f * std::sin(t), 3, 1.5f + std::cos(t)};
+        tread[FootL] = {0, 0.8f + 0.6f * std::sin(t), 0};
+        tread[FootR] = {0, 0.8f - 0.6f * std::sin(t), 0};
+        glm::vec3 crawl[PartCount]{};  // arms circle overhead in turn, feet flutter behind
+        float g = p.gaitPhase;  // whole multiples only: it wraps at a turn
+        crawl[HandL] = {-1.5f, 4 + 4 * std::sin(g), 4 * std::cos(g)};
+        crawl[HandR] = {1.5f, 4 - 4 * std::sin(g), -4 * std::cos(g)};
+        crawl[FootL] = {0, 1 + std::sin(g * 3), -1.5f};
+        crawl[FootR] = {0, 1 - std::sin(g * 3), -1.5f};
+        for (int i = 0; i < PartCount; ++i) {
+            off[i] = glm::mix(off[i], glm::mix(tread[i], crawl[i], a1), sw);
+            rot[i] = glm::mix(rot[i], glm::vec3(0), sw);
+        }
+    }
+
     if (armed) {  // the sword hand sweeps an arc at chest height around the body; the torso turns with it
         glm::vec2 sl = slash(p);
         glm::vec3 arc(-1.5f + 6.5f * std::sin(sl.x), 9, 1.5f + 6.5f * std::cos(sl.x));
@@ -317,6 +338,13 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
     } else {
         if (quadruped(model)) animateBoar(p, off, rot);
         else animate(p, armed, off, rot);
+        if (!quadruped(model) && p.swimAmount > 0) {  // leans into a crawl, about the waist
+            glm::vec3 pivot(0, 6, 0);
+            float lean = p.swimAmount * std::min(p.gaitAmount, 1.0f) * 0.6f;
+            tilt = glm::translate(glm::mat4(1), pivot);
+            tilt = glm::rotate(tilt, lean, {1, 0, 0});
+            tilt = glm::translate(tilt, -pivot);
+        }
         if (!p.alive()) {  // falls over onto its side
             float fall = std::min(p.deadTime / 0.5f, 1.0f);
             glm::vec3 pivot(0, 4, 0);  // about half a body's thickness up, so it lies on the ground

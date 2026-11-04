@@ -20,7 +20,7 @@ struct Frame {
     float4 ambientSky;
     float4 ambientGround;
     float4 fog;           // x density, y night factor (0..1), z sun disk visibility, w sea surface y
-    float4 debug;         // x view mode: 0 shaded, 1 greedy quads, 2 chunks, 3 AO, 4 normals, 5 light
+    float4 debug;         // x view mode: 0 shaded, 1 greedy quads, 2 chunks, 3 AO, 4 normals, 5 light; y 1 under water
     float4 aoCurve;       // ambient factor for AO levels 0..3 (applied per vertex)
     float4 shadowTint;    // rgb multiplier occluded albedo shades toward, a strength (weaker at night)
     float4 lightParams;   // voxel light: x sun gate, y falloff, z dark ambient, w on (else all open sky)
@@ -107,9 +107,15 @@ static float3 skyColor(constant Frame& f, float3 dir) {
     return c + f.lightColor.rgb * glow * 0.25 * f.fog.z;
 }
 
+// Under water everything fades into the water's own blue within a few dozen blocks, dimmer at night.
+static float3 underwaterColor(constant Frame& f) {
+    return f.palette[kWater].rgb * mix(0.9, 0.12, f.fog.y);
+}
+
 static float3 applyFog(constant Frame& f, float3 color, float3 worldPos) {
     float3 toPoint = worldPos - f.eye.xyz;
     float dist = length(toPoint);
+    if (f.debug.y > 0.0) return mix(color, underwaterColor(f), 0.2 + 0.8 * (1.0 - exp(-dist / 20.0)));
     float t = 1.0 - exp(-pow(dist * f.fog.x, 2.0));
     return mix(color, skyColor(f, toPoint / dist), t);
 }
@@ -264,6 +270,7 @@ fragment float4 sky_fs(SkyOut in [[stage_in]], constant Frame& f [[buffer(0)]]) 
     float4 a = f.invViewProj * float4(in.ndc, 0.0, 1.0);
     float4 b = f.invViewProj * float4(in.ndc, 1.0, 1.0);
     float3 dir = normalize(b.xyz / b.w - a.xyz / a.w);
+    if (f.debug.y > 0.0) return float4(tonemap(underwaterColor(f)), 1.0);
     float3 c = skyColor(f, dir);
 
     float sunDot = dot(dir, f.sunDir.xyz);

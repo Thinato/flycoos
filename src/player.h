@@ -37,6 +37,7 @@ struct Body {
     float gaitPhase = 0;     // advances with distance walked
     float gaitAmount = 0;    // 0 idle .. ~1.4 running
     float airAmount = 0;     // 0 grounded .. 1 airborne
+    float swimAmount = 0;    // 0 out of the water .. 1 chest-deep in it (swim pose)
     float breathPhase = 0;  // idle breathing cycle, radians
     PlayerTuning tuning;
 

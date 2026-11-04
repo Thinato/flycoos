@@ -24,6 +24,7 @@ struct FrameParams {
     float fovY = 1.2f;       // radians; aspect comes from the swapchain
     glm::vec3 eye{};
     float timeOfDay = 0.3f;  // 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset
+    bool underwater = false; // the eye is under water (underWater): blue fog and sky
     std::vector<ModelInstance> models;  // player and NPCs
 };
 

@@ -20,7 +20,7 @@ namespace {
 struct FrameUniforms {
     glm::mat4 viewProj, invViewProj;
     glm::vec4 eye, sunDir, lightDir, lightColor, skyZenith, skyHorizon, ambientSky, ambientGround, fog;
-    glm::vec4 debug;  // x: ViewMode
+    glm::vec4 debug;  // x: ViewMode, y: 1 under water
     glm::vec4 aoCurve, shadowTint;
     glm::vec4 lightParams;  // x sun gate, y light falloff, z dark ambient, w voxel light on
     glm::vec4 emberColor;   // rgb linear, times strength
@@ -384,7 +384,7 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     u.eye = glm::vec4(frame.eye, 0);
     ambience(frame.timeOfDay, u);
     if (!settings.fog) u.fog.x = 0;
-    u.debug = {float(settings.viewMode), 0, 0, 0};
+    u.debug = {float(settings.viewMode), frame.underwater && settings.fog ? 1 : 0, 0, 0};
     if (settings.occlusionRamp) {
         u.aoCurve = settings.aoCurve;
         // Moonlight is already blue, so the cool tint fades to 30% at night.

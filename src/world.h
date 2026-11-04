@@ -210,6 +210,13 @@ glm::vec3 findSpawn(const Grid& world, glm::ivec2 near);
 
 // A placed prefab (see prefab.h). Its voxels are in the grid like any others; `cells` lists every
 // voxel the placement changed, so removing it can put back what was there.
+// Whether `p` is under water: in a Water voxel, and below the surface the shader draws 0.12 under
+// the top of a Water voxel with no water above it (shaders/world.metal).
+inline bool underWater(const Grid& g, glm::vec3 p) {
+    glm::ivec3 c(glm::floor(p));
+    return g.get(c) == Water && (g.get(c + glm::ivec3(0, 1, 0)) == Water || p.y - float(c.y) < 0.88f);
+}
+
 struct Instance {
     struct Cell {
         uint16_t x, y, z;

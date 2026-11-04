@@ -105,7 +105,7 @@ json noteContext(const Session& s, const GameView& view) {
             {"time_of_day", std::format("{:02}:{:02}", minutes / 60, minutes % 60)},
             {"region", region ? std::format("#{} {}", region->id, region->name) : ""},
             {"player", player},
-            {"camera", {{"eye", vec(view.eye)}, {"yaw_degrees", round2(view.yawDegrees)}, {"pitch_degrees", round2(view.pitchDegrees)}, {"fov_degrees", view.fovDegrees}}},
+            {"camera", {{"eye", vec(view.eye)}, {"yaw_degrees", round2(std::fmod(std::fmod(view.yawDegrees, 360.0) + 360.0, 360.0))}, {"pitch_degrees", round2(view.pitchDegrees)}, {"fov_degrees", view.fovDegrees}}},
             {"nearby_npcs", npcs},
             {"quests", quests},
             {"flags", s.flags},
