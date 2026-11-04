@@ -50,7 +50,8 @@ struct RenderSettings {
     float darkAmbient = 0.03f;  // ambient left where no light reaches
     // Colour patches (ADR-028): every tone's strength and size times these; tones edited live.
     float patchStrength = 1, patchSize = 1;  // strength 0: the flat palette
-    std::array<BlockTone, BlockCount> tones = std::to_array(kTones);
+    std::array<BlockTone, BlockCount> tones = kTones;
+    float leafShade = 1;  // tree crowns: 0 every shade its kind's colour, 1 the kLeafRamp steps (docs/ART.md)
 };
 
 class Renderer {

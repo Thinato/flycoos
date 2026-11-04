@@ -1124,3 +1124,65 @@
     blocks and models branch out early. Fewer vertex outputs (no `voxelPos`) save bandwidth on the tile-based GPU.
   - The greedy-quads debug colour wraps at 128K quads instead of 256K.
   - A new block needs a `kTones` entry in its class (`core_test` `tones()` checks the classes).
+
+## ADR-029: Five tree species, shaded crowns, a 128-block palette, compact instances and replant
+
+- **Status:** accepted (2026-11-04)
+- **Context:** There was one tree: a 1- or 2-wide trunk under a single ragged ellipsoid of Leaves
+  (edges from a per-voxel random `jitter`), plus a thin pine. The user wants a stylised fantasy
+  forest (docs/ART.md "Trees"): oak, maple, birch, conifer and Araucária; massive trunks; thick
+  branches where real trees have them; leaves darker low in the crown and lighter on top. The story
+  world's forest is ~3,000 trees baked into its voxels by the old generator, and the world is made
+  by hand.
+- **Decision:**
+  - **Plan, then draw.** `planTree` (src/trees.cpp) turns a species, height, crown radius, colour
+    and seed into a `TreeShape`: bark capsules (trunk, root flare, limbs) and leaf clumps
+    (ellipsoids whose surface smooth OpenSimplex noise pushes in and out). `growShape` draws it
+    (bark into Air and Water, leaves into Air only, then removes leaves with no solid face
+    neighbour) and `shapeBox` bounds it. Prefab boxes and tests read the same shape. Trees no
+    longer use `jitter`.
+  - **Shades are blocks.** Each of 7 leaf kinds (oak, birch, pine, Araucária, maple red, orange,
+    gold) has 4 shade blocks, chosen per voxel row by height in the crown. Their colours are
+    generated: the kind's colour times `kLeafRamp`. Oak's shade 2 is the old `Leaves` id. Three
+    barks are new (birch, pine, Araucária); oak and maple keep `Wood`. 39 + 30 = 69 blocks, so the
+    shader's block field grows to 7 bits (light moves to bits 7–14, the debug quad index to
+    15–30, 16 bits) and `palette`/`toneA`/`toneB` hold 128. `kLeafOf` maps a block to its kind
+    and shade; `isTreeBlock` replaces the Wood/Leaves checks (ground finding, light cost).
+  - **Prefabs.** `tree` (now the oak: height, crown) and `pine` (height) keep their names and
+    parameter counts with wider ranges; `maple`, `birch` and `araucaria` are appended; `bush`
+    is a few small oak clumps.
+  - **Generator.** `plantTrees` puts one candidate per 13×13 cell (crowns are about 3× wider than
+    before) and picks the species from height, region and flatness (docs/ART.md).
+  - **INS2.** Big trees as instances would have cost 8 bytes per changed voxel (the story world
+    would grow from 3 MB to ~35 MB). The writer now writes `INS2`, which run-length codes each
+    instance's cells over its box when they are changes in box order (every placement), otherwise
+    keeps the old list. `INST` still reads.
+  - **Replant.** A `replant` command (MCP tool) removes the old baked trees (26-connected clusters
+    of Wood and Leaves, holding both, not owned by an instance, not touching today's tree blocks),
+    regrows the old tree, pine and bush instances (those whose cells are only Wood and Leaves;
+    `tree`/`pine` full grown by their seed; not where the bigger tree would meet a structure or
+    cover a marker) and plants the generator's trees as instances, skipping boxes that meet an
+    instance already there or hold a spawn or POI marker. Today's trees are left alone, so a second
+    run changes nothing. Every sub-step folds into one undo record as it's made (the local history's
+    256-step cap would drop the oldest). It may take a second or two for the whole world, so it has
+    no work budget.
+- **Alternatives considered:**
+  - Shade from the leaves above each voxel (follows the crown's shape, works on hand-painted
+    leaves): the user chose height in the crown, calmer and the same along each row.
+  - Shading in the shader: it would need each tree's crown span per fragment; blocks are free at
+    draw time and let builders paint shades by hand.
+  - 3 shades in a 64-colour palette (62 blocks, no shader change): bands 4 rows tall and no room
+    for later blocks.
+  - Replanting as baked voxels: smaller files, but the user wants to move and remove trees.
+  - Ragged per-voxel edges kept on the new shapes: the user chose clumps with smooth edges.
+- **Consequences:**
+  - The story world after `replant`: 466 old clusters (837k voxels) removed, 11 instances
+    regrown (old trees #31, #49, #52 and bush #61 keep their shape: the bigger tree would meet a
+    structure or a marker), 826 trees planted; 4.4 MB, instance cells 13% of `kMaxInstanceCells`;
+    undo restores it byte for byte (scratch copy, 2026-11-04).
+  - Generated worlds (seeds 1337, 42): oak 33–37%, birch 26%, maple 20%, conifer 11–13%,
+    Araucária 5–8% of ~750–800 trees.
+  - Until `replant` runs, an old `tree {10, 4.5}` reads as a young oak (height 10, crown 4.5): moved
+    by hand first, it regrows small. Replant first.
+  - `generation`/`regions` checksums were re-recorded; the greedy-quads debug colour wraps at
+    64K quads.

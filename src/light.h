@@ -13,7 +13,7 @@
 // Light depends only on the voxels, never on the time of day: the shader scales sky light by the sun.
 constexpr int kMaxLight = 15;
 
-inline int lightCost(Block b) { return b == Air || b == Leaves ? 1 : b == Water ? 2 : 0; }
+inline int lightCost(Block b) { return b == Air || isLeaf(b) ? 1 : b == Water ? 2 : 0; }
 inline int emission(Block b) { return b == Ember ? 13 : b == Lantern ? 11 : 0; }
 
 // One byte per voxel, sky << 4 | block, kept per 32^3 chunk (chunkOrigin order). A chunk holds a

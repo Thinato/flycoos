@@ -13,7 +13,7 @@ int groundTop(const Grid& g, int x, int z) {
 
 int groundUnderTrees(const Grid& g, int x, int z) {
     int y = groundTop(g, x, z);
-    for (Block b; y > 0 && ((b = g.get({x, y, z})) == Wood || b == Leaves || b == Air);) --y;
+    for (Block b; y > 0 && (isTreeBlock(b = g.get({x, y, z})) || b == Air);) --y;
     return y;
 }
 

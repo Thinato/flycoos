@@ -17,6 +17,8 @@
 
 #include <FastNoiseLite.h>
 
+#include "trees.h"
+
 void parallelFor(int count, const std::function<void(int)>& fn) {
     std::atomic<int> next{0};
     std::vector<std::thread> pool;
@@ -34,7 +36,7 @@ static uint32_t hash(int x, int z, uint32_t seed) {
     return h ^ (h >> 16);
 }
 
-// Per-voxel jitter in [-0.45, 0.45] to roughen rock and canopy surfaces.
+// Per-voxel jitter in [-0.45, 0.45] to roughen rock surfaces (rocks only: trees use smooth noise, docs/ART.md).
 static float jitter(glm::ivec3 p, uint32_t seed) {
     return float(hash(p.x, p.z, seed ^ uint32_t(p.y) * 0x9e3779b9u) & 255) / 255.0f * 0.9f - 0.45f;
 }
@@ -60,24 +62,6 @@ static bool nearEdge(const Grid& g, int x, int z, int margin) {
     return x < margin || z < margin || x >= g.size.x - margin || z >= g.size.z - margin;
 }
 
-void growTree(Grid& g, glm::ivec3 at, int trunk, float radius, uint32_t seed, glm::ivec3 jitterOrigin) {
-    int x = at.x, y = at.y, z = at.z;
-    int thick = trunk >= 12 ? 2 : 1, r = int(std::ceil(radius));
-    for (int dz = 0; dz < thick; ++dz)
-        for (int dx = 0; dx < thick; ++dx)
-            for (int ty = y + trunk; ty > y - 3 && !isOpaque(g.get({x + dx, ty, z + dz})); --ty)
-                g.set({x + dx, ty, z + dz}, Wood);  // grows down to the ground on slopes
-
-    glm::vec3 center{x + thick * 0.5f, y + trunk + 0.5f, z + thick * 0.5f};
-    for (int dy = -r; dy <= r; ++dy)
-        for (int dz = -r - 1; dz <= r + 1; ++dz)
-            for (int dx = -r - 1; dx <= r + 1; ++dx) {
-                glm::ivec3 p = glm::ivec3(glm::floor(center)) + glm::ivec3(dx, dy, dz);
-                glm::vec3 d = (glm::vec3(p) + 0.5f - center) / glm::vec3(radius, radius * 0.7f, radius);
-                if (glm::dot(d, d) + jitter(p - jitterOrigin, seed) * 0.4f <= 1 && g.get(p) == Air) g.set(p, Leaves);
-            }
-}
-
 // A tapering spire, or a half-buried boulder (`height` unused).
 void growRock(Grid& g, glm::ivec3 at, bool spire, float radius, int height, uint32_t seed, glm::ivec3 jitterOrigin) {
     int x = at.x, y = at.y, z = at.z;
@@ -94,47 +78,63 @@ void growRock(Grid& g, glm::ivec3 at, bool spire, float radius, int height, uint
             }
 }
 
-// A conifer: stacked tiers of needles, each widest at its foot, narrowing to a spike above the trunk.
-void growPine(Grid& g, glm::ivec3 at, int height, uint32_t seed, glm::ivec3 jitterOrigin) {
-    int x = at.x, y = at.y, z = at.z, top = y + height - 3;
-    for (int ty = top; ty > y - 3 && !isOpaque(g.get({x, ty, z})); --ty) g.set({x, ty, z}, Wood);
-    float widest = std::clamp(float(height) * 0.3f, 2.0f, 6.0f);
-    int r = int(std::ceil(widest + 0.5f)) + 1, base = y + std::max(2, height / 4), tip = y + height + 1;
-    for (int ty = base; ty <= tip; ++ty) {
-        float t = float(ty - base) / float(tip - base);
-        float radius = widest * (1 - t) * (0.3f + 0.35f * float((tip - ty) % 3)) + 0.5f;
-        if (ty <= top) radius = std::max(radius, 1.2f);  // needles hide the trunk
-        for (int dz = -r; dz <= r; ++dz)
-            for (int dx = -r; dx <= r; ++dx) {
-                glm::ivec3 p{x + dx, ty, z + dz};
-                if (std::sqrt(float(dx * dx + dz * dz)) + jitter(p - jitterOrigin, seed) * 0.3f <= radius && g.get(p) == Air)
-                    g.set(p, Leaves);
-            }
-    }
-}
-
-// A low, round clump of leaves on the ground.
-void growBush(Grid& g, glm::ivec3 at, float radius, uint32_t seed, glm::ivec3 jitterOrigin) {
-    int x = at.x, y = at.y, z = at.z;
-    glm::vec3 center{x + 0.5f, y + 1 + radius * 0.35f, z + 0.5f};
-    int r = int(std::ceil(radius)) + 1;
-    for (int ty = y - 2; ty <= y + 1 + r; ++ty)
-        for (int dz = -r; dz <= r; ++dz)
-            for (int dx = -r; dx <= r; ++dx) {
-                glm::ivec3 p{x + dx, ty, z + dz};
-                glm::vec3 d = (glm::vec3(p) + 0.5f - center) / glm::vec3(radius, radius * 0.75f, radius);
-                if (glm::dot(d, d) + jitter(p - jitterOrigin, seed) * 0.5f <= 1 && g.get(p) == Air) g.set(p, Leaves);
-            }
-}
-
-// Tall tree: 8-14 block trunk (2x2 when 12+), flattened ragged canopy of radius ~4-5.
-static void placeTree(Grid& g, int x, int z, uint32_t rnd, uint32_t seed) {
+// A tree for the land it stands on (ADR-029): Araucaria groves on high flat ground, conifers on
+// high or rocky ground up to the snow line, otherwise the lowland mix of oak, maple and birch.
+// A quarter are young (55-85% of full grown). Only on grass, inside the world, under its top.
+static std::optional<TreeSite> treeSite(const Grid& g, int x, int z, uint32_t rnd, glm::vec2 region) {
     int y = topY(g, x, z);
-    int trunk = 8 + int((rnd >> 3) % 7);
-    float radius = 2.5f + trunk * 0.2f;
-    int r = int(std::ceil(radius));
-    if (y < 0 || g.get({x, y, z}) != Grass || nearEdge(g, x, z, r + 2) || y + trunk + r + 1 >= g.size.y) return;
-    growTree(g, {x, y, z}, trunk, radius, seed, glm::ivec3(0));
+    if (y < 0 || g.get({x, y, z}) != Grass || nearEdge(g, x, z, 20)) return std::nullopt;
+    int flat = 0;  // the ground's largest step to points 4 out
+    for (glm::ivec2 d : {glm::ivec2(4, 0), glm::ivec2(-4, 0), glm::ivec2(0, 4), glm::ivec2(0, -4)}) flat = std::max(flat, std::abs(topY(g, x + d.x, z + d.y) - y));
+    float pick = float(rnd >> 20 & 1023) / 1024.0f;
+    bool plateau = y >= 48 && flat <= 2 && region.y < 0.5f;
+    Species s = plateau && pick < 0.5f                      ? Species::Araucaria
+              : y > 70 || region.y > 0.3f                   ? Species::Conifer
+              : region.x < 0.05f                            ? Species::Oak  // a lone plains tree
+              : pick < 0.45f                                ? Species::Oak
+              : pick < 0.70f                                ? Species::Maple
+                                                            : Species::Birch;
+    float grown = (rnd >> 12 & 3) == 0 ? 0.55f + 0.3f * float(rnd >> 14 & 63) / 63.0f : 1.0f;
+    int lo = kFullGrown[int(s)][0], hi = kFullGrown[int(s)][1];
+    TreeSite site{{x, y, z}, s, std::max(6, int(float(lo + int(rnd >> 4 & 255) % (hi - lo + 1)) * grown)), int(rnd >> 9 & 255) % 3, rnd};
+    Box box = shapeBox(planTree(s, site.height, 0, site.colour, rnd), site.at);
+    if (box.lo.y < 0 || box.hi.y >= g.size.y) return std::nullopt;
+    return site;
+}
+
+// Region strengths (0..1) at a column: x = forest, y = rocky land. Neither = open plains.
+// Rocky land pushes forest out so the two stay mostly separate instead of cluttering together.
+// The noises are low-frequency (features ~250-500 blocks) so each kind of land is vast.
+struct Regions {
+    FastNoiseLite warp, forest, rock;
+    explicit Regions(uint32_t seed)
+        : warp(makeNoise(seed + 10u, 0.003f, 1)), forest(makeNoise(seed + 1u, 0.002f, 2)), rock(makeNoise(seed + 2u, 0.002f, 2)) {
+        warp.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
+        warp.SetDomainWarpAmp(100);
+    }
+    glm::vec2 operator()(int x, int z) const {
+        float wx = float(x), wz = float(z);
+        warp.DomainWarp(wx, wz);  // organic region borders
+        float rocky = glm::smoothstep(0.20f, 0.40f, rock.GetNoise(wx, wz));
+        return {glm::smoothstep(0.10f, 0.30f, forest.GetNoise(wx, wz)) * (1 - 0.85f * rocky), rocky};
+    }
+};
+
+void plantTrees(Grid& g, uint32_t seed, glm::ivec2 lo, glm::ivec2 hi, const std::function<void(const TreeSite&)>& plant) {
+    // One candidate per 13x13 cell (crowns are ~24 across, so neighbours touch); dense in forests, a
+    // rare lone tree elsewhere. Seeded per cell, so it's deterministic; sequential, since each tree
+    // sees the ones before it.
+    Regions regions(seed);
+    for (int cz = std::max(0, lo.y / 13); cz <= std::min(g.size.z / 13 - 1, hi.y / 13); ++cz)
+        for (int cx = std::max(0, lo.x / 13); cx <= std::min(g.size.x / 13 - 1, hi.x / 13); ++cx) {
+            uint32_t rnd = hash(cx, cz, seed);
+            int x = cx * 13 + 2 + int(rnd % 9), z = cz * 13 + 2 + int((rnd >> 8) % 9);
+            if (x < lo.x || z < lo.y || x > hi.x || z > hi.y) continue;
+            float chance = float((rnd >> 16) & 0xFFFF) / 65536.0f;
+            glm::vec2 region = regions(x, z);
+            if (chance >= 0.85f * region.x + 0.006f) continue;
+            if (std::optional<TreeSite> site = treeSite(g, x, z, hash(cx, cz, seed ^ 0x2c1b3c6du), region)) plant(*site);
+        }
 }
 
 // Rock spire (10-23 tall, tapering) or a half-buried boulder.
@@ -148,26 +148,11 @@ static void placeRock(Grid& g, int x, int z, uint32_t rnd, bool spire, uint32_t 
 }
 
 void generateTerrain(Grid& g, uint32_t seed) {
-    // Region noises are low-frequency (features ~250-500 blocks) so each kind of land is vast.
-    FastNoiseLite warp = makeNoise(seed + 10u, 0.003f, 1);
-    warp.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
-    warp.SetDomainWarpAmp(100);
-    FastNoiseLite forestNoise = makeNoise(seed + 1u, 0.002f, 2);
-    FastNoiseLite rockNoise = makeNoise(seed + 2u, 0.002f, 2);
+    Regions regions(seed);
     FastNoiseLite hills = makeNoise(seed, 0.006f, 4);
     FastNoiseLite mountains = makeNoise(seed + 3u, 0.0015f, 3);
     FastNoiseLite lakes = makeNoise(seed + 4u, 0.004f, 2);
     FastNoiseLite patches = makeNoise(seed + 5u, 0.02f, 1);
-
-    // Region strengths (0..1) at a column: x = forest, y = rocky land. Neither = open plains.
-    // Rocky land pushes forest out so the two stay mostly separate instead of cluttering together.
-    auto regions = [&](int x, int z) {
-        float wx = float(x), wz = float(z);
-        warp.DomainWarp(wx, wz);  // organic region borders
-        float rocky = glm::smoothstep(0.20f, 0.40f, rockNoise.GetNoise(wx, wz));
-        float forest = glm::smoothstep(0.10f, 0.30f, forestNoise.GetNoise(wx, wz)) * (1 - 0.85f * rocky);
-        return glm::vec2(forest, rocky);
-    };
 
     // Columns are independent: fill terrain and water in parallel, one z-row per task.
     parallelFor(g.size.z, [&](int z) {
@@ -189,15 +174,9 @@ void generateTerrain(Grid& g, uint32_t seed) {
         }
     });
 
-    // Decoration is sequential (shapes cross column boundaries) and seeded per cell, so it's
-    // deterministic. Trees: one candidate per 7x7 cell; dense in forests, a rare lone tree elsewhere.
-    for (int cz = 0; cz < g.size.z / 7; ++cz)
-        for (int cx = 0; cx < g.size.x / 7; ++cx) {
-            uint32_t rnd = hash(cx, cz, seed);
-            int x = cx * 7 + 1 + int(rnd % 5), z = cz * 7 + 1 + int((rnd >> 8) % 5);
-            float chance = float((rnd >> 16) & 0xFFFF) / 65536.0f;
-            if (chance < 0.75f * regions(x, z).x + 0.004f) placeTree(g, x, z, rnd, seed);
-        }
+    // Decoration is sequential (shapes cross column boundaries) and seeded per cell, so it's deterministic.
+    plantTrees(g, seed, {0, 0}, {g.size.x - 1, g.size.z - 1},
+               [&](const TreeSite& t) { growShape(g, t.at, planTree(t.species, t.height, 0, t.colour, t.seed), t.seed); });
     // Rocks: one candidate per 14x14 cell; spires and boulders on rocky land, a rare boulder elsewhere.
     for (int cz = 0; cz < g.size.z / 14; ++cz)
         for (int cx = 0; cx < g.size.x / 14; ++cx) {
@@ -234,7 +213,12 @@ glm::vec3 findSpawn(const Grid& g, glm::ivec2 near) {
 //   mostly horizontal layers, so whole layers of stone or air collapse into single runs.
 // "INST" section (only when there are instances): u32 count, then per instance: u32 id | u8 name
 //   length | name | i32 x, y, z | u8 rotation | u32 seed | u8 param count | f32 params |
-//   u32 cell count | cells (u16 x, y, z | u8 before | u8 after).
+//   u32 cell count | cells (u16 x, y, z | u8 before | u8 after). Read only; files now get INS2.
+// "INS2" section: as INST, but after the params a u8 form: 0 = u32 cell count | cells as in INST;
+//   1 = the cells run-length coded over their box: u16 lo x, y, z | u8 extent - 1 x, y, z | runs of
+//   (u8 before, u8 after, LEB128 count - 1), x fastest, then z, then y; before == after is a voxel
+//   that isn't a cell. Form 1 is for cells in that order, each a change; a big tree's thousands of
+//   cells take a few kB instead of 8 bytes each.
 // Every other section goes to and comes from the caller as `extra` (story.cpp: MARK, LINE).
 constexpr uint32_t kWorldFileVersion = 1;
 constexpr int kChunkVoxels = kChunk * kChunk * kChunk;
@@ -300,6 +284,42 @@ static bool decodeChunk(Grid& g, glm::ivec3 o, const uint8_t* p, const uint8_t* 
     return i == kChunkVoxels;
 }
 
+static void putCount(std::vector<uint8_t>& out, uint32_t n) {  // LEB128 of n - 1
+    for (--n; n >= 128; n >>= 7) out.push_back(uint8_t(n | 128));
+    out.push_back(uint8_t(n));
+}
+
+// Appends INS2 form 1 for `cells`, or returns false (nothing appended) if they aren't changes in box order.
+static bool encodeCells(const std::vector<Instance::Cell>& cells, std::vector<uint8_t>& out) {
+    if (cells.empty()) return false;
+    glm::ivec3 lo(INT_MAX), hi(INT_MIN);
+    for (const Instance::Cell& c : cells) lo = glm::min(lo, glm::ivec3(c.x, c.y, c.z)), hi = glm::max(hi, glm::ivec3(c.x, c.y, c.z));
+    glm::ivec3 e = hi - lo + 1;
+    if (glm::any(glm::greaterThan(e, glm::ivec3(256)))) return false;
+    auto at = [&](const Instance::Cell& c) { return int64_t((c.y - lo.y) * e.z + (c.z - lo.z)) * e.x + (c.x - lo.x); };
+    for (size_t i = 0; i < cells.size(); ++i)
+        if (cells[i].before == cells[i].after || (i && at(cells[i]) <= at(cells[i - 1]))) return false;
+    out.push_back(1);
+    for (int a = 0; a < 3; ++a) put(out, uint32_t(lo[a]), 2);
+    for (int a = 0; a < 3; ++a) out.push_back(uint8_t(e[a] - 1));
+    Block before = Air, after = Air;  // the current run; before == after: not a cell
+    uint32_t count = 0;
+    auto run = [&](Block b, Block a, uint32_t n) {
+        if (count && b == before && a == after) return void(count += n);
+        if (count) out.push_back(before), out.push_back(after), putCount(out, count);
+        before = b, after = a, count = n;
+    };
+    int64_t next = 0;  // box index after the last cell
+    for (const Instance::Cell& c : cells) {
+        if (at(c) > next) run(Air, Air, uint32_t(at(c) - next));
+        run(c.before, c.after, 1);
+        next = at(c) + 1;
+    }
+    if (int64_t total = int64_t(e.x) * e.y * e.z; total > next) run(Air, Air, uint32_t(total - next));
+    out.push_back(before), out.push_back(after), putCount(out, count);
+    return true;
+}
+
 std::string writeWorldFile(const char* path, const Grid& g, uint32_t seed, const std::vector<Instance>& instances,
                            const std::vector<Section>& extra) {
     if (g.size % kChunk != glm::ivec3(0)) return "world size is not a multiple of the chunk size";
@@ -325,7 +345,7 @@ std::string writeWorldFile(const char* path, const Grid& g, uint32_t seed, const
     };
     endSection();
     if (!instances.empty()) {
-        out.insert(out.end(), {'I', 'N', 'S', 'T'});
+        out.insert(out.end(), {'I', 'N', 'S', '2'});
         sizeAt = out.size();
         put(out, 0, 8);
         put(out, instances.size(), 4);
@@ -338,10 +358,13 @@ std::string writeWorldFile(const char* path, const Grid& g, uint32_t seed, const
             put(out, in.seed, 4);
             put(out, in.params.size(), 1);
             for (float f : in.params) put(out, std::bit_cast<uint32_t>(f), 4);
-            put(out, in.cells.size(), 4);
-            for (const Instance::Cell& c : in.cells) {
-                put(out, c.x, 2), put(out, c.y, 2), put(out, c.z, 2);
-                out.push_back(c.before), out.push_back(c.after);
+            if (!encodeCells(in.cells, out)) {
+                out.push_back(0);
+                put(out, in.cells.size(), 4);
+                for (const Instance::Cell& c : in.cells) {
+                    put(out, c.x, 2), put(out, c.y, 2), put(out, c.z, 2);
+                    out.push_back(c.before), out.push_back(c.after);
+                }
             }
         }
         endSection();
@@ -402,8 +425,8 @@ std::string replaceFile(const char* path, const std::vector<uint8_t>& bytes, boo
     return {};
 }
 
-// Reads the INST payload [p, end) into `out`; returns why it's malformed, or "".
-static std::string readInstances(const uint8_t* p, const uint8_t* end, glm::ivec3 size, std::vector<Instance>& out) {
+// Reads the INST or (`v2`) INS2 payload [p, end) into `out`; returns why it's malformed, or "".
+static std::string readInstances(const uint8_t* p, const uint8_t* end, glm::ivec3 size, bool v2, std::vector<Instance>& out) {
     bool truncated = false;
     auto take = [&](int64_t bytes) -> uint64_t {  // a little-endian number, or 0 past the end
         if (end - p < bytes) return truncated = true, p = end, 0;
@@ -425,15 +448,43 @@ static std::string readInstances(const uint8_t* p, const uint8_t* end, glm::ivec
         uint64_t params = take(1);
         if (params > kMaxInstanceParams) return std::format("bad instance {}", in.id);
         for (uint64_t k = 0; k < params; ++k) in.params.push_back(std::bit_cast<float>(uint32_t(take(4))));
-        uint64_t cells = take(4);
-        if (truncated || uint64_t(end - p) / 8 < cells) return "truncated instances";
-        if ((total += cells) > kMaxInstanceCells) return "instances hold too many cells";
-        in.cells.resize(cells);
-        for (Instance::Cell& c : in.cells) {
-            c = {uint16_t(get(p, 2)), uint16_t(get(p + 2, 2)), uint16_t(get(p + 4, 2)), Block(p[6]), Block(p[7])};
-            p += 8;
-            if (c.x >= size.x || c.y >= size.y || c.z >= size.z || c.before >= BlockCount || c.after >= BlockCount)
-                return "bad instance cell";
+        uint64_t form = v2 ? take(1) : 0;
+        if (form > 1) return std::format("bad instance {}", in.id);
+        if (form == 1) {
+            glm::ivec3 lo, e;
+            for (int a = 0; a < 3; ++a) lo[a] = int(take(2));
+            for (int a = 0; a < 3; ++a) e[a] = int(take(1)) + 1;
+            if (truncated || glm::any(glm::greaterThan(lo + e, size))) return std::format("bad instance {}", in.id);
+            for (int64_t i = 0, volume = int64_t(e.x) * e.y * e.z; i < volume;) {
+                Block before = Block(take(1)), after = Block(take(1));
+                int64_t count = 0;
+                for (int shift = 0;; shift += 7) {
+                    uint64_t b = take(1);
+                    if (truncated || shift > 21) return "truncated instances";
+                    count |= int64_t(b & 127) << shift;
+                    if (!(b & 128)) break;
+                }
+                if (++count > volume - i || before >= BlockCount || after >= BlockCount) return "bad instance cell";
+                if (before != after) {
+                    if ((total += uint64_t(count)) > kMaxInstanceCells) return "instances hold too many cells";
+                    for (int64_t k = i; k < i + count; ++k) {
+                        glm::ivec3 c = lo + glm::ivec3(int(k % e.x), int(k / (int64_t(e.x) * e.z)), int(k / e.x % e.z));
+                        in.cells.push_back({uint16_t(c.x), uint16_t(c.y), uint16_t(c.z), before, after});
+                    }
+                }
+                i += count;
+            }
+        } else {
+            uint64_t cells = take(4);
+            if (truncated || uint64_t(end - p) / 8 < cells) return "truncated instances";
+            if ((total += cells) > kMaxInstanceCells) return "instances hold too many cells";
+            in.cells.resize(cells);
+            for (Instance::Cell& c : in.cells) {
+                c = {uint16_t(get(p, 2)), uint16_t(get(p + 2, 2)), uint16_t(get(p + 4, 2)), Block(p[6]), Block(p[7])};
+                p += 8;
+                if (c.x >= size.x || c.y >= size.y || c.z >= size.z || c.before >= BlockCount || c.after >= BlockCount)
+                    return "bad instance cell";
+            }
         }
         glm::ivec3 lo(INT_MAX), hi(INT_MIN);
         for (const Instance::Cell& c : in.cells) lo = glm::min(lo, glm::ivec3(c.x, c.y, c.z)), hi = glm::max(hi, glm::ivec3(c.x, c.y, c.z));
@@ -496,8 +547,9 @@ std::string readWorldFile(const char* path, Grid& g, uint32_t& seed, std::vector
             });
             if (!ok) return "corrupt chunk data";
             voxels = true;
-        } else if (std::memcmp(tag, "INST", 4) == 0) {
-            if (std::string error = readInstances(p, next, size, instances); !error.empty()) return error;
+        } else if (bool v2 = std::memcmp(tag, "INS2", 4) == 0; v2 || std::memcmp(tag, "INST", 4) == 0) {
+            if (!instances.empty()) return "two instance sections";
+            if (std::string error = readInstances(p, next, size, v2, instances); !error.empty()) return error;
         } else {
             Section& sec = extra.emplace_back();
             std::memcpy(sec.tag, tag, 4);

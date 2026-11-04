@@ -110,6 +110,12 @@ def main():
         if err:
             raise RuntimeError(state)
         x, z = int(state["player"][0]) + 20, int(state["player"][2]) + 20
+        # open ground nearest the spawn: no tree crowns over the test area (heights count trees)
+        for dx, dz in sorted(((dx, dz) for dx in range(-400, 401, 24) for dz in range(-400, 401, 24)), key=lambda d: abs(d[0]) + abs(d[1])):
+            hs = tool("heights", x0=x + dx - 45, z0=z + dz - 30, x1=x + dx + 45, z1=z + dz + 45)[1]["heights"]
+            if max(map(max, hs)) - min(map(min, hs)) <= 8:
+                x, z = x + dx, z + dz
+                break
 
         # the bridge lists the game's NPC kinds and materials (its catalog command), not its own copies
         unfilled = "enum" not in first["mark"]["entity"]
@@ -197,7 +203,7 @@ def main():
         try:
             err, r, _ = tool("prefabs")
             names = [p["name"] for p in r["prefabs"]] if not err else []
-            check(not err and {"tree", "pine", "bush", "boulder", "spire", "cottage", "camp", "e2e-hut"} <= set(names) and
+            check(not err and {"tree", "pine", "bush", "boulder", "spire", "maple", "birch", "araucaria", "cottage", "camp", "e2e-hut"} <= set(names) and
                   r["errors"] == ["e2e-broken.txt: line 3: 'X' is not in the legend"] and "Cobble" in r["blocks"],
                   f"prefabs lists {len(names)} prefabs and the broken file's error")
         finally:
@@ -208,8 +214,8 @@ def main():
         check(not err and r["instance"]["rotation"] == 90 and r["instance"]["box"]["min"][1] == before + 1, "place a prefab written just now")
         err, r, _ = tool("place", prefab="cottage", x=x + 12, z=z, seed=7)
         check(not err and r["instance"]["id"] == hut_id + 1, "place the cottage")
-        err, r, _ = tool("place", prefab="tree", x=x - 12, z=z, params={"trunk": 12, "radius": 5})
-        check(not err and r["instance"]["params"] == {"trunk": 12, "radius": 5}, "place a tree with params")
+        err, r, _ = tool("place", prefab="tree", x=x - 12, z=z, params={"height": 12, "crown": 5})
+        check(not err and r["instance"]["params"] == {"height": 12, "crown": 5}, "place a tree with params")
         err, msg, _ = tool("place", prefab="castle", x=x, z=z)
         err2, msg2, _ = tool("place", prefab="tree", x=x, z=z, params={"trunk": 99})
         check(err and "castle" in msg and err2 and "trunk" in msg2, f"bad prefab and params are tool errors ({msg2})")
@@ -222,6 +228,10 @@ def main():
         check(not err and tool("instances")[1]["count"] == 2 and r["undo_steps"] == steps + 1, "remove")
         tool("undo")
         check(tool("instances")[1]["count"] == 3, "undo brings the instance back")
+        steps = tool("state")[1]["undo_steps"]
+        err, r, _ = tool("replant", dry_run=True)
+        check(not err and r["dry_run"] and r["removed_trees"] == 0 and tool("state")[1]["undo_steps"] == steps,
+              f"replant dry run counts and changes nothing ({r if err else r['planted']} to plant)")
         err, msg, _ = tool("remove", id=999)
         check(err and "999" in msg, "remove an unknown id is an error")
         # a camp brings its own bandits: the instance's markers, removed with it
@@ -318,7 +328,7 @@ def main():
         check(not err and os.path.getsize(opt.world) > 100_000, f"save writes {opt.world}")
         with open(opt.world, "rb") as f:
             data = f.read()
-            check(b"INST" in data and b"MARK" in data, "the saved world holds the prefab instances and the markers")
+            check(b"INS2" in data and b"MARK" in data, "the saved world holds the prefab instances and the markers")
         check(not os.path.exists(save), "save writes the world only, never the player save")
         copy = os.path.join(os.path.dirname(opt.world), "e2e-copy.flyw")
         err, r, _ = tool("save", path=copy)

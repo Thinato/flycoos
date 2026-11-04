@@ -183,8 +183,10 @@ check (it opens the game on a scratch world, on a free port).
 ## Prefabs
 
 Generated prefabs grow from a few parameters with the same code as the world's own decoration:
-`tree` (trunk, radius), `pine` (height), `bush` (radius), `boulder` (radius), `spire` (height,
-radius). Structures are text files in `prefabs/` (`cottage`, `tent`, `camp`, `well`, `fence`,
+the trees `tree` (an oak: height, crown), `maple` (height, crown, colour), `birch` (height, crown),
+`pine` (a conifer: height) and `araucaria` (height, crown), plus `bush` (radius), `boulder` (radius)
+and `spire` (height, radius); crown 0 sizes it by the height (docs/ART.md "Trees"). The `replant`
+command turns an older world's baked trees into these, as instances. Structures are text files in `prefabs/` (`cottage`, `tent`, `camp`, `well`, `fence`,
 `ruin`); write a new one and the `prefabs` command (or **Rescan** in the panel) picks it up. The
 file name is the prefab name. This is `prefabs/fence.txt`:
 

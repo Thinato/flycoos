@@ -167,7 +167,7 @@ std::vector<EditOp> pathOps(const json& a, const Grid& g) {
     std::vector<int> ground, heights;  // ground under the trees, so a forest doesn't lift the road
     for (glm::ivec2 c : centers) {
         int y = groundTop(g, c.x, c.y);
-        while (y > 0 && (g.get({c.x, y, c.y}) == Wood || g.get({c.x, y, c.y}) == Leaves || g.get({c.x, y, c.y}) == Air)) --y;
+        while (y > 0 && (isTreeBlock(g.get({c.x, y, c.y})) || g.get({c.x, y, c.y}) == Air)) --y;
         ground.push_back(y);
     }
     int window = int(std::ceil(float(16 + 2 * radius) / step));  // samples on each side to average over
@@ -631,6 +631,16 @@ json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& 
         if (r.error) throw BadArgs(r.error);
         out.dirty = r.dirty;
         return {{"instance", instanceJson(*std::ranges::find(list, id, &Instance::id), lib)}, {"undo_steps", h.undo.size()}};
+    }
+    if (cmd == "replant") {  // a one-off for worlds made before ADR-029: no work budget, it may take a few seconds
+        bool all = !a.contains("x0") && !a.contains("z0") && !a.contains("x1") && !a.contains("z1");
+        auto [lo, hi] = all ? std::pair(glm::ivec2(0), glm::ivec2(g.size.x - 1, g.size.z - 1)) : region(a, g);
+        bool dry = flag(a, "dry_run", false);
+        ReplantReport r;
+        EditResult e = replantTrees(g, lib, v.seed, lo, hi, dry, list, markers, h, r);
+        out.dirty = e.dirty;
+        return {{"dry_run", dry}, {"removed_trees", r.removedTrees}, {"removed_voxels", r.removedVoxels}, {"kept_clusters", r.keptClusters},
+                {"regrown", r.regrown}, {"planted", r.planted}, {"skipped", r.skipped}, {"box", boxJson(e.dirty)}, {"undo_steps", h.undo.size()}};
     }
     if (cmd == "instances") {
         bool all = !a.contains("x0") && !a.contains("z0") && !a.contains("x1") && !a.contains("z1");

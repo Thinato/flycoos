@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -15,18 +17,62 @@ enum Block : uint8_t { Air, Grass, Dirt, Stone, Sand, Snow, Wood, Leaves, Water,
                        Hide, Tusk, Snout, Hood, Leather,  // boar, bandit
                        Plate,                             // armor
                        Planks, Cobble, Thatch, Ember,     // prefabs
-                       Brick, MossyCobble, DarkPlanks, Hay, Clay, Slate, Lantern,  // building (the palette holds 64)
-                       BlockCount };
+                       Brick, MossyCobble, DarkPlanks, Hay, Clay, Slate, Lantern,  // building
+                       // Tree leaves: 7 kinds x 4 shades, dark to light (leafBlock). Oak's shade 2 is Leaves.
+                       OakLeaves0, OakLeaves1, OakLeaves3, BirchLeaves0, BirchLeaves1, BirchLeaves2, BirchLeaves3,
+                       PineNeedles0, PineNeedles1, PineNeedles2, PineNeedles3,
+                       AraucariaLeaves0, AraucariaLeaves1, AraucariaLeaves2, AraucariaLeaves3,
+                       MapleRed0, MapleRed1, MapleRed2, MapleRed3, MapleOrange0, MapleOrange1, MapleOrange2, MapleOrange3,
+                       MapleGold0, MapleGold1, MapleGold2, MapleGold3,
+                       BirchBark, PineBark, AraucariaBark,  // trunks (oak and maple use Wood)
+                       BlockCount };  // the palette holds 128 (shaders/world.metal packs ids into 7 bits)
+
+// Leaf kinds; a tree's crown steps through 4 shades of its kind, darkest at the bottom (docs/ART.md).
+enum class Leaf : uint8_t { Oak, Birch, Pine, Araucaria, MapleRed, MapleOrange, MapleGold, Count };
+constexpr int kLeafShades = 4;
+constexpr Block leafBlock(Leaf kind, int shade) {
+    int i = int(kind) * kLeafShades + shade;  // 0..27; oak shade 2 is the old Leaves block
+    return i == 2 ? Leaves : Block(OakLeaves0 + i - (i > 2));
+}
+struct LeafOf { int8_t shade = -1; Leaf kind{}; };  // shade -1: not a leaf
+inline constexpr auto kLeafOf = [] {
+    std::array<LeafOf, BlockCount> t{};
+    for (int k = 0; k < int(Leaf::Count); ++k)
+        for (int s = 0; s < kLeafShades; ++s) t[leafBlock(Leaf(k), s)] = {int8_t(s), Leaf(k)};
+    return t;
+}();
+constexpr bool isLeaf(Block b) { return kLeafOf[b].shade >= 0; }
+constexpr bool isTreeBlock(Block b) { return b == Wood || b == BirchBark || b == PineBark || b == AraucariaBark || isLeaf(b); }
 
 inline bool isOpaque(Block b) { return b != Air && b != Water; }
 
 inline constexpr const char* kBlockNames[BlockCount] = {
     "Air", "Grass", "Dirt", "Stone", "Sand", "Snow", "Wood", "Leaves", "Water", "Skin", "Tunic", "Belt", "Boots", "Hair",
     "Eye", "Rock", "Robe", "DarkHair", "Straw", "Burlap", "Steel", "Iron", "Hide", "Tusk", "Snout", "Hood", "Leather", "Plate",
-    "Planks", "Cobble", "Thatch", "Ember", "Brick", "MossyCobble", "DarkPlanks", "Hay", "Clay", "Slate", "Lantern"};
+    "Planks", "Cobble", "Thatch", "Ember", "Brick", "MossyCobble", "DarkPlanks", "Hay", "Clay", "Slate", "Lantern",
+    "OakLeaves0", "OakLeaves1", "OakLeaves3", "BirchLeaves0", "BirchLeaves1", "BirchLeaves2", "BirchLeaves3",
+    "PineNeedles0", "PineNeedles1", "PineNeedles2", "PineNeedles3",
+    "AraucariaLeaves0", "AraucariaLeaves1", "AraucariaLeaves2", "AraucariaLeaves3",
+    "MapleRed0", "MapleRed1", "MapleRed2", "MapleRed3", "MapleOrange0", "MapleOrange1", "MapleOrange2", "MapleOrange3",
+    "MapleGold0", "MapleGold1", "MapleGold2", "MapleGold3", "BirchBark", "PineBark", "AraucariaBark"};
+
+// Leaf shades are the kind's colour (and patch tones) times kLeafRamp[shade]; shade 2 is the kind's
+// own colour. Oak's is the old Leaves colour, so old worlds keep their look.
+inline constexpr float kLeafRamp[kLeafShades] = {0.55f, 0.78f, 1.0f, 1.25f};
+struct LeafColour { float rgb[3], a[3], b[3]; };  // sRGB; a, b the patch variants
+inline constexpr LeafColour kLeafColours[int(Leaf::Count)] = {
+    {{0.20f, 0.48f, 0.18f}, {0.38f, 0.60f, 0.20f}, {0.12f, 0.36f, 0.14f}},  // oak: warm green
+    {{0.42f, 0.62f, 0.22f}, {0.56f, 0.70f, 0.26f}, {0.30f, 0.50f, 0.18f}},  // birch: light yellow-green
+    {{0.10f, 0.32f, 0.24f}, {0.16f, 0.40f, 0.28f}, {0.07f, 0.24f, 0.20f}},  // pine: dark blue-green
+    {{0.12f, 0.38f, 0.16f}, {0.20f, 0.46f, 0.18f}, {0.08f, 0.28f, 0.13f}},  // araucaria: deep green
+    {{0.70f, 0.14f, 0.10f}, {0.80f, 0.26f, 0.12f}, {0.54f, 0.09f, 0.09f}},  // maple red
+    {{0.86f, 0.42f, 0.10f}, {0.92f, 0.56f, 0.16f}, {0.74f, 0.30f, 0.08f}},  // maple orange
+    {{0.88f, 0.68f, 0.16f}, {0.94f, 0.80f, 0.30f}, {0.76f, 0.54f, 0.12f}},  // maple gold
+};
 
 // Block colors in sRGB, indexed by Block. The renderer converts them to linear; the map command uses them as is.
-inline constexpr float kPalette[BlockCount][3] = {
+inline constexpr auto kPalette = [] {
+    std::array<std::array<float, 3>, BlockCount> p{{
     {0, 0, 0},              // Air
     {0.36f, 0.62f, 0.24f},  // Grass
     {0.47f, 0.33f, 0.20f},  // Dirt
@@ -66,13 +112,23 @@ inline constexpr float kPalette[BlockCount][3] = {
     {0.74f, 0.52f, 0.38f},  // Clay
     {0.35f, 0.37f, 0.42f},  // Slate
     {1.00f, 0.80f, 0.45f},  // Lantern
-};
+    }};
+    for (int k = 0; k < int(Leaf::Count); ++k)
+        for (int s = 0; s < kLeafShades; ++s)
+            for (int c = 0; c < 3; ++c)
+                p[leafBlock(Leaf(k), s)][size_t(c)] = std::min(1.0f, kLeafColours[k].rgb[c] * kLeafRamp[s]);
+    p[BirchBark] = {0.86f, 0.84f, 0.78f};
+    p[PineBark] = {0.36f, 0.22f, 0.14f};
+    p[AraucariaBark] = {0.40f, 0.33f, 0.28f};
+    return p;
+}();
 
 // Patch tones (docs/ART.md, ADR-028), indexed by Block: inside a block, soft patches about `size`
 // voxels across fade its kPalette colour toward variant a and variant b (sRGB). `strength` 0..1:
 // natural blocks clear, man-made faint, 0 plain (water, light sources, model-only blocks).
 struct BlockTone { float a[3], b[3]; float size, strength; };
-inline constexpr BlockTone kTones[BlockCount] = {
+inline constexpr auto kTones = [] {
+    std::array<BlockTone, BlockCount> t{{
     {},                                                     // Air
     {{0.60f, 0.68f, 0.26f}, {0.20f, 0.46f, 0.17f}, 24, 0.9f},  // Grass: dry yellow-green, lush dark green
     {{0.36f, 0.24f, 0.14f}, {0.56f, 0.42f, 0.27f}, 12, 0.7f},  // Dirt: damp, dry
@@ -96,7 +152,21 @@ inline constexpr BlockTone kTones[BlockCount] = {
     {{0.64f, 0.44f, 0.32f}, {0.78f, 0.60f, 0.47f}, 8, 0.25f},  // Clay
     {{0.28f, 0.30f, 0.35f}, {0.42f, 0.44f, 0.48f}, 8, 0.25f},  // Slate
     {},                                                     // Lantern
-};
+    }};
+    for (int k = 0; k < int(Leaf::Count); ++k)
+        for (int s = 0; s < kLeafShades; ++s) {
+            BlockTone& o = t[leafBlock(Leaf(k), s)];
+            for (int c = 0; c < 3; ++c) {
+                o.a[c] = std::min(1.0f, kLeafColours[k].a[c] * kLeafRamp[s]);
+                o.b[c] = std::min(1.0f, kLeafColours[k].b[c] * kLeafRamp[s]);
+            }
+            o.size = 12, o.strength = 0.8f;
+        }
+    t[BirchBark] = {{0.24f, 0.23f, 0.22f}, {0.95f, 0.94f, 0.90f}, 4, 0.9f};  // dark knots, bright white
+    t[PineBark] = {{0.26f, 0.15f, 0.09f}, {0.48f, 0.32f, 0.20f}, 5, 0.8f};
+    t[AraucariaBark] = {{0.30f, 0.24f, 0.20f}, {0.52f, 0.44f, 0.38f}, 4, 0.8f};  // scaly plates
+    return t;
+}();
 
 constexpr int kChunk = 32;
 constexpr glm::ivec3 kWorldSize{1024, 192, 1024};  // ponytail: dense grid (192 MiB); chunk streaming in M1
@@ -129,14 +199,10 @@ void parallelFor(int count, const std::function<void(int)>& fn);
 
 void generateTerrain(Grid& world, uint32_t seed);
 
-// Natural shapes, shared by generateTerrain and the generated prefabs. Each grows on the ground
-// voxel `at`; trunks grow down to the ground on slopes, canopies only fill air, rocks overwrite.
-// Their ragged surfaces are seeded by `seed` at positions relative to `jitterOrigin` (terrain
-// passes 0; a prefab instance passes `at`, so moving it keeps its shape).
-void growTree(Grid& g, glm::ivec3 at, int trunk, float radius, uint32_t seed, glm::ivec3 jitterOrigin);
+// Rocks, shared by generateTerrain and the generated prefabs (trees: trees.h). Each grows on the
+// ground voxel `at` and overwrites. The ragged surface is seeded by `seed` at positions relative to
+// `jitterOrigin` (terrain passes 0; a prefab instance passes `at`, so moving it keeps its shape).
 void growRock(Grid& g, glm::ivec3 at, bool spire, float radius, int height, uint32_t seed, glm::ivec3 jitterOrigin);
-void growPine(Grid& g, glm::ivec3 at, int height, uint32_t seed, glm::ivec3 jitterOrigin);
-void growBush(Grid& g, glm::ivec3 at, float radius, uint32_t seed, glm::ivec3 jitterOrigin);
 
 // Feet position on the grass column nearest `near` (default: the world center).
 glm::vec3 findSpawn(const Grid& world);

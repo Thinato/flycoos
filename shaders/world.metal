@@ -25,9 +25,9 @@ struct Frame {
     float4 shadowTint;    // rgb multiplier occluded albedo shades toward, a strength (weaker at night)
     float4 lightParams;   // voxel light: x sun gate, y falloff, z dark ambient, w on (else all open sky)
     float4 emberColor;    // rgb block light color (linear, times strength)
-    float4 palette[64];
-    float4 toneA[64];     // patch variants (ADR-028), rgb linear; w patch size in voxels
-    float4 toneB[64];     // rgb linear; w strength (0: plain)
+    float4 palette[128];
+    float4 toneA[128];     // patch variants (ADR-028), rgb linear; w patch size in voxels
+    float4 toneB[128];     // rgb linear; w strength (0: plain)
 };
 struct Draw {
     float4x4 model;
@@ -40,8 +40,8 @@ struct VOut {
     float3 worldPos;
     float3 normal;
     float ao;  // aoCurve value: 1 open, lower in corners
-    // block id in bits 0-5, the quad's light (sky << 4 | block) in bits 6-13, quad index in bits
-    // 14-30 (for the greedy-quads debug view), bit 31 set for models (flat colour). Packed into one
+    // block id in bits 0-6, the quad's light (sky << 4 | block) in bits 7-14, quad index in bits
+    // 15-30 (for the greedy-quads debug view), bit 31 set for models (flat colour). Packed into one
     // output because every extra vertex output costs bandwidth on tile-based GPUs (~15% here).
     uint blockAndQuad [[flat]];
 };
@@ -84,7 +84,7 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     out.worldPos = world.xyz;
     out.normal = normalize((d.model * float4(kNormals[face], 0.0)).xyz);
     out.ao = f.aoCurve[uint(ao[c])];
-    out.blockAndQuad = block | lit << 6 | ((d.firstQuad.x + vid / 6) & 0x1FFFFu) << 14 | uint(model) << 31;  // ponytail: quad index wraps past 128K quads (debug color only)
+    out.blockAndQuad = block | lit << 7 | ((d.firstQuad.x + vid / 6) & 0xFFFFu) << 15 | uint(model) << 31;  // ponytail: quad index wraps past 64K quads (debug color only)
     return out;
 }
 
@@ -126,7 +126,7 @@ static float lightCurve(constant Frame& f, uint level) {
 }
 
 static uint voxelLight(constant Frame& f, VOut in) {
-    return f.lightParams.w > 0.0 ? (in.blockAndQuad >> 6) & 255u : 0xF0u;
+    return f.lightParams.w > 0.0 ? (in.blockAndQuad >> 7) & 255u : 0xF0u;
 }
 
 static float3 light(constant Frame& f, VOut in, float3 albedo) {
@@ -196,7 +196,7 @@ static float2 noise2(float3 p, uint seed) {
 // two smooth noise fields sampled at the voxel cell, so neighbours step gently and a face is uniform.
 // Colour is per block, so material edges stay sharp. Models and strength-0 blocks are flat.
 static float3 albedoOf(constant Frame& f, VOut in) {
-    uint block = in.blockAndQuad & 63u;
+    uint block = in.blockAndQuad & 127u;
     float3 c = f.palette[block].rgb;
     float strength = f.toneB[block].w;
     if (strength <= 0.0 || (in.blockAndQuad >> 31) != 0u) return c;
@@ -207,7 +207,7 @@ static float3 albedoOf(constant Frame& f, VOut in) {
 
 // Light levels debug view (display values): sky blue-white, block orange, shaded a little by facing.
 static float3 lightLevels(VOut in) {
-    uint lit = (in.blockAndQuad >> 6) & 255u;
+    uint lit = (in.blockAndQuad >> 7) & 255u;
     float3 c = float(lit >> 4) / 15.0 * float3(0.55, 0.7, 1.0) + float(lit & 15u) / 15.0 * float3(1.0, 0.5, 0.1);
     return pow(saturate(c * (0.8 + 0.2 * normalize(in.normal).y)), 2.2);
 }
@@ -222,7 +222,7 @@ fragment float4 voxel_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) 
     if (mode == 0) {  // normal path; `mode` is uniform, so this branch is coherent and cheap
         albedo = albedoOf(f, in);
     } else if (mode == 1) {  // greedy quads
-        albedo = idColor((in.blockAndQuad >> 14) & 0x1FFFFu);
+        albedo = idColor((in.blockAndQuad >> 15) & 0xFFFFu);
     } else {  // chunks: 32^3 cell containing the surface (nudged inside along the normal)
         uint3 cell = uint3(int3(floor((in.worldPos - in.normal * 0.01) / 32.0)));
         albedo = idColor(cell.x * 73856093u ^ cell.y * 19349663u ^ cell.z * 83492791u);
@@ -239,7 +239,7 @@ fragment float4 water_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) 
     float3 n = normalize(in.normal);
     float3 v = normalize(in.worldPos - f.eye.xyz);
     float fresnel = pow(1.0 - saturate(dot(-v, n)), 4.0);
-    float3 color = mix(light(f, in, f.palette[in.blockAndQuad & 63u].rgb), skyColor(f, reflect(v, n)), fresnel * 0.7);
+    float3 color = mix(light(f, in, f.palette[in.blockAndQuad & 127u].rgb), skyColor(f, reflect(v, n)), fresnel * 0.7);
     float spec = pow(saturate(dot(reflect(v, n), f.lightDir.xyz)), 120.0);
     color += f.lightColor.rgb * spec * 0.6;
     return float4(tonemap(applyFog(f, color, in.worldPos)), mix(0.78, 0.95, fresnel));

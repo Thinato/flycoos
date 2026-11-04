@@ -24,17 +24,17 @@ struct FrameUniforms {
     glm::vec4 aoCurve, shadowTint;
     glm::vec4 lightParams;  // x sun gate, y light falloff, z dark ambient, w voxel light on
     glm::vec4 emberColor;   // rgb linear, times strength
-    glm::vec4 palette[64];
-    glm::vec4 toneA[64], toneB[64];  // rgb linear patch variants; toneA.w size (voxels), toneB.w strength
+    glm::vec4 palette[128];
+    glm::vec4 toneA[128], toneB[128];  // rgb linear patch variants; toneA.w size (voxels), toneB.w strength
 };
 struct DrawUniforms {
     glm::mat4 model;
     glm::vec4 modelLight;  // x models: light + 1 (0: a chunk)
     glm::uvec4 firstQuad;  // x used
 };
-static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 3 * 64 * 16);
+static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 3 * 128 * 16);
 static_assert(sizeof(DrawUniforms) == 64 + 16 + 16);
-static_assert(BlockCount <= 64);  // also: shaders/world.metal packs block ids into 6 bits
+static_assert(BlockCount <= 128);  // also: shaders/world.metal packs block ids into 7 bits
 
 glm::vec3 lin(glm::vec3 srgb) { return glm::pow(srgb, glm::vec3(2.2f)); }
 
@@ -395,10 +395,14 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     u.lightParams = {settings.sunGate, settings.lightFalloff, settings.darkAmbient, settings.voxelLight};
     u.emberColor = glm::vec4(lin(settings.emberColor) * settings.emberStrength, 0);
     for (int b = 0; b < BlockCount; ++b) {
-        const BlockTone& t = settings.tones[size_t(b)];
-        u.palette[b] = glm::vec4(lin({kPalette[b][0], kPalette[b][1], kPalette[b][2]}), 1);
-        u.toneA[b] = glm::vec4(lin({t.a[0], t.a[1], t.a[2]}), std::max(t.size * settings.patchSize, 2.0f));  // smaller reads as per-voxel noise
-        u.toneB[b] = glm::vec4(lin({t.b[0], t.b[1], t.b[2]}), t.strength * settings.patchStrength);
+        int mid = isLeaf(Block(b)) ? leafBlock(kLeafOf[size_t(b)].kind, 2) : b;  // a leaf shade blends from its kind's colour
+        auto shaded = [&](const float* own, const float* base) {
+            return lin(glm::mix(glm::vec3(base[0], base[1], base[2]), glm::vec3(own[0], own[1], own[2]), settings.leafShade));
+        };
+        const BlockTone &t = settings.tones[size_t(b)], &m = settings.tones[size_t(mid)];
+        u.palette[b] = glm::vec4(shaded(kPalette[size_t(b)].data(), kPalette[size_t(mid)].data()), 1);
+        u.toneA[b] = glm::vec4(shaded(t.a, m.a), std::max(t.size * settings.patchSize, 2.0f));  // smaller reads as per-voxel noise
+        u.toneB[b] = glm::vec4(shaded(t.b, m.b), t.strength * settings.patchStrength);
     }
     SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
     SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);

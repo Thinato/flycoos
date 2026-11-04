@@ -145,14 +145,14 @@ TOOLS = {
                   "depth": num("Blocks below the graded height (river bed), default 0", 0, 64),
                   "material": SOLID},
                  ["points"])),
-    "prefabs": ("List the prefabs `place` can put into the world: generated ones (tree, pine, bush, boulder, spire) with "
+    "prefabs": ("List the prefabs `place` can put into the world: generated ones (trees: tree = oak, maple, birch, pine = conifer, araucaria; bush, boulder, spire) with "
                 "their params and ranges, and structures from text files in prefabs/ with their size. Rescans the folder "
                 "first, so a file you just wrote is usable right away; files that don't parse are listed in `errors` "
                 "with their line number." + PREFAB_FORMAT, obj({})),
     "place": ("Place a prefab as an instance that can be moved or removed later. It stands on column `x`, `z`: on the "
               "ground voxel `y` (default: the column's highest solid voxel; trees count, so aim at open ground). "
               "Generated prefabs grow like the world's own trees and rocks (trunks reach down to the ground on slopes, "
-              "canopies only fill air); structures overwrite their cells, `.` cells clear. Returns the instance: id, "
+              "crowns only fill air, leaves shade from dark below to light on top); structures overwrite their cells, `.` cells clear. Returns the instance: id, "
               "box, cells changed, and `markers`: those the prefab brings (its `marker:` lines), owned by the instance: they turn "
               "and move with it and go when it's removed. Fails if it would change nothing." + INSTANCE_NOTE,
               obj({"prefab": {"type": "string", "description": "Name from the prefabs tool"},
@@ -161,8 +161,8 @@ TOOLS = {
                    "rotation": {"type": "integer", "enum": [0, 90, 180, 270],
                                 "description": "Degrees counterclockwise seen from above (90 turns +x toward -z, so a "
                                                "+z front faces +x); structures only, default 0"},
-                   "seed": num("Variation of generated prefabs' ragged shape, default from the position", 0, 4294967295),
-                   "params": {"type": "object", "description": "Generated prefabs: e.g. {\"trunk\": 12, \"radius\": 5}; "
+                   "seed": num("Variation of generated prefabs' shape (and a maple's colour), default from the position", 0, 4294967295),
+                   "params": {"type": "object", "description": "Generated prefabs: e.g. {\"height\": 24} for a tree; "
                                                                "missing ones take their default"}},
                   ["prefab", "x", "z"])),
     "remove": ("Remove a placed instance: every voxel it wrote that still holds what it wrote gets back what was there "
@@ -177,6 +177,14 @@ TOOLS = {
                   "y": num("Ground voxel at the new spot (default: found after removing it)", 0, 191),
                   "rotation": {"type": "integer", "enum": [0, 90, 180, 270], "description": "Default: unchanged"}},
                  ["id", "x", "z"])),
+    "replant": ("One-off for worlds made before the tree species (ADR-029): in a region (default the whole world), "
+                "remove the old generator's baked trees (clusters of Wood and Leaves not owned by an instance; posts or "
+                "hedges with only one of the two stay), regrow the old tree, pine and bush instances standing there in "
+                "today's shapes (tree and pine full grown; not where they'd meet a structure or cover a marker; "
+                "today's trees are left alone, so running it again changes nothing), and plant the generator's species there as "
+                "instances, clear of other instances and of spawn and POI markers. One undo step; nothing is saved. "
+                "It may take a few seconds for the whole world. Run with dry_run first: it only counts." + INSTANCE_NOTE,
+                obj({**REGION, "dry_run": {"type": "boolean", "description": "Only count what it would do (default false)"}})),
     "instances": ("List placed prefab instances (id, prefab, position, rotation, seed, params, box, cells), all of them "
                   "or those whose box touches a region; at most 500 listed, `count` has the total.",
                   obj(REGION)),

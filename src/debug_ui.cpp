@@ -109,7 +109,9 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
     ImGui::SliderFloat("Size (voxels)", &t.size, 1, 64, "%.0f");
     ImGui::SliderFloat("Strength", &t.strength, 0, 1, "%.2f");
     ImGui::SetItemTooltip("Runtime only: copy tuned values into kTones (src/world.h).");
-    if (ImGui::Button("Reset tones")) r.tones = std::to_array(kTones);
+    if (ImGui::Button("Reset tones")) r.tones = kTones;
+    ImGui::SliderFloat("Leaf shade", &r.leafShade, 0, 1.5f, "%.2f");
+    ImGui::SetItemTooltip("Tree crowns, dark at the bottom to light at the top. 0: one colour per leaf kind.");
 
     ImGui::SeparatorText("This frame");
     ImGui::Text("Chunks drawn   %d / %d", s.chunksDrawn, s.chunksTotal);

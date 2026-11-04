@@ -26,6 +26,7 @@
 #include "mesher.h"
 #include "prefab.h"
 #include "save.h"
+#include "trees.h"
 #include "session.h"
 
 static int failures = 0;
@@ -94,8 +95,17 @@ static void tones() {
     constexpr Block plain[] = {Air, Water, Ember, Lantern, Skin, Tunic, Belt, Boots, Hair, Eye, Robe, DarkHair, Straw,
                                Burlap, Steel, Iron, Hide, Tusk, Snout, Hood, Leather, Plate};
     constexpr Block made[] = {Planks, DarkPlanks, Brick, Cobble, MossyCobble, Thatch, Hay, Clay, Slate};
-    constexpr Block natural[] = {Grass, Leaves, Dirt, Sand, Snow, Stone, Rock, Wood};
+    constexpr Block natural[] = {Grass, Dirt, Sand, Snow, Stone, Rock, Wood, BirchBark, PineBark, AraucariaBark};
     std::array<int, BlockCount> seen{};
+    for (int k = 0; k < int(Leaf::Count); ++k)  // leaves: natural, and the 4 shades get strictly lighter
+        for (int s = 0; s < kLeafShades; ++s) {
+            Block b = leafBlock(Leaf(k), s);
+            ++seen[b];
+            CHECK(kLeafOf[b].shade == s && kLeafOf[b].kind == Leaf(k) && isLeaf(b) && isTreeBlock(b) && kTones[b].strength >= 0.6f);
+            auto sum = [](Block x) { return kPalette[x][0] + kPalette[x][1] + kPalette[x][2]; };
+            if (s > 0) CHECK(sum(b) > sum(leafBlock(Leaf(k), s - 1)));
+        }
+    CHECK(leafBlock(Leaf::Oak, 2) == Leaves && BlockCount <= 128);
     for (Block b : plain) {
         ++seen[b];
         CHECK(kTones[b].strength == 0);
@@ -303,7 +313,7 @@ static void regions() {
             bool tree = false, rock = false;
             for (int y = kSeaLevel; y < g.size.y; ++y) {
                 Block b = g.get({x, y, z});
-                tree |= b == Wood || b == Leaves;
+                tree |= isTreeBlock(b);
                 rock |= b == Rock;
             }
             forest += tree;
@@ -311,7 +321,7 @@ static void regions() {
             sum[size_t(z + 1) * (n + 1) + x + 1] = (tree || rock) + sum[size_t(z) * (n + 1) + x + 1] +
                                                    sum[size_t(z + 1) * (n + 1) + x] - sum[size_t(z) * (n + 1) + x];
         }
-    CHECK(fnv(g) == 0xbd6a5444u);  // forests, spires and boulders unchanged (recorded before the prefab refactor)
+    CHECK(fnv(g) == 0x4cab0bf9u);  // recorded with the five tree species (ADR-029); spires and boulders as before
     CHECK(forest > n * n / 20);   // > 5% of columns under trees
     CHECK(rocky > n * n / 200);   // > 0.5% of columns with rocks
     constexpr int kOpen = 96;
@@ -1027,6 +1037,143 @@ static void worldFiles() {
     std::filesystem::remove_all(path);
 }
 
+// Trees (ADR-029): each species, at both ends of its full-grown height range and 5 seeds, has its
+// trunk width, height and crown width, its bark and leaves, no stray leaves, one leaf shade per row
+// that never gets darker going up, and draws only inside shapeBox.
+static void trees() {
+    struct Want { Species s; int lo, hi, trunkLo, trunkHi, crownLo, crownHi, limbs; Block bark; Leaf leaf; };
+    constexpr Want kWant[] = {
+        {Species::Oak, 20, 28, 4, 5, 20, 26, 3, Wood, Leaf::Oak},
+        {Species::Maple, 20, 28, 4, 5, 20, 26, 3, Wood, Leaf::MapleRed},
+        {Species::Birch, 18, 24, 2, 3, 12, 16, 0, BirchBark, Leaf::Birch},
+        {Species::Conifer, 26, 38, 3, 3, 12, 16, 0, PineBark, Leaf::Pine},
+        {Species::Araucaria, 32, 44, 3, 4, 22, 28, 10, AraucariaBark, Leaf::Araucaria},
+    };
+    const glm::ivec3 at{48, 10, 48};
+    Grid ground({96, 80, 96});
+    for (int y = 0; y <= at.y; ++y)
+        for (int z = 0; z < 96; ++z)
+            for (int x = 0; x < 96; ++x) ground.set({x, y, z}, y == at.y ? Grass : Stone);
+    for (const Want& w : kWant)
+        for (int height : {w.lo, w.hi})
+            for (uint32_t seed = 1; seed <= 5; ++seed) {
+                TreeShape t = planTree(w.s, height, 0, 0, seed);
+                Grid g = ground;
+                growShape(g, at, t, seed);
+                Box box = shapeBox(t, at);
+                int top = 0;
+                std::array<int, 13> slice{};  // wood per z row of the trunk, 5 above the ground: the widest is its width
+                glm::ivec3 lo(INT_MAX), hi(INT_MIN);
+                std::vector<int> rowShade(80, -1);
+                bool inBox = true, kinds = true, strays = false, rows = true;
+                for (int y = 0; y < 80; ++y)
+                    for (int z = 0; z < 96; ++z)
+                        for (int x = 0; x < 96; ++x) {
+                            glm::ivec3 p{x, y, z};
+                            Block b = g.get(p);
+                            if (b == ground.get(p)) continue;
+                            inBox &= glm::all(glm::greaterThanEqual(p, box.lo)) && glm::all(glm::lessThanEqual(p, box.hi));
+                            if (!isLeaf(b)) {
+                                kinds &= b == w.bark;
+                                if (y == at.y + 5 && std::abs(x - at.x) <= 6 && std::abs(z - at.z) <= 6) ++slice[size_t(z - at.z + 6)];
+                                continue;
+                            }
+                            kinds &= kLeafOf[b].kind == w.leaf;
+                            top = std::max(top, y - at.y);
+                            lo = glm::min(lo, p), hi = glm::max(hi, p);
+                            strays |= std::ranges::none_of(std::array{glm::ivec3(1, 0, 0), glm::ivec3(-1, 0, 0), glm::ivec3(0, 1, 0), glm::ivec3(0, -1, 0),
+                                                                      glm::ivec3(0, 0, 1), glm::ivec3(0, 0, -1)},
+                                                           [&](glm::ivec3 f) { return isOpaque(g.get(p + f)); });
+                            int shade = kLeafOf[b].shade;
+                            rows &= rowShade[size_t(y)] < 0 || rowShade[size_t(y)] == shade;
+                            rowShade[size_t(y)] = shade;
+                        }
+                int last = 0;
+                for (int shade : rowShade) rows &= shade < 0 || shade >= last, last = std::max(last, shade);
+                int crown = std::max(hi.x - lo.x, hi.z - lo.z) + 1, trunk = std::ranges::max(slice);
+                bool ok = inBox && kinds && !strays && rows && std::abs(top - height) <= 2 && trunk >= w.trunkLo && trunk <= w.trunkHi &&
+                          crown >= int(float(w.crownLo) * 0.85f) && crown <= int(float(w.crownHi) * 1.15f) + 1 && t.limbs >= w.limbs;
+                if (!ok)
+                    std::println("tree {} h{} seed {}: box {} kinds {} strays {} rows {} top {} trunk {} crown {} limbs {}", int(w.s), height, seed,
+                                 inBox, kinds, strays, rows, top, trunk, crown, t.limbs);
+                CHECK(ok);
+            }
+    for (float radius : {1.0f, 2.5f, 4.0f}) {  // bushes: oak leaves, no strays, inside their box
+        TreeShape t = planBush(radius, 9);
+        Grid g = ground;
+        growShape(g, at, t, 9);
+        Box box = shapeBox(t, at);
+        int leaves = 0;
+        for (int y = at.y + 1; y < 30; ++y)
+            for (int z = 30; z < 66; ++z)
+                for (int x = 30; x < 66; ++x)
+                    if (Block b = g.get({x, y, z}); b != Air) {
+                        ++leaves;
+                        CHECK(isLeaf(b) && kLeafOf[b].kind == Leaf::Oak && x >= box.lo.x && x <= box.hi.x && y <= box.hi.y && z >= box.lo.z && z <= box.hi.z);
+                    }
+        CHECK(leaves > 0);
+    }
+}
+
+// Instance cells: INS2 run-length codes cells in box order (prefab placements) and keeps any other
+// list as is; both round-trip exactly, and old INST files still load.
+static void instanceCells() {
+    Grid g({32, 32, 32});
+    std::vector<Instance> list(2);
+    list[0] = {.id = 3, .prefab = "bush", .pos = {9, 4, 9}, .seed = 7, .params = {2}};
+    for (int y = 5; y < 12; ++y)  // a blob in box order, as placePrefab records it
+        for (int z = 4; z < 15; ++z)
+            for (int x = 4; x < 15; ++x)
+                if ((x - 9) * (x - 9) + (y - 8) * (y - 8) * 2 + (z - 9) * (z - 9) <= 25)
+                    list[0].cells.push_back({uint16_t(x), uint16_t(y), uint16_t(z), Air, y > 9 ? leafBlock(Leaf::Oak, 3) : Leaves});
+    list[0].cells.push_back({20, 20, 20, Stone, Wood});  // a far cell in the same box
+    list[1] = {.id = 9, .prefab = "tree", .pos = {2, 2, 2}, .params = {10, 4.5f},
+               .cells = {{5, 5, 5, Air, Wood}, {1, 1, 1, Dirt, Wood}, {6, 5, 5, Grass, Grass}}};  // out of order, a no-op
+    std::string path = (std::filesystem::temp_directory_path() / "flycoos_cells_test.flyw").string();
+    auto roundTrip = [&](const std::vector<Instance>& in) {
+        std::vector<Instance> back;
+        std::vector<Section> extra;
+        uint32_t seed = 0;
+        Grid h({32, 32, 32});
+        std::string error = readWorldFile(path.c_str(), h, seed, back, extra);
+        CHECK(error.empty());
+        CHECK(back.size() == in.size());
+        for (size_t i = 0; i < std::min(back.size(), in.size()); ++i)
+            CHECK(back[i].id == in[i].id && back[i].prefab == in[i].prefab && back[i].params == in[i].params &&
+                  std::ranges::equal(back[i].cells, in[i].cells, [](auto& a, auto& b) {
+                      return a.x == b.x && a.y == b.y && a.z == b.z && a.before == b.before && a.after == b.after;
+                  }));
+    };
+    CHECK(writeWorldFile(path.c_str(), g, 1, list, {}).empty());
+    roundTrip(list);
+    std::ifstream in(path, std::ios::binary);
+    std::string file((std::istreambuf_iterator<char>(in)), {});
+    in.close();
+    size_t at = file.find("INS2");
+    CHECK(at != std::string::npos && file.find("INST") == std::string::npos);
+    uint64_t payload = 0;
+    for (int i = 0; i < 8; ++i) payload |= uint64_t(uint8_t(file[at + 4 + size_t(i)])) << (8 * i);
+    CHECK(list[0].cells.size() > 300 && payload * 5 < list[0].cells.size() * 8);  // INST: 8 bytes a cell
+
+    // The same instances in the old INST form (form bytes dropped), checksum recomputed.
+    std::vector<Instance> raw = {list[1]};
+    CHECK(writeWorldFile(path.c_str(), g, 1, raw, {}).empty());
+    std::ifstream again(path, std::ios::binary);
+    file.assign((std::istreambuf_iterator<char>(again)), {});
+    again.close();
+    at = file.find("INS2");
+    size_t form = at + 12 + 4 + 4 + 1 + 4 + 12 + 1 + 4 + 1 + 4 * 2;  // header, count, id, name length, name, pos, rotation, seed, params
+    CHECK(file[form] == 0);
+    file.erase(form, 1);
+    file.replace(at, 4, "INST");
+    file[at + 4] = char(uint8_t(file[at + 4]) - 1);
+    uint32_t h = fnv1a(reinterpret_cast<const uint8_t*>(file.data()), file.size() - 4);
+    for (int i = 0; i < 4; ++i) file[file.size() - 4 + size_t(i)] = char(h >> (8 * i));
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << file;
+    roundTrip(raw);
+    std::filesystem::remove(path);
+}
+
 // Terrain with hills, trees and water in a 64x96x64 grid.
 static Grid editWorld() {
     Grid g({64, 96, 64});
@@ -1143,13 +1290,13 @@ static void editing() {
         for (int z = 0; z < 32; ++z)
             for (int x = 0; x < 32; ++x)
                 for (int y = 0; y <= 5; ++y) g.set({x, y, z}, y == 5 ? Grass : Dirt);
-        growTree(g, {16, 5, 16}, 10, 4.5f, 3, {16, 5, 16});
+        growShape(g, {16, 5, 16}, planTree(Species::Oak, 10, 4.5f, 0, 3), 3);
         for (int y = 6; y <= 8; ++y) g.set({10, y, 16}, y == 8 ? Thatch : Planks);  // a hut's wall and roof
-        CHECK(g.get({16, groundTop(g, 16, 16), 16}) == Leaves && groundTop(g, 16, 16) > 15);
+        CHECK(isLeaf(g.get({16, groundTop(g, 16, 16), 16})) && groundTop(g, 16, 16) > 12);
         EditHistory h;
         Grid lowered = g;  // lowering into a canopy leaves it a canopy (no grass up in the tree)
         CHECK(!applyEdit(lowered, {.tool = Tool::Lower, .center = {16, 16}, .radius = 0, .strength = 2}, h).dirty.empty());
-        CHECK(lowered.get({16, groundTop(lowered, 16, 16), 16}) == Leaves);
+        CHECK(isLeaf(lowered.get({16, groundTop(lowered, 16, 16), 16})));
         Grid raised = g;  // raising under a tree raises the canopy (no ground stacked on the leaves)
         int canopy = groundTop(g, 16, 16);
         CHECK(!applyEdit(raised, {.tool = Tool::Raise, .center = {16, 16}, .radius = 0, .strength = 3}, h).dirty.empty());
@@ -1372,16 +1519,16 @@ static void commands() {
     instances.clear();
     prefabs.dir = std::filesystem::path(FLYCOOS_SOURCE_DIR) / "prefabs";
     c = run(R"({"cmd": "prefabs"})");
-    // Every shipped file loads without errors, after the 5 generated prefabs.
+    // Every shipped file loads without errors, after the 8 generated prefabs.
     auto shipped = std::ranges::count_if(std::filesystem::directory_iterator(prefabs.dir), [](const auto& f) { return f.path().extension() == ".txt"; });
-    CHECK(ok(c) && c.response["result"]["prefabs"].size() == size_t(5 + shipped) && shipped >= 6 && c.response["result"]["errors"].empty());
+    CHECK(ok(c) && c.response["result"]["prefabs"].size() == size_t(8 + shipped) && shipped >= 6 && c.response["result"]["errors"].empty());
     for (size_t i = 0; ok(c) && i < c.response["result"]["prefabs"].size(); ++i)
-        CHECK(c.response["result"]["prefabs"][i].contains(i < 5 ? "params" : "size"));
-    CHECK(c.response["result"]["prefabs"][0]["params"][0]["name"] == "trunk" && c.response["result"]["prefabs"][5].contains("size"));
+        CHECK(c.response["result"]["prefabs"][i].contains(i < 8 ? "params" : "size"));
+    CHECK(c.response["result"]["prefabs"][0]["params"][0]["name"] == "height" && c.response["result"]["prefabs"][8].contains("size"));
     c = run(R"({"cmd": "place", "args": {"prefab": "cottage", "x": 30, "z": 30, "rotation": 90}})");
     CHECK(ok(c) && c.response["result"]["instance"]["id"] == 1 && c.response["result"]["instance"]["rotation"] == 90 && !c.dirty.empty());
-    c = run(R"({"cmd": "place", "args": {"prefab": "tree", "x": 12, "z": 50, "y": 60, "seed": 4000000000, "params": {"trunk": 13.4, "radius": 3.5}}})");
-    CHECK(ok(c) && c.response["result"]["instance"]["params"]["trunk"] == 13 && c.response["result"]["instance"]["seed"] == 4000000000u &&
+    c = run(R"({"cmd": "place", "args": {"prefab": "tree", "x": 12, "z": 50, "y": 60, "seed": 4000000000, "params": {"height": 13.4, "crown": 3.5}}})");
+    CHECK(ok(c) && c.response["result"]["instance"]["params"]["height"] == 13 && c.response["result"]["instance"]["seed"] == 4000000000u &&
           c.response["result"]["instance"]["position"][1] == 60 && h.undo.size() == 2);
     c = run(R"({"cmd": "move", "args": {"id": 1, "x": 45, "z": 20}})");
     CHECK(ok(c) && c.response["result"]["instance"]["position"][0] == 45 && c.response["result"]["instance"]["rotation"] == 90 && h.undo.size() == 3);
@@ -1400,8 +1547,8 @@ static void commands() {
              R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "y": 96}})",
              R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "rotation": 45}})",
              R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "rotation": 360}})",
-             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "params": {"trunk": 99}}})",
-             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "params": {"height": 9}}})",   // not a tree parameter
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "params": {"height": 99}}})",
+             R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "params": {"radius": 9}}})",   // not a tree parameter
              R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "params": [10]}})",
              R"({"cmd": "place", "args": {"prefab": "cottage", "x": 10, "z": 10, "params": {"trunk": 9}}})",
              R"({"cmd": "place", "args": {"prefab": "tree", "x": 10, "z": 10, "seed": -1}})",
@@ -1562,7 +1709,7 @@ static void prefabs() {
         PrefabLibrary lib = loadPrefabs(dir);
         std::vector<std::string> names;
         for (const Prefab& p : lib.prefabs) names.push_back(p.name);
-        CHECK((names == std::vector<std::string>{"tree", "pine", "bush", "boulder", "spire", "box"}));
+        CHECK((names == std::vector<std::string>{"tree", "pine", "bush", "boulder", "spire", "maple", "birch", "araucaria", "box"}));
         CHECK(lib.errors.size() == 3 && lib.errors[0] == "broken.txt: line 3: 'Q' is not in the legend" &&
               lib.errors[1].starts_with("huge.txt") && lib.errors[2].starts_with("tree.txt"));
         fs::remove_all(dir);
@@ -1571,7 +1718,7 @@ static void prefabs() {
         for (int i = 0; i < 8; ++i)  // 8 x 260 KB: the last one is over the 2 MB total
             std::ofstream(dir / std::format("big{}.txt", i)) << "#" << std::string(260 << 10, 'x') << "\nS = Stone\nlayer\nS\n";
         lib = loadPrefabs(dir);
-        CHECK(lib.prefabs.size() == 5 + 7 && lib.errors.size() == 1 && lib.errors[0].starts_with("big7.txt: skipped"));
+        CHECK(lib.prefabs.size() == 8 + 7 && lib.errors.size() == 1 && lib.errors[0].starts_with("big7.txt: skipped"));
         fs::remove_all(dir);
         PrefabLibrary shipped = loadPrefabs(fs::path(FLYCOOS_SOURCE_DIR) / "prefabs");
         for (const std::string& e : shipped.errors) std::println(stderr, "  shipped prefab: {}", e);
@@ -1670,13 +1817,73 @@ static void prefabs() {
         CHECK(movePrefab(g, bush, b, {25, 25}, 0, 0, list, h).error && hashCells(g) == before && h.undo.size() == undos &&
               h.redo.size() == 1 && list.back().pos == glm::ivec3(20, 3, 20));
     }
+    {  // replant (ADR-029): an old baked tree goes, a hand-made post stays, instances and their cells stay, undo restores
+        Grid g({128, 64, 128});
+        for (int z = 0; z < 128; ++z)
+            for (int x = 0; x < 128; ++x)
+                for (int y = 0; y <= 10; ++y) g.set({x, y, z}, y == 10 ? Grass : Stone);
+        for (int y = 11; y < 16; ++y) g.set({30, y, 30}, Wood);
+        for (int dy = -2; dy <= 2; ++dy)
+            for (int dz = -2; dz <= 2; ++dz)
+                for (int dx = -2; dx <= 2; ++dx)
+                    if (g.get({30 + dx, 17 + dy, 30 + dz}) == Air) g.set({30 + dx, 17 + dy, 30 + dz}, Leaves);
+        for (int y = 11; y < 14; ++y) g.set({60, y, 60}, Wood);
+        std::vector<Instance> list;
+        std::vector<Marker> marks;
+        EditHistory h;
+        const Prefab& cottage = prefabNamed(lib, "cottage");
+        CHECK(!placePrefab(g, cottage, at(cottage, {90, 10, 90}), std::nullopt, list, h).error);
+        const uint64_t before = hashCells(g);
+        const std::vector<Instance::Cell> cells = list[0].cells;
+        ReplantReport r;
+        replantTrees(g, lib, 7, {0, 0}, {127, 127}, true, list, marks, h, r);
+        CHECK(hashCells(g) == before && h.undo.size() == 1 && list.size() == 1 && r.removedTrees == 1 && r.keptClusters == 1);
+        CHECK(!replantTrees(g, lib, 7, {0, 0}, {127, 127}, false, list, marks, h, r).error && r.removedTrees == 1 && r.keptClusters == 1);
+        CHECK(h.undo.size() == 2 && g.get({60, 12, 60}) == Wood && g.get({30, 17, 30}) != Leaves);
+        CHECK(std::ranges::all_of(cells, [&](const Instance::Cell& c) { return g.get({c.x, c.y, c.z}) == c.after; }));
+        undoEdit(g, h, list, marks);
+        CHECK(hashCells(g) == before && list.size() == 1);
+
+        // Today's trees (placed by hand or by a first replant) are left alone, so a second run changes nothing.
+        const Prefab& oak = prefabNamed(lib, "tree");
+        Instance young = at(oak, {60, 10, 30});
+        young.params = {12, 5};
+        CHECK(!placePrefab(g, oak, young, std::nullopt, list, h).error);
+        replantTrees(g, lib, 7, {0, 0}, {127, 127}, false, list, marks, h, r);
+        const uint64_t once = hashCells(g);
+        const size_t steps = h.undo.size(), count = list.size();
+        CHECK(r.regrown == 0 && std::ranges::any_of(list, [](const Instance& in) { return in.params == std::vector<float>{12, 5}; }));
+        replantTrees(g, lib, 7, {0, 0}, {127, 127}, false, list, marks, h, r);
+        CHECK(hashCells(g) == once && h.undo.size() == steps && list.size() == count && r.regrown == 0 && r.removedTrees == 0 && r.planted == 0);
+    }
+    {  // replant regrows hundreds of old instances in one step that undo restores exactly (no undo cap drops any)
+        Grid g({128, 32, 128});
+        for (int z = 0; z < 128; ++z)
+            for (int x = 0; x < 128; ++x)
+                for (int y = 0; y <= 10; ++y) g.set({x, y, z}, y == 10 ? Grass : Stone);
+        std::vector<Instance> list;
+        std::vector<Marker> marks;
+        EditHistory h;
+        for (int i = 0; i < 300; ++i) {  // old-style bushes: one Leaves voxel each, as a file would hold them
+            glm::ivec3 p{4 + i % 20 * 6, 10, 4 + i / 20 * 6};
+            g.set(p + glm::ivec3(0, 1, 0), Leaves);
+            list.push_back({.id = uint32_t(i + 1), .prefab = "bush", .pos = p, .seed = uint32_t(i), .params = {1},
+                            .cells = {{uint16_t(p.x), uint16_t(p.y + 1), uint16_t(p.z), Air, Leaves}}});
+        }
+        const uint64_t before = hashCells(g);
+        ReplantReport r;
+        replantTrees(g, lib, 3, {0, 0}, {127, 127}, false, list, marks, h, r);
+        CHECK(r.regrown == 300 && h.undo.size() == 1 && hashCells(g) != before);
+        undoEdit(g, h, list, marks);
+        CHECK(hashCells(g) == before && list.size() == 300 && list[0].cells.size() == 1);
+    }
     {  // placement checks
         Grid g = plain();
         std::vector<Instance> list;
         EditHistory h;
         const Prefab& tree = prefabNamed(lib, "tree");
         Instance in = at(tree, {8, 0, 8});
-        in.params[0] = 30;
+        in.params[0] = 41;
         CHECK(placePrefab(g, tree, in, std::nullopt, list, h).error);
         CHECK(placePrefab(g, tree, at(tree, {-1, 0, 8}), std::nullopt, list, h).error);
         CHECK(placePrefab(g, tree, at(tree, {8, 0, 8}, 4), std::nullopt, list, h).error);
@@ -1765,7 +1972,7 @@ static void prefabs() {
             for (int i = 0; i < 4; ++i) bytes[bytes.size() - 4 + size_t(i)] = char(hash >> (8 * i));
             return bytes;
         };
-        size_t inst = file.find("INST");
+        size_t inst = file.find("INS2");
         CHECK(inst != std::string::npos);
         int rejected = 0;
         for (size_t i = inst + 12; i + 4 < file.size(); i += 3) {  // flip bytes past the checksum: never crash or overrun
@@ -4922,6 +5129,8 @@ int main() {
     generation();
     regions();
     worldFiles();
+    instanceCells();
+    trees();
     editing();
     commands();
     prefabs();

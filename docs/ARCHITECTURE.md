@@ -29,10 +29,11 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 
 | File | Responsibility |
 |---|---|
-| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, the natural shapes (`growTree`, `growRock`, `growPine`, `growBush`), `findSpawn`, `Instance`, the world file container (`writeWorldFile`/`readWorldFile`: header, `VOXL`, `INST`, checksum; other sections pass through as `Section`s), `fnv1a` and `replaceFile` (temp and rename; durable for player saves) shared with `save.cpp` |
+| `src/world.h/.cpp` | `Block` ids, `Grid` (dense voxel volume, x fastest, out-of-bounds = Air), `parallelFor`, region-based terrain, `growRock`, `plantTrees` (the generator's tree sites), `findSpawn`, `Instance`, the world file container (`writeWorldFile`/`readWorldFile`: header, `VOXL`, `INST`/`INS2`, checksum; other sections pass through as `Section`s), `fnv1a` and `replaceFile` (temp and rename; durable for player saves) shared with `save.cpp` |
+| `src/trees.h/.cpp` | Tree species (ADR-029): `planTree` (a `TreeShape` of bark capsules and leaf clumps), `planBush`, `shapeBox`, `growShape` (draws it, leaf shades by height in the crown); `kFullGrown`, `kSpeciesPrefab`, `TreeSite` |
 | `src/story.h/.cpp` | Story data: `EntityKind` save ids (and the string ids of the ones code names), `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`, `OWNR`, `TIME`), `activeAt` and `saveWorld`/`loadWorld` (the container plus markers) |
 | `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels, prefab instances and markers); `putMarker`/`removeMarker`; `raycast` (voxel DDA); `groundTop` |
-| `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances |
+| `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances, `replantTrees` |
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`), `fillLight` (whole world) and `relight` (the columns around an edit; returns the box whose light changed), `lightCost`/`emission` per block |
@@ -62,7 +63,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 - `Grid` stores one `Block` byte per voxel: 1024×192×1024 = 192 MiB. There is no per-chunk storage.
   Chunks (32³) exist only as meshing and draw units.
 - **Blocks** (`Block` in `world.h`): the id is the palette index and the saved byte, so new blocks
-  only append. The renderer holds 64 (6 bits in the shader's flat output, ADR-019); 39 are used.
+  only append. The renderer holds 128 (7 bits in the shader's flat output, ADR-019, widened in ADR-029); 69 are used.
 
   | Ids | Blocks | Used by |
   |---|---|---|
@@ -109,7 +110,12 @@ u32 FNV-1a checksum of every byte before it
 - The `INST` section (written only when there are prefab instances) holds them sorted by id: per
   instance `u32 id | u8 name length | name | i32 x, y, z | u8 rotation | u32 seed | u8 param count |
   f32 params | u32 cell count | cells (u16 x, y, z | u8 before | u8 after)`. A file without it
-  loads with no instances; older builds skip it.
+  loads with no instances; older builds skip it. Builds since ADR-029 read `INST` but write `INS2`:
+  the same, except a `u8 form` after the params. Form 0 is the `INST` cell list. Form 1 run-length
+  codes the cells over their box (`u16 lo x, y, z | u8 extent − 1 x, y, z | runs of (u8 before,
+  u8 after, LEB128 count − 1)`, x fastest, then z, then y; before = after marks a voxel that isn't
+  a cell). Prefab placements record cells in that order, so a big tree's thousands of cells take a
+  few kB. Anything else (e.g. an instance moved by hand) keeps form 0.
 - The `MARK` section (always written; empty when there are no markers) holds the markers sorted by
   id: `u32 count`, then per marker `u32 id | u8 kind | u8 name length | name | f32 x, y, z | f32
   radius | u8 entity | u8 count`. A file without it is older: it loads with `markers` = nullopt.
@@ -242,12 +248,15 @@ the screen center.
 
 ## Prefabs and instances
 
-- **Generated prefabs** (`tree`, `pine`, `bush`, `boulder`, `spire`) call the same `grow*`
-  functions as `generateTerrain` (terrain stays bit-identical per seed; `core_test` pins hashes).
-  They work on the live grid, so their rules depend on it: trunks grow down to the first solid
-  voxel (≤ 3 below the ground), canopies and needles only fill Air, rocks overwrite. Jitter is
-  seeded by the instance's seed at positions relative to its anchor, so a moved tree keeps its
+- **Generated prefabs** (`tree` = oak, `pine` = conifer, `bush`, `boulder`, `spire`, then
+  `maple`, `birch`, `araucaria`) grow with the same code as `generateTerrain`: trees through
+  `planTree`/`growShape` (src/trees.cpp, ADR-029; `prefabBox` is the shape's `shapeBox`), rocks
+  through `growRock`. They work on the live grid, so their rules depend on it: trunks grow down to
+  the first solid voxel (≤ 3 below the ground), leaves only fill Air, rocks overwrite. Shapes are
+  seeded by the instance's seed in coordinates relative to its anchor, so a moved tree keeps its
   shape. They ignore rotation.
+- **Replant** (`replantTrees`, the `replant` command) turns a world's old baked trees into today's
+  species as instances, in one undo step (ADR-029).
 - **Structures** are text files (format in the README) parsed strictly into cells (Air, a block,
   or `kKeep`), at most 64³, with line-numbered errors. Placing writes every non-keep cell at
   `ground + 1 + y`, rotated by quarter turns around the footprint center, then fills
@@ -538,7 +547,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - **Debug views:** `Frame.debug.x` selects shaded, greedy quads (color per merged quad), chunks
   (color per 32³ cell), AO only, normals, or light levels (sky blue-white, block orange;
   `--view light`). The branch is on a uniform, so it's coherent. The quad's light and index ride in
-  the existing flat `blockAndQuad` output (block id bits 0-5, light 6-13, quad index 14-30, bit 31
+  the existing flat `blockAndQuad` output (block id bits 0-6, light 7-14, quad index 15-30, bit 31
   set for models) rather than new ones: on Apple's tile-based GPUs every extra vertex output costs
   bandwidth, and two extra outputs measured ~15% slower frames.
 - **Color:** the swapchain is `SDR_LINEAR` (sRGB format), so all lighting is in linear space. The
@@ -1023,6 +1032,24 @@ rest on only 3-5 runs and the machine was heat-drifting. The candidate with `--p
 | Generated, candidate `--patches 0` | – | 3.28 ms (1 run) | – |
 
 The patch noise costs about +0.3-0.5 ms per frame (+7-13%) in the fragment shader; the quad counts are unchanged, and `--patches 0` brought the frame time back to (or below) the baseline, but that is a single run.
+
+### Perf A/B 2026-11-04: 78be3e8 vs tree species (ADR-029, working tree)
+
+Same flags (`--frames 900 --look 0 -20`, `--no-serve`), 6 alternating runs per cell, all under 6 ms.
+The baseline runs the story world as it is; the candidate runs a scratch copy after `replant`
+(826 trees as instances: 1.96M opaque quads vs 1.86M, 817 chunks drawn vs 725). Medians:
+
+| Scene | 78be3e8 | Tree species | Delta |
+|---|---|---|---|
+| Generated world, seed 1337, day | 2.08 ms | 2.26 ms | +0.18 ms (+9%) |
+| Story world, day (`--time 0.4`) | 1.99 ms | 2.31 ms | +0.32 ms (+16%) |
+| Story world, night (`--time 0.9`) | 2.16 ms | 2.39 ms | +0.23 ms (+11%) |
+| Story world as it is, both builds (3 valid runs each of 5) | 2.10 ms | 2.26 ms | +0.16 ms (+7%) |
+
+About half the cost is the trees themselves: taller crowns reach into chunk layers that were empty
+(+13% chunks drawn, +5% quads). The rest is the build on the same world (the 128-entry palette
+doubles the frame uniforms pushed twice a frame to ~6 KB; nothing else in the shader changed); that
+row rests on 3 runs on a heat-drifting machine. Frame times are still ~2.3 ms.
 
 ## Known ceilings
 

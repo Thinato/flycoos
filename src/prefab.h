@@ -74,5 +74,19 @@ EditResult removePrefab(Grid& g, uint32_t id, std::vector<Instance>& list, EditH
 EditResult movePrefab(Grid& g, const Prefab& p, uint32_t id, glm::ivec2 column, std::optional<int> y, int rotation,
                       std::vector<Instance>& list, EditHistory& h, std::vector<Marker>* markers = nullptr);
 
+// Replant (ADR-029): in columns [lo, hi], removes the old generator's baked trees (clusters of Wood
+// and Leaves, 26-connected, holding both, not owned by an instance, not touching today's tree blocks;
+// they're removed whole, even past
+// [lo, hi]), regrows the old tree and bush instances standing there (those that stamped only Wood and
+// Leaves; `tree` and `pine` full grown, by their seed; not where the bigger tree would meet a structure
+// or cover a marker) and places the generator's trees for world `seed` as instances, skipping
+// any whose box meets an instance already there or holds a spawn or point-of-interest marker. One undo step.
+// With `dryRun` it only counts: nothing changes.
+struct ReplantReport {
+    size_t removedTrees = 0, removedVoxels = 0, keptClusters = 0, regrown = 0, planted = 0, skipped = 0;
+};
+EditResult replantTrees(Grid& g, const PrefabLibrary& lib, uint32_t seed, glm::ivec2 lo, glm::ivec2 hi, bool dryRun,
+                        std::vector<Instance>& list, const std::vector<Marker>& markers, EditHistory& h, ReplantReport& report);
+
 // The instance that wrote `cell` and still owns it, or nullptr.
 const Instance* instanceAt(const std::vector<Instance>& list, const Grid& g, glm::ivec3 cell);

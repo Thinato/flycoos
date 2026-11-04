@@ -8,9 +8,12 @@
 #include <cstdlib>
 #include <format>
 #include <fstream>
+#include <map>
+#include <unordered_set>
 #include <utility>
 
 #include "defs.h"
+#include "trees.h"
 
 namespace {
 
@@ -23,12 +26,20 @@ std::vector<Prefab> generatedPrefabs() {
         return p;
     };
     return {
-        make("tree", "Broadleaf tree like the forests': trunk (2x2 from 12 up) and a flattened ragged canopy",
-             {{"trunk", 4, 20, 10, true}, {"radius", 2, 7, 4.5f}}),
-        make("pine", "Conifer: thin trunk and stacked tiers of needles", {{"height", 6, 28, 14, true}}),
-        make("bush", "Low round clump of leaves", {{"radius", 1, 4, 2}}),
+        make("tree", "Oak: thick flared trunk forking into limbs under a broad crown of leaf clumps (height 20-28 is full grown; crown radius 0 = by height)",
+             {{"height", 4, 40, 24, true}, {"crown", 0, 14, 0}}),
+        make("pine", "Conifer: straight trunk under stacked tiers of needles narrowing to the tip (26-38 is full grown)",
+             {{"height", 6, 50, 32, true}}),
+        make("bush", "Low round clump of oak leaves", {{"radius", 1, 4, 2}}),
         make("boulder", "Half-buried rock like the plains' boulders", {{"radius", 1.5f, 6, 3}}),
         make("spire", "Tapering rock spire like the rocky highlands'", {{"height", 6, 32, 16, true}, {"radius", 1.5f, 5, 3}}),
+        // Appended: the generated prefabs above keep their order.
+        make("maple", "Maple: like the oak but taller and rounder, autumn leaves (colour 0 red, 1 orange, 2 gold, -1 by seed)",
+             {{"height", 4, 40, 24, true}, {"crown", 0, 14, 0}, {"colour", -1, 2, -1, true}}),
+        make("birch", "Birch: slim white trunk with dark knots, a slight lean and an oval crown (18-24 is full grown)",
+             {{"height", 4, 32, 21, true}, {"crown", 0, 10, 0}}),
+        make("araucaria", "Araucaria (Parana pine): tall bare trunk under a flat candelabra crown of tufts (32-44 is full grown)",
+             {{"height", 8, 56, 38, true}, {"crown", 0, 18, 0}}),
     };
 }
 
@@ -120,6 +131,18 @@ glm::vec2 turn(glm::vec2 c, glm::ivec3 s, int rotation) {
     }
 }
 
+// The tree a generated tree prefab grows (stamp and prefabBox share it), or nullopt.
+std::optional<TreeShape> treeOf(const Prefab& p, const Instance& in) {
+    const float* v = in.params.data();
+    if (p.name == "tree") return planTree(Species::Oak, int(v[0]), v[1], 0, in.seed);
+    if (p.name == "maple") return planTree(Species::Maple, int(v[0]), v[1], v[2] < 0 ? int(in.seed % 3) : int(v[2]), in.seed);
+    if (p.name == "birch") return planTree(Species::Birch, int(v[0]), v[1], 0, in.seed);
+    if (p.name == "pine") return planTree(Species::Conifer, int(v[0]), 0, 0, in.seed);
+    if (p.name == "araucaria") return planTree(Species::Araucaria, int(v[0]), v[1], 0, in.seed);
+    if (p.name == "bush") return planBush(v[0], in.seed);
+    return std::nullopt;
+}
+
 // Where structure cell (0, 0, 0) of the rotated footprint goes: centered on the column, the bottom layer above the ground.
 glm::ivec3 structureOrigin(const Prefab& p, const Instance& in) {
     glm::ivec3 s = rotatedSize(p.size, in.rotation);
@@ -133,9 +156,7 @@ glm::vec3 inWorld(const Grid& g, glm::vec3 p) {
 
 void stamp(Grid& g, const Prefab& p, const Instance& in) {
     const float* v = in.params.data();
-    if (p.name == "tree") return growTree(g, in.pos, int(v[0]), v[1], in.seed, in.pos);
-    if (p.name == "pine") return growPine(g, in.pos, int(v[0]), in.seed, in.pos);
-    if (p.name == "bush") return growBush(g, in.pos, v[0], in.seed, in.pos);
+    if (std::optional<TreeShape> t = treeOf(p, in)) return growShape(g, in.pos, *t, in.seed);
     if (p.name == "boulder") return growRock(g, in.pos, false, v[0], 0, in.seed, in.pos);
     if (p.name == "spire") return growRock(g, in.pos, true, v[1], int(v[0]), in.seed, in.pos);
 
@@ -339,15 +360,8 @@ Box prefabBox(const Grid& g, const Prefab& p, const Instance& in) {
     const float* v = in.params.data();
     auto around = [&](int r, int below, int above) { return Box{{x - r, y - below, z - r}, {x + r, y + above, z + r}}; };
     Box b;
-    if (p.name == "tree") {  // matches growTree: a 2x2 trunk's canopy is centered one further along +x and +z
-        int trunk = int(v[0]), r = int(std::ceil(v[1]));
-        b = around(r + 1, std::max(2, r - trunk), trunk + r);
-        b.hi += glm::ivec3(1, 0, 1);
-    } else if (p.name == "pine") {
-        b = around(int(std::ceil(std::clamp(v[0] * 0.3f, 2.0f, 6.0f) + 0.5f)) + 1, 2, int(v[0]) + 1);
-    } else if (p.name == "bush") {
-        int r = int(std::ceil(v[0])) + 1;
-        b = around(r, 2, 1 + r);
+    if (std::optional<TreeShape> t = treeOf(p, in)) {
+        b = shapeBox(*t, in.pos);
     } else if (p.name == "boulder") {
         b = around(int(std::ceil(v[0])) + 1, 3, int(v[0] * 1.5f));
     } else if (p.name == "spire") {
@@ -468,6 +482,163 @@ EditResult movePrefab(Grid& g, const Prefab& p, uint32_t id, glm::ivec2 column, 
     pushRecord(h, std::move(step.undo.back()), false);
     placed.dirty = {glm::min(from.lo, placed.dirty.lo), glm::max(from.hi, placed.dirty.hi)};
     return placed;
+}
+
+EditResult replantTrees(Grid& g, const PrefabLibrary& lib, uint32_t seed, glm::ivec2 lo, glm::ivec2 hi, bool dryRun,
+                        std::vector<Instance>& list, const std::vector<Marker>& markers, EditHistory& h, ReplantReport& report) {
+    report = {};
+    if (dryRun) {  // the same on copies
+        Grid copy = g;
+        std::vector<Instance> l = list;
+        EditHistory none;
+        replantTrees(copy, lib, seed, lo, hi, false, l, markers, none, report);
+        return {};
+    }
+    lo = glm::max(lo, glm::ivec2(0)), hi = glm::min(hi, glm::ivec2(g.size.x - 1, g.size.z - 1));
+    std::unordered_set<size_t> owned;
+    for (const Instance& in : list)
+        for (const Instance::Cell& c : in.cells)
+            if (g.get({c.x, c.y, c.z}) == c.after) owned.insert(g.index({c.x, c.y, c.z}));
+    auto old = [&](glm::ivec3 p) {
+        Block b = g.get(p);
+        return (b == Wood || b == Leaves) && !owned.contains(g.index(p));
+    };
+    // 1. The old trees, gathered per chunk so the undo record holds a few boxes, not one huge one.
+    std::vector<bool> seen(g.cells.size());
+    std::map<size_t, std::vector<glm::ivec3>> doomed;  // chunk index -> voxels
+    for (int z = lo.y; z <= hi.y; ++z)
+        for (int x = lo.x; x <= hi.x; ++x)
+            for (int y = 0; y < g.size.y; ++y) {
+                glm::ivec3 start{x, y, z};
+                if (seen[g.index(start)] || !old(start)) continue;
+                std::vector<glm::ivec3> cluster{start}, todo{start};
+                seen[g.index(start)] = true;
+                bool wood = false, leaves = false, modern = false;  // modern: touches today's tree blocks (an oak or maple)
+                while (!todo.empty()) {
+                    glm::ivec3 p = todo.back();
+                    todo.pop_back();
+                    (g.get(p) == Wood ? wood : leaves) = true;
+                    for (int dy = -1; dy <= 1; ++dy)
+                        for (int dz = -1; dz <= 1; ++dz)
+                            for (int dx = -1; dx <= 1; ++dx) {
+                                glm::ivec3 q = p + glm::ivec3(dx, dy, dz);
+                                Block b = g.get(q);
+                                modern |= isTreeBlock(b) && b != Wood && b != Leaves;
+                                if (!g.inside(q) || seen[g.index(q)] || !old(q)) continue;
+                                seen[g.index(q)] = true;
+                                todo.push_back(q), cluster.push_back(q);
+                            }
+                }
+                if (modern) continue;
+                if (!wood || !leaves) {  // a hand-painted post or hedge: not a tree
+                    ++report.keptClusters;
+                    continue;
+                }
+                ++report.removedTrees;  // ponytail: a cluster of touching crowns counts as one
+                report.removedVoxels += cluster.size();
+                glm::ivec3 chunks = g.size / kChunk;
+                for (glm::ivec3 p : cluster) {
+                    glm::ivec3 c = p / kChunk;
+                    doomed[size_t((c.y * chunks.z + c.z) * chunks.x + c.x)].push_back(p);
+                }
+            }
+    EditRecord all;  // every step below, folded in as it's made (so no undo cap drops any) and pushed as one
+    Box dirty{glm::ivec3(INT_MAX), glm::ivec3(INT_MIN)};
+    auto grow = [&](Box b) { dirty = {glm::min(dirty.lo, b.lo), glm::max(dirty.hi, b.hi)}; };
+    auto fold = [&](EditHistory& step) {
+        for (EditRecord& r : step.undo) {
+            for (EditRecord::Part& part : r.parts) grow(part.box), all.parts.push_back(std::move(part));
+            for (auto& entry : r.instances) {
+                if (entry.second) grow(instanceBox(*entry.second));  // a removed instance's box is dirty too
+                all.instances.push_back(std::move(entry));
+            }
+        }
+        step.undo.clear();
+    };
+    EditRecord removal;
+    for (auto& [chunk, cells] : doomed) {
+        Box box{glm::ivec3(INT_MAX), glm::ivec3(INT_MIN)};
+        for (glm::ivec3 p : cells) box.lo = glm::min(box.lo, p), box.hi = glm::max(box.hi, p);
+        std::vector<Block> before = readBox(g, box);
+        for (glm::ivec3 p : cells) g.set(p, Air);
+        removal.parts.push_back(changedPart(g, box, before));
+    }
+    if (!removal.parts.empty()) {
+        EditHistory step;
+        pushRecord(step, std::move(removal), false);
+        fold(step);
+    }
+
+    auto treeParams = [](std::string_view prefab, int height, int colour) -> std::vector<float> {
+        if (prefab == "pine") return {float(height)};
+        if (prefab == "maple") return {float(height), 0, float(colour)};
+        return {float(height), 0};
+    };
+    auto treeLike = [](std::string_view prefab) { return prefab == "bush" || std::ranges::find(kSpeciesPrefab, prefab) != std::end(kSpeciesPrefab); };
+    auto meets = [](const Box& a, const Box& b) { return glm::all(glm::lessThanEqual(a.lo, b.hi)) && glm::all(glm::lessThanEqual(b.lo, a.hi)); };
+    auto onMarker = [&](const Box& box) {
+        return std::ranges::any_of(markers, [&](const Marker& m) {
+            glm::ivec3 at(glm::floor(m.pos));
+            return m.kind != MarkerKind::Region && meets(box, Box{at, at});
+        });
+    };
+    std::vector<Marker> none;  // tree prefabs own no markers
+
+    // 2. Old tree and bush instances (they stamped only Wood and Leaves) standing here grow again in
+    // today's shapes, unless the bigger tree would meet a structure or cover a marker.
+    std::vector<Box> structures;
+    for (const Instance& in : list)
+        if (!treeLike(in.prefab)) structures.push_back(instanceBox(in));
+    std::vector<uint32_t> regrow;
+    for (const Instance& in : list)
+        if (in.pos.x >= lo.x && in.pos.x <= hi.x && in.pos.z >= lo.y && in.pos.z <= hi.y && treeLike(in.prefab) &&
+            std::ranges::all_of(in.cells, [](const Instance::Cell& c) { return c.after == Wood || c.after == Leaves; }))
+            regrow.push_back(in.id);
+    for (uint32_t id : regrow) {
+        Instance in = *std::ranges::find(list, id, &Instance::id);
+        const Prefab* p = lib.find(in.prefab);
+        if (!p) continue;
+        if (in.prefab == "tree" || in.prefab == "pine") {  // the old meaning of their params: grow them up
+            int s = in.prefab == "tree" ? int(Species::Oak) : int(Species::Conifer);
+            in.params = treeParams(in.prefab, kFullGrown[s][0] + int(in.seed % uint32_t(kFullGrown[s][1] - kFullGrown[s][0] + 1)), 0);
+        }
+        in.cells.clear();
+        Box box = prefabBox(g, *p, in);
+        if (checkPlacement(g, *p, in) || onMarker(box) || std::ranges::any_of(structures, [&](const Box& b) { return meets(b, box); })) {
+            ++report.skipped;  // keeps its old shape
+            continue;
+        }
+        EditHistory step;
+        removePrefab(g, id, list, step);
+        if (placePrefab(g, *p, in, in.pos.y, list, step, true).error) {
+            undoEdit(g, step, list, none);  // back as it was
+            ++report.skipped;
+            continue;
+        }
+        fold(step);
+        ++report.regrown;
+    }
+
+    // 3. The generator's trees, as instances, clear of the instances already here and of spawn and POI markers.
+    std::vector<Box> taken;
+    for (const Instance& in : list) taken.push_back(instanceBox(in));
+    plantTrees(g, seed, lo, hi, [&](const TreeSite& site) {
+        const Prefab* p = lib.find(kSpeciesPrefab[int(site.species)]);
+        if (!p) return;
+        Instance in{.id = nextId(list, h),  // the real history's ids too: an id is never reused
+                    .prefab = p->name, .pos = site.at, .seed = site.seed, .params = treeParams(p->name, site.height, site.colour)};
+        if (!in.id) return void(++report.skipped);
+        Box box = prefabBox(g, *p, in);
+        if (onMarker(box) || std::ranges::any_of(taken, [&](const Box& b) { return meets(b, box); })) return void(++report.skipped);
+        EditHistory step;
+        if (placePrefab(g, *p, in, site.at.y, list, step).error) return void(++report.skipped);
+        fold(step);
+        ++report.planted;  // new trees may share space, like the generator's: crowns only fill air
+    });
+
+    if (all.parts.empty() && all.instances.empty()) return {};
+    pushRecord(h, std::move(all), false);
+    return {dirty, nullptr, 0};
 }
 
 const Instance* instanceAt(const std::vector<Instance>& list, const Grid& g, glm::ivec3 cell) {
