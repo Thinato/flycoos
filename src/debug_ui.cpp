@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <format>
+#include <print>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -14,6 +15,7 @@
 #include <imgui_impl_sdlgpu3.h>
 
 #include "defs.h"
+#include "hud.h"
 #include "text.h"
 
 DebugUI::DebugUI(SDL_Window* window, const Renderer& renderer) {
@@ -25,6 +27,18 @@ DebugUI::DebugUI(SDL_Window* window, const Renderer& renderer) {
     // We render into an sRGB swapchain (linear-light output). ImGui's colors are authored in sRGB,
     // so convert them to linear or the UI comes out washed-out.
     for (ImVec4& c : style.Colors) c = {std::pow(c.x, 2.2f), std::pow(c.y, 2.2f), std::pow(c.z, 2.2f), c.w};
+
+    // The default font stays first (everything else uses it); Alagard is a pixel font on a 16 px grid,
+    // crisp at multiples of 16 without oversampling.
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->AddFontDefault();
+    ImFontConfig pixel;
+    pixel.PixelSnapH = true;
+    pixel.OversampleH = pixel.OversampleV = 1;
+    pixel.Flags |= ImFontFlags_NoLoadError;
+    std::string font = (dataDir() / "fonts" / "alagard.ttf").string();
+    titleFont = io.Fonts->AddFontFromFileTTF(font.c_str(), 16, &pixel);
+    if (!titleFont) std::println(stderr, "warning: {} didn't load; region titles use the default font", font);
 
     ImGui_ImplSDL3_InitForSDLGPU(window);
     ImGui_ImplSDLGPU3_InitInfo info{};

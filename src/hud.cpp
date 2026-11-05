@@ -153,11 +153,13 @@ void drawPlaces(const glm::mat4& view, float fovY, const Player& player, const s
     }
     if (!region || regionSeconds >= kRegionSeconds) return;
     float alpha = std::min({1.0f, regionSeconds / 0.5f, kRegionSeconds - regionSeconds});  // fades in, then out over the last second
-    float size = ImGui::GetFontSize() * 2;
-    ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, region->name.c_str());
-    ImVec2 at(screen.x / 2 - ts.x / 2, screen.y * 0.16f);
-    dl->AddText(ImGui::GetFont(), size, ImVec2(at.x + 2, at.y + 2), uiColor(0, 0, 0, 0.8f * alpha), region->name.c_str());
-    dl->AddText(ImGui::GetFont(), size, at, uiColor(1, 0.95f, 0.8f, alpha), region->name.c_str());
+    ImFont* font = titleFont ? titleFont : ImGui::GetFont();
+    float size = titleFont ? 48 : ImGui::GetFontSize() * 2, px = titleFont ? 3 : 2;  // 3 screen pixels per font pixel
+    const char* name = region->name.c_str();
+    ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, name);
+    ImVec2 at(std::round(screen.x / 2 - ts.x / 2), std::round(screen.y * 0.16f));  // whole pixels keep it crisp
+    dl->AddText(font, size, ImVec2(at.x + px, at.y + px), uiColor(0.1f, 0.05f, 0, 0.85f * alpha), name);
+    dl->AddText(font, size, at, uiColor(1, 0.85f, 0.5f, alpha), name);
 }
 
 void drawNotice(const char* text, float age) {

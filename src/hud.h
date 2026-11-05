@@ -5,6 +5,10 @@
 
 #include "entity.h"
 
+struct ImFont;
+// Region titles' font (Alagard, data/fonts/), set by DebugUI; null (the default font) if it didn't load.
+inline ImFont* titleFont = nullptr;
+
 // An sRGB color as ImGui's packed ImU32, for the linear (sRGB-format) swapchain.
 unsigned uiColor(float r, float g, float b, float a = 1);
 

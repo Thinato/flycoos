@@ -319,10 +319,14 @@ src/debug_ui.*   Dear ImGui debug window (toggle with .), and the debug note box
 src/notes.*      debug notes: the game state a note keeps, debug_notes/notes.jsonl
 src/editor_ui.*  Editor panel, crosshair and brush preview (Tab)
 src/main.cpp     window, input, camera, main loop, benchmark mode, runs remote commands
-data/            definition files: items.json, creatures.json (ADR-018), quests/*.json (ADR-026)
+data/            definition files: items.json, creatures.json (ADR-018), quests/*.json (ADR-026); fonts/alagard.ttf (region titles)
 prefabs/         structure prefab files (cottage, tent, camp, well, fence, ruin)
 tools/           flycoos_mcp.py (MCP server bridging Claude Code to the game), test_mcp.py (end-to-end check)
 shaders/         world.metal (voxel, water, sky), compiled at runtime
 tests/           core_test.cpp: mesher, packing, physics, flight, camera, combat, NPC fights and loot, inventory, generation,
                  world files, edits and undo, remote commands, prefabs and instances, markers and spawns, raycast, data files checks, quests
 ```
+
+## Credits
+
+- [Alagard](https://www.dafont.com/alagard.font) by Hewett Tsoi (free, credit given): the region titles' font.
