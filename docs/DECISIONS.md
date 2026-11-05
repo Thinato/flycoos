@@ -1241,4 +1241,5 @@
     plants (97k quads): +0.2–0.3 ms on 2.3 ms (M4, A/B against e100595).
   - Generated worlds grow the meadow last (22% of all columns of a 512² seed-42 world); the
     `generation`/`regions` checksums were re-recorded (without plants they are the old ones).
-  - Prefab placement doesn't check plants: a plant left on a prefab's path tile stays.
+  - Placing a prefab clears the plants inside its box that lost their grass (e.g. under a bridge deck
+    flush with the ground); one just above the box, on a cell its top layer covered, stays.

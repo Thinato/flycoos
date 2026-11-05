@@ -63,15 +63,6 @@ void setColumnTop(Grid& g, int x, int z, int to) {
     if (isPlant(plant) && g.get({x, to + 1, z}) == Air) g.set({x, to + 1, z}, plant);
 }
 
-// Plants need grass under them and air or plants above: clears those in b that lost either (a fill
-// of water over them drowns them).
-void clearUnsupported(Grid& g, Box b) {
-    for (int y = b.lo.y; y <= b.hi.y; ++y)
-        for (int z = b.lo.z; z <= b.hi.z; ++z)
-            for (int x = b.lo.x; x <= b.hi.x; ++x)
-                if (isPlant(g.get({x, y, z})) && (g.get({x, y - 1, z}) != Grass || g.get({x, y + 1, z}) == Water)) g.set({x, y, z}, Air);
-}
-
 // Brush weight: 1 at the center, easing to 0 just past `radius` columns away.
 float falloff(int dx, int dz, int radius) {
     float r = float(radius) + 0.5f, t = float(dx * dx + dz * dz) / (r * r);
@@ -174,6 +165,14 @@ Box swapRecord(Grid& g, std::vector<Instance>& list, std::vector<Marker>& marker
 }
 
 }  // namespace
+
+// (A fill of water over plants drowns them.)
+void clearUnsupported(Grid& g, Box b) {
+    for (int y = b.lo.y; y <= b.hi.y; ++y)
+        for (int z = b.lo.z; z <= b.hi.z; ++z)
+            for (int x = b.lo.x; x <= b.hi.x; ++x)
+                if (isPlant(g.get({x, y, z})) && (g.get({x, y - 1, z}) != Grass || g.get({x, y + 1, z}) == Water)) g.set({x, y, z}, Air);
+}
 
 uint32_t nextMarkerId(const std::vector<Marker>& list, const EditHistory& h) {
     uint32_t id = std::max(list.empty() ? 0 : list.back().id, h.markerIds);

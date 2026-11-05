@@ -1,57 +1,57 @@
-description: Plank bridge 3 wide x 11 long along z with wood rails and support posts reaching the stream bed; place it with the bank height as y so the deck is flush with the ground
+description: Plank bridge 5 wide x 11 long along z (a walkway 3 wide between wood rails) with support posts reaching the stream bed; place it with the bank height as y so the deck is flush with the ground
 foundation: Wood
 y: -2
 W = Wood
 P = Planks
 
 layer
-   
-W W
-   
-   
-   
-W W
-   
-   
-   
-W W
-   
+     
+W   W
+     
+     
+     
+W   W
+     
+     
+     
+W   W
+     
 
 layer
-PPP
-PPP
-PPP
-PPP
-PPP
-PPP
-PPP
-PPP
-PPP
-PPP
-PPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
+PPPPP
 
 layer
-W W
-W W
-W W
-W W
-W W
-W W
-W W
-W W
-W W
-W W
-W W
+W   W
+W   W
+W   W
+W   W
+W   W
+W   W
+W   W
+W   W
+W   W
+W   W
+W   W
 
 layer
-W W
-   
-   
-   
-   
-W W
-   
-   
-   
-   
-W W
+W   W
+     
+     
+     
+     
+W   W
+     
+     
+     
+     
+W   W

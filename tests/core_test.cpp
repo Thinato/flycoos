@@ -5279,6 +5279,16 @@ static void plants() {
         CHECK(plantModel(TallGrass, {1, 2, 3}) >= TallTuft0 && plantModel(TallGrass, {1, 2, 3}) <= TallTuft2 &&
               plantModel(FlowerViolet, {1, 2, 3}) == Bellflowers);
     }
+    {  // a prefab clears the plants it takes the grass from (a deck flush with the ground); removed, they're back
+        Grid g = field();
+        Prefab deck;
+        CHECK(parsePrefab("y: -1\nP = Planks\nW = Wood\n\nlayer\nPPP\nPPP\nPPP\nlayer\nW  \n   \n   \n", deck).empty());
+        std::vector<Instance> list;
+        EditHistory h;
+        EditResult r = placePrefab(g, deck, {.prefab = "deck", .pos = {8, 0, 8}}, std::nullopt, list, h);
+        CHECK(!r.error && g.get({8, 3, 8}) == Planks && g.get({8, 4, 8}) == Air && g.get({6, 4, 8}) == ShortGrass);
+        CHECK(!removePrefab(g, r.id, list, h).error && g.get({8, 3, 8}) == Grass && g.get({8, 4, 8}) == ShortGrass);
+    }
 }
 
 int main() {

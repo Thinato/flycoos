@@ -121,3 +121,5 @@ std::optional<RayHit> raycast(const Grid& g, glm::vec3 from, glm::vec3 dir, floa
 int groundTop(const Grid& g, int x, int z);
 // The same below any tree on it (skipping Wood and Leaves, and the air under a canopy), or -1.
 int groundUnderTrees(const Grid& g, int x, int z);
+// Plants need grass under them and air or plants above: clears those in b that lost either.
+void clearUnsupported(Grid& g, Box b);

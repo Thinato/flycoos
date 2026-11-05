@@ -396,6 +396,8 @@ EditResult placePrefab(Grid& g, const Prefab& p, Instance inst, std::optional<in
     if (box.empty()) return {{}, "the prefab is outside the world"};
     std::vector<Block> before = readBox(g, box);
     stamp(g, p, inst);
+    // ponytail: only plants inside the box; one on a cell just above it, on what the top layer covered, stays
+    clearUnsupported(g, box);
 
     inst.cells.clear();
     size_t i = 0;
