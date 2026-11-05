@@ -882,7 +882,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   face the player.
 - **Separation:** the player is pushed out of an entity's 0.8-block radius (never into terrain).
 - **HUD:** nameplates (level, name, health bar; red name for aggressive, amber for other attackable,
-  green for friendly; red health bar if attackable) within
+  green for friendly; red health bar if attackable; friendly and passive ones show health only in
+  combat) within
   40 blocks. They're hidden when terrain blocks the line of sight, using the camera's box march. The
   HUD always runs an ImGui frame; the UI render pass is skipped when there is nothing to draw.
 - **From markers:** the NPCs come from spawn markers (see "Markers"); a world without markers

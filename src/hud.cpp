@@ -107,7 +107,9 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
                                                          : uiColor(0.6f, 1, 0.6f, alpha);
         ImU32 healthColor = t.attackable ? uiColor(0.85f, 0.2f, 0.15f, alpha) : uiColor(0.3f, 0.8f, 0.3f, alpha);
         shadowText(dl, ImVec2(p.x - size.x / 2, p.y - line - 6), nameColor, alpha, label);
-        bar(dl, p, ImVec2(90, 7), e.body.health / float(maxHealth(sheet(e.body))), healthColor, alpha);
+        // Health: always for the aggressive, for the rest (friendly, passive) only in combat.
+        if (t.temper == Temper::Aggressive || e.angry() || e.body.combatTimer > 0)
+            bar(dl, p, ImVec2(90, 7), e.body.health / float(maxHealth(sheet(e.body))), healthColor, alpha);
         if (!speech && &e == target) hint(dl, p, alpha, e);
     }
 

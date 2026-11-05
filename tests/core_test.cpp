@@ -3085,6 +3085,10 @@ static void npcAi() {
     });
     CHECK(bandit->transitions - before <= 3 && !bandit->angry());  // Return, then Wander at home
     CHECK(glm::distance(flat(bandit->body.pos), flat(home)) < 3 + 1);
+    // Height counts: the same spot 20 blocks up (a cliff, another floor) is out of its aggro range.
+    player.pos = bandit->body.pos + glm::vec3(-6, 20, 0);
+    sim(1, none);
+    CHECK(!bandit->angry());
     // Re-aggro: inside the re-aggro radius and its aggro range it attacks again.
     player.pos = bandit->body.pos + glm::vec3(-6, 0, 0);
     sim(1, none);

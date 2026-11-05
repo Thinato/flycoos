@@ -281,8 +281,10 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                 setState(e, AiState::Chase, "damaged");
                 continue;
             }
+            // Aggro range is in 3D: a player high above (or a floor below) isn't seen.
+            // ponytail: range only, no line of sight; add a ray test when dungeons put enemies behind walls.
             if (t.temper == Temper::Aggressive && target.alive() && e.calmTimer <= 0 && targetFromHome < t.reaggroRadius &&
-                dist < t.aggroRange) {
+                glm::distance(target.pos, e.body.pos) < t.aggroRange) {
                 setState(e, AiState::Chase, "saw_target");
                 continue;
             }
