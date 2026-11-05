@@ -5138,6 +5138,7 @@ static void debugNotes() {
     std::vector<nlohmann::json> lines;
     for (std::string l; std::getline(in, l);) lines.push_back(nlohmann::json::parse(l));
     CHECK(lines.size() == 2 && lines[0]["note"] == "fell through \"the\" floor" && lines[1]["note"] == "second");
+    CHECK(lines[1]["id"] == 2 && lines[1]["status"] == "open");
     CHECK(std::filesystem::exists(lines[0]["screenshot"].get<std::string>()) && lines[1]["screenshot"] == "");
     CHECK(lines[0]["player"] == c["player"]);
 }

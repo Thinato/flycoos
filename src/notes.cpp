@@ -120,6 +120,8 @@ int saveNote(const std::filesystem::path& dir, const std::string& text, json con
     int line = 1;
     if (std::ifstream in(file); in)
         for (std::string l; std::getline(in, l);) ++line;
+    context["id"] = line;
+    context["status"] = "open";  // set to "done" (with "resolution") by whoever handles the note
     context["note"] = text;
     context["screenshot"] = "";
     if (!rgb.empty()) {

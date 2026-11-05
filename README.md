@@ -57,7 +57,7 @@ GPU debug layer.
 | K | Progress: level and XP, skills, talent trees (click a highlighted talent to learn it) |
 | `.` | Open/close the debug window |
 | Tab | Enter/leave the world editor (see below) |
-| F2 | With `--debug`: write a debug note. The game pauses; the note goes to `debug_notes/notes.jsonl` with the game's state (player, combat, nearby NPCs, quests, latest events) and a screenshot from that moment |
+| F2 | With `--debug`: write a debug note. The game pauses; the note goes to `debug_notes/notes.jsonl` with the game's state (player, combat, nearby NPCs, quests, latest events) and a screenshot from that moment. Each note starts `"status": "open"` and becomes `"done"` with a `"resolution"` once handled; list the open ones with `jq -c 'select(.status != "done") \| [.id, .note]' debug_notes/notes.jsonl` |
 | F5 / F9 | Save / load the game (the player save next to the world file, e.g. `worlds/story.flys`) |
 | Esc | Close the open windows, otherwise quit (asks twice with unsaved world edits); quitting saves the game (see below) |
 
