@@ -62,6 +62,22 @@ GPU debug layer.
 | F5 / F9 | Save / load the game (the player save next to the world file, e.g. `worlds/story.flys`) |
 | Esc | Close the open windows, otherwise quit (asks twice with unsaved world edits); quitting saves the game (see below) |
 
+A controller works too (SDL's gamepad layout; PlayStation names here, an Xbox pad's buttons sit in the same places):
+
+| Input | Action |
+|---|---|
+| Left stick | Move; with a window open, move the cursor |
+| L3 (click the left stick) | Run, until the stick lets go |
+| Right stick | Orbit the camera |
+| Cross | Jump / swim up (fly: rise); with a window open, click |
+| Circle | Fly: sink; with a window open, close the windows |
+| Square | Loot or talk (like E); with a window open, right-click (equip / unequip) |
+| R1 / R2 | Attack (hold to keep swinging) |
+| Triangle | Bags |
+| D-pad left / up / right | Character / Journal / Progress |
+| Options | Close the windows |
+| Create | Open/close the debug window (its Camera tab: stick look speed and deadzone, live stick values) |
+
 In the Character and Bags windows, drag items between slots and right-click to equip or unequip;
 Ctrl+right-click (or Cmd+right-click) destroys an item. With the bags full, loot goes straight into
 its empty equipment slot.

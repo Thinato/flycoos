@@ -478,7 +478,7 @@ static void questsTab(Session& s) {
     for (auto it = s.eventLog.rbegin(); it != s.eventLog.rend(); ++it) ImGui::TextUnformatted(it->c_str());
 }
 
-static void cameraTab(GameSettings& g) {
+static void cameraTab(GameSettings& g, SDL_Gamepad* pad) {
     ImGui::SliderFloat("Field of view", &g.fovDegrees, 30, 120, "%.0f deg");
     ImGui::SliderFloat("Distance", &g.cameraDistance, 2, 80, "%.1f blocks");
     ImGui::SetItemTooltip("Also the mouse wheel. Pull far back for an overview.");
@@ -486,6 +486,17 @@ static void cameraTab(GameSettings& g) {
     ImGui::Checkbox("HUD", &g.hud);
     ImGui::SetItemTooltip("Nameplates, speech balloons and the health bar.");
     ImGui::SliderFloat("Mouse sensitivity", &g.mouseSensitivity, 0.001f, 0.02f, "%.4f");
+    ImGui::SeparatorText("Controller");
+    if (!pad) ImGui::TextDisabled("None connected");
+    else {
+        auto axis = [&](SDL_GamepadAxis a) { return SDL_GetGamepadAxis(pad, a) / 32767.0f; };
+        ImGui::Text("%s", SDL_GetGamepadName(pad));
+        ImGui::Text("Left stick %+.2f %+.2f, right stick %+.2f %+.2f, triggers %.2f %.2f", axis(SDL_GAMEPAD_AXIS_LEFTX),
+                    axis(SDL_GAMEPAD_AXIS_LEFTY), axis(SDL_GAMEPAD_AXIS_RIGHTX), axis(SDL_GAMEPAD_AXIS_RIGHTY),
+                    axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER), axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
+    }
+    ImGui::SliderFloat("Stick look speed", &g.stickLookSpeed, 0.5f, 8, "%.1f rad/s");
+    ImGui::SliderFloat("Stick deadzone", &g.stickDeadzone, 0, 0.5f, "%.2f");
 }
 
 static void streamSection(GameSettings& g, const Stream& stream, const Grid& world, glm::vec3 player) {
@@ -588,7 +599,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
         if (ImGui::BeginTabItem("Entities")) { entitiesTab(session, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Quests")) { questsTab(session); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Data")) { dataTab(defsStatus_, player); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Camera")) { cameraTab(game, gamepad); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions, stream); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Save")) { saveTab(savePath, saveStatus, saveNotes, autosave, saveLocked, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Stats")) {

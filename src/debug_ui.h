@@ -13,6 +13,7 @@
 // Main-loop knobs the debug UI can change.
 struct GameSettings {
     float fovDegrees = 70, cameraDistance = 9, mouseSensitivity = 0.004f;
+    float stickLookSpeed = 3, stickDeadzone = 0.15f;  // a controller's right stick: radians a second at full tilt
     bool cameraCollision = true;
     bool hud = true;  // nameplates, speech balloons, health bar
     uint32_t seed = 1337;
@@ -56,6 +57,7 @@ public:
     bool open = false;
     const char* region = nullptr;  // the name of the region the player is in (main sets it each frame)
     const Stream* stream = nullptr;  // the endless world's, else null (main sets it)
+    SDL_Gamepad* gamepad = nullptr;  // the controller playing, else null (main sets it)
     int ticks = 0;                 // sim ticks this frame, and how far into the next one it's drawn (main sets them)
     float tickAlpha = 0;
     // The Save tab (main sets them): the player save's path, the last save or load's result, and the

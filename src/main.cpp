@@ -318,6 +318,20 @@ static int run(SDL_Window* window, const Options& opt) {
     auto menus = [&] { return ui.open || characterOpen || bagsOpen || journalOpen || progressOpen || noteOpen || editor.cursor; };
     auto updateMouseMode = [&] { SDL_SetWindowRelativeMouseMode(window, !benchmark && !menus()); };
     updateMouseMode();
+    auto toggle = [&](bool& open) {
+        open = !open;
+        updateMouseMode();
+    };
+    auto closeWindows = [&] {  // the note box, else the debug window, else the rest
+        if (noteOpen) noteOpen = false, noteText[0] = 0;
+        else if (ui.open) ui.open = false;
+        else characterOpen = bagsOpen = journalOpen = progressOpen = editor.cursor = false;
+        updateMouseMode();
+    };
+    // A controller (README, Controls): the first one connected plays; it opens as SDL reports it.
+    SDL_Gamepad* pad = nullptr;
+    bool sprint = false;          // L3 pressed: runs until the left stick lets go
+    bool triggerWas = false;      // R2 past half last frame
     PlayerTuning walking;  // movement settings from before entering the editor
     auto setEditing = [&](bool on) {  // the editor flies with noclip; NPCs and combat pause
         editor.active = on;
@@ -383,22 +397,12 @@ static int run(SDL_Window* window, const Options& opt) {
                 else if (e.key.key == SDLK_S && !e.key.repeat) editorActions.save = true;
             }
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && !ui.wantsKeyboard() && (!noteOpen || e.key.key == SDLK_ESCAPE)) {
-                if (e.key.key == SDLK_PERIOD) {
-                    ui.open = !ui.open;
-                    updateMouseMode();
-                } else if (e.key.key == SDLK_C) {
-                    characterOpen = !characterOpen;
-                    updateMouseMode();
-                } else if (e.key.key == SDLK_B) {
-                    bagsOpen = !bagsOpen;
-                    updateMouseMode();
-                } else if (e.key.key == SDLK_J) {
-                    journalOpen = !journalOpen;
-                    updateMouseMode();
-                } else if (e.key.key == SDLK_K) {
-                    progressOpen = !progressOpen;
-                    updateMouseMode();
-                } else if (e.key.key == SDLK_E) {  // loot a corpse, else talk
+                if (e.key.key == SDLK_PERIOD) toggle(ui.open);
+                else if (e.key.key == SDLK_C) toggle(characterOpen);
+                else if (e.key.key == SDLK_B) toggle(bagsOpen);
+                else if (e.key.key == SDLK_J) toggle(journalOpen);
+                else if (e.key.key == SDLK_K) toggle(progressOpen);
+                else if (e.key.key == SDLK_E) {  // loot a corpse, else talk
                     interactQueued = true;
                 } else if (e.key.key == SDLK_TAB) {
                     if (stream) {
@@ -439,10 +443,7 @@ static int run(SDL_Window* window, const Options& opt) {
                     // Esc closes the debug window, then the others, then quits (twice with unsaved edits).
                     if (!menus() && (!editor.unsaved || editor.quitArmed)) return quit();
                     if (!menus()) editor.quitArmed = true;
-                    else if (noteOpen) noteOpen = false, noteText[0] = 0;
-                    else if (ui.open) ui.open = false;
-                    else characterOpen = bagsOpen = journalOpen = progressOpen = editor.cursor = false;
-                    updateMouseMode();
+                    else closeWindows();
                 }
             }
             if (e.type == SDL_EVENT_MOUSE_MOTION && !benchmark && !menus()) {
@@ -451,9 +452,80 @@ static int run(SDL_Window* window, const Options& opt) {
             }
             if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT && !benchmark)
                 punchQueued = pressInGame = !menus();
+            if (e.type == SDL_EVENT_GAMEPAD_ADDED && !pad) pad = SDL_OpenGamepad(e.gdevice.which);
+            if (e.type == SDL_EVENT_GAMEPAD_REMOVED && pad && SDL_GetGamepadID(pad) == e.gdevice.which) {
+                SDL_CloseGamepad(pad);
+                pad = nullptr;
+                int count = 0;
+                if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {  // another one still connected takes over
+                    if (count) pad = SDL_OpenGamepad(ids[0]);
+                    SDL_free(ids);
+                }
+            }
+            if ((e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_UP) && pad &&
+                e.gbutton.which == SDL_GetGamepadID(pad) && !benchmark && !noteOpen) {
+                auto b = SDL_GamepadButton(e.gbutton.button);
+                bool click = b == SDL_GAMEPAD_BUTTON_SOUTH || b == SDL_GAMEPAD_BUTTON_WEST;
+                if (click && (menus() || !e.gbutton.down)) {
+                    // With a window open the left stick moves the cursor (below): Cross clicks, Square
+                    // right-clicks. Releases always go out, so a press doesn't stay down past a closed window.
+                    SDL_Event m{};
+                    m.type = e.gbutton.down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+                    m.button.timestamp = SDL_GetTicksNS();
+                    m.button.windowID = SDL_GetWindowID(window);
+                    m.button.button = b == SDL_GAMEPAD_BUTTON_SOUTH ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
+                    m.button.down = e.gbutton.down;
+                    m.button.clicks = 1;
+                    SDL_GetMouseState(&m.button.x, &m.button.y);
+                    SDL_PushEvent(&m);
+                } else if (e.gbutton.down) {
+                    switch (b) {
+                        case SDL_GAMEPAD_BUTTON_WEST: interactQueued = true; break;  // Square: loot, else talk
+                        case SDL_GAMEPAD_BUTTON_LEFT_STICK: sprint = !sprint; break;
+                        case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: punchQueued = !menus(); break;
+                        case SDL_GAMEPAD_BUTTON_NORTH: toggle(bagsOpen); break;
+                        case SDL_GAMEPAD_BUTTON_DPAD_LEFT: toggle(characterOpen); break;
+                        case SDL_GAMEPAD_BUTTON_DPAD_UP: toggle(journalOpen); break;
+                        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: toggle(progressOpen); break;
+                        case SDL_GAMEPAD_BUTTON_BACK: toggle(ui.open); break;  // Create: the debug window
+                        case SDL_GAMEPAD_BUTTON_EAST:
+                        case SDL_GAMEPAD_BUTTON_START:  // Circle or Options close the windows (they never quit)
+                            if (menus()) closeWindows();
+                            break;
+                        default: break;
+                    }
+                }
+            }
             if (e.type == SDL_EVENT_MOUSE_WHEEL && !ui.wantsMouse())
                 game.cameraDistance = std::clamp(game.cameraDistance * std::pow(0.9f, e.wheel.y), 2.0f, 80.0f);
         }
+
+        ui.gamepad = pad;
+        // The controller's sticks, past the deadzone and rescaled from it (0 .. 1).
+        bool padPlays = pad && !benchmark && !noteOpen;
+        auto stick = [&](SDL_GamepadAxis x, SDL_GamepadAxis y) {
+            glm::vec2 v = padPlays ? glm::vec2(SDL_GetGamepadAxis(pad, x), SDL_GetGamepadAxis(pad, y)) / 32767.0f : glm::vec2(0);
+            float length = glm::length(v);
+            if (length <= game.stickDeadzone) return glm::vec2(0);
+            return v / length * std::min((length - game.stickDeadzone) / (1 - game.stickDeadzone), 1.0f);
+        };
+        auto button = [&](SDL_GamepadButton b) { return padPlays && !menus() && SDL_GetGamepadButton(pad, b); };
+        glm::vec2 leftStick = stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY);
+        glm::vec2 rightStick = stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY);
+        if (menus() && leftStick != glm::vec2(0)) {  // the cursor, slow near the middle for small targets
+            float x, y;
+            SDL_GetMouseState(&x, &y);
+            glm::vec2 by = leftStick * glm::length(leftStick) * 1000.0f * realDt;
+            SDL_WarpMouseInWindow(window, x + by.x, y + by.y);
+        }
+        if (!menus()) {
+            camYaw -= rightStick.x * game.stickLookSpeed * realDt;
+            camPitch = std::clamp(camPitch + rightStick.y * game.stickLookSpeed * 0.6f * realDt, -0.5f, 1.45f);
+        }
+        if (leftStick == glm::vec2(0)) sprint = false;
+        bool trigger = padPlays && SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16384;
+        if (trigger && !triggerWas && !menus()) punchQueued = true;
+        triggerWas = trigger;
 
         const bool* keys = SDL_GetKeyboardState(nullptr);
         bool gameKeys = !ui.wantsKeyboard();
@@ -462,17 +534,19 @@ static int run(SDL_Window* window, const Options& opt) {
         Input& in = sim.move;
         in.move = forward * float(key(SDL_SCANCODE_W) - key(SDL_SCANCODE_S)) +
                   right * float(key(SDL_SCANCODE_D) - key(SDL_SCANCODE_A));
+        if (!menus()) in.move += forward * -leftStick.y + right * leftStick.x;
         if (glm::length(in.move) > 1) in.move = glm::normalize(in.move);
-        in.jump = key(SDL_SCANCODE_SPACE);
-        in.run = key(SDL_SCANCODE_LSHIFT);
-        in.descend = key(SDL_SCANCODE_LCTRL);
+        in.jump = key(SDL_SCANCODE_SPACE) || button(SDL_GAMEPAD_BUTTON_SOUTH);
+        in.run = key(SDL_SCANCODE_LSHIFT) || (sprint && !menus());
+        in.descend = key(SDL_SCANCODE_LCTRL) || button(SDL_GAMEPAD_BUTTON_EAST);
         if ((SDL_GetModState() & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) && (key(SDL_SCANCODE_Z) || key(SDL_SCANCODE_Y) || key(SDL_SCANCODE_S)))
             in = {};  // a shortcut (Ctrl+S) isn't movement
         // Left mouse attacks toward where the camera looks; holding it keeps swinging.
         // A press that began in a window (e.g. a drag) doesn't attack once the window closes.
         if (menus()) punchQueued = pressInGame = false;
         if (noteOpen) interactQueued = false;
-        bool punchHeld = pressInGame && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK);
+        bool punchHeld = (pressInGame && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) ||
+                         button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) || (trigger && !menus());
         sim.aim = forward;
         sim.editing = editor.active;
         sim.timeRate = benchmark ? 0 : key(SDL_SCANCODE_T) ? 60.0f : 1.0f;
@@ -815,7 +889,7 @@ int main(int argc, char** argv) {
     }
     for (const std::string& warning : loaded.warnings) std::println(stderr, "warning: {}", warning);
     setDefs(std::move(loaded));
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         std::println(stderr, "SDL_Init failed: {}", SDL_GetError());
         return 1;
     }
