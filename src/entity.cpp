@@ -468,7 +468,7 @@ bool damage(Entity& e, int amount) {
 }
 
 bool startPunch(Player& b, glm::vec2 aim, float windup) {
-    if (!b.alive() || b.swingTimer > 0) return false;
+    if (!b.alive() || b.swingTimer > 0 || b.rolling()) return false;
     b.swingWeapon = b.inv.equipped[SlotMainHand];
     b.swingTimer += swingTime(sheet(b, skillOf(b.swingWeapon)), weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
     b.punchLength = std::min(windup / kPunchImpact, b.swingTimer);

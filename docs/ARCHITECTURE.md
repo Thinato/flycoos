@@ -658,6 +658,12 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
     and tucks the feet in the air.
   - Body yaw eases toward the movement direction, except during a punch, which keeps facing where it
     was aimed.
+  - A roll (`Input::roll`, Alt or Circle; on the ground or up to 0.4 s after a jump's take-off, not
+    mid-swing) turns the body to face the way it moves (or keeps its facing) and carries it at
+    `rollSpeed`, slowing to half over `rollSeconds`; no swings until it ends. Jumping out of a roll
+    keeps its speed and scales its time so the rest plays out in 0.12 s, pose unbroken.
+  - A jump still takes off up to 0.1 s (6 ticks) after stepping off an edge, once (`offGround`). The pose tucks, turns forward once about the
+    tucked middle, and is lifted so its lowest corner stays on the ground.
   - Punch: the fist shoots forward to shoulder height and the torso twists into it, alternating
     hands. The dummy wobbles back when hit and topples over when out of health.
   - Sword slash (main-hand weapon equipped): the right hand winds up to the right side, sweeps an arc

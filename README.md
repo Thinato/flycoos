@@ -46,6 +46,7 @@ GPU debug layer.
 | W A S D | Move (relative to the camera) |
 | Shift | Run |
 | Space | Jump / swim up (fly: rise) |
+| Alt (Option) | Roll the way you're moving (standing still: the way you face): on the ground, or just after jumping to roll through the air; jump while rolling to jump out of it |
 | Ctrl | Fly: sink |
 | Mouse | Orbit the camera |
 | Wheel | Zoom |
@@ -70,7 +71,7 @@ A controller works too (SDL's gamepad layout; PlayStation names here, an Xbox pa
 | L3 (click the left stick) | Run, until the stick lets go |
 | Right stick | Orbit the camera |
 | Cross | Jump / swim up (fly: rise); with a window open, click |
-| Circle | Fly: sink; with a window open, close the windows |
+| Circle | Roll (like Alt); fly: sink; with a window open, close the windows |
 | Square | Loot or talk (like E); with a window open, right-click (equip / unequip) |
 | R1 / R2 | Attack (hold to keep swinging) |
 | Triangle | Bags |

@@ -212,6 +212,87 @@ static void physics() {
         CHECK(maxY > 4.9f);
         CHECK(p.pos.x > 11);
     }
+    {  // a roll goes the way it moves (standing: the way it faces), about 4 blocks, on the ground only
+        auto rolled = [](glm::vec2 move, float yaw, bool airborne) {
+            Grid g = flatWorld(0);
+            Player p;
+            p.pos = {7.5f, airborne ? 6.0f : 4.001f, 7.5f};
+            p.yaw = yaw;
+            updatePlayer(p, g, {}, 1 / 120.0f);  // settles (or starts falling)
+            Input in;
+            in.move = move, in.roll = true;
+            updatePlayer(p, g, in, 1 / 120.0f);
+            bool started = p.rolling(), punch = startPunch(p, {1, 0});
+            in.roll = false;
+            float yawAfter = p.yaw;
+            for (int i = 0; i < 60; ++i) updatePlayer(p, g, {}, 1 / 120.0f);  // past the roll's 0.45 s
+            return std::tuple{started, punch, glm::vec2(p.pos.x - 7.5f, p.pos.z - 7.5f), yawAfter, p.rolling()};
+        };
+        auto [started, punch, by, yaw, still] = rolled({}, 0, false);
+        CHECK(started && !punch && !still);  // no swing mid-roll; over after its length
+        CHECK(by.y > 3.5f && by.y < 4.8f && std::abs(by.x) < 0.01f);  // straight ahead (yaw 0 faces +Z)
+        auto [started2, punch2, by2, yaw2, still2] = rolled({-1, 0}, 0, false);
+        CHECK(started2 && by2.x < -3.5f && std::abs(by2.y) < 0.01f);  // toward -X, turned to face it
+        CHECK(std::abs(yaw2 + std::numbers::pi_v<float> / 2) < 1e-4f);
+        auto [started3, punch3, by3, yaw3, still3] = rolled({1, 0}, 0, true);
+        CHECK(!started3 && punch3);  // in the air: no roll
+    }
+    {  // a roll just after a jump goes through the air with it; one later in the jump doesn't start
+        auto airRoll = [](int ticksAfterJump) {
+            Grid g = flatWorld(0);
+            Player p;
+            p.pos = {7.5f, 4.001f, 4.5f};
+            updatePlayer(p, g, {}, 1 / 120.0f);
+            Input in;
+            in.jump = true;
+            updatePlayer(p, g, in, 1 / 120.0f);
+            in.jump = false;
+            for (int i = 0; i < ticksAfterJump; ++i) updatePlayer(p, g, in, 1 / 120.0f);
+            in.move = {0, 1}, in.roll = true;
+            updatePlayer(p, g, in, 1 / 120.0f);
+            return p.rolling() && !p.onGround;
+        };
+        CHECK(airRoll(12));   // 0.1 s after take-off
+        CHECK(!airRoll(60));  // 0.5 s: past the window, still in the air
+    }
+    {  // a jump still takes off for a few frames after stepping off an edge, once
+        auto jumpAfterEdge = [](int ticks) {
+            Grid g = flatWorld(0);
+            Player p;
+            p.pos = {7.5f, 4.001f, 7.5f};
+            updatePlayer(p, g, {}, 1 / 60.0f);
+            p.pos.y = 6;  // as if it just walked off a ledge: falling from here
+            for (int i = 0; i < ticks; ++i) updatePlayer(p, g, {}, 1 / 60.0f);
+            Input in;
+            in.jump = true;
+            updatePlayer(p, g, in, 1 / 60.0f);
+            float up = p.vel.y;
+            updatePlayer(p, g, in, 1 / 60.0f);  // held: no second jump in the air
+            return std::pair{up > 5, p.vel.y < up};
+        };
+        auto [late4, once] = jumpAfterEdge(4);
+        CHECK(late4 && once);
+        CHECK(!jumpAfterEdge(10).first);  // 1/6 s: too late
+    }
+    {  // jumping while rolling cuts the roll short: the turn carries on from where it was, quickly
+        Grid g = flatWorld(0);
+        Player p;
+        p.pos = {7.5f, 4.001f, 4.5f};
+        updatePlayer(p, g, {}, 1 / 120.0f);
+        Input in;
+        in.roll = true;
+        updatePlayer(p, g, in, 1 / 120.0f);
+        in.roll = false;
+        for (int i = 0; i < 12; ++i) updatePlayer(p, g, in, 1 / 120.0f);
+        float u = p.rollTime / p.rollLength;
+        in.jump = true;
+        updatePlayer(p, g, in, 1 / 120.0f);
+        CHECK(p.vel.y > 5 && p.rolling());
+        CHECK(std::abs(p.rollTime / p.rollLength - u) < 0.05f);  // one tick on, not a jump in the pose
+        in.jump = false;
+        for (int i = 0; i < 15; ++i) updatePlayer(p, g, in, 1 / 120.0f);  // 0.125 s later
+        CHECK(!p.rolling() && !p.onGround);
+    }
     {  // grounding holds at high frame rates (one frame of gravity < rest gap)
         Grid g = flatWorld(0);
         Player p;

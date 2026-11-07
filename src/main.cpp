@@ -369,6 +369,7 @@ static int run(SDL_Window* window, const Options& opt) {
     double titleTimer = 0;
     float tickTime = 0;          // frame time not yet simulated, < kTick between frames
     bool interactQueued = false;  // E pressed, not yet seen by a step
+    bool rollQueued = false;      // Alt (Option) or Circle pressed, likewise
     for (int frame = 0;; ++frame) {
         if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) {  // don't spin or count frames while hidden
             for (SDL_Event e; SDL_WaitEventTimeout(&e, 100);)
@@ -402,6 +403,7 @@ static int run(SDL_Window* window, const Options& opt) {
                 else if (e.key.key == SDLK_B) toggle(bagsOpen);
                 else if (e.key.key == SDLK_J) toggle(journalOpen);
                 else if (e.key.key == SDLK_K) toggle(progressOpen);
+                else if (e.key.key == SDLK_LALT && !benchmark && !menus()) rollQueued = true;
                 else if (e.key.key == SDLK_E) {  // loot a corpse, else talk
                     interactQueued = true;
                 } else if (e.key.key == SDLK_TAB) {
@@ -488,9 +490,10 @@ static int run(SDL_Window* window, const Options& opt) {
                         case SDL_GAMEPAD_BUTTON_DPAD_UP: toggle(journalOpen); break;
                         case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: toggle(progressOpen); break;
                         case SDL_GAMEPAD_BUTTON_BACK: toggle(ui.open); break;  // Create: the debug window
-                        case SDL_GAMEPAD_BUTTON_EAST:
-                        case SDL_GAMEPAD_BUTTON_START:  // Circle or Options close the windows (they never quit)
+                        case SDL_GAMEPAD_BUTTON_EAST:  // Circle rolls, or closes the windows like Options
+                        case SDL_GAMEPAD_BUTTON_START:  // (they never quit)
                             if (menus()) closeWindows();
+                            else if (b == SDL_GAMEPAD_BUTTON_EAST) rollQueued = true;
                             break;
                         default: break;
                     }
@@ -544,7 +547,7 @@ static int run(SDL_Window* window, const Options& opt) {
         // Left mouse attacks toward where the camera looks; holding it keeps swinging.
         // A press that began in a window (e.g. a drag) doesn't attack once the window closes.
         if (menus()) punchQueued = pressInGame = false;
-        if (noteOpen) interactQueued = false;
+        if (noteOpen) interactQueued = rollQueued = false;
         bool punchHeld = (pressInGame && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) ||
                          button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) || (trigger && !menus());
         sim.aim = forward;
@@ -563,9 +566,10 @@ static int run(SDL_Window* window, const Options& opt) {
             }
             sim.attack = punchHeld || punchQueued;
             sim.interact = interactQueued;
+            in.roll = rollQueued;
             StepResult stepped = step(session, sim, kTick);
             if (stepped.attacked) punchQueued = false;
-            interactQueued = false;
+            interactQueued = rollQueued = in.roll = false;
             respawned |= stepped.respawned;
         }
         if (!session.toasts.empty()) {  // quest news: started, updated, complete

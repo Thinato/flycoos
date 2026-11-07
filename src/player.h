@@ -17,6 +17,7 @@ struct Input {
     glm::vec2 move{};  // world-space XZ direction, length <= 1
     bool jump = false, run = false;
     bool descend = false;  // flight only
+    bool roll = false;     // a tap: roll the way it moves (else the way it faces), on the ground or just after a jump
 };
 
 // Movement knobs, tweakable live from the debug UI.
@@ -25,6 +26,7 @@ struct PlayerTuning {
     bool fly = false;     // no gravity: jump rises, descend sinks; run = 2.5x
     bool noclip = false;  // fly through terrain (implies fly)
     float flySpeed = 15;
+    float rollSpeed = 12, rollSeconds = 0.45f;  // a roll's speed at its start (it slows to half) and length
 };
 
 // The moving body: position and physics (updatePlayer), its animation state, and where to draw it.
@@ -39,7 +41,13 @@ struct Body {
     float airAmount = 0;     // 0 grounded .. 1 airborne
     float swimAmount = 0;    // 0 out of the water .. 1 chest-deep in it (swim pose)
     float breathPhase = 0;  // idle breathing cycle, radians
+    float rollTime = 99, rollLength = 0;  // seconds since the latest roll began, and its length
+    glm::vec2 rollDir{};                  // unit XZ direction of the latest roll
+    float jumpTime = 99;                  // seconds since the latest jump took off
+    float offGround = 99;                 // seconds since it last stood on the ground (99 once it jumped)
     PlayerTuning tuning;
+
+    bool rolling() const { return rollTime < rollLength; }
 
     // Moved without passing in between (spawned, respawned, flown to): drawn there at once, not slid.
     void teleport(glm::vec3 to) { pos = prevPos = to; prevYaw = yaw; }

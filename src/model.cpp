@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -252,6 +253,15 @@ static float thrust(const Player& p) {
     return smooth(u < kPunchImpact ? u / kPunchImpact : 1 - (u - kPunchImpact) / (1 - kPunchImpact));
 }
 
+// A roll: how tucked the body is (in over the first 15%, out over the last 20%) and how far it has
+// turned forward (one full turn, easing in and out).
+struct Roll { float tuck = 0, turn = 0; };
+static Roll roll(const Body& p) {
+    if (!p.rolling()) return {};
+    float u = p.rollTime / p.rollLength;
+    return {smooth(u / 0.15f) * smooth((1 - u) / 0.2f), 2 * std::numbers::pi_v<float> * smooth(u)};
+}
+
 // Procedural walk/breathe/airborne/attack animation as per-part offsets (voxels) and rotations.
 static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], glm::vec3 (&rot)[PartCount]) {
     float s = std::sin(p.gaitPhase), c = std::cos(p.gaitPhase);
@@ -289,6 +299,14 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
         for (int i = 0; i < PartCount; ++i) {
             off[i] = glm::mix(off[i], glm::mix(tread[i], crawl[i], a1), sw);
             rot[i] = glm::mix(rot[i], glm::vec3(0), sw);
+        }
+    }
+
+    if (float k = roll(p).tuck; k > 0) {  // rolling: head to the chest, knees up, hands on the shins
+        static const glm::vec3 tuck[PartCount] = {{0, -4, 2.5f}, {0, -1, 0.5f}, {-2.3f, 1, 4}, {2.3f, 1, 4}, {0, 3, 2.5f}, {0, 3, 2.5f}};
+        for (int i = 0; i < PartCount; ++i) {
+            off[i] = glm::mix(off[i], tuck[i], k);
+            rot[i] = glm::mix(rot[i], glm::vec3(i == Torso ? 0.5f : 0, 0, 0), k);
         }
     }
 
@@ -345,6 +363,12 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
             tilt = glm::rotate(tilt, lean, {1, 0, 0});
             tilt = glm::translate(tilt, -pivot);
         }
+        if (Roll r = roll(p); !quadruped(model) && r.tuck > 0) {  // turns forward about the tucked body's middle
+            glm::vec3 pivot(0, 6, 1);
+            tilt = glm::translate(glm::mat4(1), pivot);
+            tilt = glm::rotate(tilt, r.turn, {1, 0, 0});
+            tilt = glm::translate(tilt, -pivot);
+        }
         if (!p.alive()) {  // falls over onto its side
             float fall = std::min(p.deadTime / 0.5f, 1.0f);
             glm::vec3 pivot(0, 4, 0);  // about half a body's thickness up, so it lies on the ground
@@ -366,6 +390,17 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         m = glm::rotate(m, rot[i].y, {0, 1, 0});
         m = glm::rotate(m, rot[i].x, {1, 0, 0});
         out[i] = glm::translate(m, -glm::vec3(parts[i].size) * 0.5f);
+    }
+    if (roll(p).tuck > 0) {  // rolls on its lowest corner: neither sinks into the ground nor floats over it
+        float lowest = 1e9f;
+        for (int i = 0; i < PartCount; ++i)
+            for (int c = 0; c < 8; ++c) {
+                glm::vec3 corner(c & 1 ? parts[i].size.x : 0, c & 2 ? parts[i].size.y : 0, c & 4 ? parts[i].size.z : 0);
+                lowest = std::min(lowest, (out[i] * glm::vec4(corner, 1)).y);
+            }
+        glm::mat4 lift = glm::translate(glm::mat4(1), {0, base[3].y - lowest, 0});
+        for (glm::mat4& m : out) m = lift * m;
+        base = lift * base;
     }
     if (held && armed) {  // blade tilted forward from the fist; flatter and swept around while slashing
         glm::vec2 sl = slash(p);

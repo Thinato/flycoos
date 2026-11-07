@@ -20,11 +20,12 @@ json vec(glm::vec3 v) { return {round2(v.x), round2(v.y), round2(v.z)}; }
 json itemId(ItemId id) { return id ? json(defs().itemIds[id]) : json(nullptr); }
 
 // What the body is doing, in one word: the first that holds of knocked_out, flying, swimming,
-// falling, jumping, on_ground.
+// falling, jumping, rolling, on_ground.
 const char* motion(const Player& p) {
     if (!p.alive()) return "knocked_out";
     if (p.tuning.fly || p.tuning.noclip) return "flying";
     if (p.inWater) return "swimming";
+    if (p.rolling()) return "rolling";
     if (p.onGround) return "on_ground";
     return p.vel.y < 0 ? "falling" : "jumping";
 }

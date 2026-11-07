@@ -220,6 +220,10 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
     ImGui::SliderFloat("Run speed", &t.runSpeed, 1, 60, "%.1f b/s");
     ImGui::SliderFloat("Jump speed", &t.jumpSpeed, 1, 40, "%.1f b/s");
     ImGui::SliderFloat("Gravity", &t.gravity, 0, 80, "%.1f b/s^2");
+    ImGui::SliderFloat("Roll speed", &t.rollSpeed, 1, 40, "%.1f b/s");
+    ImGui::SetItemTooltip("At the roll's start; it slows to half by the end. Alt (Option) or Circle rolls; just after a jump it rolls through the air; jumping cuts it short.");
+    ImGui::SliderFloat("Roll length", &t.rollSeconds, 0.1f, 1.5f, "%.2f s");
+    ImGui::Text("Rolling %s   (%.1f blocks a roll)", p.rolling() ? "yes" : "no", double(t.rollSpeed * t.rollSeconds * 0.75f));
 
     ImGui::SeparatorText("Flight");
     ImGui::Checkbox("Fly", &t.fly);

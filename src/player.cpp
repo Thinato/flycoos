@@ -6,6 +6,10 @@
 
 constexpr float kStride = 1.7f;  // blocks travelled per full gait cycle
 constexpr float kEps = 1e-3f;
+constexpr float kRollRecovery = 0.15f;  // seconds after a roll before the next one
+constexpr float kAirRollWindow = 0.4f;  // seconds after a jump's take-off that a roll may still start (in the air)
+constexpr float kRollCut = 0.12f;       // seconds a roll jumped out of takes to finish its turn
+constexpr float kCoyoteTime = 0.1f;     // seconds after stepping off an edge that a jump still takes off
 
 std::vector<Modifier> collect(const Combatant& c) {
     std::vector<Modifier> out;
@@ -67,6 +71,9 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
 
     const PlayerTuning& t = p.tuning;
     bool flying = t.fly || t.noclip;
+    p.rollTime = std::min(p.rollTime + dt, 99.0f);
+    p.jumpTime = std::min(p.jumpTime + dt, 99.0f);
+    p.offGround = p.onGround ? 0 : std::min(p.offGround + dt, 99.0f);
     p.inWater = g.get(glm::ivec3(glm::floor(p.pos + glm::vec3(0, 0.9f, 0)))) == Water;
     if (flying) {
         float speed = t.flySpeed * (in.run ? 2.5f : 1.0f);
@@ -74,15 +81,36 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
                  approach(p.vel.y, float(in.jump - in.descend) * speed, 10, dt),
                  approach(p.vel.z, in.move.y * speed, 10, dt)};
     } else {
+        bool jumps = in.jump && p.offGround <= kCoyoteTime && !p.inWater;  // just off an edge still counts
+        if (jumps) {
+            p.jumpTime = 0, p.offGround = 99;  // one jump per time on the ground
+            // Jumping out of a roll: the rest of it plays out in kRollCut seconds, in the air (time
+            // scaled, so the pose carries on from where it was), and the jump keeps its speed.
+            if (float left = p.rollLength - p.rollTime; p.rolling() && left > kRollCut) {
+                p.rollTime *= kRollCut / left;
+                p.rollLength *= kRollCut / left;
+            }
+        }
+        // On the ground, or just after a jump: then the roll goes through the air with the jump.
+        if (in.roll && (p.onGround || p.jumpTime < kAirRollWindow) && !p.inWater && !p.punching() && p.rollTime >= p.rollLength + kRollRecovery) {
+            glm::vec2 facing{std::sin(p.yaw), std::cos(p.yaw)};
+            p.rollDir = glm::length(in.move) > 0.1f ? glm::normalize(in.move) : facing;
+            p.rollTime = 0, p.rollLength = t.rollSeconds;
+            p.yaw = std::atan2(p.rollDir.x, p.rollDir.y);  // tucks facing the roll
+        }
         glm::vec2 target = in.move * (in.run ? t.runSpeed : t.walkSpeed) * (p.inWater ? 0.6f : 1.0f);
         float control = p.onGround || p.inWater ? 12.0f : 3.0f;
         p.vel.x = approach(p.vel.x, target.x, control, dt);
         p.vel.z = approach(p.vel.z, target.y, control, dt);
+        if (p.rolling()) {  // the roll carries it, slowing from full speed to half
+            glm::vec2 v = p.rollDir * t.rollSpeed * (1 - 0.5f * p.rollTime / p.rollLength);
+            p.vel.x = v.x, p.vel.z = v.y;
+        }
         if (p.inWater) {
             p.vel.y = in.jump ? 4.0f : std::max(p.vel.y - 6 * dt, -3.0f);
         } else {
             p.vel.y = std::max(p.vel.y - t.gravity * dt, -50.0f);
-            if (in.jump && p.onGround) p.vel.y = t.jumpSpeed;
+            if (jumps) p.vel.y = t.jumpSpeed;
         }
     }
 
