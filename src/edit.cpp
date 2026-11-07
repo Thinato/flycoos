@@ -22,11 +22,18 @@ int groundUnderTrees(const Grid& g, int x, int z) {
 
 namespace {
 
-// Calls fn(index in g of the row's first voxel, row number) for each x-row of b (inside g), z then y.
+// Calls fn(index in g, row number, offset in the row, length) for each contiguous run of each
+// x-row of b (inside g), z then y: one run per row, two where a streamed grid's storage wraps.
 template <class Fn> void rows(const Grid& g, Box b, Fn fn) {
     size_t r = 0;
+    int w = b.size().x;
     for (int y = b.lo.y; y <= b.hi.y; ++y)
-        for (int z = b.lo.z; z <= b.hi.z; ++z) fn(g.index({b.lo.x, y, z}), r++);
+        for (int z = b.lo.z; z <= b.hi.z; ++z, ++r)
+            for (int x = 0, n; x < w; x += n) {
+                glm::ivec3 p(b.lo.x + x, y, z);
+                n = g.rowRun(p, w - x);
+                fn(g.index(p), r, size_t(x), size_t(n));
+            }
 }
 
 // What a column's surface turns into when it's buried, as generation layers it.
@@ -114,7 +121,7 @@ void brush(Grid& g, const EditOp& op, Box box) {
 }
 
 Box markerBox(const Grid& g, const Marker& m) {
-    glm::ivec3 p = glm::clamp(glm::ivec3(glm::floor(m.pos)), glm::ivec3(0), g.size - 1);
+    glm::ivec3 p = glm::clamp(glm::ivec3(glm::floor(m.pos)), g.lo, g.hi());
     return {p, p};
 }
 
@@ -149,7 +156,9 @@ Box swapRecord(Grid& g, std::vector<Instance>& list, std::vector<Marker>& marker
     for (size_t k = 0; k < rec.parts.size(); ++k) {
         EditRecord::Part& p = rec.parts[undo ? rec.parts.size() - 1 - k : k];
         size_t w = size_t(p.box.size().x);
-        rows(g, p.box, [&](size_t i, size_t r) { std::swap_ranges(&p.cells[r * w], &p.cells[r * w] + w, &g.cells[i]); });
+        rows(g, p.box, [&](size_t i, size_t r, size_t x, size_t n) {
+            std::swap_ranges(&p.cells[r * w + x], &p.cells[r * w + x] + n, &g.cells[i]);
+        });
         grow(p.box);
     }
     swapEntries(list, rec.instances, undo, [&](const Instance* live, const Instance* other) {
@@ -206,13 +215,13 @@ Box editBox(const Grid& g, const EditOp& op) {
     if (op.tool == Tool::Fill) box = {glm::min(op.min, op.max), glm::max(op.min, op.max)};
     else box = {glm::ivec3(op.center.x - op.radius, 0, op.center.y - op.radius),
                 glm::ivec3(op.center.x + op.radius, g.size.y - 1, op.center.y + op.radius)};
-    return {glm::max(box.lo, glm::ivec3(0)), glm::min(box.hi, g.size - 1)};
+    return {glm::max(box.lo, g.lo), glm::min(box.hi, g.hi())};
 }
 
 std::vector<Block> readBox(const Grid& g, Box b) {
     size_t w = size_t(b.size().x);
     std::vector<Block> cells(w * size_t(b.size().y) * size_t(b.size().z));
-    rows(g, b, [&](size_t i, size_t r) { std::copy_n(&g.cells[i], w, &cells[r * w]); });
+    rows(g, b, [&](size_t i, size_t r, size_t x, size_t n) { std::copy_n(&g.cells[i], n, &cells[r * w + x]); });
     return cells;
 }
 
@@ -220,15 +229,15 @@ EditRecord::Part changedPart(const Grid& g, Box box, const std::vector<Block>& b
     // The bounding box of what changed, so remeshing and undo stay small.
     Box dirty{glm::ivec3(INT_MAX), glm::ivec3(INT_MIN)};
     size_t w = size_t(box.size().x);
-    rows(g, box, [&](size_t i, size_t r) {
-        const Block *old = &before[r * w], *now = &g.cells[i];
-        auto first = std::mismatch(old, old + w, now).first;
-        if (first == old + w) return;
-        int last = int(w) - 1;
+    rows(g, box, [&](size_t i, size_t r, size_t x, size_t n) {
+        const Block *old = &before[r * w + x], *now = &g.cells[i];
+        auto first = std::mismatch(old, old + n, now).first;
+        if (first == old + n) return;
+        int last = int(n) - 1;
         while (old[last] == now[last]) --last;
         int y = box.lo.y + int(r / size_t(box.size().z)), z = box.lo.z + int(r % size_t(box.size().z));
-        dirty.lo = glm::min(dirty.lo, glm::ivec3(box.lo.x + int(first - old), y, z));
-        dirty.hi = glm::max(dirty.hi, glm::ivec3(box.lo.x + last, y, z));
+        dirty.lo = glm::min(dirty.lo, glm::ivec3(box.lo.x + int(x) + int(first - old), y, z));
+        dirty.hi = glm::max(dirty.hi, glm::ivec3(box.lo.x + int(x) + last, y, z));
     });
     if (dirty.empty()) return {};
 
@@ -282,7 +291,7 @@ EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join)
     Box touched = box;  // and the plants just above a fill, which may lose their ground, or just under it (drowned)
     touched.lo.y = std::max(touched.lo.y - 1, 0), touched.hi.y = std::min(touched.hi.y + 1, g.size.y - 1);
     std::vector<Block> before = readBox(g, touched);
-    if (op.tool == Tool::Fill) rows(g, box, [&](size_t i, size_t) { std::fill_n(&g.cells[i], box.size().x, op.block); });
+    if (op.tool == Tool::Fill) rows(g, box, [&](size_t i, size_t, size_t, size_t n) { std::fill_n(&g.cells[i], n, op.block); });
     else brush(g, op, box);
     clearUnsupported(g, touched);
 
@@ -295,7 +304,7 @@ EditResult applyEdit(Grid& g, const EditOp& op, EditHistory& history, bool join)
 
 EditResult growMeadow(Grid& g, glm::ivec2 lo, glm::ivec2 hi, Block kind, float density, EditHistory& history) {
     constexpr int kTile = 64;
-    std::tie(lo, hi) = std::pair(glm::max(glm::min(lo, hi), glm::ivec2(0)), glm::min(glm::max(lo, hi), glm::ivec2(g.size.x, g.size.z) - 1));
+    std::tie(lo, hi) = std::pair(glm::max(glm::min(lo, hi), glm::ivec2(g.lo.x, g.lo.z)), glm::min(glm::max(lo, hi), glm::ivec2(g.hi().x, g.hi().z)));
     EditRecord rec;
     Box dirty;
     for (int tz = lo.y; tz <= hi.y; tz += kTile)

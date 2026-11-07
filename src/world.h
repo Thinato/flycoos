@@ -1,4 +1,6 @@
 #pragma once
+#include <cassert>
+#include <bit>
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -194,19 +196,54 @@ constexpr int kSeaLevel = 34;
 static_assert(kChunk <= 32, "quad positions are 6-bit; see mesher.h");
 static_assert(kWorldSize.x % kChunk == 0 && kWorldSize.y % kChunk == 0 && kWorldSize.z % kChunk == 0);
 
-// Dense voxel volume, x fastest. Reads outside the volume return Air.
+// Dense voxel volume, x fastest, in world coordinates. Reads outside the volume return Air.
+// A streamed grid (streamed()) is a window onto the endless world: `lo` is its low corner and its
+// storage wraps around in x and z, so moving the window only rewrites the chunks that left it (a
+// voxel lives at index(p) whatever `lo` is). Any other grid is fixed at `lo` (usually 0) and doesn't wrap.
 struct Grid {
     glm::ivec3 size{};
+    glm::ivec3 lo{};             // world position of the volume's low corner; y is always 0
+    glm::ivec2 wrap{-1, -1};     // x, z storage masks (size - 1) of a streamed grid; -1: no wrap
+    glm::ivec3 org{};            // subtracted before indexing: lo for a fixed grid, 0 for a streamed one
     std::vector<Block> cells;
 
-    explicit Grid(glm::ivec3 s) : size(s), cells(size_t(s.x) * s.y * s.z, Air) {}
-    bool inside(glm::ivec3 p) const {
-        return p.x >= 0 && p.y >= 0 && p.z >= 0 && p.x < size.x && p.y < size.y && p.z < size.z;
+    explicit Grid(glm::ivec3 s, glm::ivec3 at = {}) : size(s), lo(at), org(at), cells(size_t(s.x) * s.y * s.z, Air) {}
+    // A window of `s` (x and z powers of two) for streaming, its low corner at `origin`.
+    static Grid streamed(glm::ivec3 s, glm::ivec3 origin) {
+        assert(std::has_single_bit(unsigned(s.x)) && std::has_single_bit(unsigned(s.z)) && origin % kChunk == glm::ivec3(0));
+        Grid g(s);
+        g.lo = origin;
+        g.wrap = {s.x - 1, s.z - 1};
+        g.org = {};
+        return g;
     }
-    size_t index(glm::ivec3 p) const { return (size_t(p.y) * size.z + p.z) * size.x + p.x; }
+    bool streaming() const { return wrap.x >= 0; }
+    glm::ivec3 hi() const { return lo + size - 1; }  // the highest voxel inside
+    bool inside(glm::ivec3 p) const {
+        glm::ivec3 q = p - lo;
+        return q.x >= 0 && q.y >= 0 && q.z >= 0 && q.x < size.x && q.y < size.y && q.z < size.z;
+    }
+    // Of a voxel inside. Along x, storage is contiguous up to the wrap seam (rowRun).
+    size_t index(glm::ivec3 p) const {
+        return (size_t(p.y) * size.z + size_t((p.z - org.z) & wrap.y)) * size.x + size_t((p.x - org.x) & wrap.x);
+    }
+    // How many voxels from p along +x (at most n) are contiguous in storage from index(p).
+    int rowRun(glm::ivec3 p, int n) const { return std::min(n, size.x - ((p.x - org.x) & wrap.x)); }
     Block get(glm::ivec3 p) const { return inside(p) ? cells[index(p)] : Air; }
     void set(glm::ivec3 p, Block b) { if (inside(p)) cells[index(p)] = b; }
+
+    // Chunk slots: kChunk^3 blocks of storage numbered x fastest, then y, then z (a streamed grid's
+    // `lo` is chunk-aligned, so each slot holds one whole chunk of the world).
+    size_t chunkSlot(glm::ivec3 p) const {  // the slot of voxel p (inside)
+        glm::ivec3 n = size / kChunk, s = ((p - org) >> 5) & glm::ivec3(wrap.x >> 5, -1, wrap.y >> 5);  // >> 5: floor / kChunk
+        return size_t(s.x + n.x * (s.y + n.y * s.z));
+    }
+    glm::ivec3 chunkOrigin(size_t slot) const {  // world position of the chunk in a slot
+        glm::ivec3 n = size / kChunk, s(int(slot) % n.x, int(slot) / n.x % n.y, int(slot) / (n.x * n.y));
+        return lo + ((s * kChunk + org - lo) & glm::ivec3(wrap.x, -1, wrap.y));
+    }
 };
+static_assert(kChunk == 32, "Grid::chunkSlot divides by shifting");
 
 // Origin of chunk i of a grid of `size` (chunks numbered x fastest, then y, then z).
 inline glm::ivec3 chunkOrigin(glm::ivec3 size, int i) {
@@ -217,7 +254,11 @@ inline glm::ivec3 chunkOrigin(glm::ivec3 size, int i) {
 // Runs fn(0..count-1) across all hardware threads.
 void parallelFor(int count, const std::function<void(int)>& fn);
 
+// The world of `seed`, chunk column by chunk column (in parallel) over every chunk g holds.
 void generateTerrain(Grid& world, uint32_t seed);
+// One chunk column (chunk coordinates x, z: kChunk-wide) of the world of `seed`, into g where g
+// holds it. A pure function of (chunk, seed): any order, any grid, the same voxels.
+void generateChunkColumn(Grid& g, glm::ivec2 chunk, uint32_t seed);
 
 // Rocks, shared by generateTerrain and the generated prefabs (trees: trees.h). Each grows on the
 // ground voxel `at` and overwrites. The ragged surface is seeded by `seed` at positions relative to

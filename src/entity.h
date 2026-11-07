@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <array>
 #include <cstdint>
 #include <random>
@@ -121,7 +122,9 @@ std::vector<Marker> defaultMarkers(const Grid& world, uint32_t seed);
 void setState(Entity& e, AiState to, const char* reason);
 // AI and physics for every entity: the state machine of ADR-020 (wandering, talking villagers stop
 // and face the player, fighters chase the player, wind up and swing, give up and walk home).
-void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt);
+// NPCs where `loaded` says no (the endless world's part that isn't in) wait where they are.
+void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt,
+                    const std::function<bool(glm::vec3)>& loaded = {});
 // Keeps the player from walking through entities (never pushes into terrain).
 void separate(Player& player, const Grid& world, const std::vector<Entity>& entities);
 // Nearest living entity within talk range that can talk, or null.

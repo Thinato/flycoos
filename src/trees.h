@@ -42,7 +42,14 @@ struct TreeSite {
     int height, colour;
     uint32_t seed;
 };
-// The generator's trees for world `seed` whose trunks stand in columns [lo, hi] (x, z), in order;
-// each is chosen on the grid as `plant` left it (world.cpp). generateTerrain grows them; replant
-// (prefab.h) places them as instances.
-void plantTrees(Grid& g, uint32_t seed, glm::ivec2 lo, glm::ivec2 hi, const std::function<void(const TreeSite&)>& plant);
+// A column's ground for tree sites: the y of its highest voxel that isn't clear (-1: none, or no
+// tree there) and that voxel's block.
+using GroundAt = std::function<std::pair<int, Block>(int x, int z)>;
+// The ground of g as it is (structures and trees count), none within `margin` of its edge.
+GroundAt groundOf(const Grid& g, int margin);
+// The generator's trees for world `seed` whose trunks stand in columns [lo, hi] (x, z), on
+// `ground`, in cell order. The choice depends only on the ground and the seed, so any part of the
+// world gets the same trees (world.cpp). generateTerrain grows them; replant (prefab.h) places them
+// as instances.
+void plantTrees(uint32_t seed, int worldHeight, glm::ivec2 lo, glm::ivec2 hi, const GroundAt& ground,
+                const std::function<void(const TreeSite&)>& plant);

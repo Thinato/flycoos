@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -25,6 +26,8 @@ struct Session {
     float timeOfDay = 0.3f, timeScale = 1;  // see FrameParams::timeOfDay; timeScale 0 = time paused
     float armorK = kArmorK;                 // armor balance: see armorReduction
     uint32_t regionId = 0;                  // the region marker the player is in (0: none), since `regionSince` of `elapsed`
+    // Where the world is in (the endless world streams, stream.h); null: everywhere. Nothing moves elsewhere.
+    std::function<bool(glm::vec3)> loaded;
     double regionSince = 0;
     // Quests (ADR-026): this tick's events, drained once at the end of step(); each quest's state
     // (by handle, defs().quests); the world flags; the player's item counts as of the last tick

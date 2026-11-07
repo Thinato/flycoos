@@ -1243,3 +1243,63 @@
     `generation`/`regions` checksums were re-recorded (without plants they are the old ones).
   - Placing a prefab clears the plants inside its box that lost their grass (e.g. under a bridge deck
     flush with the ground); one just above the box, on a cell its top layer covered, stays.
+
+## ADR-031: The endless world: a wrapping window streamed around the player
+
+- **Status:** accepted (2026-11-07); revises M1's "a fixed story world replaces an infinite one"
+- **Context:** The user wants a procedurally generated world with procedural quests, monsters and
+  dungeons, so play doesn't depend on the story's progress. The first step is a world that goes on
+  as the player travels. The hand-made story world must keep working.
+- **Decision:**
+  - **One wrapping window.** Without `--world` the world is `Grid::streamed`: the usual 1024×192×1024
+    grid (192 MiB, as before), but in world coordinates. `lo` is its low corner, and storage wraps in
+    x and z (power-of-two sizes; `index` masks). Moving the window only rewrites the 32-wide chunk
+    columns that left it. `get`/`set` keep their meaning, so physics, NPCs, edits and the mesher
+    didn't change. Code that used `size` as the world's edge uses `lo`/`hi()`. Rows that cross the
+    wrap seam are split (`rowRun`). Any other grid (the story world, models, prefabs, tests) is fixed
+    at `lo`, usually 0, and behaves as before. `Light` wraps the same way.
+  - **Generation in any order.** `generateChunkColumn` builds one chunk column of the world of a seed.
+    It works in a scratch grid padded by 24 blocks, more than any tree or rock reaches, so the trees
+    and rocks that touch the column grow whole and only the column is copied out. The column is a
+    pure function of (column, seed). Terrain was already a function of the column. Trees no longer
+    read the grid: a candidate (one per 13×13 cell) yields to a neighbouring cell's candidate within
+    10 blocks that has a higher roll, instead of to a crown planted before it. Rocks stand on the
+    ground, not on crowns. A 48-block pad gives exactly the same voxels as 24, and tree density is
+    within 4% of before. Generated worlds changed (the pinned hashes too); saved worlds didn't.
+  - **Stages.** `Stream` (core, tested) keeps the window centred on the player:
+    - worker threads generate the columns that came in, nearest first;
+    - each frame the main thread installs them, then lights columns whose 8 neighbours are in
+      (`lightColumns`, nearest first, within a time budget: 2 ms, a debug slider);
+    - it hands out a column's 6 chunk slots to mesh once its 8 neighbours are lit.
+
+    So a chunk is meshed only when every voxel and light value its faces and AO read is final. Light
+    only ever rises toward the exact value, so lighting in any order ends up exact, the same as
+    `fillLight` (tested). A column that leaves is cleared to air and dark, and its chunk slots are
+    emptied. The two outer rings of the window are never meshed: what's drawn reaches about 448
+    blocks around the player, inside the fog.
+  - **Renderer.** `streamWorld` starts empty with 2M quads of headroom. `updateChunks` meshes and
+    empties slots. Packing leaves each chunk a quarter more room, so the next column in a slot
+    usually fits without a repack. Plant cells are packed modulo 1024 and unpacked against the
+    window (`plantCell`, and the plant shader through the draw's uniform).
+  - **NPCs** in columns that aren't in yet wait (`Session::loaded`). The player save stores any
+    position, and loading recentres the window there, lifting the player out of the terrain.
+  - **No editing yet.** The editor (Tab) and every remote command but `state`, `screenshot` and
+    `goto` refuse the endless world. Their coordinates, prefab instance cells (u16) and the world
+    file all assume a fixed world at 0. A streamed grid is never written to a world file
+    (`writeWorldFile` refuses it), and `relight` ignores edits outside the window.
+- **Alternatives considered:**
+  - A hash map of chunk columns: unbounded and sparse, but every voxel read hashes, and all the code
+    that walks rows of `cells` would change. The window keeps reads O(1) and the code as it was.
+  - Moving the data when the window moves (memmove): a 192 MiB hitch every few chunks.
+  - Lighting on worker threads: lighting a column raises its neighbours' light, which the mesher
+    may be reading, and light chunks allocate as they change. Kept on the main thread with a budget;
+    at 60 blocks/s it costs ~3 ms a frame.
+- **Measured** (M4, release, `--fly`, 1800 frames): standing still, 8.4 ms mean, p99 9.9 ms; flying at 60 blocks/s, 8.5 ms
+  mean, p99 10.8 ms (light 1.9 ms + mesh and upload 1.9 ms a frame, 1 repack). The first view
+  (5 columns around the spawn) comes in ~0.9 s, and a column takes ~4 ms to generate on a worker.
+  The story world is unchanged (same frame times, and a byte-identical screenshot).
+- **Follow-ups:**
+  - Editing the endless world (editor, commands, instance cells) and saving its edits (only the changed columns).
+  - Lighting off the main thread.
+  - LOD beyond the window.
+  - Procedural quests, monsters and dungeons on top.

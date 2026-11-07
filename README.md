@@ -32,7 +32,8 @@ configure needs network access. Full Xcode is **not** required, because shaders 
 cmake --preset release            # configure (Ninja, Release) into build/release
 cmake --build --preset release    # build flycoos + core_test
 ctest --preset release            # run engine-core checks
-./build/release/flycoos           # play
+./build/release/flycoos           # play the endless world (streamed around you; --seed picks it)
+./build/release/flycoos --world worlds/story.flyw   # or the hand-made story world
 ```
 
 The `dev` preset (`cmake --preset dev`, etc.) builds Debug with AddressSanitizer, UBSan and the SDL
@@ -270,7 +271,7 @@ unless a text field has focus.
 | Data | The loaded item definitions (save id, id, slot, attack, bag size, armor); Reload defs re-reads data/ and keeps the old ones on an error |
 | Entities | Every NPC: health and attributes, traits and temper, aggro/leash/chase numbers, angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
-| World | Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
+| World | In the endless world, streaming: the window, columns at each stage, what the last frame installed and lit (and how long that took), a worker's time per column, the light budget per frame, the player's column's stage. Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
 | Save | The player save's path, when it was written and its size, Save / Load / Delete, whether quitting saves (and why not), the last result and what the last load restored or dropped |
 | Stats | Frame-time graph of the last 240 frames, average and worst frame |
 
@@ -278,13 +279,14 @@ unless a text field has focus.
 
 | Flag | Meaning |
 |---|---|
-| `--world PATH` | World file: load it if it exists, otherwise generate from `--seed`; the editor saves here. The player save is the same path with `.flys` |
+| `--world PATH` | World file: load it if it exists, otherwise generate a 1024² world from `--seed`; the editor saves here. The player save is the same path with `.flys`. Without it: the endless world (streamed around the player; no editor yet, not saved; the player save is `worlds/world.flys`) |
 | `--new-game` | Don't load the player save on start (quitting still writes it) |
 | `--seed N` | World seed (default 1337) |
 | `--time T` | Start time of day, 0..1 (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset) |
 | `--frames N` | Benchmark: the player walks a circle and the camera orbits; exits after N frames and prints frame-time stats. Vsync is off. Each frame is exactly one 60 Hz tick of game time, so a run is the same at any frame rate. |
 | `--screenshot out.bmp` | With `--frames`: save the last frame as a BMP |
 | `--look YAW PITCH` | With `--frames`: fixed camera angles in degrees instead of the orbit (yaw 0 looks toward −Z, −90 toward +X; negative pitch looks up) |
+| `--fly SPEED` | With `--frames` in the endless world: the player rides east at SPEED blocks per second, 12 above the ground, so the stats include streaming (also printed: its cost per frame and repacks) |
 | `--debug` | Start with the debug window open (it's also captured by `--screenshot`); F2 writes debug notes |
 | `--port N` | Command server port on 127.0.0.1 (default 47800); see "Shaping the world with Claude" |
 | `--no-serve` | No command server (benchmarks never start one) |
@@ -317,6 +319,7 @@ src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, t
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
 src/debug_ui.*   Dear ImGui debug window (toggle with .), and the debug note box
 src/notes.*      debug notes: the game state a note keeps, debug_notes/notes.jsonl
+src/stream.*     the endless world: chunk columns generated on worker threads, lit and meshed around the player
 src/editor_ui.*  Editor panel, crosshair and brush preview (Tab)
 src/main.cpp     window, input, camera, main loop, benchmark mode, runs remote commands
 data/            definition files: items.json, creatures.json (ADR-018), quests/*.json (ADR-026); fonts/alagard.ttf (region titles)

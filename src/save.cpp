@@ -370,8 +370,10 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
     s.player.tuning = tuning;
     s.elapsed = s.regionSince = d.elapsed;
     Player& p = s.player;
-    auto inWorld = [&](glm::vec3 pos) {  // clamped into the world and lifted out of the terrain
-        return clearOfTerrain(s.world, glm::clamp(pos, glm::vec3(0.5f, 0, 0.5f), glm::vec3(s.world.size) - glm::vec3(0.5f, 0, 0.5f)));
+    auto inWorld = [&](glm::vec3 pos) {  // clamped into the world and lifted out of the terrain (the endless world has no edge)
+        if (s.world.streaming()) return pos;
+        return clearOfTerrain(s.world, glm::clamp(pos, glm::vec3(s.world.lo) + glm::vec3(0.5f, 0, 0.5f),
+                                                  glm::vec3(s.world.hi() + 1) - glm::vec3(0.5f, 0, 0.5f)));
     };
     if (d.inv) p.inv = fitInventory(*d.inv, r.notes);
     if (d.player) {

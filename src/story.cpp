@@ -16,8 +16,9 @@ const char* checkMarker(const Grid& g, const Marker& m) {
     if (m.name.size() > kMaxMarkerName) return "name longer than 48 bytes";
     if (!validName(m.name)) return "name must be UTF-8 text without control, bidi or zero-width characters";
     if (m.name.empty() && (m.kind == MarkerKind::Poi || m.kind == MarkerKind::Region)) return "a poi or region needs a name";
-    if (!(m.pos.x >= 0 && m.pos.x < float(g.size.x) && m.pos.z >= 0 && m.pos.z < float(g.size.z) && m.pos.y >= 0 &&
-          m.pos.y <= float(g.size.y)))
+    glm::vec2 lo(g.lo.x, g.lo.z), hi(g.hi().x + 1, g.hi().z + 1);
+    if (g.streaming()) lo = glm::vec2(-1e6f), hi = glm::vec2(1e6f);  // the endless world: anywhere
+    if (!(m.pos.x >= lo.x && m.pos.x < hi.x && m.pos.z >= lo.y && m.pos.z < hi.y && m.pos.y >= 0 && m.pos.y <= float(g.size.y)))
         return "position outside the world";  // NaN fails every comparison
     if (!(m.radius >= 0 && m.radius <= kMaxMarkerRadius)) return "radius out of range (0..512)";
     if (!(m.activeFrom >= 0 && m.activeFrom < 1 && m.activeTo >= 0 && m.activeTo < 1))

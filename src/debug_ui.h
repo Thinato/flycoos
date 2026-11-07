@@ -16,6 +16,7 @@ struct GameSettings {
     bool cameraCollision = true;
     bool hud = true;  // nameplates, speech balloons, health bar
     uint32_t seed = 1337;
+    float streamLightMs = 2;  // the endless world: time a frame spends lighting chunk columns (then they're meshed)
 };
 
 // One-shot requests the main loop carries out (they need the world and renderer).
@@ -33,6 +34,7 @@ NoteAction noteWindow(char* text, size_t size, bool focus);
 // Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Progression, Items, Entities, Quests, Data, Camera, World, Save,
 // Stats.
 // Also owns the ImGui frame the in-game HUD draws into.
+class Stream;
 class DebugUI {
 public:
     DebugUI(SDL_Window* window, const Renderer& renderer);
@@ -53,6 +55,7 @@ public:
 
     bool open = false;
     const char* region = nullptr;  // the name of the region the player is in (main sets it each frame)
+    const Stream* stream = nullptr;  // the endless world's, else null (main sets it)
     int ticks = 0;                 // sim ticks this frame, and how far into the next one it's drawn (main sets them)
     float tickAlpha = 0;
     // The Save tab (main sets them): the player save's path, the last save or load's result, and the

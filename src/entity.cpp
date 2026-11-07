@@ -363,8 +363,10 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
 
 }  // namespace
 
-void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt) {
+void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt,
+                    const std::function<bool(glm::vec3)>& loaded) {
     for (Entity& e : entities) {
+        if (loaded && !loaded(e.body.pos)) continue;  // its part of the world isn't in: it waits there
         e.speechTimer = std::max(0.0f, e.speechTimer - dt);
         e.shoutTimer = std::max(0.0f, e.shoutTimer - dt);
         e.calmTimer = std::max(0.0f, e.calmTimer - dt);

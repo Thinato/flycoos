@@ -624,7 +624,7 @@ EditResult replantTrees(Grid& g, const PrefabLibrary& lib, uint32_t seed, glm::i
     // 3. The generator's trees, as instances, clear of the instances already here and of spawn and POI markers.
     std::vector<Box> taken;
     for (const Instance& in : list) taken.push_back(instanceBox(in));
-    plantTrees(g, seed, lo, hi, [&](const TreeSite& site) {
+    plantTrees(seed, g.size.y, lo, hi, groundOf(g, 20), [&](const TreeSite& site) {
         const Prefab* p = lib.find(kSpeciesPrefab[int(site.species)]);
         if (!p) return;
         Instance in{.id = nextId(list, h),  // the real history's ids too: an id is never reused

@@ -363,9 +363,9 @@ json map(const json& a, const Grid& g, const std::vector<Marker>& markers) {
 
 Shot shot(const json& a, const GameView& v) {
     Shot s;
-    s.eye = point(a, "position", {-1000, -100, -1000}, {3000, 1000, 3000});
+    s.eye = point(a, "position", {-1e6f, -100, -1e6f}, {1e6f, 1000, 1e6f});  // anywhere (the endless world); far off sees the sky
     if (a.contains("look_at")) {
-        s.target = point(a, "look_at", {-1000, -100, -1000}, {3000, 1000, 3000});
+        s.target = point(a, "look_at", {-1e6f, -100, -1e6f}, {1e6f, 1000, 1e6f});
     } else {
         float yaw = glm::radians(float(number(a, "yaw", -360, 360))), pitch = glm::radians(float(number(a, "pitch", -89, 89, 20)));
         s.target = s.eye - glm::vec3(std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch));
@@ -554,6 +554,9 @@ uint32_t markerId(const json& a, const std::vector<Marker>& list) {
 
 json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& list, std::vector<Marker>& markers,
          EditHistory& h, PrefabLibrary& lib, const GameView& v, Command& out) {
+    // ponytail: the commands' coordinates assume a fixed world; in the endless one, look and move only
+    if (g.streaming() && cmd != "state" && cmd != "screenshot" && cmd != "goto")
+        throw BadArgs(std::format("'{}' needs a world file: the endless world can't be edited yet (start the game with --world)", cmd));
     if (cmd == "state")
         return {{"world", v.path}, {"size", {g.size.x, g.size.y, g.size.z}}, {"seed", v.seed}, {"sea_level", kSeaLevel},
                 {"unsaved", v.unsaved}, {"undo_steps", h.undo.size()}, {"redo_steps", h.redo.size()},
@@ -709,7 +712,9 @@ json run(const std::string& cmd, const json& a, Grid& g, std::vector<Instance>& 
         return json::object();
     }
     if (cmd == "goto") {
-        Goto go{point(a, "position", {-512, 0, -512}, {g.size.x + 512.0f, 1000, g.size.z + 512.0f}), {}};
+        glm::vec3 lo = g.streaming() ? glm::vec3(-1e6f, 0, -1e6f) : glm::vec3(g.lo) - glm::vec3(512, 0, 512);  // the endless world: anywhere
+        glm::vec3 hi = g.streaming() ? glm::vec3(1e6f, 1000, 1e6f) : glm::vec3(float(g.hi().x) + 513, 1000, float(g.hi().z) + 513);
+        Goto go{point(a, "position", lo, hi), {}};
         if (a.contains("look_at")) go.lookAt = point(a, "look_at", glm::vec3(-1e6f), glm::vec3(1e6f));
         out.go = go;
         return {{"moved", v.follow}, {"note", v.follow ? "the user's camera flies there" : "Follow Claude is off in the Editor panel"}};

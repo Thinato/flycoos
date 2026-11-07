@@ -16,6 +16,7 @@
 
 #include "defs.h"
 #include "hud.h"
+#include "stream.h"
 #include "text.h"
 
 DebugUI::DebugUI(SDL_Window* window, const Renderer& renderer) {
@@ -487,7 +488,23 @@ static void cameraTab(GameSettings& g) {
     ImGui::SliderFloat("Mouse sensitivity", &g.mouseSensitivity, 0.001f, 0.02f, "%.4f");
 }
 
-static void worldTab(GameSettings& g, Session& sim, const RenderStats& s, DebugActions& actions) {
+static void streamSection(GameSettings& g, const Stream& stream, const Grid& world, glm::vec3 player) {
+    ImGui::SeparatorText("Streaming (the endless world)");
+    Stream::Stats st = stream.stats();
+    ImGui::Text("Window %d..%d x %d..%d (%d x %d columns of %d)", world.lo.x, world.hi().x, world.lo.z, world.hi().z,
+                world.size.x / kChunk, world.size.z / kChunk, kChunk);
+    ImGui::Text("Columns: %d queued, %d generated, %d lit, %d meshed", st.queued, st.generated, st.lit, st.meshed);
+    ImGui::Text("Last frame: %d in (%.2f ms), %d lit (%.2f ms); %d dropped by the last move", st.installed, st.installMs,
+                st.litNow, st.lightMs, st.dropped);
+    ImGui::Text("Generating a column: %.1f ms (a worker's average)", st.generateMs);
+    ImGui::SliderFloat("Light ms per frame", &g.streamLightMs, 0.5f, 16, "%.1f");
+    ImGui::SetItemTooltip("Time a frame spends lighting chunk columns (at least one; they're meshed next): more fills in faster, but costs frame time.");
+    const char* stages[] = {"queued", "generated", "lit", "meshed"};
+    ImGui::Text("Player's column: %s", stages[int(stream.stage(glm::ivec3(glm::floor(player))))]);
+}
+
+static void worldTab(GameSettings& g, Session& sim, const RenderStats& s, DebugActions& actions, const Stream* stream) {
+    if (stream) streamSection(g, *stream, sim.world, sim.player.pos);
     int minutes = int(sim.timeOfDay * 24 * 60);
     ImGui::SliderFloat("Time of day", &sim.timeOfDay, 0, 0.9999f, "%.3f");
     ImGui::SameLine();
@@ -572,7 +589,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
         if (ImGui::BeginTabItem("Quests")) { questsTab(session); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Data")) { dataTab(defsStatus_, player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions, stream); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Save")) { saveTab(savePath, saveStatus, saveNotes, autosave, saveLocked, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Stats")) {
             statsTab(frameMs_, frameIndex_);

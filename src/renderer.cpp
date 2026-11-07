@@ -30,7 +30,7 @@ struct FrameUniforms {
 struct DrawUniforms {
     glm::mat4 model;
     glm::vec4 modelLight;  // x models: light + 1 (0: a chunk)
-    glm::uvec4 firstQuad;  // x used
+    glm::uvec4 firstQuad;  // x first quad; plants: y first instance, zw the world window's low corner x, z (int)
 };
 static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 3 * 128 * 16);
 static_assert(sizeof(DrawUniforms) == 64 + 16 + 16);
@@ -260,29 +260,64 @@ void Renderer::uploadWorld(const Grid& world) {
     start = SDL_GetTicksNS();
     meshes_ = {};  // free the old world's meshes before building the new ones
     meshes_ = meshChunks(world, &light_);
+    worldLo_ = world.lo;
+    headroom_ = 65536;
     chunks_.assign(meshes_.size(), {});
-    for (size_t i = 0; i < chunks_.size(); ++i) chunks_[i].origin = chunkOrigin(world.size, int(i));
+    for (size_t i = 0; i < chunks_.size(); ++i) chunks_[i].origin = world.chunkOrigin(i);
     packWorld();
     stats.meshSeconds = double(SDL_GetTicksNS() - start) * 1e-9;
+}
+
+void Renderer::streamWorld(const Grid& world) {
+    light_ = Light(world);
+    meshes_ = {};
+    meshes_.resize(size_t((world.size.x / kChunk) * (world.size.y / kChunk) * (world.size.z / kChunk)));
+    chunks_.assign(meshes_.size(), {});
+    for (size_t i = 0; i < chunks_.size(); ++i) chunks_[i].origin = world.chunkOrigin(i);
+    worldLo_ = world.lo;
+    headroom_ = uint32_t(1) << 21;  // the window's quads come in and go without repacking often
+    packWorld();
+}
+
+void Renderer::updateChunks(const Grid& world, const std::vector<size_t>& mesh, const std::vector<size_t>& empty) {
+    worldLo_ = world.lo;
+    if (mesh.empty() && empty.empty()) return;
+    uint64_t start = SDL_GetTicksNS();
+    for (size_t i : empty) meshes_[i] = {};
+    parallelFor(int(mesh.size()), [&](int j) {
+        size_t i = mesh[size_t(j)];
+        meshes_[i] = meshRegion(world, world.chunkOrigin(i), glm::ivec3(kChunk), &light_);
+    });
+    std::vector<size_t> ids = mesh;
+    ids.insert(ids.end(), empty.begin(), empty.end());
+    uploadChunks(world, ids);
+    stats.chunksRemeshed = int(mesh.size());
+    stats.remeshMs = double(SDL_GetTicksNS() - start) * 1e-6;
 }
 
 // Lays every chunk's quads out back to back in fresh buffers, with headroom at the end for chunks
 // that outgrow their slot after edits.
 void Renderer::packWorld() {
+    const uint32_t headroom = headroom_;
     stats.chunksTotal = 0;
     for (size_t k = 0; k < 2; ++k) {
         std::vector<Quad> all;
         for (size_t i = 0; i < chunks_.size(); ++i) {
             const std::vector<Quad>& q = k ? meshes_[i].water : meshes_[i].opaque;
-            chunks_[i].slot[k] = {uint32_t(all.size()), uint32_t(q.size()), uint32_t(q.size())};
+            // A quarter more room, so a chunk that grows (an edit; streamed, the next column in its slot) stays put.
+            uint32_t cap = q.empty() ? 0 : uint32_t(q.size() + q.size() / 4);
+            chunks_[i].slot[k] = {uint32_t(all.size()), uint32_t(q.size()), cap};
             all.insert(all.end(), q.begin(), q.end());
+            all.resize(all.size() + (cap - q.size()));
             stats.chunksTotal += k == 0 && !(meshes_[i].opaque.empty() && meshes_[i].water.empty());
         }
         worldUsed_[k] = uint32_t(all.size());
-        worldCap_[k] = worldUsed_[k] + worldUsed_[k] / 8 + 65536;  // ~2 MB of headroom for the opaque world
+        worldCap_[k] = worldUsed_[k] + worldUsed_[k] / 8 + (k ? std::max(headroom / 8, 65536u) : headroom);  // water needs less
         if (world_[k]) SDL_ReleaseGPUBuffer(device_, world_[k]);  // SDL frees it once in-flight frames are done
         world_[k] = upload(all.data(), uint32_t(all.size() * sizeof(Quad)), worldCap_[k] * uint32_t(sizeof(Quad)));
-        (k ? stats.waterQuads : stats.opaqueQuads) = all.size();
+        size_t quads = 0;
+        for (const ChunkDraw& c : chunks_) quads += c.slot[k].count;
+        (k ? stats.waterQuads : stats.opaqueQuads) = quads;
     }
 }
 
@@ -295,7 +330,13 @@ void Renderer::updateWorld(const Grid& world, const Box& dirty) {
     stats.lightChunks = light_.allocated();
     glm::ivec3 lo = lit.empty() ? dirty.lo : glm::min(dirty.lo, lit.lo), hi = lit.empty() ? dirty.hi : glm::max(dirty.hi, lit.hi);
     std::vector<size_t> ids = remeshChunks(world, lo, hi, meshes_, &light_);
+    uploadChunks(world, ids);
+    stats.chunksRemeshed = int(ids.size());
+    stats.remeshMs = double(SDL_GetTicksNS() - start) * 1e-6;
+}
 
+void Renderer::uploadChunks(const Grid& world, const std::vector<size_t>& ids) {
+    for (size_t i : ids) chunks_[i].origin = world.chunkOrigin(i);  // a streamed slot may hold another column now
     // A chunk's new quads overwrite its slot when they fit. Otherwise they move to a new slot with
     // spare room at the end of the buffer; once that headroom is used up, everything is repacked.
     std::vector<Quad> staged;
@@ -326,8 +367,6 @@ void Renderer::updateWorld(const Grid& world, const Box& dirty) {
         stats.chunksTotal = 0;
         for (const ChunkDraw& c : chunks_) stats.chunksTotal += c.slot[0].count || c.slot[1].count;
     }
-    stats.chunksRemeshed = int(ids.size());
-    stats.remeshMs = double(SDL_GetTicksNS() - start) * 1e-6;
 }
 
 void Renderer::uploadModels() {
@@ -443,7 +482,8 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
             return glm::dot(d, d) < r2;
         };
         auto draw = [&](PlantInstance p) {
-            glm::vec2 d = glm::vec2(float(p.cell & 1023) + 0.5f, float(p.cell >> 18 & 1023) + 0.5f) - eye;
+            glm::ivec3 cell = plantCell(p.cell, worldLo_);
+            glm::vec2 d = glm::vec2(float(cell.x) + 0.5f, float(cell.z) + 0.5f) - eye;
             return size_t(p.info >> 8) * 2 + (glm::dot(d, d) > near2);
         };
         std::vector<const std::vector<PlantInstance>*> lists;
@@ -548,7 +588,7 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
             uint32_t count = plantFirst[k + 1] - plantFirst[k];
             auto [first, quads] = plantParts_[k];
             if (!count || !quads) continue;
-            DrawUniforms d{glm::mat4(1), glm::vec4(0), glm::uvec4(first, plantFirst[k], 0, 0)};
+            DrawUniforms d{glm::mat4(1), glm::vec4(0), glm::uvec4(first, plantFirst[k], uint32_t(worldLo_.x), uint32_t(worldLo_.z))};
             SDL_PushGPUVertexUniformData(cmd, 1, &d, sizeof d);
             SDL_DrawGPUPrimitives(pass, quads * 6, count, 0, 0);
             stats.quadsDrawn += size_t(quads) * count;

@@ -32,7 +32,7 @@ struct Frame {
 struct Draw {
     float4x4 model;
     float4 modelLight;    // x models: light + 1 (0: a chunk)
-    uint4 firstQuad;      // x: index of this draw's first quad in the storage buffer
+    uint4 firstQuad;      // x: index of this draw's first quad in the storage buffer; plants: y first instance, zw window low x, z (int)
 };
 
 struct VOut {
@@ -277,7 +277,7 @@ struct PlantOut {
     float3 normal;
     float ao;
     uint blockAndQuad [[flat]];  // as VOut's
-    uint cell [[flat]];          // the plant's cell, packed like PlantInstance::cell
+    int3 cell [[flat]];          // the plant's cell (world)
 };
 
 // Must match plantHash in src/plants.cpp.
@@ -298,7 +298,8 @@ vertex PlantOut plant_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
                          const device uint2* plants [[buffer(3)]]) {
     QuadVertex v = quadVertex(f, quads[d.firstQuad.x + vid / 6], vid);
     uint2 p = plants[d.firstQuad.y + iid];
-    int3 cell = int3(p.x & 1023u, (p.x >> 10) & 255u, (p.x >> 18) & 1023u);
+    int2 lo = int2(as_type<int>(d.firstQuad.z), as_type<int>(d.firstQuad.w));  // as plantCell (src/mesher.h)
+    int3 cell = int3(lo.x + ((int(p.x & 1023u) - lo.x) & 1023), int((p.x >> 10) & 255u), lo.y + ((int((p.x >> 18) & 1023u) - lo.y) & 1023));
     uint h = plantHash(cell);
     float3 root = float3(cell) + float3(0.5, 0.0, 0.5) + float3(float((h >> 8) & 15u) - 7.5, 0.0, float((h >> 12) & 15u) - 7.5) * 0.02;
     float grow = 1.0 - smoothstep(f.debug.w - 12.0, f.debug.w, distance(root.xz, f.eye.xz));
@@ -316,7 +317,7 @@ vertex PlantOut plant_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
     out.normal = n;
     out.ao = v.ao * mix(0.75, 1.0, saturate(v.local.y / 4.0));  // a little darker near the ground
     out.blockAndQuad = v.block | (p.y & 255u) << 7 | ((d.firstQuad.x + vid / 6) & 0xFFFFu) << 15;
-    out.cell = p.x;
+    out.cell = cell;
     return out;
 }
 
@@ -333,7 +334,7 @@ fragment float4 plant_fs(PlantOut in [[stage_in]], constant Frame& f [[buffer(0)
     float3 c = f.palette[block].rgb;
     float strength = f.toneB[block].w;
     if (strength > 0.0 && uint(f.debug.x) == 0) {
-        float3 ground = float3(int3(int(in.cell & 1023u), int((in.cell >> 10) & 255u) - 1, int((in.cell >> 18) & 1023u))) + 0.5;
+        float3 ground = float3(in.cell - int3(0, 1, 0)) + 0.5;
         float2 t = saturate(smoothstep(0.0, 0.4, noise2(ground / f.toneA[block].w, kGrass)) * strength);
         c = mix(mix(c, f.toneA[block].rgb, t.x), f.toneB[block].rgb, t.y);
     }

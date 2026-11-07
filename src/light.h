@@ -25,9 +25,13 @@ struct Light {
         void set(int i, uint8_t v);
     };
     glm::ivec3 size{}, chunkCount{};
+    glm::ivec3 lo{}, org{};     // the grid's: light covers the same voxels, wrapping the same way
+    glm::ivec2 wrap{-1, -1};    // chunk masks in x, z (chunkCount - 1) for a streamed grid; -1: no wrap
     std::vector<Chunk> chunks;
 
-    explicit Light(glm::ivec3 size = {});
+    Light() = default;
+    explicit Light(const Grid& g);  // all dark, the shape of g
+    size_t chunkAt(glm::ivec3 p) const;  // index in `chunks` of the chunk holding voxel p (inside)
     uint8_t get(glm::ivec3 p) const;  // outside the volume: open sky
     void set(glm::ivec3 p, uint8_t v);
     size_t bytes() const;  // in allocated chunk arrays
@@ -42,3 +46,9 @@ void fillLight(const Grid& g, Light& light);
 // as sky light falls any distance) from the voxels and the unchanged light around them. Returns the
 // box of voxels whose light changed; the faces in front of them need remeshing.
 Box relight(const Grid& g, Light& light, Box edit);
+// Lights the columns [lo, hi] (x, z; every height) from their voxels and the light around them,
+// raising what they reach beyond (streaming: columns coming in, lit in any order once the columns
+// around them are in; light only ever rises toward the exact value).
+void lightColumns(const Grid& g, Light& light, glm::ivec2 lo, glm::ivec2 hi);
+// Darkens every voxel of the chunk column holding voxel p (one dropped from a streamed grid).
+void clearColumn(Light& light, glm::ivec3 p);

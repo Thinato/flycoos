@@ -44,8 +44,10 @@ reach them.
 
 ## M1: A living world
 
+- An endless procedural world streamed around the player (ADR-031, 2026-11-07) ✅, the base for
+  procedural quests, monsters and dungeons, so play doesn't wait on the story; the story world stays
 - A hand-authored story world: the fixed-size 1024×192×1024 world, generated once and then shaped
-  in the in-game editor, replaces an infinite streamed one. Story markers in the world file ✅
+  in the in-game editor (`--world worlds/story.flyw`). Story markers in the world file ✅
 - Biomes (grassland, desert, tundra, swamp), rivers, caves; LOD for distant terrain
 - Shadow maps for sun and moon; clouds; wind-animated foliage
 - Ambient audio (wind, birds by day, crickets by night) and footsteps

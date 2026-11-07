@@ -47,9 +47,9 @@ StepResult step(Session& s, const SimInput& in, float dt) {
         }
     }
     if (!in.editing && in.attack && (startPunch(p, in.aim) || !p.alive())) r.attacked = true;
-    updatePlayer(p, s.world, !p.alive() && !in.editing ? Input{} : in.move, dt);
+    if (!s.loaded || s.loaded(p.pos)) updatePlayer(p, s.world, !p.alive() && !in.editing ? Input{} : in.move, dt);
     if (!in.editing) {
-        updateEntities(s.entities, s.world, p, dt);
+        updateEntities(s.entities, s.world, p, dt, s.loaded);
         separate(p, s.world, s.entities);
         int level = p.level;
         auto skills = p.progress.skills;

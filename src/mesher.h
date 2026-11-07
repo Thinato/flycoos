@@ -28,13 +28,17 @@ struct QuadInfo {
 Quad pack(const QuadInfo& q);
 QuadInfo unpack(Quad q);
 
-// A plant (isPlant) to draw as a model (plants.h): its cell x:10 | y:8 | z:10, then the cell's
-// light (sky << 4 | block) | PlantModel << 8. Decoded in shaders/world.metal (plant_vs).
+// A plant (isPlant) to draw as a model (plants.h): its cell x:10 | y:8 | z:10, x and z modulo 1024
+// (plantCell gets the world cell back, given the low corner of the world's window, at most 1024
+// wide), then the cell's light (sky << 4 | block) | PlantModel << 8. Decoded in shaders/world.metal (plant_vs).
 struct PlantInstance {
     uint32_t cell, info;
     bool operator==(const PlantInstance&) const = default;
 };
 static_assert(kWorldSize.x <= 1024 && kWorldSize.y <= 256 && kWorldSize.z <= 1024, "PlantInstance packs cells in 28 bits");
+inline glm::ivec3 plantCell(uint32_t cell, glm::ivec3 lo) {
+    return {lo.x + ((int(cell & 1023) - lo.x) & 1023), int(cell >> 10 & 255), lo.z + ((int(cell >> 18 & 1023) - lo.z) & 1023)};
+}
 
 struct Mesh { std::vector<Quad> opaque, water; std::vector<PlantInstance> plants; };
 

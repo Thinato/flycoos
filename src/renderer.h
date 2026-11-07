@@ -74,6 +74,11 @@ public:
     // chunks overlapping `dirty` and the voxels whose light changed, grown by one voxel (faces and AO
     // look at neighbours).
     void updateWorld(const Grid& world, const Box& dirty);
+    // A streamed world (stream.h): starts with no chunks drawn and all dark; the Stream lights
+    // light() and says which chunk slots to mesh or empty (updateChunks), as they come and go.
+    void streamWorld(const Grid& world);
+    Light& light() { return light_; }
+    void updateChunks(const Grid& world, const std::vector<size_t>& mesh, const std::vector<size_t>& empty);
     void uploadModels();  // character and NPC models
     // Draws one frame, then the debug UI (if any) on top. With screenshotPath set, also writes
     // the frame to a BMP.
@@ -101,7 +106,8 @@ private:
                                       SDL_GPUCullMode cull, SDL_GPUFillMode fill = SDL_GPU_FILLMODE_FILL);
     SDL_GPUBuffer* upload(const void* data, uint32_t bytes, uint32_t capacity = 0);  // capacity: bytes, >= data
     void write(const void* data, uint32_t bytes, const std::vector<Upload>& uploads);
-    void packWorld();
+    void packWorld();  // with headroom_ quads to spare beyond an eighth more
+    void uploadChunks(const Grid& world, const std::vector<size_t>& ids);  // meshes_[ids] into their slots (repacking if they don't fit)
     SDL_GPUTexture* texture(SDL_GPUTextureFormat format, SDL_GPUTextureUsageFlags usage, SDL_GPUSampleCount samples,
                             uint32_t w, uint32_t h);
     bool ensureTargets(uint32_t w, uint32_t h);
@@ -125,6 +131,8 @@ private:
     std::vector<ChunkDraw> chunks_;  // every chunk, empty ones too, in chunkOrigin order
     std::vector<Mesh> meshes_;       // CPU copy of every chunk's mesh, for repacking
     Light light_;                    // the world's light, kept in step with it by updateWorld
+    glm::ivec3 worldLo_{};           // the world's window's low corner (plant cells are modulo 1024)
+    uint32_t headroom_ = 65536;      // opaque quads packWorld leaves spare: ~0.5 MB, or ~16 MB for a streamed world
     std::array<std::array<std::pair<uint32_t, uint32_t>, PartCount>, ModelCount> parts_{};  // first quad, quad count
     std::array<std::pair<uint32_t, uint32_t>, 2 * PlantModelCount> plantParts_{};  // [model * 2 + far], in models_ too
     // This frame's plants near the eye, grouped by plantParts_ index, uploaded to plantInstances_ every frame.

@@ -5,9 +5,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <numbers>
 #include <print>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <SDL3/SDL.h>
@@ -24,6 +26,7 @@
 #include "save.h"
 #include "server.h"
 #include "session.h"
+#include "stream.h"
 
 constexpr float kCameraRadius = 0.3f;  // camera collision box half-size; > near-plane half-diagonal
 constexpr float kBrushRate = 8;        // editor brush applications per second while the button is held
@@ -36,6 +39,7 @@ struct Options {
     float timeOfDay = 0.3f;
     const char* screenshot = nullptr;
     bool fixedLook = false;  // --look: fixed camera angles instead of the benchmark orbit
+    float fly = 0;           // --fly: blocks per second the benchmark's player rides east (streaming under load)
     float lookYaw = 0, lookPitch = 0;
     bool debug = false;  // --debug: start with the debug window open; F2 writes a debug note
     bool newGame = false;  // --new-game: don't load the world's player save (quitting still writes it)
@@ -48,7 +52,7 @@ struct Options {
     std::println(stderr, "usage: flycoos [--world PATH] [--new-game] [--seed N] [--time 0..1] [--debug] [--view shaded|quads|chunks|ao|normals|light|wire]\n"
                          "               [--patches STRENGTH (colour patches, 0 flat palette, default 1)]\n"
                          "               [--port N | --no-serve]\n"
-                         "               [--frames N [--screenshot out.bmp] [--look YAW PITCH]]");
+                         "               [--frames N [--screenshot out.bmp] [--look YAW PITCH] [--fly BLOCKS_PER_SECOND]]");
     std::exit(2);
 }
 
@@ -69,6 +73,9 @@ static Options parseArgs(int argc, char** argv) {
             o.fixedLook = true;
             o.lookYaw = glm::radians(std::strtof(argv[++i], nullptr));
             o.lookPitch = glm::radians(std::strtof(argv[++i], nullptr));
+        } else if (a == "--fly" && hasValue) {
+            o.fly = std::strtof(argv[++i], nullptr);
+            if (!std::isfinite(o.fly) || o.fly < 0 || o.fly > 2000) usage();
         } else if (a == "--debug") o.debug = true;
         else if (a == "--new-game") o.newGame = true;
         else if (a == "--port" && hasValue) {
@@ -89,7 +96,7 @@ static Options parseArgs(int argc, char** argv) {
             else usage();
         } else usage();
     }
-    if ((o.screenshot || o.fixedLook) && !o.frames) usage();  // benchmark-only options
+    if ((o.screenshot || o.fixedLook || o.fly) && !o.frames) usage();  // benchmark-only options
     return o;
 }
 
@@ -110,7 +117,39 @@ static int run(SDL_Window* window, const Options& opt) {
     std::vector<Instance>& instances = session.instances;
     std::vector<Marker>& markers = session.markers;
     uint32_t& worldSeed = session.seed;
+    // Without --world: the endless world, streamed around the player (stream.h, ADR-031).
+    std::unique_ptr<Stream> stream;
+    double streamMs[3] = {};  // the benchmark's totals: installing, lighting, meshing + uploading
+    auto pumpStream = [&](double lightMs) {
+        Stream::Update u = stream->update(lightMs);
+        renderer.updateChunks(world, u.mesh, u.empty);
+        Stream::Stats st = stream->stats();
+        streamMs[0] += st.installMs, streamMs[1] += st.lightMs, streamMs[2] += u.mesh.empty() && u.empty.empty() ? 0 : renderer.stats.remeshMs;
+    };
+    auto waitForWorld = [&](glm::vec3 at) {  // until the columns around `at` are meshed: loading, before the first frame
+        stream->follow(at);
+        while (!stream->meshedAround(at, 5)) {  // 160+ blocks around; nearest first, so the far ones wait
+            pumpStream(8);
+            SDL_Delay(1);
+        }
+    };
+    auto buildEndless = [&] {
+        uint64_t start = SDL_GetTicksNS();
+        stream.reset();  // its workers stop before the world they fill is replaced
+        worldSeed = game.seed;
+        world = Grid::streamed(kWorldSize, glm::ivec3(-kWorldSize.x / 2, 0, -kWorldSize.z / 2));
+        renderer.streamWorld(world);
+        int threads = std::max(1, int(std::thread::hardware_concurrency()) - 2);  // the main thread and the GPU's
+        stream = std::make_unique<Stream>(world, renderer.light(), worldSeed, threads);
+        session.loaded = [&](glm::vec3 p) { return stream->generated(glm::ivec3(int(std::floor(p.x)), 0, int(std::floor(p.z)))); };
+        waitForWorld({0, 0, 0});
+        std::ranges::fill(streamMs, 0.0);  // the benchmark counts what comes after the first view
+        renderer.stats.genSeconds = double(SDL_GetTicksNS() - start) * 1e-9;
+        std::println("endless world seed {} ({} worker threads) | first view in {:.3f}s, {:.1f} ms a column", worldSeed, threads,
+                     renderer.stats.genSeconds, stream->stats().generateMs);
+    };
     auto buildWorld = [&] {
+        if (!opt.world) return buildEndless();
         uint64_t start = SDL_GetTicksNS();
         std::ranges::fill(world.cells, Air);
         worldSeed = game.seed;
@@ -156,6 +195,11 @@ static int run(SDL_Window* window, const Options& opt) {
     for (const std::string& warning : checkQuestMarkers(defs(), markers)) std::println(stderr, "warning: {}", warning);
 
     auto save = [&] {
+        if (stream) {
+            editor.status = "Not saved: the endless world isn't saved (yet); edits there last while its part is loaded";
+            std::println("{}", editor.status);
+            return std::string("the endless world isn't saved");
+        }
         uint64_t start = SDL_GetTicksNS();
         std::string error = saveWorld(editor.path.c_str(), world, worldSeed, instances, markers, editor.history.markerIds);
         double seconds = double(SDL_GetTicksNS() - start) * 1e-9;
@@ -215,6 +259,12 @@ static int run(SDL_Window* window, const Options& opt) {
         for (const std::string& note : ui.saveNotes) std::println("  {}", note);
     };
     if (!benchmark && !opt.newGame && (std::filesystem::exists(savePath, ec) || std::filesystem::exists(savePath + ".bak", ec))) loadGame();
+    auto toLoadedPlayer = [&] {  // a save puts the player anywhere in the endless world, maybe where a tunnel was dug
+        if (!stream) return;
+        waitForWorld(player.pos);
+        player.teleport(clearOfTerrain(world, player.pos));
+    };
+    toLoadedPlayer();
     auto quit = [&] {
         if (const char* off = autosaveOff()) std::println("{}: not saved on quit ({})", savePath, off);
         else saveGame();
@@ -287,7 +337,7 @@ static int run(SDL_Window* window, const Options& opt) {
     };
     // Editor flight to `pos`, facing `lookAt` past the character.
     auto flyTo = [&](glm::vec3 pos, std::optional<glm::vec3> lookAt) {
-        if (!editor.active) setEditing(true);
+        if (!editor.active && !stream) setEditing(true);  // the endless world has no editor: just goes there
         player.teleport(pos);
         player.vel = {};
         camTarget = player.pos + glm::vec3(0, 1.4f, 0);
@@ -351,7 +401,10 @@ static int run(SDL_Window* window, const Options& opt) {
                 } else if (e.key.key == SDLK_E) {  // loot a corpse, else talk
                     interactQueued = true;
                 } else if (e.key.key == SDLK_TAB) {
-                    setEditing(!editor.active);
+                    if (stream) {
+                        notice = "The endless world can't be edited yet: start with --world to edit a world file";
+                        noticeAt = SDL_GetTicksNS();
+                    } else setEditing(!editor.active);
                 } else if (e.key.key == SDLK_F5 && !benchmark) {
                     if (!saveLocked) saveGame();
                     else {
@@ -446,6 +499,11 @@ static int run(SDL_Window* window, const Options& opt) {
             for (const auto& [quest, text] : session.toasts) notice += (notice.empty() ? "" : "   |   ") + text;
             noticeAt = SDL_GetTicksNS();
             session.toasts.clear();
+        }
+        if (benchmark && opt.fly > 0) {  // rides east 12 blocks over the ground (where it's in yet)
+            glm::vec3 to = player.pos + glm::vec3(opt.fly * dt, 0, 0);
+            if (int top = groundTop(world, int(std::floor(to.x)), int(std::floor(to.z))); top >= 0) to.y = float(top + 12);
+            player.teleport(to);
         }
         float alpha = ui.tickAlpha = tickTime / kTick;  // how far into the next tick this frame is drawn
         glm::vec3 drawnAt = drawPos(player, alpha);
@@ -602,6 +660,11 @@ static int run(SDL_Window* window, const Options& opt) {
         auto inRegion = std::ranges::find(markers, session.regionId, &Marker::id);  // still there after the command?
         const Marker* region = session.regionId && inRegion != markers.end() ? &*inRegion : nullptr;
         ui.region = region ? region->name.c_str() : nullptr;
+        if (stream) {  // the window follows the player; what came in gets lit and meshed, a few columns a frame
+            stream->follow(player.pos);
+            pumpStream(game.streamLightMs);
+        }
+        ui.stream = stream.get();
         bool wasOpen = menus();
         ui.begin(realDt, wasOpen);
         if (game.hud) {
@@ -696,6 +759,7 @@ static int run(SDL_Window* window, const Options& opt) {
         if (actions.saveGame) saveGame();  // the Save tab's button: also over a save that didn't load
         if (actions.loadGame) {
             loadGame();
+            toLoadedPlayer();
             camTarget = player.pos + glm::vec3(0, 1.4f, 0);
         }
         if (actions.deleteSave) {
@@ -735,6 +799,10 @@ static int run(SDL_Window* window, const Options& opt) {
                  "chunks drawn {}/{} | plants {} ({} quads)",
                  ms.size(), warmup, mean, 1000.0 / mean, ms[ms.size() * 99 / 100], ms.back(), s.chunksDrawn,
                  s.chunksTotal, s.plantsDrawn, s.plantQuadsDrawn);
+    if (stream)
+        std::println("streaming per frame: install {:.2f} ms, light {:.2f} ms, mesh + upload {:.2f} ms | {:.1f} ms to generate a column | {} repacks",
+                     streamMs[0] / double(frameMs.size()), streamMs[1] / double(frameMs.size()), streamMs[2] / double(frameMs.size()),
+                     stream->stats().generateMs, renderer.stats.repacks);
     return 0;
 }
 

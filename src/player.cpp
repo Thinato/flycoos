@@ -107,8 +107,8 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
         p.onGround = true;
         p.vel.y = 0;
     }
-    p.pos.x = std::clamp(p.pos.x, kHalfWidth, g.size.x - kHalfWidth);
-    p.pos.z = std::clamp(p.pos.z, kHalfWidth, g.size.z - kHalfWidth);
+    p.pos.x = std::clamp(p.pos.x, float(g.lo.x) + kHalfWidth, float(g.hi().x + 1) - kHalfWidth);
+    p.pos.z = std::clamp(p.pos.z, float(g.lo.z) + kHalfWidth, float(g.hi().z + 1) - kHalfWidth);
     if (p.pos.y < 0) { p.pos.y = 0; p.vel.y = 0; p.onGround = true; }
 
     // Animation state: gait follows the distance actually covered, so feet neither slide

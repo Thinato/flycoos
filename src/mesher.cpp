@@ -53,9 +53,10 @@ Mesh meshRegion(const Grid& g, glm::ivec3 o, glm::ivec3 e, const Light* light) {
             for (int x = 0; x < e.x; ++x) {
                 glm::ivec3 p = o + glm::ivec3(x, y, z);
                 Block b = g.get(p);
-                if (!isPlant(b) || p.x >= 1024 || p.y >= 256 || p.z >= 1024) continue;  // PlantInstance's 28 bits (bigger worlds load)
+                // PlantInstance's 28 bits: a window at most 1024 wide (fixed worlds bigger than that load without the far plants)
+                if (!isPlant(b) || p.y >= 256 || (!g.streaming() && (p.x >= 1024 || p.z >= 1024))) continue;
                 uint32_t lit = light ? light->get(p) : kMaxLight << 4;
-                mesh.plants.push_back({uint32_t(p.x) | uint32_t(p.y) << 10 | uint32_t(p.z) << 18,
+                mesh.plants.push_back({uint32_t(p.x & 1023) | uint32_t(p.y) << 10 | uint32_t(p.z & 1023) << 18,
                                        lit | uint32_t(plantModel(b, p)) << 8});
             }
 
@@ -113,21 +114,20 @@ std::vector<Mesh> meshChunks(const Grid& g, const Light* light) {
     glm::ivec3 counts = g.size / kChunk;
     int n = counts.x * counts.y * counts.z;
     std::vector<Mesh> meshes(static_cast<size_t>(n));
-    parallelFor(n, [&](int i) { meshes[size_t(i)] = meshRegion(g, chunkOrigin(g.size, i), glm::ivec3(kChunk), light); });
+    parallelFor(n, [&](int i) { meshes[size_t(i)] = meshRegion(g, g.chunkOrigin(size_t(i)), glm::ivec3(kChunk), light); });
     return meshes;
 }
 
 std::vector<size_t> remeshChunks(const Grid& g, glm::ivec3 dirtyLo, glm::ivec3 dirtyHi, std::vector<Mesh>& meshes,
                                  const Light* light) {
-    glm::ivec3 lo = glm::max(dirtyLo - 1, glm::ivec3(0)) / kChunk, hi = glm::min(dirtyHi + 1, g.size - 1) / kChunk;
-    glm::ivec3 counts = g.size / kChunk;
+    glm::ivec3 lo = glm::max(dirtyLo - 1, g.lo) >> 5, hi = glm::min(dirtyHi + 1, g.hi()) >> 5;  // chunks (floor / kChunk)
     std::vector<size_t> ids;
     for (int z = lo.z; z <= hi.z; ++z)
         for (int y = lo.y; y <= hi.y; ++y)
-            for (int x = lo.x; x <= hi.x; ++x) ids.push_back(size_t(x + counts.x * (y + counts.y * z)));
+            for (int x = lo.x; x <= hi.x; ++x) ids.push_back(g.chunkSlot(glm::ivec3(x, y, z) * kChunk));
     parallelFor(int(ids.size()), [&](int j) {
         size_t i = ids[size_t(j)];
-        meshes[i] = meshRegion(g, chunkOrigin(g.size, int(i)), glm::ivec3(kChunk), light);
+        meshes[i] = meshRegion(g, g.chunkOrigin(i), glm::ivec3(kChunk), light);
     });
     return ids;
 }
