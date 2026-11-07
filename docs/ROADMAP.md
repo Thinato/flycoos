@@ -48,7 +48,8 @@ reach them.
   procedural quests, monsters and dungeons, so play doesn't wait on the story; the story world stays
 - A hand-authored story world: the fixed-size 1024×192×1024 world, generated once and then shaped
   in the in-game editor (`--world worlds/story.flyw`). Story markers in the world file ✅
-- Biomes (grassland, desert, tundra, swamp), rivers, caves; LOD for distant terrain
+- Seas, rivers and lakes at their own levels; soft stone and snow lines (ADR-032) ✅
+- Biomes (grassland, desert, tundra, swamp), caves; LOD for distant terrain
 - Shadow maps for sun and moon; clouds; wind-animated foliage
 - Ambient audio (wind, birds by day, crickets by night) and footsteps
 - Cross-platform shaders (HLSL + SDL_shadercross, or Slang), plus Windows and Linux builds

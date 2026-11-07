@@ -8,10 +8,13 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <numbers>
+#include <optional>
 #include <format>
 #include <fstream>
 #include <thread>
 #include <tuple>
+#include <unordered_map>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -98,42 +101,199 @@ struct Regions {
     }
 };
 
+static int floorDiv(int a, int b) { return a / b - (a % b < 0); }
+
 // The bare terrain of a world seed, column by column: a pure function of (x, z), so any part of
 // the endless world comes out the same whenever and in whatever order it's generated.
+//   Shape: hills and mountains sink into seas along wide coasts, river valleys are carved down to
+//          the sea (rivers wane into the hills), and lakes fill hollows at their own levels.
+//   Blocks: from height, slope and noise, so the lines between grass, stone, snow and sand wander:
+//          snow lies on the flats and stone shows on the steeps.
 struct Terrain {
+    static constexpr int kLakeCell = 224;  // at most one lake a cell, its centre 50 or more in from the edges
+
+    struct Shape {
+        float h;      // ground height
+        int water;    // the water surface over the ground, else -1
+        int shore;    // the surface of the water whose shore this may be: sea level, or a lake's
+        float rocky;  // the region's rocky strength
+    };
+    struct Column { int h; Block top, sub; int water; };
+    struct Lake {
+        glm::vec2 at{}, axis{1, 0};     // centre, long axis
+        float radius = 0, stretch = 1;  // short half-axis (0: no lake); long / short
+        float level = 0, depth = 0;     // water surface; how deep the middle is
+        float reach(glm::vec2 p) const {  // in radii from the centre (1: the shore)
+            glm::vec2 d = p - at;
+            return glm::length(glm::vec2(glm::dot(d, axis) / stretch, d.y * axis.x - d.x * axis.y)) / radius;
+        }
+    };
+
     Regions regions;
-    FastNoiseLite hills, mountains, lakes, patches;
+    FastNoiseLite hills, mountains, coast, coastWarp, river, riverWarp, riverMask, shoreline, patches, lines, grain;
+    uint32_t seed;
     int height;  // the world's
+    mutable std::unordered_map<uint64_t, Lake> rawLakes_, lakes_;
+    std::vector<Shape> cache_;  // cache()'s rectangle
+    glm::ivec2 cacheLo_{0}, cacheSize_{0};
+
     Terrain(uint32_t seed, int worldHeight)
         : regions(seed), hills(makeNoise(seed, 0.006f, 4)), mountains(makeNoise(seed + 3u, 0.0015f, 3)),
-          lakes(makeNoise(seed + 4u, 0.004f, 2)), patches(makeNoise(seed + 5u, 0.02f, 1)), height(worldHeight) {}
-    struct Column { int h; Block top, sub; };
-    Column operator()(int x, int z) const {
-        float fx = float(x), fz = float(z);
-        glm::vec2 region = regions(x, z);
+          coast(makeNoise(seed + 4u, 0.0005f, 4)), coastWarp(makeNoise(seed + 13u, 0.0012f, 1)), river(makeNoise(seed + 6u, 0.0009f, 1)), riverWarp(makeNoise(seed + 7u, 0.003f, 1)),
+          riverMask(makeNoise(seed + 12u, 0.0008f, 1)),
+          shoreline(makeNoise(seed + 8u, 0.012f, 3)), patches(makeNoise(seed + 5u, 0.02f, 1)), lines(makeNoise(seed + 9u, 0.004f, 2)),
+          grain(makeNoise(seed + 11u, 0.08f, 1)), seed(seed), height(worldHeight) {
+        riverWarp.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
+        riverWarp.SetDomainWarpAmp(60);
+        coastWarp.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
+        coastWarp.SetDomainWarpAmp(250);
+    }
+
+    // The height before lakes, and how far out of a river valley it is (0 in a river .. 1 out of its valley).
+    std::pair<float, float> dry(float fx, float fz, glm::vec2 region) const {
         float hillHeight = 8 + 10 * region.x + 50 * region.y;  // plains gentle, rocky land tall
         float hill = hills.GetNoise(fx, fz) * 0.5f + 0.5f;
         float mountain = std::max(0.0f, mountains.GetNoise(fx, fz) * 0.5f + 0.5f - 0.6f) / 0.4f;
-        float lake = std::max(0.0f, -lakes.GetNoise(fx, fz) - 0.5f) * 50;
-        int h = int(kSeaLevel + 5 + hill * hill * hillHeight + mountain * mountain * 80 - lake);
-        h = std::clamp(h, 2, std::max(2, height - 30));  // headroom for tall trees and spires
-        bool bareRock = region.y > 0.5f && patches.GetNoise(fx, fz) > 0.3f;
-        Block top = h <= kSeaLevel + 1 ? Sand : h > 130 ? Snow : h > 110 || bareRock ? Stone : Grass;
-        return {h, top, top == Sand ? Sand : top == Grass ? Dirt : Stone};
+        float cx = fx, cz = fz;
+        coastWarp.DomainWarp(cx, cz);  // capes, bays and inlets
+        float sea = glm::smoothstep(-0.30f, -0.48f, coast.GetNoise(cx, cz));  // 0 land .. 1 open sea
+        float h = glm::mix(float(kSeaLevel + 5) + hill * hill * hillHeight + mountain * mountain * 80, float(kSeaLevel - 18), sea);
+        // Rivers follow a noise's zero line (meandering by a warp), some stretches wide, some narrow;
+        // their beds dip below the sea, their valleys widen out gently, and they wane into the
+        // hills, where the valley rises dry.
+        float rx = fx, rz = fz;
+        riverWarp.DomainWarp(rx, rz);
+        float width = 0.010f + 0.012f * (patches.GetNoise(fx * 0.05f, fz * 0.05f) * 0.5f + 0.5f);
+        float u = std::abs(river.GetNoise(rx, rz)) / width;  // 1 at the banks
+        float valley = glm::smoothstep(1.0f, 7.0f, u);
+        float carved = u < 1 ? float(kSeaLevel) - 1 - 3 * (1 - u * u) : glm::mix(float(kSeaLevel) - 1, h, valley);
+        float strength = (1 - glm::smoothstep(60.0f, 95.0f, h)) * glm::smoothstep(-0.25f, 0.05f, riverMask.GetNoise(fx, fz));
+        if (carved < h) h = glm::mix(h, carved, strength);
+        return {h, valley};
     }
-    // The column's highest voxel that isn't clear (lake water counts) and its block.
+
+    // Cell c's lake, if it has one: in a hollow (its level the lowest ground around it), clear of
+    // rivers, above the sea and below the stone.
+    const Lake& rawLake(glm::ivec2 c) const {
+        uint64_t key = uint64_t(uint32_t(c.x)) << 32 | uint32_t(c.y);
+        if (auto it = rawLakes_.find(key); it != rawLakes_.end()) return it->second;
+        Lake k;
+        uint32_t a = hash(c.x, c.y, seed ^ 0x6c8e9cf5u), b = hash(c.x, c.y, seed ^ 0x1b873593u);
+        if ((a & 255) < 150) {
+            k.at = glm::vec2(c * kLakeCell + 50) + glm::vec2(float(a >> 8 & 127), float(a >> 15 & 127));
+            float size = float(b & 255) / 255;
+            k.radius = 10 + 50 * size * size;  // mostly ponds and small lakes, now and then a big one
+            k.stretch = 1 + float(b >> 8 & 255) / 255 * 0.8f;
+            float angle = float(b >> 16 & 255) / 255 * std::numbers::pi_v<float>;
+            k.axis = {std::cos(angle), std::sin(angle)};
+            auto [middle, open] = dry(k.at.x, k.at.y, regions(int(k.at.x), int(k.at.y)));
+            float rim = 1e9f;
+            for (int i = 0; i < 8; ++i) {  // around the shore, a little out
+                float t = float(i) * std::numbers::pi_v<float> / 4;
+                glm::vec2 p = k.at + (k.axis * (std::cos(t) * k.stretch) + glm::vec2(-k.axis.y, k.axis.x) * std::sin(t)) * (k.radius * 1.3f);
+                auto [h, valley] = dry(p.x, p.y, regions(int(p.x), int(p.y)));
+                rim = std::min(rim, h);
+                open = std::min(open, valley);
+            }
+            k.level = std::floor(std::max(rim, middle + 2));
+            k.depth = 2 + 0.15f * k.radius;
+            if (middle > rim + 3 || open < 1 || k.level <= float(kSeaLevel + 1) || k.level > 120) k.radius = 0;
+        }
+        return rawLakes_.emplace(key, k).first->second;
+    }
+    // ... and gives way to a neighbouring cell's lake that comes near it with a higher roll.
+    const Lake& lake(glm::ivec2 c) const {
+        uint64_t key = uint64_t(uint32_t(c.x)) << 32 | uint32_t(c.y);
+        if (auto it = lakes_.find(key); it != lakes_.end()) return it->second;
+        Lake k = rawLake(c);
+        uint32_t roll = hash(c.x, c.y, seed ^ 0x6c8e9cf5u);
+        for (int dz = -1; dz <= 1 && k.radius > 0; ++dz)
+            for (int dx = -1; dx <= 1 && k.radius > 0; ++dx) {
+                const Lake& n = rawLake(c + glm::ivec2(dx, dz));
+                if ((dx || dz) && n.radius > 0 && hash(c.x + dx, c.y + dz, seed ^ 0x6c8e9cf5u) > roll &&
+                    glm::distance(n.at, k.at) < 2.3f * (n.radius * n.stretch + k.radius * k.stretch))
+                    k.radius = 0;
+            }
+        return lakes_.emplace(key, k).first->second;
+    }
+
+    Shape shapeOf(int x, int z) const {
+        float fx = float(x), fz = float(z);
+        glm::vec2 region = regions(x, z), p(fx, fz);
+        Shape s{dry(fx, fz, region).first, -1, kSeaLevel, region.y};
+        glm::ivec2 cell(floorDiv(x, kLakeCell), floorDiv(z, kLakeCell));
+        std::optional<float> wobble;
+        for (int dz = -1; dz <= 1; ++dz)
+            for (int dx = -1; dx <= 1; ++dx) {
+                const Lake& k = lake(cell + glm::ivec2(dx, dz));
+                float far = 2.4f * k.radius * k.stretch;
+                if (k.radius == 0 || glm::dot(p - k.at, p - k.at) > far * far) continue;
+                if (!wobble) wobble = shoreline.GetNoise(fx, fz);
+                float reach = k.reach(p) + 0.35f * *wobble;  // bays and points
+                float ease = 1 + std::min(1.0f, 30 / k.radius);  // the ground eased toward the shore out to here
+                if (reach >= ease) continue;
+                // A bowl: the bed deepest in the middle, the ground around eased to the shore.
+                float target = reach < 1 ? k.level - k.depth * (1 - reach * reach) : k.level + (reach - 1) * k.radius * 0.3f;
+                s.h = glm::mix(target, s.h, glm::smoothstep(1.0f, ease, reach));
+                if (reach < 1) s.water = int(k.level);
+                else if (reach < 1.3f) s.h = std::max(s.h, k.level);  // the rim holds the water in
+                if (reach < 1.4f) s.shore = int(k.level);
+            }
+        if (s.h < float(kSeaLevel)) s.water = std::max(s.water, kSeaLevel);
+        return s;
+    }
+    // Shapes of lo..hi computed once (generateChunkColumn's padded area); anything else is computed
+    // when asked, the same.
+    void cache(glm::ivec2 lo, glm::ivec2 hi) {
+        cacheLo_ = lo;
+        cacheSize_ = hi - lo + 1;
+        cache_.resize(size_t(cacheSize_.x) * size_t(cacheSize_.y));
+        for (int z = lo.y; z <= hi.y; ++z)
+            for (int x = lo.x; x <= hi.x; ++x) cache_[size_t(z - lo.y) * size_t(cacheSize_.x) + size_t(x - lo.x)] = shapeOf(x, z);
+    }
+    Shape shape(int x, int z) const {
+        glm::ivec2 d = glm::ivec2(x, z) - cacheLo_;
+        if (d.x >= 0 && d.y >= 0 && d.x < cacheSize_.x && d.y < cacheSize_.y) return cache_[size_t(d.y) * size_t(cacheSize_.x) + size_t(d.x)];
+        return shapeOf(x, z);
+    }
+    int topOf(const Shape& s) const { return std::clamp(int(std::floor(s.h)), 2, std::max(2, height - 30)); }  // headroom for tall trees and spires
+
+    Column operator()(int x, int z) const {
+        Shape s = shape(x, z);
+        int h = topOf(s), slope = 0;  // the largest step to a neighbour
+        for (glm::ivec2 d : {glm::ivec2(1, 0), glm::ivec2(-1, 0), glm::ivec2(0, 1), glm::ivec2(0, -1)})
+            slope = std::max(slope, std::abs(topOf(shape(x + d.x, z + d.y)) - h));
+        float fx = float(x), fz = float(z);
+        float fine = grain.GetNoise(fx, fz), patch = patches.GetNoise(fx, fz), line = lines.GetNoise(fx, fz);
+        Block top;
+        if (s.water > h) {  // sand in the shallows and the sea, silt deep in lakes, stone where steep
+            top = slope >= 3 ? Stone : s.water > kSeaLevel && float(s.water - h) > 2 + 2 * fine ? Dirt : Sand;
+        } else {
+            // The height the snow and stone lines look at, mottled at two scales so they come in
+            // patches over a band some 20 high instead of along a contour.
+            float e = float(h) + 4 * fine + 8 * patches.GetNoise(fx * 1.5f, fz * 1.5f);
+            float snowLine = 128 + 10 * line, stoneLine = 106 + 10 * line;
+            bool bare = s.rocky > 0.5f && patch > 0.3f;
+            if (e - 2 * float(slope) > snowLine) top = Snow;  // on the flats, not down the steeps
+            else if (bare || e + 4 * float(slope) > stoneLine || (slope >= 4 && h > s.shore + 1)) top = Stone;
+            else if (slope <= 2 && float(h) <= float(s.shore) + (s.shore > kSeaLevel ? 0.5f + 2 * patch : 1.5f + 3 * patch) + fine)
+                top = Sand;  // beaches; lakes' narrower
+            else if (slope == 3) top = Dirt;  // earth banks
+            else top = Grass;
+        }
+        return {h, top, top == Grass || top == Dirt ? Dirt : top == Sand ? Sand : Stone, s.water};
+    }
+    // The column's highest voxel that isn't clear (water counts) and its block.
     std::pair<int, Block> ground(int x, int z) const {
         Column c = (*this)(x, z);
-        return c.h < kSeaLevel ? std::pair(kSeaLevel, Water) : std::pair(c.h, c.top);
+        return c.water > c.h ? std::pair(c.water, Water) : std::pair(c.h, c.top);
     }
     void fill(Grid& g, int x, int z) const {
         Column c = (*this)(x, z);
         for (int y = 0; y <= c.h; ++y) g.set({x, y, z}, y == c.h ? c.top : y > c.h - 4 ? c.sub : Stone);
-        for (int y = c.h + 1; y <= kSeaLevel; ++y) g.set({x, y, z}, Water);
+        for (int y = c.h + 1; y <= c.water; ++y) g.set({x, y, z}, Water);
     }
 };
-
-static int floorDiv(int a, int b) { return a / b - (a % b < 0); }
 
 // A tree for the land it stands on (ADR-029): Araucaria groves on high flat ground, conifers on
 // high or rocky ground up to the snow line, otherwise the lowland mix of oak, maple and birch.
@@ -226,6 +386,7 @@ void generateChunkColumn(Grid& g, glm::ivec2 chunk, uint32_t seed) {
     const glm::ivec3 o(chunk.x * kChunk, 0, chunk.y * kChunk);
     Grid pad({kChunk + 2 * kMargin, g.size.y, kChunk + 2 * kMargin}, o - glm::ivec3(kMargin, 0, kMargin));
     Terrain terrain(seed, g.size.y);
+    terrain.cache(glm::ivec2(pad.lo.x, pad.lo.z) - 5, glm::ivec2(pad.hi().x, pad.hi().z) + 5);  // the trees look 4 out
     for (int z = pad.lo.z; z <= pad.hi().z; ++z)
         for (int x = pad.lo.x; x <= pad.hi().x; ++x) terrain.fill(pad, x, z);
 
@@ -244,7 +405,9 @@ void generateChunkColumn(Grid& g, glm::ivec2 chunk, uint32_t seed) {
             int x = cx * 14 + 2 + int(rnd % 10), z = cz * 14 + 2 + int((rnd >> 8) % 10);
             float chance = float((rnd >> 16) & 0xFFFF) / 65536.0f;
             float rocky = terrain.regions(x, z).y;
-            if (chance < 0.4f * rocky + 0.006f) placeRock(pad, x, terrain(x, z).h, z, rnd, rocky > 0.5f && (rnd >> 4) % 4 != 0, seed);
+            Terrain::Column c = terrain(x, z);
+            if (chance < 0.4f * rocky + 0.006f && c.water < c.h)
+                placeRock(pad, x, c.h, z, rnd, rocky > 0.5f && (rnd >> 4) % 4 != 0, seed);
         }
     // Grass and flowers last, on the open grass the trees and rocks left.
     for (int z = o.z; z < o.z + kChunk; ++z)

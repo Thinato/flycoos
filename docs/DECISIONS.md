@@ -1303,3 +1303,45 @@
   - Lighting off the main thread.
   - LOD beyond the window.
   - Procedural quests, monsters and dungeons on top.
+
+## ADR-032: Water from the land's shape: seas, rivers and lakes; soft stone and snow lines
+
+- **Status:** accepted (2026-11-07)
+- **Context:** Generated terrain switched to stone at height 111 and to snow at 131 everywhere, so a
+  mountain showed level lines. Every lake was a dip filled to sea level, so lakes looked alike and
+  sat at one height, ringed by the same band of sand. There were no rivers or seas.
+- **Decision:** `Terrain` stays a pure function of (x, z) (ADR-031), built in three steps.
+  - **Seas:** a coast noise (0.0005, 4 octaves, domain-warped 250 blocks for capes and bays)
+    sinks the land to 18 below sea level where it is low. The transition spans ~150 blocks, so
+    coasts are gentle and their beaches wide.
+  - **Rivers:** along the zero line of a meandering noise. The bed is 1-4 below sea level, with a
+    width that varies along the river. The valley rises smoothly over ~6 river widths. Rivers wane
+    above height 60-95 (the valley rises dry into the hills), and a mask noise breaks the network
+    up.
+  - **Lakes:** at most one per 224-block cell, at a hashed spot, with radius 10-60 (mostly small),
+    stretched up to 1.8 and turned at random. Its level is the lowest ground around it (8 samples at
+    1.3 radii), so it fills a hollow at its own height. Cells where the middle stands above the
+    rim (a hillside or a top), next to a river, at sea level or above 120 get none, and of two
+    neighbours that come near each other the higher roll keeps its lake. Each lake is a bowl
+    (deepest 2-11 in the middle), and a shoreline noise wobbles the shore into bays and points. The
+    ground around eases toward the shore over up to 30 blocks, and within 0.3 radii it is raised
+    to the water's level at least, so water is never open to the air at its sides (tested).
+  - **Blocks** come from height, slope (the largest step to a neighbour) and noise.
+    - Snow above ~128 and stone above ~106. Both lines wander ±10 with a low-frequency noise and
+      are mottled ±12 at two smaller scales.
+    - Snow needs flatter ground (2 heights a step) and stone takes steep ground (4 heights a step).
+      Cliffs (steps of 4) are stone at any height and steps of 3 are bare earth.
+    - Beaches: sand on gentle ground up to 1.5-4 above the sea, or 0.5-2.5 above a lake.
+    - Under water: sand in the shallows and the sea, silt (dirt) deep in lakes, stone on steep
+      beds.
+- **Alternatives considered:**
+  - Flowing water (simulated rivers, erosion): not a pure function of the column, so the endless
+    world couldn't generate in any order.
+  - Lakes as dips in a noise filled to a per-region level: the water would spill wherever the
+    dip's rim is lower than that level. Basing the level on the rim avoids this.
+- **Consequences:**
+  - Generated worlds changed (pins updated); saved worlds, the story world included, didn't.
+  - A column takes ~6 ms to generate on a worker instead of ~4, and the first view comes in ~0.8 s
+    instead of ~0.65 s. Frame times are unchanged: flying at 60 blocks/s, 8.35 ms mean, p99 9.4 ms,
+    the same as before.
+  - Over the 8×8 km around the spawn, 17% of columns are under water instead of 3%, most of it sea.

@@ -82,10 +82,20 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 - **Terrain** (`generateTerrain`, parallel over z-rows):
   - Hill height scales with region: about 8 blocks on plains, 18 in forests, up to 58 on rocky land.
     The hill noise is squared, so hills rise out of flat ground instead of rippling.
-  - Rare mountain ranges add up to 80 blocks, and lake basins dip below sea level.
-  - Surface block: sand at the shore, grass, broad bare-stone patches on rocky land, stone above 110,
-    snow above 130. Below the surface come 3 blocks of subsoil, then stone.
-  - Water fills up to `kSeaLevel` (34). Heights are capped at `size.y - 30` to leave headroom.
+  - Rare mountain ranges add up to 80 blocks.
+  - Water (ADR-032): seas where a low-frequency, warped coast noise sinks the land below `kSeaLevel`
+    (34) along wide coasts; rivers along a meandering noise's zero line, their beds just under the
+    sea and their valleys widening gently, waning into the hills; lakes, at most one per 224-block
+    cell, in hollows at their own levels (the lowest ground around them), each a stretched, wobbly
+    bowl whose shore the ground eases toward, with a rim that holds the water in.
+  - Surface block from height, slope and noise: sand on gentle shores (wider by the sea than by
+    lakes), sand or silt under water, stone on cliffs, on broad bare patches of rocky land and up
+    high, snow on the high flats. The stone and snow lines wander with a low-frequency noise and
+    are mottled at two smaller scales, so they come in patches over ~20 blocks of height. Below
+    the surface come 3 blocks of subsoil, then stone.
+  - Heights are capped at `size.y - 30` to leave headroom. `generateChunkColumn` computes the
+    column's shapes once for its padded area (`Terrain::cache`); anything else is computed on demand,
+    the same.
 - **Decoration**, run sequentially (the shapes cross column boundaries), seeded per cell so it is
   deterministic:
   - **Trees:** one candidate per 7×7 cell, with probability 75% × forest strength plus 0.4%, so the
