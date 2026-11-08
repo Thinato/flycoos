@@ -1381,3 +1381,31 @@
   down switch to enemies farther or nearer on screen. Anything attackable can be locked, the
   dummy, boars and guards included (as Elden Ring lets you lock onto any NPC you can hit);
   villagers can't be.
+
+## ADR-034: Fighters on the player spread around it
+
+- **Status:** accepted (2026-11-07)
+- **Context:** Two NPCs chasing the player ran the same straight line and stood inside each other,
+  so two of the same kind looked like one. The user wanted them aware of each other, coming at the
+  player from different sides, and asked that it stay cheap with many enemies.
+- **Decision:**
+  - **Sides:** each tick, before the AI, the fighters on the player (alive, wandering kinds in
+    `Chase`, `Windup` or `Recover`) are sorted by their angle around the player and given sides
+    `2π/n` apart. The ring is turned to the mean of their offsets, so each keeps its place in the
+    order and none crosses the others. Two take opposite sides, three a third of a turn apart.
+  - **Approach:** from beyond 6 blocks a fighter runs straight in, so one that's behind doesn't
+    lose the player by circling. Within 6, one more than 0.4 rad off its side heads for a point up
+    to 0.8 rad round toward it, 1.5 blocks nearer than it is (at least 2.5): a spiral. At its side it
+    closes in to 1.5 blocks. In reach, it swings wherever it stands. A lone fighter comes straight in.
+  - **Spacing:** after moving, living NPCs closer than 1 block (and within a body height) push
+    apart, half each, never into terrain. Ones that stand where they're put (the dummy) aren't moved.
+  - **Cost:** sorting the pack is O(n log n) and spacing is O(n²) over the NPCs, both every tick.
+    For the tens of NPCs an area holds that is microseconds, so there is no need to spread it over
+    frames. A grid of cells would replace the all-pairs pass if areas grow to hundreds.
+- **Alternatives considered:**
+  - Body collision only: they'd stop overlapping, but would still queue up on one side.
+  - Recomputing sides a few times a second: no measurable saving, and the sides would lag.
+- **Consequences:** Fights against two or more are harder: one can come from behind, and lock-on
+  helps to keep track. The Entities tab shows each fighter's side and pack size.
+- **Follow-ups:** a cap on how many swing at once (the rest circle and wait, in the soulslike way);
+  ranged kinds that keep their distance and back off from melee, once there are projectiles.

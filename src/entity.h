@@ -83,6 +83,8 @@ struct Entity {
     std::array<AiTransition, 8> history{};  // the latest transitions: history[(transitions - 1) % 8] is the newest
     uint32_t transitions = 0;               // how many it has made
     ItemId loot = NoItem;  // what its corpse holds
+    float side = 0;        // fighting the player with others: the angle around the player it closes in from (atan2(x, z))
+    int pack = 0;          // how many are fighting the player together (it included); 0: not fighting
     float xpWear = 0;      // the player's hits on it that earned XP lately: each one earns less (awardHitXp)
     float armorWear = 0;   // its hits on the player that earned armor XP lately
     std::mt19937 rng;
@@ -127,7 +129,9 @@ std::vector<Marker> defaultMarkers(const Grid& world, uint32_t seed);
 // cancels its hit; entering Chase from a calm state shouts the spawn marker's next line (at most every 8 s).
 void setState(Entity& e, AiState to, const char* reason);
 // AI and physics for every entity: the state machine of ADR-020 (wandering, talking villagers stop
-// and face the player, fighters chase the player, wind up and swing, give up and walk home).
+// and face the player, fighters chase the player, wind up and swing, give up and walk home). Fighters
+// on the player together spread around it (ADR-034): each gets a side to come in from, evenly spaced,
+// and circles to it before closing in. Living NPCs push apart so they never stand inside each other.
 // NPCs where `loaded` says no (the endless world's part that isn't in) wait where they are.
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt,
                     const std::function<bool(glm::vec3)>& loaded = {});

@@ -5577,6 +5577,38 @@ static void plants() {
     }
 }
 
+// Fighters on the player together (ADR-034): two bandits that start on the same spot push apart and
+// come at the player from opposite sides; one alone comes straight in.
+static void packs() {
+    Grid g({48, 16, 48});
+    for (int z = 0; z < 48; ++z)
+        for (int x = 0; x < 48; ++x)
+            for (int y = 0; y < 4; ++y) g.set({x, y, z}, Stone);
+    Player player;
+    player.pos = {24.5f, 4, 24.5f};
+    std::vector<Entity> es;
+    spawnAhead(es, g, player, EntityKind::Bandit, 1, 6);
+    spawnAhead(es, g, player, EntityKind::Bandit, 2, 6);  // the very same spot
+    std::mt19937 rng(3);
+    auto around = [&](const Entity& e) { glm::vec2 d(e.body.pos.x - player.pos.x, e.body.pos.z - player.pos.z); return std::atan2(d.x, d.y); };
+    float closest = 99;
+    for (int i = 0; i < 4 * 60; ++i) {
+        updateEntities(es, g, player, 1 / 60.0f);
+        separate(player, g, es);
+        updateCombat(player, es, 1 / 60.0f, rng);
+        player.health = float(maxHealth(sheet(player)));  // stays up: the fight goes on
+        if (i > 30) closest = std::min(closest, glm::distance(es[0].body.pos, es[1].body.pos));
+    }
+    CHECK(es[0].pack == 2 && es[1].pack == 2 && es[0].angry() && es[1].angry());
+    CHECK(std::abs(std::remainder(around(es[0]) - around(es[1]), 2 * std::numbers::pi_v<float>)) > 2.4f);  // opposite sides
+    CHECK(closest > 0.9f);  // never inside each other once apart
+    for (const Entity& e : es) CHECK(glm::distance(e.body.pos, player.pos) < 2.5f);  // both in to fight
+
+    es.pop_back();  // alone: straight in, no circling
+    updateEntities(es, g, player, 1 / 60.0f);
+    CHECK(es[0].pack == 1);
+}
+
 // Lock-on (lockon.h): the pick nearest the middle of the view, switching by screen direction, and
 // letting go on a kill (or passing the lock on), past the break range or long out of sight.
 static void lockOn() {
@@ -5676,6 +5708,7 @@ int main() {
     physics();
     entities();
     lockOn();
+    packs();
     combat();
     fighters();
     items();

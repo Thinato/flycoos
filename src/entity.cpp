@@ -16,6 +16,7 @@ constexpr float kTau = 2 * std::numbers::pi_v<float>;
 constexpr float kSpeechSeconds = 5;
 constexpr float kShoutSeconds = 8;  // at least this long between shouts
 constexpr float kBodyRadius = 0.8f;  // player-to-entity distance kept by separate()
+constexpr float kNpcSpacing = 1.0f;  // NPC-to-NPC distance kept by updateEntities
 
 constexpr const char* kNames[] = {
     "Alda", "Bram", "Corin", "Dessa", "Edric", "Fenna", "Garrick", "Hilde", "Ivo", "Juna",
@@ -307,7 +308,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             wander(e, g, target.pos, dt);
             in.move = e.wanderDir;
             return in;
-        case AiState::Chase:  // runs at the target until in reach, then winds up a swing
+        case AiState::Chase:  // runs at the target (around it to its side, with others) until in reach, then winds up a swing
             if (!fighter) setState(e, AiState::Wander, "harmless");  // forced from the debug window
             else if (!target.alive()) setState(e, AiState::Return, "target_down");
             else if (targetFromHome >= t.leashRadius) setState(e, AiState::Return, "target_left_leash");
@@ -315,8 +316,18 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             else if (e.body.health < t.fleeHealth * float(maxHealth(sheet(e.body)))) setState(e, AiState::Flee, "low_health");
             else if (inReach && e.stateTime >= t.cooldown && startPunch(e.body, dir, t.windup)) setState(e, AiState::Windup, "in_reach");
             else {
-                if (walkable(g, e.body.pos, dir, target.pos)) {
-                    in.move = dir;
+                glm::vec2 go = dir;
+                if (e.pack > 1 && !inReach && dist < 6) {  // with others, once near: circle round to its side, then close in
+                    float at = std::atan2(-dir.x, -dir.y);  // where it stands around the target
+                    float off = std::remainder(e.side - at, 2 * std::numbers::pi_v<float>);
+                    bool there = std::abs(off) < 0.4f;
+                    float a = there ? e.side : at + std::clamp(off, -0.8f, 0.8f);
+                    float r = there ? kPunchReach - 0.5f : std::max(dist - 1.5f, 2.5f);  // spirals in
+                    glm::vec2 to = xz(target.pos) + glm::vec2(std::sin(a), std::cos(a)) * r - xz(e.body.pos);
+                    if (glm::length(to) > 0.05f) go = glm::normalize(to);
+                }
+                if (walkable(g, e.body.pos, go, target.pos)) {
+                    in.move = go;
                     in.run = true;
                     e.lostTime = 0;
                 } else {  // ponytail: no pathfinding; it waits, and gives up after giveUpSeconds
@@ -373,8 +384,55 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
 
 }  // namespace
 
+// Sides for the fighters on the player: evenly spaced around it, in the order they stand, turned to
+// fit where they are (the mean of their offsets), so none has to cross the others to get there.
+// ponytail: every tick, O(n log n) in the fighters; a pack of dozens is still microseconds.
+static void assignSides(std::vector<Entity>& entities, const Player& player) {
+    std::vector<std::pair<float, Entity*>> pack;
+    for (Entity& e : entities) {
+        e.pack = 0;
+        bool fighting = e.state == AiState::Chase || e.state == AiState::Windup || e.state == AiState::Recover;
+        if (fighting && e.body.alive() && e.type().wanders) {
+            glm::vec2 d = xz(e.body.pos - player.pos);
+            pack.emplace_back(std::atan2(d.x, d.y), &e);
+        }
+    }
+    std::ranges::sort(pack, {}, &std::pair<float, Entity*>::first);
+    float spacing = 2 * std::numbers::pi_v<float> / float(std::max<size_t>(pack.size(), 1));
+    glm::vec2 mean{};
+    for (size_t i = 0; i < pack.size(); ++i) {
+        float off = pack[i].first - float(i) * spacing;
+        mean += glm::vec2(std::sin(off), std::cos(off));
+    }
+    float base = std::atan2(mean.x, mean.y);
+    for (size_t i = 0; i < pack.size(); ++i) {
+        pack[i].second->side = std::remainder(base + float(i) * spacing, 2 * std::numbers::pi_v<float>);
+        pack[i].second->pack = int(pack.size());
+    }
+}
+
+// Living NPCs push each other apart (half each; one that stands where it was put isn't moved), never
+// into terrain. ponytail: all pairs, fine for the tens an area holds; a grid of cells if it's hundreds.
+static void spread(std::vector<Entity>& entities, const Grid& world, const std::function<bool(glm::vec3)>& loaded) {
+    auto movable = [&](const Entity& e) { return e.type().wanders && (!loaded || loaded(e.body.pos)); };
+    for (size_t i = 0; i < entities.size(); ++i)
+        for (size_t j = i + 1; j < entities.size(); ++j) {
+            Player &a = entities[i].body, &b = entities[j].body;
+            glm::vec2 d = xz(b.pos - a.pos);
+            float len = glm::length(d);
+            if (len >= kNpcSpacing || !a.alive() || !b.alive() || std::abs(a.pos.y - b.pos.y) >= kHeight) continue;
+            bool ma = movable(entities[i]), mb = movable(entities[j]);
+            if (!ma && !mb) continue;
+            glm::vec2 n = len > 1e-4f ? d / len : glm::vec2(std::sin(float(i)), std::cos(float(i)));  // same spot: any way
+            float push = (kNpcSpacing - len) / float(ma + mb);
+            if (glm::vec3 to = a.pos - glm::vec3(n.x, 0, n.y) * push; ma && !overlapsSolid(world, to)) a.pos = to;
+            if (glm::vec3 to = b.pos + glm::vec3(n.x, 0, n.y) * push; mb && !overlapsSolid(world, to)) b.pos = to;
+        }
+}
+
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt,
                     const std::function<bool(glm::vec3)>& loaded) {
+    assignSides(entities, player);
     for (Entity& e : entities) {
         if (loaded && !loaded(e.body.pos)) continue;  // its part of the world isn't in: it waits there
         e.speechTimer = std::max(0.0f, e.speechTimer - dt);
@@ -392,6 +450,7 @@ void updateEntities(std::vector<Entity>& entities, const Grid& world, const Play
         e.events = 0;  // read by this update only: later hits arrive with the next
         updatePlayer(e.body, world, in, dt);
     }
+    spread(entities, world, loaded);
 }
 
 void separate(Player& player, const Grid& world, const std::vector<Entity>& entities) {

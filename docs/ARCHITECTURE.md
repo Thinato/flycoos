@@ -891,6 +891,11 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   FOV check yet. The Entities tab shows the state, time in it, the transitions and a force-state combo.
   For trying out fights it also spawns a picked kind 5 blocks in front of the player (`spawnAhead`,
   F6 too): not from a marker, so marker syncs and the player save leave it alone.
+- **Packs** (ADR-034): `updateEntities` first gives every fighter on the player (`Chase`, `Windup`,
+  `Recover`) a side to come in from (`Entity::side`, `pack`): evenly spaced around the player, in
+  the order they stand, turned to fit where they are. Within 6 blocks, one that isn't at its side yet
+  spirals round to it (up to 0.8 rad a step), then closes in; in reach it swings wherever it is.
+  After moving, living NPCs push apart to 1 block (half each; ones that don't wander aren't moved).
 - **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell until it
   respawns; E within 3.5 blocks moves the loot into the bags, else into its empty equip slot (it
   stays on the corpse if neither has room, and E talks instead).

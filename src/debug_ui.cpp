@@ -273,6 +273,11 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
         ImGui::SetItemTooltip("Forces a state; the AI leaves it again at once if it doesn't fit (e.g. dead while alive).");
         ImGui::Text("for %.1f s   target you: %.1f away, %.1f from home%s", e.stateTime, glm::distance(e.body.pos, player.pos),
                     glm::distance(player.pos, e.home), e.calmTimer > 0 ? "   calming" : "");
+        if (e.pack > 1) {
+            float at = std::atan2(e.body.pos.x - player.pos.x, e.body.pos.z - player.pos.z);
+            ImGui::Text("One of %d on you: its side %.0f deg, standing at %.0f deg", e.pack, double(glm::degrees(e.side)), double(glm::degrees(at)));
+            ImGui::SetItemTooltip("Fighters on the player together spread evenly around it and circle to their side before closing in (ADR-034).");
+        }
         if (t.temper != Temper::Harmless) {
             ImGui::Text("aggro %.0f   leash %.0f   re-aggro %.0f (after %.0f s)   chase %.1f b/s", t.aggroRange, t.leashRadius,
                         t.reaggroRadius, t.reaggroCooldown, t.chaseSpeed);
