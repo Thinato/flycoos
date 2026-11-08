@@ -281,7 +281,7 @@ void loadCreatures(const File& f, Defs& d) {
         r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
                  "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds", "leash_radius",
                  "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
-                 "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries"});
+                 "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
         auto flag = [&](const char* key) {
@@ -358,6 +358,15 @@ void loadCreatures(const File& f, Defs& d) {
         bool gives = t.attackable && t.temper != Temper::Harmless;
         t.xp = int(r.number(r.fields, "xp", 0, 100000, gives ? defaultKillXp(t.level) : 0));
         if (t.xp && !t.attackable) throw r.fail("xp", "a creature that can't be hurt is never killed");
+        // Its sounds (ADR-037): a voice (the start of its sound names), its pitch, what its body sounds like hit.
+        t.voice = given("voice") ? r.text("voice") : "";
+        if (!std::ranges::all_of(t.voice, [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; }))
+            throw r.fail("voice", "must be lowercase letters and _ (it names sound files)");
+        t.voicePitch = float(r.number(r.fields, "voice_pitch", 0.5, 2, 1, false));
+        if (given("voice_pitch") && t.voice.empty()) throw r.fail("voice_pitch", "no 'voice' to pitch");
+        std::string body = given("body") ? r.text("body") : "flesh";
+        if (body != "flesh" && body != "wood") throw r.fail("body", "must be flesh or wood");
+        t.wooden = body == "wood";
         if (d.creatures.size() <= save) d.creatures.resize(save + 1), d.creatureIds.resize(save + 1), d.creatureNames.resize(save + 1);
         d.creatures[save] = t;
         d.creatureIds[save] = r.id();

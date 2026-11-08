@@ -1501,3 +1501,66 @@
   Tests build their item records after the code-named items, whatever data adds after them.
 - **Follow-ups:** perfect guard (decide), backstep, damage types with per-shield negation, weight
   (equip load), NPCs with shields that guard and parry, a parry flash and sound.
+
+## ADR-037: Sound
+
+- **Status:** accepted (2026-11-08)
+- **Context:** The game had no sound. The goal: every action and every combat event is
+  recognizable by ear alone, so the fight reads even where the picture doesn't, plus ambience so the
+  world isn't silent. The user had bad experiences with sounds generated in code: use free recordings
+  that need no licence from anyone (public domain, or attribution in CREDITS.md). What shipped games
+  do, from their sound designers' write-ups (Conan / The Force Unleashed and Ryse on Designing Sound,
+  Saints Row IV via Wwise, God of War's hit-stop): several takes per sound picked at random and never
+  the same twice running; a few percent of random pitch and volume on each; layering (a hit is its
+  impact, its weight and a voice); separate sounds per material (wood, metal, flesh); distance
+  falloff; the sound in sync with the hit-stop frame.
+- **Decision:**
+  - **What happened, from the sim:** each body sets `Noise` bits (`Combatant::noises`) where things
+    happen: a jump, a landing (from more than a step up), a roll, a splash into water, the swing (as
+    it leaves its windup pose, so the whoosh leads into the hit), an NPC's windup (the tell), a full
+    charge, raising the guard, hurt, death, a critical, a stance break, a parry, a block, a guard
+    break, a bounce, loot and talk. `step()` gathers them into `Session::sounds` (`Sound`: what,
+    where, which kind, the ground, the move, the weapon or what hit it, how much), adding a
+    footstep (or a swim stroke) where the gait passes a quarter turn, as the walk's feet land. The
+    sim stays silent and testable; main.cpp plays them.
+  - **What it sounds like:** `layersOf` maps a noise to sounds played together. Steps by surface
+    (grass, dirt, stone, sand, snow, wood, wading). Swings: light, heavy, fast (a knife or fists), the
+    shield's swipe; beasts lunge with their voice instead. Hits: blade, blunt or wood (the dummy), a
+    heavy layer from 20 stance damage, a crunch on a critical. Blocks: sword (metal), shield (wood;
+    deeper off a greatshield), arms. The moments that must stand out have their own: a parry rings,
+    a stance break tolls, a guard break splinters, a bounce thuds. Voices come from the creatures'
+    new `voice` and `voice_pitch` fields (human, boar, wolf, ghoul; the chief a deeper human), and
+    `body` (flesh or wood).
+  - **Files:** `data/sounds/<name>_<n>.ogg`, the takes of one sound (stb_vorbis decodes them at
+    start). 223 takes of 65 sounds, 6 MB: cut, trimmed, faded and levelled from
+    CC0 packs (Kenney, OpenGameArt) and Freesound (all CC0 but two CC-BY bird calls); CREDITS.md
+    lists every source.
+  - **Mixer** (`audio.h`): SDL3's audio stream pulls a float stereo mix at 48 kHz on its own thread;
+    up to 48 voices with linear resampling (pitch), a smoothed gain per voice, three buses (effects,
+    ambience, interface) and a tanh soft limiter. Sounds are heard at the player, panned by the
+    camera's right; full volume within 4 blocks, then falling off as 1 / distance, silent past 45.
+  - **Ambience:** looping beds, each faded in and out by what's around (a sparse look at the voxels
+    twice a second): wind (stronger up high), birds by day where there are trees, insects at night,
+    waves by open water and a stream by a little, fire near embers; single bird calls by day and an
+    owl at night.
+  - **Interface:** loot, talking, the game windows opening and closing, the lock-on, equipping, quest
+    news and level-ups.
+  - Debug window, Audio tab: mute, volumes per bus, the spreads, hearing distance, the voices
+    playing, the ambience's readings, the latest sounds, sounds with no takes, and a button per
+    sound to play it.
+- **Alternatives considered:**
+  - Synthesizing sounds in code: no files, but it tends to sound cheap; the user asked for
+    recordings.
+  - A sound middleware (FMOD, Wwise) or a mixing library (miniaudio, SDL_mixer): more features, a
+    dependency and a licence for what is a few hundred lines on SDL3's stream.
+  - Deriving sounds in main.cpp from state changes between frames: no sim changes, but a parry and
+    a block look alike from outside; only the combat code knows which happened.
+  - Data-driven sound tables (a sounds.json): the mapping is code for now, like the melee tables;
+    creatures pick their voice in the data.
+- **Consequences:** Every combat outcome has a distinct sound. New data: the creatures' `voice`,
+  `voice_pitch`, `body`. `Combatant` and `Body` gained a few fields (not saved). Benchmarks run
+  silent. Tests check the noises the sim makes, what each sounds like, the mixer, and that every
+  sound the game asks for has takes.
+- **Follow-ups:** a settings menu (volumes, mute, saved); reverb and muffling (caves, underwater);
+  music; per-weapon-class sounds with the weapon classes (roadmap); armored-body hits; NPC
+  footsteps by kind (hooves, paws).

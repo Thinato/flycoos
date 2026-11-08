@@ -297,6 +297,7 @@ unless a text field has focus.
 | Entities | Every NPC: health and attributes, traits and temper, aggro/leash/chase numbers, angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | In the endless world, streaming: the window, columns at each stage, what the last frame installed and lit (and how long that took), a worker's time per column, the light budget per frame, the player's column's stage. Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
+| Audio | Mute, volume (all and per bus: effects, ambience, interface), random pitch and volume spread, hearing distance, the voices playing, the ambience's readings (water, trees, fire around) and its loops' volumes, the latest sounds, sounds with no takes, and a button per sound to play it (ADR-037) |
 | Save | The player save's path, when it was written and its size, Save / Load / Delete, whether quitting saves (and why not), the last result and what the last load restored or dropped |
 | Stats | Frame-time graph of the last 240 frames, average and worst frame |
 
@@ -346,8 +347,10 @@ src/debug_ui.*   Dear ImGui debug window (toggle with .), and the debug note box
 src/notes.*      debug notes: the game state a note keeps, debug_notes/notes.jsonl
 src/stream.*     the endless world: chunk columns generated on worker threads, lit and meshed around the player
 src/editor_ui.*  Editor panel, crosshair and brush preview (F1)
+src/audio.*      sound (ADR-037): loading data/sounds, the mixer, what each noise sounds like, ambience
 src/main.cpp     window, input, camera, main loop, benchmark mode, runs remote commands
-data/            definition files: items.json, creatures.json (ADR-018), quests/*.json (ADR-026); fonts/alagard.ttf (region titles)
+data/            definition files: items.json, creatures.json (ADR-018), quests/*.json (ADR-026); fonts/alagard.ttf (region titles);
+                 sounds/*.ogg (ADR-037: <name>_<n>.ogg are one sound's takes)
 prefabs/         structure prefab files (cottage, tent, camp, well, fence, ruin)
 tools/           flycoos_mcp.py (MCP server bridging Claude Code to the game), test_mcp.py (end-to-end check)
 shaders/         world.metal (voxel, water, sky), compiled at runtime
@@ -358,3 +361,5 @@ tests/           core_test.cpp: mesher, packing, physics, flight, camera, combat
 ## Credits
 
 - [Alagard](https://www.dafont.com/alagard.font) by Hewett Tsoi (free, credit given): the region titles' font.
+- Sounds: public domain (CC0) and CC-BY recordings from Kenney, OpenGameArt and Freesound; every source is in
+  [CREDITS.md](CREDITS.md).

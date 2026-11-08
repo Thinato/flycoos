@@ -20,6 +20,47 @@
 #include "stream.h"
 #include "text.h"
 
+// Sound (ADR-037): the volumes, what's playing, the ambience's look around, and every sound to try.
+static void audioTab(Audio& a, const Ambience* amb) {
+    auto knob = [](const char* label, std::atomic<float>& v, float most) {  // the mixer reads them on its thread
+        float f = v;
+        if (ImGui::SliderFloat(label, &f, 0, most)) v = f;
+    };
+    if (bool m = a.muted; ImGui::Checkbox("Mute", &m)) a.muted = m;
+    knob("Volume", a.volume, 1);
+    for (int b = 0; b < BusCount; ++b) knob(std::format("{}##bus", kBusNames[b]).c_str(), a.bus[b], 1.5f);
+    ImGui::SliderFloat("Pitch spread", &a.pitchSpread, 0, 0.2f);
+    ImGui::SliderFloat("Volume spread", &a.gainSpread, 0, 0.5f);
+    ImGui::SliderFloat("Hearing (blocks)", &a.hearing, 10, 100);
+    ImGui::SliderFloat("Full volume within", &a.near, 1, 10);
+    ImGui::Text("Voices %d / %d", a.playing(), Audio::kMaxVoices);
+    if (amb) {
+        ImGui::SeparatorText("Ambience");
+        ImGui::Text("Around: water %.2f, trees %.2f, fire %.2f", amb->water, amb->leaves, amb->ember);
+        ImGui::Text("Wind %.2f  high %.2f  birds %.2f  night %.2f  sea %.2f  stream %.2f  fire %.2f", amb->gains[0], amb->gains[1],
+                    amb->gains[2], amb->gains[3], amb->gains[4], amb->gains[5], amb->gains[6]);
+    }
+    ImGui::SeparatorText("Latest");
+    std::string latest;
+    for (const std::string& n : a.log) latest += n + "  ";
+    ImGui::TextWrapped("%s", latest.c_str());
+    if (!a.missing.empty()) {
+        std::string missing;
+        for (const std::string& n : a.missing) missing += n + "  ";
+        ImGui::TextColored({1, 0.6f, 0.3f, 1}, "No takes for:");
+        ImGui::TextWrapped("%s", missing.c_str());
+    }
+    ImGui::SeparatorText("Sounds (click to play)");
+    ImGui::BeginChild("sounds", {0, 260}, ImGuiChildFlags_Borders);
+    for (const auto& [name, g] : a.groups) {
+        if (ImGui::SmallButton(std::format("{} ({})", name, g.clips.size()).c_str()))
+            a.play(name, 1, 0, 1, name.starts_with("amb_") ? BusAmbience : BusEffects);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%.1f s", g.clips.front().seconds());
+    }
+    ImGui::EndChild();
+}
+
 DebugUI::DebugUI(SDL_Window* window, const Renderer& renderer) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -709,6 +750,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game, gamepad, lock, session); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions, stream); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Save")) { saveTab(savePath, saveStatus, saveNotes, autosave, saveLocked, actions); ImGui::EndTabItem(); }
+        if (audio && ImGui::BeginTabItem("Audio")) { audioTab(*audio, ambience); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Stats")) {
             statsTab(frameMs_, frameIndex_);
             ImGui::Text("Sim ticks this frame %d (60 Hz), drawn %.2f into the next", ticks, tickAlpha);

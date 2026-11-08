@@ -22,6 +22,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "audio.h"
 #include "commands.h"
 #include "defs.h"
 #include "edit.h"
@@ -6063,6 +6064,209 @@ static void melee() {
         }
         CHECK(p.pos.z > z + 0.1f);
     }
+    {  // What a fight sounds like (ADR-037): each outcome is its own noise, made by the body it happened to.
+        Player p = armored();
+        std::vector<Entity> es = duel(p);
+        Player& b = es[0].body;
+        auto quiet = [&] { p.noises = b.noises = 0; };
+        quiet();
+        CHECK(strikeNow(p, es, {}) > 0 && p.made(Noise::Hurt) && p.hitWith == b.swingWeapon && p.hitWith != NoItem);
+        CHECK(b.made(Noise::Windup) && !p.made(Noise::Block));  // it telegraphed the swing
+        tick(p, {.guard = true}, es);
+        CHECK(p.made(Noise::GuardUp));  // raising it
+        quiet();
+        tick(p, {.guard = true}, es);
+        CHECK(!p.made(Noise::GuardUp));  // only then
+        strikeNow(p, es, {.guard = true});
+        CHECK(p.made(Noise::Block) && !p.made(Noise::Hurt) && !p.made(Noise::Bounce) && !p.made(Noise::GuardBreak));
+        p.inv.equipped[SlotOffHand] = tower;
+        quiet();
+        strikeNow(p, es, {.guard = true});
+        CHECK(p.made(Noise::Block) && p.made(Noise::Bounce));  // off the greatshield
+        p.inv.equipped[SlotOffHand] = NoItem;
+        p.stamina = 1;
+        quiet();
+        strikeNow(p, es, {.guard = true});
+        CHECK(p.made(Noise::Block) && p.made(Noise::GuardBreak));
+        p = armored(), es = duel(p);
+        Player& c = es[0].body;
+        p.inv.equipped[SlotOffHand] = buckler;
+        tick(p, {.parry = true}, es);
+        while (p.moveTime / p.moveScale < gMelee.parryFrom + 0.02f) tick(p, {}, es);
+        p.noises = c.noises = 0;
+        CHECK(strikeNow(p, es, {}) == 0 && p.made(Noise::Parry) && c.made(Noise::StanceBreak) && !p.made(Noise::Hurt));
+        while (p.punching()) tick(p, {}, es);
+        p.noises = c.noises = 0;
+        CHECK(tick(p, {.attack = true, .aim = {0, 1}, .riposte = true}, es) == Move::Riposte);
+        CHECK(!p.made(Noise::Swing));  // not out of its windup yet
+        float swungAt = -1, windup = holdTime(p), hit = impactTime(p);
+        for (int i = 0; i < 120 && p.punching(); ++i)
+            if (tick(p, {}, es), p.made(Noise::Swing) && swungAt < 0) swungAt = p.moveTime;
+        CHECK(swungAt >= windup && swungAt < hit);  // the blade moves between the windup and the hit
+        CHECK(c.made(Noise::Crit) && (c.made(Noise::Hurt) || c.made(Noise::Death)) && c.hitWith == Shortsword && c.hitStance >= 20);
+        Player heavy = fighter();
+        tick(heavy, {.heavy = true, .heavyHeld = true}, none);
+        for (int i = 0; i < 120 && !heavy.charged; ++i) tick(heavy, {.heavyHeld = true}, none);
+        CHECK(heavy.charged && heavy.made(Noise::Charged));
+    }
+}
+
+// Sound (ADR-037): what a session hears (footsteps from the gait, a jump and its landing, a roll, a
+// splash, loot), what each noise sounds like, the mixer and placing, and takes for every sound played.
+static void sounds() {
+    Session s{.world = meadow(), .seed = 2};
+    s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}}};
+    startSession(s);
+    auto count = [&](Noise n) { return std::ranges::count(s.sounds, n, &Sound::what); };
+    for (int i = 0; i < 30; ++i) step(s, {}, kTick);  // settled on the grass
+    s.sounds.clear();
+    SimInput walk;
+    walk.move.move = {0, 1};
+    float z = s.player.pos.z;
+    for (int i = 0; i < 120; ++i) step(s, walk, kTick);
+    CHECK(std::abs(float(count(Noise::Step)) - 2 * (s.player.pos.z - z) / 1.7f) <= 1.5f);  // twice a stride (kStride)
+    CHECK(count(Noise::Step) > 4 && std::ranges::all_of(s.sounds, [](const Sound& h) {
+              return h.what == Noise::Step && h.ground == Grass && h.kind == -1 && h.amount > 0.5f;
+          }));
+    for (int i = 0; i < 30; ++i) step(s, {}, kTick);  // stopped
+    s.sounds.clear();
+    SimInput jump;
+    jump.move.jump = true;
+    step(s, jump, kTick);
+    for (int i = 0; i < 90; ++i) step(s, {}, kTick);
+    auto land = std::ranges::find(s.sounds, Noise::Land, &Sound::what);
+    CHECK(count(Noise::Jump) == 1 && count(Noise::Land) == 1 && land->amount > 5 && land->ground == Grass && count(Noise::Step) == 0);
+    s.sounds.clear();
+    SimInput roll;
+    roll.move.roll = true;
+    step(s, roll, kTick);
+    for (int i = 0; i < 60; ++i) step(s, {}, kTick);
+    CHECK(count(Noise::Roll) == 1 && count(Noise::Step) == 0);  // a roll has no footsteps
+    s.player.teleport({40.5f, 4.5f, 10.5f});  // the shallows (x >= 32)
+    s.sounds.clear();
+    for (int i = 0; i < 60; ++i) step(s, {}, kTick);
+    CHECK(count(Noise::Splash) == 1);
+    s.sounds.clear();
+    for (int i = 0; i < 60; ++i) step(s, walk, kTick);
+    CHECK(count(Noise::Step) > 2 && std::ranges::all_of(s.sounds, [](const Sound& h) { return h.ground == Water; }));
+    {  // looting a corpse; an NPC's steps are its kind's
+        Entity& bandit = spawnAhead(s.entities, s.world, s.player, EntityKind::Bandit, 1, 1.5f);
+        CHECK(damage(bandit, 1000));
+        bandit.loot = Knife;
+        s.sounds.clear();
+        SimInput loot;
+        loot.interact = true;
+        step(s, loot, kTick);
+        CHECK(count(Noise::Loot) == 1 && s.sounds[0].kind == -1);
+        s.entities.clear();
+        s.player.teleport({10.5f, 4, 10.5f});  // on the grass: the boar won't wade
+        Entity& boar = spawnAhead(s.entities, s.world, s.player, EntityKind::Boar, 1, 8);
+        CHECK(damage(boar, 1));  // it charges
+        s.sounds.clear();
+        for (int i = 0; i < 90; ++i) step(s, {}, kTick);
+        CHECK(std::ranges::any_of(s.sounds, [](const Sound& h) { return h.what == Noise::Step && h.kind == int(EntityKind::Boar); }));
+        s.loaded = [](glm::vec3) { return false; };  // frozen out of the loaded world: nothing heard, nothing saved up
+        s.sounds.clear();
+        boar.body.noise(Noise::Windup);
+        step(s, {}, kTick);
+        s.loaded = nullptr;
+        step(s, {}, kTick);
+        CHECK(!std::ranges::any_of(s.sounds, [](const Sound& h) { return h.what == Noise::Windup; }));
+    }
+    for (int i = 0; i < 400 && s.sounds.size() < kMaxSounds; ++i) s.player.noise(Noise::Jump), step(s, {}, kTick);
+    for (int i = 0; i < 10; ++i) s.player.noise(Noise::Jump), step(s, {}, kTick);
+    CHECK(s.sounds.size() == kMaxSounds);  // nobody playing them: it stops growing
+
+    // What each noise plays, in layers.
+    using Names = std::vector<std::string>;
+    auto names = [](const Sound& h) {
+        Names n;
+        for (const Layer& l : layersOf(h)) n.push_back(l.name);
+        return n;
+    };
+    const ItemId buckler = defs().itemById.at("oak_buckler"), tower = defs().itemById.at("tower_shield");
+    const int bandit = int(EntityKind::Bandit), boar = int(EntityKind::Boar), chief = int(EntityKind::BanditChief);
+    CHECK(names({.what = Noise::Step, .ground = Sand}) == Names{"step_sand"} && names({.what = Noise::Step, .ground = Cobble}) == Names{"step_stone"});
+    CHECK(names({.what = Noise::Step, .ground = Planks}) == Names{"step_wood"} && names({.what = Noise::Step, .ground = Dirt}) == Names{"step_dirt"});
+    CHECK(names({.what = Noise::Hurt, .kind = bandit, .with = Shortsword, .amount = 30}) == (Names{"hit_blade", "hit_heavy", "human_hurt"}));
+    CHECK(names({.what = Noise::Hurt, .kind = int(EntityKind::TrainingDummy), .with = Shortsword, .amount = 10}) == Names{"hit_wood"});  // no voice
+    CHECK(names({.what = Noise::Hurt, .amount = 12}) == (Names{"hit_blunt", "player_hurt"}));  // the player, gored
+    CHECK(names({.what = Noise::Crit, .kind = bandit}) == Names{"hit_crit"});
+    CHECK(names({.what = Noise::Swing, .kind = int(EntityKind::Wolf), .move = Move::Light1}) == Names{"wolf_attack"});  // teeth, no blade
+    CHECK(names({.what = Noise::Swing, .move = Move::Light2, .with = Shortsword}) == Names{"swing_light"});
+    CHECK(names({.what = Noise::Swing, .move = Move::Heavy1, .with = Shortsword}) == (Names{"swing_heavy", "player_attack"}));
+    CHECK(names({.what = Noise::Swing, .kind = bandit, .move = Move::Light1, .with = Knife}) == Names{"swing_fast"});
+    CHECK(names({.what = Noise::Swing, .move = Move::Parry, .with = Shortsword}) == Names{"swing_shield"});
+    CHECK(names({.what = Noise::Windup, .kind = boar}) == Names{"boar_windup"} && names({.what = Noise::Parry}) == Names{"parry"});
+    CHECK(names({.what = Noise::Block, .with = buckler}) == Names{"block_shield"} && names({.what = Noise::Block, .with = Shortsword}) == Names{"block_metal"});
+    CHECK(names({.what = Noise::Block}) == Names{"block_arms"} && layersOf({.what = Noise::Block, .with = tower})[0].pitch < 1);  // a deeper thud
+    std::vector<Layer> death = layersOf({.what = Noise::Death, .kind = boar});
+    CHECK(names({.what = Noise::Death, .kind = boar}) == (Names{"hit_blunt", "boar_death", "body_fall"}) && death[2].delay > 0.2f);
+    CHECK(layersOf({.what = Noise::Hurt, .kind = chief}).back().pitch == typeOf(EntityKind::BanditChief).voicePitch && typeOf(EntityKind::BanditChief).voicePitch < 1);
+    CHECK(layersOf({.what = Noise::Loot})[0].bus == BusInterface);
+
+    // The mixer: a take plays once (panned), waits out its delay, loops, stops for room; mute is silence.
+    {
+        Audio a;
+        a.pitchSpread = a.gainSpread = 0;
+        Clip tone;
+        tone.rate = Audio::kRate;
+        tone.samples.assign(480, 16000);  // 10 ms
+        a.groups["tone"].clips = {tone, tone};
+        std::vector<float> out(2 * 960);
+        auto loud = [&](int from, int to, int channel) {
+            float most = 0;
+            for (int f = from; f < to; ++f) most = std::max(most, std::abs(out[2 * size_t(f) + size_t(channel)]));
+            return most;
+        };
+        CHECK(a.play("tone", 1, 1) > 0 && a.play("none") == 0 && a.missing == Names{"none"});
+        a.mix(out.data(), 960);
+        CHECK(loud(0, 470, 1) > 0.3f && loud(0, 960, 0) == 0 && loud(490, 960, 1) == 0 && a.playing() == 0);  // right only, then done
+        a.play("tone", 1, 0, 1, BusEffects, false, 0.005f);
+        a.mix(out.data(), 960);
+        CHECK(loud(0, 230, 0) == 0 && loud(250, 700, 0) > 0.3f);  // 5 ms late
+        int bed = a.play("tone", 0.5f, 0, 1, BusAmbience, true);
+        a.mix(out.data(), 960), a.mix(out.data(), 960);
+        CHECK(loud(900, 960, 0) > 0.1f && a.playing() == 1);  // still going
+        a.setGain(bed, 0);
+        for (int i = 0; i < 20; ++i) a.mix(out.data(), 960);
+        CHECK(loud(0, 960, 0) < 1e-3f && a.playing() == 1);  // a silent loop stays, to come back
+        for (int i = 0; i < 2 * Audio::kMaxVoices; ++i) a.play("tone", 4);
+        CHECK(a.playing() == Audio::kMaxVoices && a.play("tone", 0.1f) == 0);  // full: a quieter one waits its turn
+        a.mix(out.data(), 960);
+        CHECK(loud(0, 400, 0) > 0.9f && loud(0, 400, 0) <= 1);  // squashed, never past full scale
+        CHECK(a.playing() == 1);  // the tones are done; the (silent) loop was never what made room
+        a.play("tone"), a.muted = true;
+        a.mix(out.data(), 960);
+        CHECK(loud(0, 960, 0) == 0);
+        Listener ear{{0, 0, 0}, {1, 0}};
+        Placed close = place(a, ear, {2, 0, 0}), left = place(a, ear, {-12, 0, 0}), far = place(a, ear, {100, 0, 0});
+        CHECK(close.gain == 1 && close.pan > 0 && left.gain < 0.5f && left.gain > 0 && left.pan < -0.5f && far.gain == 0);
+        CHECK(place(a, ear, {0, 1, 0}).pan == 0);  // overhead: centered
+    }
+
+    // Every sound the game asks for has takes in data/sounds.
+    std::set<std::string> wanted{"bag_open", "bag_close", "lock_on", "equip", "quest", "level_up", "amb_wind", "amb_high", "amb_birds",
+                                 "amb_night", "amb_sea", "amb_river", "amb_fire", "bird", "owl"};
+    const Block grounds[] = {Grass, Dirt, Stone, Sand, Snow, Planks, Water};
+    for (int n = 0; n < int(Noise::Count); ++n)
+        for (int kind = -1; kind < int(defs().creatures.size()); ++kind)
+            for (Block ground : grounds)
+                for (Move move : {Move::Light1, Move::Heavy1, Move::Parry})
+                    for (ItemId with : {NoItem, Shortsword, Knife, buckler, tower})
+                        for (float amount : {0.0f, 30.0f})
+                            for (const Layer& l : layersOf({Noise(n), {}, kind, ground, move, with, amount}))
+                                if (!(kind < 0 && Noise(n) == Noise::Windup))  // only NPCs telegraph
+                                if (kind < 0 || typeOf(EntityKind(kind)).attackable || l.name.find("_hurt") == std::string::npos) wanted.insert(l.name);
+    Audio shipped;
+    std::string error;
+    CHECK(shipped.load(std::filesystem::path(FLYCOOS_SOURCE_DIR) / "data" / "sounds", error));
+    for (const std::string& name : wanted)
+        if (!shipped.has(name)) std::println(stderr, "FAIL no takes for the sound '{}' (data/sounds/{}_1.ogg)", name, name), ++failures;
+    for (const auto& [name, g] : shipped.groups) {
+        CHECK(!g.clips.empty() && g.clips[0].seconds() < 200);
+        if (!wanted.contains(name)) std::println(stderr, "FAIL data/sounds/{}_*.ogg is never played", name), ++failures;
+    }
 }
 
 // Lock-on (lockon.h): the pick nearest the middle of the view, switching by screen direction, and
@@ -6166,6 +6370,7 @@ int main() {
     lockOn();
     packs();
     melee();
+    sounds();
     combat();
     fighters();
     items();

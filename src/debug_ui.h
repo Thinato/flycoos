@@ -7,6 +7,7 @@
 
 #include <vector>
 
+#include "audio.h"
 #include "renderer.h"
 #include "lockon.h"
 #include "session.h"
@@ -36,7 +37,7 @@ enum class NoteAction { None, Save, Cancel };
 NoteAction noteWindow(char* text, size_t size, bool focus);
 
 // Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Progression, Items, Entities, Quests, Data, Camera, World, Save,
-// Stats.
+// Audio, Stats.
 // Also owns the ImGui frame the in-game HUD draws into.
 class Stream;
 class DebugUI {
@@ -71,6 +72,8 @@ public:
     std::vector<std::string> saveNotes;
     const char* autosave = "";  // whether quitting saves, else why not
     bool saveLocked = false;    // the save didn't load: F5 and quitting won't write over it
+    Audio* audio = nullptr;          // the Audio tab's (main sets them)
+    const Ambience* ambience = nullptr;
 
 private:
     void window(GameSettings& game, RenderSettings& render, Session& session,

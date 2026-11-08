@@ -39,6 +39,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |
 | `src/melee.h/.cpp` | Melee (ADR-035): the move table `kMoves` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces` |
+| `src/audio.h/.cpp` | Sound (ADR-037): `Audio` (loads `data/sounds/*.ogg` with stb_vorbis into groups of takes; `play` picks a take never twice running with a little random pitch and volume; `mix` is the device thread's stereo mix: up to 48 resampled voices, three buses, a soft limiter), `place` (falloff and pan from the listener), `layersOf`/`hear` (what a `Sound` from the sim plays), `updateAmbience` (looping beds faded by what's around). No device here: main.cpp's `Speaker` feeds `mix` to SDL3's audio stream |
 | `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`; plants become `PlantInstance`s, not faces), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
@@ -872,7 +873,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   kind that fights must wander. Attackable kinds may set `stance` (default 30; 0: never breaks) and
   `poise` (0: every hit makes it flinch), ADR-035; kinds that fight may set `parryable` (default
   true) and `parries` (1..10, default 1: parries to open it to a riposte), ADR-036. The boar can't
-  be parried; the chief takes 2.
+  be parried; the chief takes 2. Sound (ADR-037): `voice` (its sounds are `<voice>_windup`,
+  `_attack`, `_hurt`, `_death`; lowercase and `_`; none: silent), `voice_pitch` (0.5..2, default 1)
+  and `body` (`flesh`, the default, or `wood`: how hits on it sound).
 
   | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Temper | Weapon | Drops | Talks |
   |---|---|---|---|---|---|---|---|---|
@@ -1042,6 +1045,24 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   tab lists every quest (set any stage, which runs its actions, reset, done/failed, objective
   states), the flags (edit, delete, add), the loader's and the marker check's warnings, and the
   last 32 events the drain saw with the stage changes they caused.
+
+## Sound (ADR-037)
+
+- **From the sim:** bodies set `Noise` bits (`Combatant::noises`) where things happen (player.cpp,
+  melee.cpp, entity.cpp, session.cpp). At the end of each `step()`, `hear` turns them into `Sound`s
+  in `Session::sounds`: the noise, where, who (`kind`, -1 the player), the ground under it, the move,
+  the weapon (or what hit it, or the shield that blocked) and an amount (gait, fall speed, stance
+  damage). Footsteps come from the gait: a foot lands each time `gaitPhase` passes a quarter turn
+  (1.5 times as often for the quadrupeds). Bodies outside the loaded world are cleared unheard. The list
+  stops at `kMaxSounds` when nobody drains it.
+- **To the speakers:** each frame main.cpp `hear`s the frame's sounds at the player (panned by
+  the camera's right), runs `updateAmbience`, plays the interface's sounds (windows, lock-on,
+  equipping, quest news) and clears the list. `layersOf` is the table of what each noise plays. The
+  device thread pulls `Audio::mix`; `play` and `setGain` take the same mutex.
+- **Files:** `data/sounds/<name>_<n>.ogg` (or `<name>.ogg`): the takes of the sound `<name>`, mono for
+  effects (they're panned), stereo for the ambience beds. A missing sound is silent and listed in
+  the debug window's Audio tab; core_test checks every sound `layersOf` and main ask for has takes.
+  Sources and licences: CREDITS.md.
 
 ## Day/night
 

@@ -12,6 +12,18 @@
 constexpr float kDayLength = 4320;  // seconds per full day/night cycle (72 minutes)
 constexpr float kTick = 1 / 60.0f;  // seconds per step(); see docs/DECISIONS.md, ADR-017
 
+// A noise made in the world (ADR-037), for main.cpp to play: what, where, by whom and how.
+struct Sound {
+    Noise what = Noise::Step;
+    glm::vec3 pos{};
+    int kind = -1;           // the EntityKind that made it; -1: the player
+    Block ground = Air;      // what it stands on (steps, landings, rolls)
+    Move move = Move::None;  // the move it was in (swings: the one swung)
+    ItemId with = NoItem;    // swings: the weapon; hurt: what hit it; blocks: what took it (a shield, the main hand)
+    float amount = 0;        // steps: the gait (0..1.4); landings: the fall speed; hurt: the hit's stance damage
+};
+constexpr size_t kMaxSounds = 256;  // Session::sounds stops growing here when nobody plays them
+
 // The simulation state: the world and everything that lives in it. main.cpp keeps the window,
 // camera, renderer, UI and editor around it and drives it with step().
 struct Session {
@@ -38,6 +50,7 @@ struct Session {
     std::vector<int> itemCounts;
     std::deque<std::string> eventLog;  // the latest kEventLogSize drained events, newest last (debug window)
     std::vector<std::pair<int, std::string>> toasts;  // quest news since main last took them: quest handle (-1: none), text
+    std::vector<Sound> sounds;  // noises since main last took them, oldest first
 };
 
 // What the player wants this step; main.cpp maps keys and mouse to it.
@@ -66,6 +79,7 @@ void startSession(Session& s);
 void respawnPlayer(Session& s);
 // Advances the simulation by `dt` seconds (the game always passes kTick): the NPCs' quest lines,
 // interaction, the player's swing and movement, NPCs and combat (paused while editing), the time of
-// day, which region the player is in, item count changes, then the quests drain the tick's events.
+// day, which region the player is in, item count changes, then the quests drain the tick's events,
+// and what everyone did that can be heard joins `sounds`.
 // A player knocked out for kPlayerRespawnSeconds gets back up first.
 StepResult step(Session& s, const SimInput& in, float dt);

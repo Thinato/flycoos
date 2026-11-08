@@ -82,7 +82,7 @@ system is summarized in ADR-035.
 ## Feel
 
 - [ ] Hit sparks, blood, a slash trail on the blade
-- [ ] Sounds: swings, hits, blocks, parries, footsteps
+- [x] Sounds: swings, hits, blocks, parries, footsteps, voices, ambience (ADR-037)
 - [ ] Camera shake on heavy hits; hit-stop tuned per weapon class
 - [ ] Knockback and launch on big hits; ragdoll-ish falls
 - [ ] Charge glow; a riposte and parry flash

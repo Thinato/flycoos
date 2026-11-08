@@ -557,6 +557,7 @@ bool startPunch(Player& b, glm::vec2 aim, float windup) {
     bool chains = b.lastMove >= Move::Light1 && b.lastMove < Move::Light3;  // the first three lights in turn
     startMove(b, chains ? Move(int(b.lastMove) + 1) : Move::Light1, aim);
     b.hold = std::max(0.0f, windup - impactTime(b));
+    b.noise(Noise::Windup);  // the tell: heard before the swing
     b.swingTimer += swingTime(sheet(b, skillOf(b.swingWeapon)), weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
     return true;
 }
@@ -610,6 +611,7 @@ void staggerHit(Entity& e, float stance, bool riposte) {
     if (t.stance > 0 && b.stance <= 0) {
         b.stance = t.stance;
         interrupt(b, gMelee.breakSeconds, true);
+        b.noise(Noise::StanceBreak);
     } else if (stance >= t.poise) {
         interrupt(b, gMelee.flinchSeconds, false);
     }
@@ -678,8 +680,12 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             player.combatTimer = kCombatSeconds;
             bool killed = !target->body.alive();
             awardHitXp(player, *target, true, killed);
+            target->body.noise(killed ? Noise::Death : Noise::Hurt);
+            if (riposte) target->body.noise(Noise::Crit);
+            target->body.hitWith = player.swingWeapon;
             if (killed && events) events->push_back(Killed{target->kind, target->spawn.id});
             float stance = player.move == Move::Riposte && !riposte ? spec(Move::Light1).stance : m.stance * (player.charged ? gMelee.chargeStance : 1);
+            target->body.hitStance = riposte ? 100 : stance;
             if (!killed) staggerHit(*target, stance, riposte);
             player.freeze = target->body.freeze = std::min(0.04f + 0.003f * stance, 0.12f);  // hit-stop: heavier hits, longer
         }
@@ -694,25 +700,33 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             e.body.combatTimer = kCombatSeconds;
             int full = resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), ctx);
             const MeleeTuning& t = gMelee;
+            bool guarded = false;
             if (e.type().parryable && parries(player, e.body.pos)) {  // deflected (ADR-036): the last of its parries opens it
                 player.combatTimer = kCombatSeconds;
-                if (++e.parried >= e.type().parries) e.parried = 0, interrupt(e.body, t.parrySeconds, true);
+                if (++e.parried >= e.type().parries) e.parried = 0, interrupt(e.body, t.parrySeconds, true), e.body.noise(Noise::StanceBreak);
                 else interrupt(e.body, t.recoilSeconds, false);
+                player.noise(Noise::Parry);
                 player.freeze = e.body.freeze = 0.1f;
                 full = 0;
             } else if (std::optional<Guard> guard = guardAgainst(player, e.body.pos)) {  // blocked: part of the damage, and stamina
                 player.stamina -= (t.blockStamina + t.blockStaminaPerDamage * float(full)) * (1 - guard->boost);
                 player.staminaWait = t.staminaDelay;
                 player.combatTimer = kCombatSeconds;
-                if (player.stamina < 0) player.stamina = 0, interrupt(player, t.guardBreakSeconds, true);  // guard broken
+                player.noise(Noise::Block), guarded = true;
+                if (player.stamina < 0) player.stamina = 0, interrupt(player, t.guardBreakSeconds, true), player.noise(Noise::GuardBreak);  // guard broken
                 else if (player.guarding) player.blockTime = 0;  // a guard counter only off a real guard, not a parry's weak one
                 e.body.freeze = 0.08f;
-                if (player.stamina > 0 && bounces(*guard, e.type().hitStance)) interrupt(e.body, t.recoilSeconds, false);  // off a greatshield
+                if (player.stamina > 0 && bounces(*guard, e.type().hitStance)) interrupt(e.body, t.recoilSeconds, false), player.noise(Noise::Bounce);  // off a greatshield
                 full = int(std::lround(float(full) * (1 - guard->negation)));
             } else if (full > 0 && !hyperarmor(player) && e.type().hitStance >= playerPoise(player)) {
                 interrupt(player, gMelee.flinchSeconds, false);
             }
-            if (hurt(player, full)) awardHitXp(player, e, false, false);
+            if (hurt(player, full)) {
+                awardHitXp(player, e, false, false);
+                if (!player.alive()) player.noise(Noise::Death);
+                else if (!guarded) player.noise(Noise::Hurt);  // a blocked hit sounds as the block
+                player.hitWith = e.body.swingWeapon, player.hitStance = e.type().hitStance;
+            }
         }
         if (!e.body.alive() && e.body.deadTime >= e.type().respawnSeconds) {  // back home, fully healed
             e.body.teleport(e.home);

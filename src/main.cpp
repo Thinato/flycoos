@@ -15,6 +15,7 @@
 #include <SDL3/SDL.h>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "audio.h"
 #include "commands.h"
 #include "debug_ui.h"
 #include "defs.h"
@@ -32,6 +33,27 @@
 constexpr float kCameraRadius = 0.3f;  // camera collision box half-size; > near-plane half-diagonal
 constexpr float kBrushRate = 8;        // editor brush applications per second while the button is held
 constexpr float kEditReach = 400;      // blocks; about where fog hides the ground
+
+// The audio device (ADR-037): it pulls the mix from `audio` on its own thread until destroyed.
+struct Speaker {
+    SDL_AudioStream* stream = nullptr;
+    explicit Speaker(Audio& audio) {
+        SDL_AudioSpec spec{SDL_AUDIO_F32, 2, Audio::kRate};
+        auto feed = [](void* user, SDL_AudioStream* to, int wanted, int) {
+            thread_local std::vector<float> buffer;
+            int frames = wanted / int(2 * sizeof(float));
+            buffer.resize(size_t(frames) * 2);
+            static_cast<Audio*>(user)->mix(buffer.data(), frames);
+            SDL_PutAudioStreamData(to, buffer.data(), frames * int(2 * sizeof(float)));
+        };
+        if (!SDL_InitSubSystem(SDL_INIT_AUDIO) || !(stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, feed, &audio)))
+            std::println(stderr, "warning: no sound: {}", SDL_GetError());
+        else SDL_ResumeAudioStreamDevice(stream);
+    }
+    ~Speaker() { if (stream) SDL_DestroyAudioStream(stream); }
+    Speaker(const Speaker&) = delete;
+    Speaker& operator=(const Speaker&) = delete;
+};
 
 struct Options {
     uint32_t seed = 1337;
@@ -111,6 +133,16 @@ static int run(SDL_Window* window, const Options& opt) {
     game.seed = opt.seed;
     RenderSettings render = opt.render;
     DebugActions actions;
+    // Sound (ADR-037); benchmarks run silent.
+    Audio audio;
+    std::unique_ptr<Speaker> speaker;
+    if (!benchmark) {
+        if (std::string error; !audio.load(dataDir() / "sounds", error)) std::println(stderr, "warning: {}", error);
+        speaker = std::make_unique<Speaker>(audio);
+        if (!speaker->stream) speaker.reset();  // no device: nothing plays (or piles up unmixed)
+    }
+    Ambience ambience;
+    ui.audio = &audio, ui.ambience = &ambience;
 
     Session session{.world = Grid(kWorldSize), .seed = game.seed};
     session.timeOfDay = opt.timeOfDay;
@@ -319,6 +351,9 @@ static int run(SDL_Window* window, const Options& opt) {
     glm::vec2 switchDir{};         // a switch asked for this frame (D-pad, arrows, flicks), else zero
     glm::vec3 camLook{};           // where the camera looks, past the orbit's centre (toward a lock-on target)
     bool characterOpen = false, bagsOpen = false, journalOpen = false, progressOpen = false;
+    bool windowWas = false;  // the interface's sounds (ADR-037): a game window was open, the lock-on, the gear, last frame
+    uint32_t lockWas = 0;
+    std::array<ItemId, EquipCount> equippedWas = player.inv.equipped;
     // The debug note box (notes.h): while it's open the simulation doesn't step. What it saves is
     // taken the frame it opens: the state, and a screenshot without the UI.
     bool noteOpen = false, noteFocus = false;
@@ -640,6 +675,9 @@ static int run(SDL_Window* window, const Options& opt) {
             respawned |= stepped.respawned;
         }
         if (!session.toasts.empty()) {  // quest news: started, updated, complete
+            bool quest = std::ranges::any_of(session.toasts, [](auto& t) { return t.first >= 0; });
+            bool level = std::ranges::any_of(session.toasts, [](auto& t) { return t.second.starts_with("Level"); });
+            if (speaker) audio.play(quest ? "quest" : "level_up", level || quest ? 0.8f : 0.4f, 0, level || quest ? 1 : 1.25f, BusInterface);  // a skill: a small one
             notice.clear();
             for (const auto& [quest, text] : session.toasts) notice += (notice.empty() ? "" : "   |   ") + text;
             noticeAt = SDL_GetTicksNS();
@@ -649,6 +687,19 @@ static int run(SDL_Window* window, const Options& opt) {
             glm::vec3 to = player.pos + glm::vec3(opt.fly * dt, 0, 0);
             if (int top = groundTop(world, int(std::floor(to.x)), int(std::floor(to.z))); top >= 0) to.y = float(top + 12);
             player.teleport(to);
+        }
+        {  // what this frame's ticks sounded like, heard at the player with the camera's right (ADR-037)
+            Listener ear{player.pos, {std::cos(camYaw), -std::sin(camYaw)}};
+            if (speaker) {
+                for (const Sound& h : session.sounds) hear(audio, h, ear);
+                updateAmbience(audio, ambience, session, ear, dt);
+                bool window = characterOpen || bagsOpen || journalOpen || progressOpen;
+                if (window != windowWas) audio.play(window ? "bag_open" : "bag_close", 0.6f, 0, 1, BusInterface);
+                if (lock.target && lock.target != lockWas) audio.play("lock_on", 0.6f, 0, 1, BusInterface);
+                if (player.inv.equipped != equippedWas) audio.play("equip", 0.7f, 0, 1, BusInterface);
+                windowWas = window, lockWas = lock.target, equippedWas = player.inv.equipped;
+            }
+            session.sounds.clear();
         }
         float alpha = ui.tickAlpha = tickTime / kTick;  // how far into the next tick this frame is drawn
         glm::vec3 drawnAt = drawPos(player, alpha);

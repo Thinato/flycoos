@@ -74,7 +74,9 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     p.rollTime = std::min(p.rollTime + dt, 99.0f);
     p.jumpTime = std::min(p.jumpTime + dt, 99.0f);
     p.offGround = p.onGround ? 0 : std::min(p.offGround + dt, 99.0f);
+    bool wasWet = p.inWater;
     p.inWater = g.get(glm::ivec3(glm::floor(p.pos + glm::vec3(0, 0.9f, 0)))) == Water;
+    if (p.inWater && !wasWet && p.vel.y < -2) p.noise(Noise::Splash);
     if (flying) {
         float speed = t.flySpeed * (in.run ? 2.5f : 1.0f);
         p.vel = {approach(p.vel.x, in.move.x * speed, 10, dt),
@@ -84,6 +86,7 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
         bool jumps = in.jump && p.offGround <= kCoyoteTime && !p.inWater;  // just off an edge still counts
         if (jumps) {
             p.jumpTime = 0, p.offGround = 99;  // one jump per time on the ground
+            p.noise(Noise::Jump);
             // Jumping out of a roll: the rest of it plays out in kRollCut seconds, in the air (time
             // scaled, so the pose carries on from where it was), and the jump keeps its speed.
             if (float left = p.rollLength - p.rollTime; p.rolling() && left > kRollCut) {
@@ -97,6 +100,7 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
             p.rollDir = glm::length(in.move) > 0.1f ? glm::normalize(in.move) : facing;
             p.rollTime = 0, p.rollLength = t.rollSeconds;
             p.yaw = std::atan2(p.rollDir.x, p.rollDir.y);  // tucks facing the roll
+            p.noise(Noise::Roll);
         }
         glm::vec2 target = in.move * (in.speed > 0 ? in.speed : in.run ? t.runSpeed : t.walkSpeed) * (p.inWater ? 0.6f : 1.0f);
         float control = p.onGround || p.inWater ? 12.0f : 3.0f;
@@ -119,6 +123,8 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     // Swimming counts as grounded for step-up, so the player can climb out onto a shore.
     bool canStep = p.onGround || p.inWater;
     glm::vec3 before = p.pos;
+    bool wasGrounded = p.onGround;
+    float falling = -p.vel.y;
     p.onGround = false;
     if (t.noclip) {  // pass straight through terrain
         p.pos += delta;
@@ -138,6 +144,7 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     p.pos.x = std::clamp(p.pos.x, float(g.lo.x) + kHalfWidth, float(g.hi().x + 1) - kHalfWidth);
     p.pos.z = std::clamp(p.pos.z, float(g.lo.z) + kHalfWidth, float(g.hi().z + 1) - kHalfWidth);
     if (p.pos.y < 0) { p.pos.y = 0; p.vel.y = 0; p.onGround = true; }
+    if (p.onGround && !wasGrounded && !flying && falling > 8) p.noise(Noise::Land), p.landSpeed = falling;  // more than a step down
 
     // Animation state: gait follows the distance actually covered, so feet neither slide
     // nor keep walking in place against a wall.

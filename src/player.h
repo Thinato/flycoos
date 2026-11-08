@@ -37,6 +37,8 @@ struct Body {
     float yaw = 0;           // radians; 0 faces +Z
     glm::vec3 prevPos{};     // pos and yaw at the start of the latest sim tick: drawn between them
     float prevYaw = 0;
+    float prevGait = 0;      // gaitPhase then: a foot comes down in between (step() hears it, ADR-037)
+    float landSpeed = 0;     // how fast it was falling when it last landed (blocks/s)
     bool onGround = false, inWater = false;
     float gaitPhase = 0;     // advances with distance walked
     float gaitAmount = 0;    // 0 idle .. ~1.4 running
@@ -59,6 +61,10 @@ struct Body {
 // and the attacks that depend on what the body was doing.
 enum class Move : uint8_t { None, Light1, Light2, Light3, Light4, Heavy1, Heavy2, Running, Rolling, JumpLight, JumpHeavy,
                             GuardCounter, Riposte, Parry, Count };
+// What a body did this tick that can be heard (ADR-037): bits of Combatant::noises, set where it
+// happens and gathered by step() into Session::sounds. Steps and swim strokes come from the gait.
+enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup, Charged, GuardUp, Hurt, Crit, Death,
+                             StanceBreak, Parry, Block, GuardBreak, Bounce, Loot, Talk, Count };
 // What the player's attack buttons asked for and is still waiting to happen (melee.cpp).
 enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry };
 
@@ -101,12 +107,18 @@ struct Combatant {
     bool chargeByHeavy = false;            // the charging heavy follows the heavy button (else the attack button)
     ItemId swingWeapon = NoItem;           // main hand when the swing started; it lands and animates with that
     float hitTime = 99;                    // seconds since this body last took damage
+    ItemId hitWith = NoItem;               // what that hit was struck with (NoItem: bare hands, teeth, tusks)
+    float hitStance = 0;                   // and its stance damage: how heavy it was
+    uint32_t noises = 0;                   // bits of Noise made this tick
+    Move swung = Move::None;               // the move the latest Noise::Swing came from (it may be cut short the same tick)
     int lastDamage = 0;
     float deadTime = 0;                    // seconds spent at 0 health
     Inventory inv;                         // equipment and bags
     Progress progress;                     // skills, XP and talents: the player's (NPCs' stay at the start)
 
     bool alive() const { return health > 0; }
+    void noise(Noise n) { noises |= 1u << int(n); }
+    bool made(Noise n) const { return noises >> int(n) & 1; }
     bool punching() const { return move != Move::None; }  // any attack move, armed or not
     // What's in hand: the main hand, or what the current swing started with (swapping mid-swing waits).
     ItemId weapon() const { return punching() ? swingWeapon : inv.equipped[SlotMainHand]; }

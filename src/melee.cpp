@@ -87,6 +87,7 @@ void advanceMove(Combatant& c, float dt) {
         c.hold = std::max(0.0f, c.hold - dt);
         return;
     }
+    if (c.moveTime <= at && c.moveTime + dt > at) c.noise(Noise::Swing), c.swung = c.move;  // out of the windup: the blade moves
     c.moveTime += dt;
     if (c.moveTime >= moveLength(c)) endMove(c, c.move);
 }
@@ -142,7 +143,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
             if (charges(p.move) && !p.charged) {  // a heavy holds its windup while its button is held, charging
                 bool held = p.chargeByHeavy ? in.heavyHeld : in.attackHeld;
                 p.holding = held && p.moveTime <= holdTime(p);
-                if (p.holding && p.moveTime >= holdTime(p) && (p.charge += dt) >= t.chargeSeconds) p.charged = true, p.holding = false;
+                if (p.holding && p.moveTime >= holdTime(p) && (p.charge += dt) >= t.chargeSeconds) p.charged = true, p.holding = false, p.noise(Noise::Charged);
             }
             if (jumpAttack(p.move)) p.holding = airborne(p);  // strikes on landing
             bool cut = p.want == Want::Roll || p.want == Want::Parry || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
@@ -179,7 +180,9 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
         }
         if (!p.punching() && p.want == Want::Roll && p.stamina > 0) move.roll = true;  // until updatePlayer can roll
     }
+    bool wasGuarding = p.guarding;
     p.guarding = in.guard && p.stagger <= 0 && !p.punching() && !p.rolling() && !move.roll && p.offGround < 0.1f && !p.inWater;
+    if (p.guarding && !wasGuarding) p.noise(Noise::GuardUp);
     p.guardBlend += ((p.guarding ? 1.0f : 0.0f) - p.guardBlend) * (1 - std::exp(-25 * dt));
 
     // What the body does: nothing while reeling; an attack steps forward into its hit (in the air it

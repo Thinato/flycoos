@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <numbers>
 
 #include "defs.h"
 #include "melee.h"
@@ -30,19 +31,50 @@ void respawnPlayer(Session& s) {
     p.combatTimer = 0;
 }
 
+// The noises `b` made this tick into s.sounds, then clears them. A foot comes down where the gait
+// passes a quarter turn (the walk's feet in model.cpp land there; quadrupeds step 1.5 times as often).
+static void hear(Session& s, Player& b, int kind) {
+    Block ground = s.world.get(glm::ivec3(glm::floor(b.pos - glm::vec3(0, 0.05f, 0))));
+    if (b.inWater && b.onGround) ground = Water;  // wading
+    Model model = kind < 0 ? ModelPlayer : typeOf(EntityKind(kind)).model;
+    float rate = model == ModelBoar || model == ModelWolf ? 1.5f : 1, pi = std::numbers::pi_v<float>;
+    float from = b.prevGait * rate / pi - 0.5f, to = from + std::remainder(b.gaitPhase - b.prevGait, 2 * pi) * rate / pi;
+    if (std::floor(from) != std::floor(to) && b.alive() && !b.rolling() && b.gaitAmount > 0.15f && (b.onGround || b.inWater) &&
+        !b.made(Noise::Land))  // a landing has its own footfall
+        b.noise(b.onGround ? Noise::Step : Noise::Swim);
+    for (int n = 0; n < int(Noise::Count) && b.noises; ++n) {
+        if (!(b.noises >> n & 1) || s.sounds.size() >= kMaxSounds) continue;
+        Sound h{Noise(n), b.pos, kind, ground, b.move, b.swingWeapon, 0};
+        switch (Noise(n)) {
+            case Noise::Step: h.amount = b.gaitAmount; break;
+            case Noise::Swing: h.move = b.swung; break;
+            case Noise::Land: h.amount = b.landSpeed; break;
+            case Noise::Hurt: case Noise::Death: case Noise::Crit: h.with = b.hitWith, h.amount = b.hitStance; break;
+            case Noise::Block: case Noise::Bounce: case Noise::Parry: case Noise::GuardBreak:
+                h.with = shieldOf(b) ? b.inv.equipped[SlotOffHand] : b.inv.equipped[SlotMainHand];
+                break;
+            default: break;
+        }
+        s.sounds.push_back(h);
+    }
+    b.noises = 0;
+}
+
 StepResult step(Session& s, const SimInput& in, float dt) {
     StepResult r;
     Player& p = s.player;
     s.elapsed += dt;
-    p.prevPos = p.pos, p.prevYaw = p.yaw;  // drawn from here to where this tick leaves them
-    for (Entity& e : s.entities) e.body.prevPos = e.body.pos, e.body.prevYaw = e.body.yaw;
+    p.prevPos = p.pos, p.prevYaw = p.yaw, p.prevGait = p.gaitPhase;  // drawn from here to where this tick leaves them
+    for (Entity& e : s.entities) e.body.prevPos = e.body.pos, e.body.prevYaw = e.body.yaw, e.body.prevGait = e.body.gaitPhase;
     if (p.deadTime >= kPlayerRespawnSeconds) {
         respawnPlayer(s);
         r.respawned = true;
     }
     if (in.interact && p.alive()) {
-        if (Entity* corpse = lootTarget(s.entities, p)) takeLoot(*corpse, p.inv);
-        else if (Entity* npc = talkTarget(s.entities, p)) {
+        if (Entity* corpse = lootTarget(s.entities, p)) {
+            if (takeLoot(*corpse, p.inv)) p.noise(Noise::Loot);
+        } else if (Entity* npc = talkTarget(s.entities, p)) {
+            p.noise(Noise::Talk);
             talk(*npc, pickLine(s, *npc));  // answered from the state the player walked up in; the quests react below
             if (npc->spawn.id) s.events.push_back(TalkedTo{npc->spawn.id});
         }
@@ -83,5 +115,9 @@ StepResult step(Session& s, const SimInput& in, float dt) {
         if (counts[id] != (id < s.itemCounts.size() ? s.itemCounts[id] : 0)) s.events.push_back(ItemCountChanged{ItemId(id), counts[id]});
     s.itemCounts = std::move(counts);
     updateQuests(s);
+    hear(s, p, -1);
+    for (Entity& e : s.entities)
+        if (!s.loaded || s.loaded(e.body.pos)) hear(s, e.body, int(e.kind));
+        else e.body.noises = 0;  // frozen out there: nothing to hear
     return r;
 }

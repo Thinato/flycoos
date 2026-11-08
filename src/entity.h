@@ -47,6 +47,11 @@ struct EntityType {
     bool parryable;        // a parry deflects its attacks (ADR-036)
     int parries;           // parries it takes to open it to a riposte (the ones before only make it recoil)
     int xp;                // character XP the player gets for killing one (ADR-027)
+    // Its sounds (ADR-037): "<voice>_windup", "_attack", "_hurt", "_death" (empty: it has no voice),
+    // played at voicePitch; hits on a wooden one sound as on wood, not flesh.
+    std::string voice;
+    float voicePitch;
+    bool wooden;
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);
