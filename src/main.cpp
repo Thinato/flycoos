@@ -21,6 +21,7 @@
 #include "editor_ui.h"
 #include "hud.h"
 #include "inventory_ui.h"
+#include "lockon.h"
 #include "notes.h"
 #include "renderer.h"
 #include "save.h"
@@ -306,6 +307,15 @@ static int run(SDL_Window* window, const Options& opt) {
     }
     glm::vec3 camTarget = player.pos + glm::vec3(0, 1.4f, 0);
     float camDist = game.cameraDistance;  // actual distance after terrain collision
+    // Lock-on (lockon.h): R3 or Tab. Picks use the camera as last frame drew it.
+    LockOn lock;
+    LockView lockView;
+    bool camReset = false;         // locked onto nothing: the camera swings behind the player
+    glm::vec2 flick{};             // mouse travel lately while locked (screen: x right, y up)
+    float flickWait = 0;           // seconds until a mouse flick may switch again
+    float stickWas = 0;            // the right stick's tilt last frame: a flick pushes it past 0.7 from under 0.3
+    glm::vec2 switchDir{};         // a switch asked for this frame (D-pad, arrows, flicks), else zero
+    glm::vec3 camLook{};           // where the camera looks, past the orbit's centre (toward a lock-on target)
     bool characterOpen = false, bagsOpen = false, journalOpen = false, progressOpen = false;
     // The debug note box (notes.h): while it's open the simulation doesn't step. What it saves is
     // taken the frame it opens: the state, and a screenshot without the UI.
@@ -333,8 +343,13 @@ static int run(SDL_Window* window, const Options& opt) {
     bool sprint = false;          // L3 pressed: runs until the left stick lets go
     bool triggerWas = false;      // R2 past half last frame
     PlayerTuning walking;  // movement settings from before entering the editor
+    auto toggleLock = [&] {  // let go, else lock onto what's nearest the middle of the view, else turn the camera
+        if (lock.target) lock = {};
+        else if (!(lock.target = pickTarget(entities, world, lockView, player.pos, game.lock))) camReset = true;
+    };
     auto setEditing = [&](bool on) {  // the editor flies with noclip; NPCs and combat pause
         editor.active = on;
+        lock = {};
         editor.cursor = false;
         punchQueued = false;  // a click queued mid-swing must not become an editor action
         editor.corner.reset();
@@ -406,7 +421,12 @@ static int run(SDL_Window* window, const Options& opt) {
                 else if (e.key.key == SDLK_LALT && !benchmark && !menus()) rollQueued = true;
                 else if (e.key.key == SDLK_E) {  // loot a corpse, else talk
                     interactQueued = true;
-                } else if (e.key.key == SDLK_TAB) {
+                } else if (e.key.key == SDLK_TAB && !editor.active && !menus() && player.alive()) {
+                    toggleLock();
+                } else if (lock.target && (e.key.key == SDLK_LEFT || e.key.key == SDLK_RIGHT || e.key.key == SDLK_UP || e.key.key == SDLK_DOWN)) {
+                    switchDir = {e.key.key == SDLK_RIGHT ? 1 : e.key.key == SDLK_LEFT ? -1 : 0,
+                                 e.key.key == SDLK_UP ? 1 : e.key.key == SDLK_DOWN ? -1 : 0};
+                } else if (e.key.key == SDLK_F1) {
                     if (stream) {
                         notice = "The endless world can't be edited yet: start with --world to edit a world file";
                         noticeAt = SDL_GetTicksNS();
@@ -417,6 +437,8 @@ static int run(SDL_Window* window, const Options& opt) {
                         notice = "Not saved: the save didn't load (debug window, Save tab)";
                         noticeAt = SDL_GetTicksNS();
                     }
+                } else if (e.key.key == SDLK_F6 && !benchmark && !defs().creatureIds.empty()) {  // the debug window's Entities tab picks what
+                    spawnAhead(session.entities, world, player, ui.spawnKind, SDL_rand_bits());
                 } else if (e.key.key == SDLK_F9 && !benchmark) {
                     actions.loadGame = true;
                 } else if (e.key.key == SDLK_F2 && opt.debug && !benchmark && !noteOpen) {
@@ -448,7 +470,10 @@ static int run(SDL_Window* window, const Options& opt) {
                     else closeWindows();
                 }
             }
-            if (e.type == SDL_EVENT_MOUSE_MOTION && !benchmark && !menus()) {
+            if (e.type == SDL_EVENT_MOUSE_MOTION && !benchmark && !menus() && lock.target) {
+                flick += glm::vec2(e.motion.xrel, -e.motion.yrel);  // locked: the mouse switches targets
+            } else if (e.type == SDL_EVENT_MOUSE_MOTION && !benchmark && !menus()) {
+                camReset = false;
                 camYaw -= e.motion.xrel * game.mouseSensitivity;
                 camPitch = std::clamp(camPitch + e.motion.yrel * game.mouseSensitivity, -0.5f, 1.45f);
             }
@@ -486,9 +511,20 @@ static int run(SDL_Window* window, const Options& opt) {
                         case SDL_GAMEPAD_BUTTON_LEFT_STICK: sprint = !sprint; break;
                         case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: punchQueued = !menus(); break;
                         case SDL_GAMEPAD_BUTTON_NORTH: toggle(bagsOpen); break;
-                        case SDL_GAMEPAD_BUTTON_DPAD_LEFT: toggle(characterOpen); break;
-                        case SDL_GAMEPAD_BUTTON_DPAD_UP: toggle(journalOpen); break;
-                        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: toggle(progressOpen); break;
+                        case SDL_GAMEPAD_BUTTON_RIGHT_STICK:  // R3: lock on / let go
+                            if (!editor.active && !menus() && player.alive()) toggleLock();
+                            break;
+                        case SDL_GAMEPAD_BUTTON_DPAD_LEFT:  // locked on, the D-pad switches targets; otherwise it opens windows
+                        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+                        case SDL_GAMEPAD_BUTTON_DPAD_UP:
+                        case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+                            if (lock.target && !menus())
+                                switchDir = {b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT ? 1 : b == SDL_GAMEPAD_BUTTON_DPAD_LEFT ? -1 : 0,
+                                             b == SDL_GAMEPAD_BUTTON_DPAD_UP ? 1 : b == SDL_GAMEPAD_BUTTON_DPAD_DOWN ? -1 : 0};
+                            else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) toggle(characterOpen);
+                            else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) toggle(journalOpen);
+                            else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) toggle(progressOpen);
+                            break;
                         case SDL_GAMEPAD_BUTTON_BACK: toggle(ui.open); break;  // Create: the debug window
                         case SDL_GAMEPAD_BUTTON_EAST:  // Circle rolls, or closes the windows like Options
                         case SDL_GAMEPAD_BUTTON_START:  // (they never quit)
@@ -504,6 +540,7 @@ static int run(SDL_Window* window, const Options& opt) {
         }
 
         ui.gamepad = pad;
+        ui.lock = &lock;
         // The controller's sticks, past the deadzone and rescaled from it (0 .. 1).
         bool padPlays = pad && !benchmark && !noteOpen;
         auto stick = [&](SDL_GamepadAxis x, SDL_GamepadAxis y) {
@@ -521,7 +558,16 @@ static int run(SDL_Window* window, const Options& opt) {
             glm::vec2 by = leftStick * glm::length(leftStick) * 1000.0f * realDt;
             SDL_WarpMouseInWindow(window, x + by.x, y + by.y);
         }
-        if (!menus()) {
+        if (!menus() && lock.target) {  // locked: a flick of the right stick or the mouse switches targets
+            float tilt = glm::length(rightStick);
+            if (tilt > 0.7f && stickWas < 0.3f) switchDir = {rightStick.x, -rightStick.y};
+            stickWas = tilt;
+            flick *= std::exp(-8 * realDt);
+            flickWait -= realDt;
+            if (glm::length(flick) > game.lockFlickPixels && flickWait <= 0) switchDir = flick, flick = {}, flickWait = 0.3f;
+        } else if (!menus()) {
+            flick = {};
+            if (rightStick != glm::vec2(0)) camReset = false;
             camYaw -= rightStick.x * game.stickLookSpeed * realDt;
             camPitch = std::clamp(camPitch + rightStick.y * game.stickLookSpeed * 0.6f * realDt, -0.5f, 1.45f);
         }
@@ -550,7 +596,15 @@ static int run(SDL_Window* window, const Options& opt) {
         if (noteOpen) interactQueued = rollQueued = false;
         bool punchHeld = (pressInGame && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) ||
                          button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) || (trigger && !menus());
+        if (switchDir != glm::vec2(0)) lock.target = switchTarget(lock, entities, world, lockView, player.pos, game.lock, switchDir);
+        switchDir = {};
+        if (!player.alive() || benchmark) lock = {};
+        updateLock(lock, entities, world, lockView, player.pos, game.lock, dt);
         sim.aim = forward;
+        if (const Entity* t = lockedEntity(lock, entities)) {  // face it while walking; swing at it
+            glm::vec2 to(t->body.pos.x - player.pos.x, t->body.pos.z - player.pos.z);
+            if (glm::length(to) > 1e-3f) in.face = sim.aim = glm::normalize(to);
+        }
         sim.editing = editor.active;
         sim.timeRate = benchmark ? 0 : key(SDL_SCANCODE_T) ? 60.0f : 1.0f;
         // Fixed 60 Hz simulation (ADR-017): as many ticks as the frame time covers, at most 0.25 s
@@ -591,7 +645,28 @@ static int run(SDL_Window* window, const Options& opt) {
 
         // Third-person orbit camera. A camera-sized box is marched out from the player; the camera
         // snaps in when terrain is in the way and eases back out so it doesn't pop.
+        // Locked on, the camera turns to look past the player at the target, a little from above;
+        // locking onto nothing swings it behind the player.
+        if (const Entity* t = lockedEntity(lock, entities)) {
+            glm::vec3 d = drawPos(t->body, alpha) + (lockPoint(*t) - t->body.pos) - (drawnAt + glm::vec3(0, 1.4f, 0));
+            float level = std::max(glm::length(glm::vec2(d.x, d.z)), 1.0f);
+            camYaw += std::remainder(std::atan2(-d.x, -d.z) - camYaw, 2 * std::numbers::pi_v<float>) * (1 - std::exp(-8 * dt));
+            // Higher the nearer it is, so it shows over the player's head.
+            float near = 1 - std::clamp((level - 3) / 9, 0.0f, 1.0f);
+            float pitch = std::clamp(0.3f + 0.35f * near * near * (3 - 2 * near) + 0.5f * std::atan2(-d.y, level), -0.3f, 1.0f);
+            camPitch += (pitch - camPitch) * (1 - std::exp(-5 * dt));
+            camReset = false;
+        } else if (camReset) {
+            float turn = std::remainder(player.yaw + std::numbers::pi_v<float> - camYaw, 2 * std::numbers::pi_v<float>);
+            camYaw += turn * (1 - std::exp(-14 * dt));
+            camPitch += (0.35f - camPitch) * (1 - std::exp(-14 * dt));
+            if (std::abs(turn) < 0.01f) camReset = false;
+        }
         camTarget += (drawnAt + glm::vec3(0, 1.4f, 0) - camTarget) * (1 - std::exp(-15 * dt));
+        glm::vec3 lookWant{};  // locked on, the camera looks a quarter of the way to the target
+        if (const Entity* t = lockedEntity(lock, entities))
+            lookWant = (drawPos(t->body, alpha) + (lockPoint(*t) - t->body.pos) - camTarget) * 0.25f;
+        camLook += (lookWant - camLook) * (1 - std::exp(-6 * dt));
         glm::vec3 offset{std::sin(camYaw) * std::cos(camPitch), std::sin(camPitch), std::cos(camYaw) * std::cos(camPitch)};
         bool collide = game.cameraCollision && !player.tuning.noclip;
         float clear = collide ? cameraClearance(world, camTarget, offset, game.cameraDistance, kCameraRadius)
@@ -600,11 +675,16 @@ static int run(SDL_Window* window, const Options& opt) {
 
         FrameParams fp;
         fp.eye = camTarget + offset * camDist;
-        fp.view = glm::lookAtRH(fp.eye, camTarget, glm::vec3(0, 1, 0));
+        fp.view = glm::lookAtRH(fp.eye, camTarget + camLook, glm::vec3(0, 1, 0));
         fp.fovY = glm::radians(game.fovDegrees);
         fp.timeOfDay = session.timeOfDay;
         fp.seconds = wallSeconds += dt;
         fp.underwater = underWater(world, fp.eye);
+        int winW = 16, winH = 9;
+        SDL_GetWindowSize(window, &winW, &winH);
+        lockView.aspect = float(winW) / float(std::max(winH, 1));
+        lockView.viewProj = glm::perspectiveRH_ZO(fp.fovY, lockView.aspect, 0.1f, 1000.0f) * fp.view;
+        lockView.eye = fp.eye;
 
         // Editor: LMB applies the brush where the crosshair (the screen center) meets the ground.
         std::optional<RayHit> aim;
@@ -747,7 +827,8 @@ static int run(SDL_Window* window, const Options& opt) {
         ui.begin(realDt, wasOpen);
         if (game.hud) {
             const Entity* target = lootTarget(entities, player);
-            drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player), alpha);
+            drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player), alpha,
+                    lockedEntity(lock, entities));
             drawPlaces(fp.view, fp.fovY, player, markers, region, float(session.elapsed - session.regionSince));
             drawNotice(notice.c_str(), float(double(SDL_GetTicksNS() - noticeAt) * 1e-9));
         }
@@ -858,7 +939,7 @@ static int run(SDL_Window* window, const Options& opt) {
             titleTimer = 0;
             int minutes = int(session.timeOfDay * 24 * 60);
             char title[256];
-            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack | E = talk/loot | C = character | B = bags | J = journal | . = debug | Tab = editor",
+            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack | E = talk/loot | C = character | B = bags | J = journal | . = debug | Tab = lock on | F1 = editor",
                           realDt * 1000.0, 1.0 / std::max(realDt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);
             SDL_SetWindowTitle(window, title);
         }

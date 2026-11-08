@@ -8,6 +8,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 
+#include "lockon.h"
+
 // The swapchain is linear (sRGB format), so sRGB colors are linearized like the debug UI style.
 unsigned uiColor(float r, float g, float b, float a) {
     return ImGui::GetColorU32(ImVec4(std::pow(r, 2.2f), std::pow(g, 2.2f), std::pow(b, 2.2f), a));
@@ -70,7 +72,7 @@ void damageNumber(ImDrawList* dl, const glm::mat4& viewProj, ImVec2 screen, glm:
 }  // namespace
 
 void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world, const Player& player,
-             const std::vector<Entity>& entities, const Entity* target, float tickAlpha) {
+             const std::vector<Entity>& entities, const Entity* target, float tickAlpha, const Entity* locked) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ImVec2 screen = ImGui::GetIO().DisplaySize;
     if (screen.x <= 0 || screen.y <= 0) return;
@@ -113,6 +115,14 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         if (!speech && &e == target) hint(dl, p, alpha, e);
     }
 
+    if (locked) {  // the lock-on dot: white with a dark rim, on the chest
+        glm::vec4 c = viewProj * glm::vec4(drawPos(locked->body, tickAlpha) + (lockPoint(*locked) - locked->body.pos), 1);
+        if (c.w > 0.1f) {
+            ImVec2 p((c.x / c.w * 0.5f + 0.5f) * screen.x, (0.5f - c.y / c.w * 0.5f) * screen.y);
+            dl->AddCircleFilled(p, 7, uiColor(0, 0, 0, 0.55f));
+            dl->AddCircleFilled(p, 4.5f, uiColor(1, 1, 1, 0.95f));
+        }
+    }
     damageNumber(dl, viewProj, screen, drawPos(player, tickAlpha) + glm::vec3(0, 2.2f, 0), player, {1, 0.3f, 0.25f});
     if (!player.alive()) {
         char msg[64];

@@ -58,8 +58,10 @@ GPU debug layer.
 | J | Journal: active and finished quests, the current entry and objectives |
 | K | Progress: level and XP, skills, talent trees (click a highlighted talent to learn it) |
 | `.` | Open/close the debug window |
-| Tab | Enter/leave the world editor (see below) |
+| Tab | Lock on to the enemy nearest the middle of the view (again: let go). With nothing in reach the camera swings behind you. Locked on, you walk facing the target and attack toward it (running and rolls go where you steer); the arrow keys, or a quick flick of the mouse, switch to the next enemy that way on screen. A kill moves the lock to the next enemy in reach |
+| F1 | Enter/leave the world editor (see below) |
 | F2 | With `--debug`: write a debug note. The game pauses; the note goes to `debug_notes/notes.jsonl` with the game's state (player, combat, nearby NPCs, quests, latest events) and a screenshot from that moment. Each note starts `"status": "open"` and becomes `"done"` with a `"resolution"` once handled; list the open ones with `jq -c 'select(.status != "done") \| [.id, .note]' debug_notes/notes.jsonl` |
+| F6 | Spawn an NPC 5 blocks in front of you, a bandit unless the debug window's Entities tab picks another kind (for trying out fights; it isn't saved) |
 | F5 / F9 | Save / load the game (the player save next to the world file, e.g. `worlds/story.flys`) |
 | Esc | Close the open windows, otherwise quit (asks twice with unsaved world edits); quitting saves the game (see below) |
 
@@ -69,13 +71,14 @@ A controller works too (SDL's gamepad layout; PlayStation names here, an Xbox pa
 |---|---|
 | Left stick | Move; with a window open, move the cursor |
 | L3 (click the left stick) | Run, until the stick lets go |
-| Right stick | Orbit the camera |
+| Right stick | Orbit the camera; locked on, a flick switches target |
+| R3 (click the right stick) | Lock on / let go (like Tab) |
 | Cross | Jump / swim up (fly: rise); with a window open, click |
 | Circle | Roll (like Alt); fly: sink; with a window open, close the windows |
 | Square | Loot or talk (like E); with a window open, right-click (equip / unequip) |
 | R1 / R2 | Attack (hold to keep swinging) |
 | Triangle | Bags |
-| D-pad left / up / right | Character / Journal / Progress |
+| D-pad left / up / right | Character / Journal / Progress; locked on, the D-pad (down too) switches to the next enemy that way |
 | Options | Close the windows |
 | Create | Open/close the debug window (its Camera tab: stick look speed and deadzone, live stick values) |
 
@@ -107,7 +110,7 @@ The running game is the world editor. Start it on a world file:
 ./build/release/flycoos --world worlds/story.flyw   # loads the file, or generates from --seed if it doesn't exist yet
 ```
 
-Tab enters editor mode: you fly with noclip, NPCs and combat pause, and a crosshair marks where the
+F1 enters editor mode: you fly with noclip, NPCs and combat pause, and a crosshair marks where the
 brush lands (the ray from the camera through the screen center, past your character). A ring shows
 the brush on the ground. Fly up to aim farther away.
 
@@ -337,7 +340,7 @@ src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/nig
 src/debug_ui.*   Dear ImGui debug window (toggle with .), and the debug note box
 src/notes.*      debug notes: the game state a note keeps, debug_notes/notes.jsonl
 src/stream.*     the endless world: chunk columns generated on worker threads, lit and meshed around the player
-src/editor_ui.*  Editor panel, crosshair and brush preview (Tab)
+src/editor_ui.*  Editor panel, crosshair and brush preview (F1)
 src/main.cpp     window, input, camera, main loop, benchmark mode, runs remote commands
 data/            definition files: items.json, creatures.json (ADR-018), quests/*.json (ADR-026); fonts/alagard.ttf (region titles)
 prefabs/         structure prefab files (cottage, tent, camp, well, fence, ruin)

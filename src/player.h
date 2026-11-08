@@ -18,6 +18,7 @@ struct Input {
     bool jump = false, run = false;
     bool descend = false;  // flight only
     bool roll = false;     // a tap: roll the way it moves (else the way it faces), on the ground or just after a jump
+    glm::vec2 face{};      // nonzero: keep facing this XZ direction while walking (a lock-on); running and rolls don't
 };
 
 // Movement knobs, tweakable live from the debug UI.

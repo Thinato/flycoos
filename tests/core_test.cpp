@@ -20,11 +20,14 @@
 #include <tuple>
 #include <type_traits>
 
+#include <glm/gtc/matrix_transform.hpp>
+
 #include "commands.h"
 #include "defs.h"
 #include "edit.h"
 #include "entity.h"
 #include "light.h"
+#include "lockon.h"
 #include "mesher.h"
 #include "notes.h"
 #include "plants.h"
@@ -2258,6 +2261,17 @@ static void markers() {
         CHECK(glm::distance(e.home, boars.pos) < 4 && e.home.y == 4 && !overlapsSolid(g, e.home));
     }
     CHECK(npcs[0].home == boars.pos);
+    {  // one spawned in front of the player (F6) stands 5 blocks the way it faces, and syncs leave it be
+        Player me;
+        me.pos = {16.5f, 4, 16.5f};
+        me.yaw = std::numbers::pi_v<float> / 2;  // facing +X
+        const Entity& b = spawnAhead(npcs, g, me, EntityKind::Bandit, 7);
+        CHECK(glm::distance(b.body.pos, glm::vec3(21.5f, 4, 16.5f)) < 1e-4f && !overlapsSolid(g, b.body.pos));
+        CHECK(b.spawn.id == 0 && std::abs(b.body.yaw + std::numbers::pi_v<float> / 2) < 1e-4f);  // faces the player
+        sync();
+        CHECK(npcs.size() == 4 && npcs[3].kind == EntityKind::Bandit);
+        npcs.pop_back();
+    }
     r = putMarker(g, list, h, poi);
     CHECK(r.id == 2);
     damage(npcs[1], 5);
@@ -5563,6 +5577,77 @@ static void plants() {
     }
 }
 
+// Lock-on (lockon.h): the pick nearest the middle of the view, switching by screen direction, and
+// letting go on a kill (or passing the lock on), past the break range or long out of sight.
+static void lockOn() {
+    Grid g({48, 16, 48});
+    for (int z = 0; z < 48; ++z)
+        for (int x = 0; x < 48; ++x)
+            for (int y = 0; y < 4; ++y) g.set({x, y, z}, Stone);
+    std::vector<Entity> es;
+    auto put = [&](float x, float z) {  // a bandit standing at (x, z)
+        Player at;
+        at.pos = {x, 4, z - 1};
+        return spawnAhead(es, g, at, EntityKind::Bandit, uint32_t(es.size() + 1), 1).id;
+    };
+    // The camera behind the player looks along +Z: screen right is -X.
+    glm::vec3 player(24.5f, 4, 10.5f);
+    LockView view;
+    view.eye = {24.5f, 6, 6};
+    view.viewProj = glm::perspectiveRH_ZO(glm::radians(70.0f), view.aspect, 0.1f, 1000.0f) *
+                    glm::lookAtRH(view.eye, glm::vec3(24.5f, 5, 30), glm::vec3(0, 1, 0));
+    LockSettings s;
+    uint32_t ahead = put(24.5f, 20.5f), right = put(20.5f, 20.5f), left = put(29.5f, 19.5f);
+    put(24.5f, 40.5f);  // in the middle of the view but out of range
+    CHECK(ahead && right && left && ahead != right && right != left);  // ids are unique
+    CHECK(pickTarget(es, g, view, player, s) == ahead);
+    LockOn lock{ahead};
+    CHECK(switchTarget(lock, es, g, view, player, s, {1, 0}) == right);
+    CHECK(switchTarget(lock, es, g, view, player, s, {-1, 0}) == left);
+    CHECK(switchTarget(lock, es, g, view, player, s, {0, 1}) == ahead);  // nothing above in range: stays
+    CHECK(switchTarget(LockOn{right}, es, g, view, player, s, {-1, 0}) == ahead);  // the nearer one that way
+
+    for (int y = 4; y < 9; ++y)  // a wall hides the one ahead
+        for (int x = 22; x < 27; ++x) g.set({x, y, 15}, Stone);
+    uint32_t picked = pickTarget(es, g, view, player, s);
+    CHECK(picked == right || picked == left);
+    updateLock(lock, es, g, view, player, s, 1.5f);
+    CHECK(lock.target == ahead && lock.unseen == 1.5f);
+    updateLock(lock, es, g, view, player, s, 1.0f);  // over 2 s out of sight: lets go
+    CHECK(lock.target == 0);
+    for (int y = 4; y < 9; ++y)
+        for (int x = 22; x < 27; ++x) g.set({x, y, 15}, Air);
+
+    lock = {ahead};
+    auto byId = [&](uint32_t id) -> Entity& { return *std::ranges::find(es, id, &Entity::id); };
+    damage(byId(ahead), 10000);  // a kill passes the lock to the next one
+    updateLock(lock, es, g, view, player, s, 0.016f);
+    CHECK(lock.target == right || lock.target == left);
+    s.autoSwitch = false;
+    damage(byId(lock.target), 10000);
+    updateLock(lock, es, g, view, player, s, 0.016f);
+    CHECK(lock.target == 0);
+    s.autoSwitch = true;
+    lock = {byId(right).body.alive() ? right : left};  // the one still standing
+    byId(lock.target).body.pos.z += 40;               // past the break range
+    updateLock(lock, es, g, view, player, s, 0.016f);
+    CHECK(lock.target == 0);
+
+    {  // locked on, walking keeps facing the target: a sidestep, not a turn
+        Grid flat = flatWorld(0);
+        Player p;
+        p.pos = {7.5f, 4.001f, 7.5f};
+        Input in;
+        in.move = {1, 0};
+        in.face = {0, 1};
+        for (int i = 0; i < 60; ++i) updatePlayer(p, flat, in, 1 / 120.0f);
+        CHECK(std::abs(p.yaw) < 0.01f && p.pos.x > 9);  // faces +Z, moved along +X
+        in.run = true;  // running turns to where it goes
+        for (int i = 0; i < 60; ++i) updatePlayer(p, flat, in, 1 / 120.0f);
+        CHECK(std::abs(p.yaw - std::numbers::pi_v<float> / 2) < 0.05f);
+    }
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -5590,6 +5675,7 @@ int main() {
     streaming();
     physics();
     entities();
+    lockOn();
     combat();
     fighters();
     items();

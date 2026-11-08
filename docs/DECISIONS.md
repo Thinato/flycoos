@@ -1345,3 +1345,39 @@
     instead of ~0.65 s. Frame times are unchanged: flying at 60 blocks/s, 8.35 ms mean, p99 9.4 ms,
     the same as before.
   - Over the 8×8 km around the spawn, 17% of columns are under water instead of 3%, most of it sea.
+
+## ADR-033: Lock-on in the style of the soulslikes
+
+- **Status:** accepted (2026-11-07)
+- **Context:** Combat aimed where the camera looked, so circling an enemy meant steering the
+  camera and the character at once. The user asked for lock-on as Elden Ring has it: R3 (Tab on a
+  keyboard) locks onto the enemy nearest the middle of the view, and the D-pad picks the next enemy
+  in that direction.
+- **Decision:** `lockon.h/.cpp` (core, tested) holds the rules; main.cpp wires input, camera and HUD.
+  - **Lock:** R3 or Tab locks onto the alive, attackable entity within 20 blocks, on screen and in
+    the camera's line of sight, nearest the middle of the view (nearer ones win close calls).
+    Pressing it again lets go. With nothing to lock onto, the camera swings behind the player.
+  - **Holding the lock:** the lock holds `Entity::id`, a per-run counter from `makeEntity`, because
+    the entity list is erased from and appended to. It lets go past 28 blocks or after 2 s out of
+    sight. A kill moves it to the next pick, if there is one (setting "Next target on a kill").
+  - **Switching:** the D-pad, the arrow keys, a right-stick flick (past 0.7 tilt from under 0.3) or
+    a quick mouse flick (60 px) moves the lock to the next enemy that way on screen, within 60
+    degrees of the direction, scored by screen distance and straightness. While locked, the mouse
+    and right stick don't turn the camera, and the D-pad doesn't open windows.
+  - **Camera:** turns to look past the player at the target's chest, from a little above, and
+    pitches with the height difference. It rises by up to 0.35 rad as the target comes within 12
+    blocks and looks a quarter of the way toward it, so a near target shows over the player's head
+    instead of behind it. The player stays the orbit's centre, so terrain collision is unchanged.
+  - **Player:** `Input::face` keeps the body facing the target while walking (strafing, and a
+    backwards gait when backing off). Running and rolls face where they go. Attacks aim at the
+    target. The HUD draws a white dot on the target's chest.
+  - **Keys:** the world editor moves from Tab to F1.
+- **Alternatives considered:**
+  - Mouse movement switching targets only, as Elden Ring does on PC: kept, but the arrow keys were
+    added because the user asked for direction keys.
+  - Holding the lock by index into the entity list: syncs erase and append, so the lock would jump
+    to another NPC.
+- **Consequences:** Lock-on with no enemy near also works as a "camera behind me" button. Up and
+  down switch to enemies farther or nearer on screen. Anything attackable can be locked, the
+  dummy, boars and guards included (as Elden Ring lets you lock onto any NPC you can hit);
+  villagers can't be.

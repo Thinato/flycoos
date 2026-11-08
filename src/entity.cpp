@@ -1,6 +1,7 @@
 #include "entity.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <iterator>
@@ -80,7 +81,9 @@ void wander(Entity& e, const Grid& g, glm::vec3 player, float dt) {
 
 // A new entity of `kind` standing at (and at home on) `pos`, facing `face`.
 Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 face) {
+    static std::atomic<uint32_t> made{0};
     Entity e{};
+    e.id = ++made;
     e.kind = kind;
     e.rng.seed(rngSeed);
     const EntityType& t = e.type();
@@ -114,6 +117,12 @@ const char* Entity::speech() const {
 
 const std::string& Entity::displayName() const {
     return !spawn.lines.empty() && spawn.count == 1 && !spawn.name.empty() ? spawn.name : name;
+}
+
+Entity& spawnAhead(std::vector<Entity>& entities, const Grid& world, const Player& player, EntityKind kind,
+                   uint32_t seed, float distance) {
+    glm::vec3 at = player.pos + glm::vec3(std::sin(player.yaw), 0, std::cos(player.yaw)) * distance;
+    return entities.emplace_back(makeEntity(kind, seed, clearOfTerrain(world, at), player.pos));
 }
 
 std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t seed) {
@@ -189,6 +198,7 @@ void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vec
     std::vector<Tally> tally(markers.size());
     bool any = false;  // something to erase or spawn
     for (Entity& e : entities) {
+        if (!e.spawn.id) continue;  // not from a marker (spawnAhead): left alone
         ptrdiff_t i = spawnOf(e.spawn.id);
         if (i < 0) {  // its marker is gone
             any = true;
@@ -214,7 +224,7 @@ void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vec
     if (!any) return;
     std::erase_if(entities, [&](const Entity& e) {
         ptrdiff_t i = spawnOf(e.spawn.id);
-        return i < 0 || tally[size_t(i)].stale;
+        return e.spawn.id && (i < 0 || tally[size_t(i)].stale);
     });
     for (size_t i = 0; i < markers.size(); ++i)
         if (uint32_t slots = missing(i)) spawnAt(entities, world, markers[i], seed, face, slots);

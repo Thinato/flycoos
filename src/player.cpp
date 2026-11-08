@@ -141,16 +141,23 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
 
     // Animation state: gait follows the distance actually covered, so feet neither slide
     // nor keep walking in place against a wall.
-    float moved = glm::length(glm::vec2(p.pos.x - before.x, p.pos.z - before.z));
+    glm::vec2 step(p.pos.x - before.x, p.pos.z - before.z);
+    float moved = glm::length(step);
     float speed = moved / dt;
-    p.gaitPhase = std::fmod(p.gaitPhase + moved * kTau / kStride, kTau);
+    // Backing away (facing a lock-on target) walks the gait backwards.
+    bool backwards = glm::dot(step, glm::vec2(std::sin(p.yaw), std::cos(p.yaw))) < -0.3f * moved;
+    p.gaitPhase = std::fmod(p.gaitPhase + (backwards ? -moved : moved) * kTau / kStride + kTau, kTau);
     bool walking = speed > 0.3f && !flying;
     p.gaitAmount = approach(p.gaitAmount, walking ? std::min(speed / t.walkSpeed, 1.4f) : 0, 10, dt);
     p.airAmount = approach(p.airAmount, (p.onGround || p.inWater) && !flying ? 0.0f : 1.0f, 12, dt);
     p.swimAmount = approach(p.swimAmount, p.inWater && !flying ? 1.0f : 0.0f, 6, dt);
-    // Face where we're trying to go; a punch keeps facing where it was aimed.
-    if (!p.punching() && glm::length(glm::vec2(p.vel.x, p.vel.z)) > 0.3f) {
-        float diff = std::remainder(std::atan2(p.vel.x, p.vel.z) - p.yaw, kTau);
+    // Face where we're trying to go, or what's locked on while walking; a punch keeps facing where
+    // it was aimed.
+    glm::vec2 want = glm::length(in.face) > 1e-3f && !in.run && !p.rolling() && !flying ? in.face
+                   : glm::length(glm::vec2(p.vel.x, p.vel.z)) > 0.3f                  ? glm::vec2(p.vel.x, p.vel.z)
+                                                                                      : glm::vec2(0);
+    if (!p.punching() && want != glm::vec2(0)) {
+        float diff = std::remainder(std::atan2(want.x, want.y) - p.yaw, kTau);
         p.yaw = std::remainder(p.yaw + diff * (1 - std::exp(-12 * dt)), kTau);
     }
 }

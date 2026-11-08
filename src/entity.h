@@ -61,6 +61,7 @@ struct AiTransition {
 };
 
 struct Entity {
+    uint32_t id = 0;       // unique in the run (makeEntity counts them): what a lock-on holds
     EntityKind kind;
     std::string name;
     Player body;           // position, animation, health, level
@@ -102,10 +103,15 @@ constexpr float kCorpseLinger = 3;  // seconds an empty corpse of an inactive sp
 // The training dummy, a villager, a boar and a bandit on grass beside `near` (usually the player
 // spawn). The bandit's camp is far enough away that it can't see `near`.
 std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t seed);
+// A fresh `kind` `distance` blocks in front of `player` (the way its body faces), lifted out of the
+// terrain and facing it; for trying out fights (debug window, F6). Not from a marker (spawn.id 0):
+// marker syncs and the player save leave it alone, and it doesn't come back with the game.
+Entity& spawnAhead(std::vector<Entity>& entities, const Grid& world, const Player& player, EntityKind kind,
+                   uint32_t seed, float distance = 5);
 // The NPCs of every spawn marker. Entities whose marker is gone or changed (position, radius, kind
 // or count) are replaced by fresh ones at the marker; the rest are left alone (a new name or new
 // lines only update their copy of the marker), so it's cheap to call after anything that may have
-// changed the markers. New ones face `face`. A marker with an active window (Marker::activeFrom)
+// changed the markers. Entities not from a marker (spawnAhead's) are left alone. New ones face `face`. A marker with an active window (Marker::activeFrom)
 // spawns only inside it at `timeOfDay` (then only the slots it misses: those still out keep their
 // state); outside it its NPCs leave once out of a fight (Chase, Windup,
 // Recover), its corpses once looted (kCorpseLinger after death at the earliest) or back up, and the

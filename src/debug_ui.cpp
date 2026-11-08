@@ -235,7 +235,7 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
     if (ImGui::Button("Reset movement")) t = PlayerTuning{};
 }
 
-static void entitiesTab(Session& session, DebugActions& actions) {
+static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spawnKind) {
     std::vector<Entity>& entities = session.entities;
     const Player& player = session.player;
     // Hits from here count for quests as the player's would.
@@ -243,6 +243,21 @@ static void entitiesTab(Session& session, DebugActions& actions) {
         if (damage(e, amount) && !e.body.alive()) session.events.push_back(Killed{e.kind, e.spawn.id});
     };
     if (ImGui::Button("Respawn NPCs at their markers")) actions.respawnEntities = true;
+    const std::vector<std::string>& kinds = defs().creatureIds;
+    if (size_t(spawnKind) >= kinds.size()) spawnKind = EntityKind(0);
+    ImGui::SetNextItemWidth(160);
+    if (ImGui::BeginCombo("##spawnKind", kinds.empty() ? "-" : kinds[size_t(spawnKind)].c_str())) {
+        for (size_t k = 0; k < kinds.size(); ++k)
+            if (ImGui::Selectable(kinds[k].c_str(), size_t(spawnKind) == k)) spawnKind = EntityKind(k);
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(kinds.empty());
+    if (ImGui::Button("Spawn 5 blocks ahead (F6)")) spawnAhead(entities, session.world, player, spawnKind, SDL_rand_bits());
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Remove spawned")) std::erase_if(entities, [](const Entity& e) { return !e.spawn.id; });
+    ImGui::SetItemTooltip("The NPCs spawned here or with F6 (not from a marker). They don't come back with the game either.");
     for (size_t i = 0; i < entities.size(); ++i) {
         Entity& e = entities[i];
         const EntityType& t = e.type();
@@ -482,7 +497,7 @@ static void questsTab(Session& s) {
     for (auto it = s.eventLog.rbegin(); it != s.eventLog.rend(); ++it) ImGui::TextUnformatted(it->c_str());
 }
 
-static void cameraTab(GameSettings& g, SDL_Gamepad* pad) {
+static void cameraTab(GameSettings& g, SDL_Gamepad* pad, const LockOn* lock, const Session& session) {
     ImGui::SliderFloat("Field of view", &g.fovDegrees, 30, 120, "%.0f deg");
     ImGui::SliderFloat("Distance", &g.cameraDistance, 2, 80, "%.1f blocks");
     ImGui::SetItemTooltip("Also the mouse wheel. Pull far back for an overview.");
@@ -490,6 +505,20 @@ static void cameraTab(GameSettings& g, SDL_Gamepad* pad) {
     ImGui::Checkbox("HUD", &g.hud);
     ImGui::SetItemTooltip("Nameplates, speech balloons and the health bar.");
     ImGui::SliderFloat("Mouse sensitivity", &g.mouseSensitivity, 0.001f, 0.02f, "%.4f");
+    ImGui::SeparatorText("Lock-on (R3 / Tab)");
+    if (const Entity* t = lock ? lockedEntity(*lock, session.entities) : nullptr)
+        ImGui::Text("On %s #%u, %.1f blocks away, unseen %.1f s", t->displayName().c_str(), t->id,
+                    double(glm::distance(t->body.pos, session.player.pos)), double(lock->unseen));
+    else
+        ImGui::TextDisabled("Not locked on");
+    ImGui::SliderFloat("Lock range", &g.lock.acquireRange, 5, 60, "%.0f blocks");
+    ImGui::SetItemTooltip("How far a new lock reaches. Picks the enemy nearest the middle of the view, in sight.");
+    ImGui::SliderFloat("Break range", &g.lock.breakRange, 5, 80, "%.0f blocks");
+    ImGui::SetItemTooltip("A lock lets go past this.");
+    ImGui::SliderFloat("Lost sight after", &g.lock.unseenSeconds, 0.1f, 10, "%.1f s");
+    ImGui::Checkbox("Next target on a kill", &g.lock.autoSwitch);
+    ImGui::SliderFloat("Mouse flick", &g.lockFlickPixels, 10, 300, "%.0f px");
+    ImGui::SetItemTooltip("Mouse travel (quickly, while locked) that switches target. The D-pad, arrow keys and a flick of the right stick switch too.");
     ImGui::SeparatorText("Controller");
     if (!pad) ImGui::TextDisabled("None connected");
     else {
@@ -600,10 +629,10 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
         if (ImGui::BeginTabItem("Player")) { playerTab(player, session.armorK, actions, region); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Progression")) { progressionTab(player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Items")) { itemsTab(player); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Entities")) { entitiesTab(session, actions); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Entities")) { entitiesTab(session, actions, spawnKind); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Quests")) { questsTab(session); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Data")) { dataTab(defsStatus_, player); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Camera")) { cameraTab(game, gamepad); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Camera")) { cameraTab(game, gamepad, lock, session); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions, stream); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Save")) { saveTab(savePath, saveStatus, saveNotes, autosave, saveLocked, actions); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Stats")) {

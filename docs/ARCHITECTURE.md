@@ -16,7 +16,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
    │
    ├─ loop: events ─► SimInput ─► step() × N (fixed 60 Hz) ─► poseModel(alpha) ─► camera ─► Renderer::render()
    │
-   ├─ editor (Tab): raycast() ─► applyEdit() / undoEdit() / redoEdit() ─► dirty Box ─► Renderer::updateWorld()
+   ├─ editor (F1): raycast() ─► applyEdit() / undoEdit() / redoEdit() ─► dirty Box ─► Renderer::updateWorld()
    │                saveWorld() on Ctrl+S
    │
    ├─ player save: loadPlayer() on start (unless --new-game) and F9; savePlayer() on F5 and quit ─► worlds/<world>.flys
@@ -38,6 +38,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |
+| `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`; plants become `PlantInstance`s, not faces), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
 | `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (base stats, level, health, swing and damage timers, `Inventory`); `Progress`; `collect`/`sheet` (its modifiers and final stats, optionally with a weapon skill's conditional modifiers), `skillOf`; walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
@@ -888,6 +889,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   actions (no shout). Below `flee_health` of its health (0 for
   every shipped kind: never) it runs from the player for 4 s, then returns. No line-of-sight or
   FOV check yet. The Entities tab shows the state, time in it, the transitions and a force-state combo.
+  For trying out fights it also spawns a picked kind 5 blocks in front of the player (`spawnAhead`,
+  F6 too): not from a marker, so marker syncs and the player save leave it alone.
 - **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell until it
   respawns; E within 3.5 blocks moves the loot into the bags, else into its empty equip slot (it
   stays on the corpse if neither has room, and E talks instead).
