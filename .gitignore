@@ -2,6 +2,7 @@ build/
 .cache/
 .DS_Store
 .omc/
+.karazhan/
 imgui.ini
 # player saves (ADR-025): per player, next to their world file
 *.flys
