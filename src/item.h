@@ -17,6 +17,15 @@ extern const char* const kSlotNames[EquipCount];
 enum ItemId : uint8_t { NoItem, Shortsword, Satchel, Knife, BoarSkin,
                         IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, WolfPelt, BoneCharm, ItemCount };
 
+// What an off-hand shield does when guarding (ADR-036): the share of a blocked hit's damage it stops
+// and of its stamina damage it saves, and whether it can parry. Its size picks its model.
+enum class ShieldSize : uint8_t { None, Small, Medium, Great };
+struct Shield {
+    ShieldSize size = ShieldSize::None;  // None: not a shield
+    float negation = 0, boost = 0;
+    float parry = 0;                     // the parry's length (x its base timing); 0: can't parry
+};
+
 struct ItemType {
     const char* name;
     EquipSlot slot;
@@ -24,6 +33,7 @@ struct ItemType {
     int bagSlots;   // bags
     int armor;      // armor pieces; chest and legs always give the most (a test enforces it)
     std::vector<Modifier> mods;  // what wearing it adds to the stat pipeline, besides its armor (source unset)
+    Shield shield;               // off-hand shields
 };
 const ItemType& itemType(ItemId id);  // from the loaded defs (defs.h); NoItem's row when out of range
 

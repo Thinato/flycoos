@@ -38,7 +38,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |
-| `src/melee.h/.cpp` | Melee (ADR-035): the move table `kMoves` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise` |
+| `src/melee.h/.cpp` | Melee (ADR-035): the move table `kMoves` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces` |
 | `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`; plants become `PlantInstance`s, not faces), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
@@ -768,6 +768,17 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   (`stance`): hits wear it down (it comes back after stance/13 s, at 13 a second), at 0 it breaks
   (2.5 s on a knee, open to a riposte, which knocks it down 1.2 s), and a hit of at least its `poise`
   makes it flinch, cancelling its swing. NPC swings land the same way on the player.
+- **Shields and the parry** (ADR-036, melee.h): an off-hand item with a `shield` guards by its own
+  numbers instead of the sword's (`guardOf`): the Oak Buckler stops 80% and saves 46% of the stamina,
+  the Heater Shield 100% / 56%, the Tower Shield 100% / 72%. A guard of at least 65% boost makes an
+  attack of less than 20 `hit_stance` bounce: its attacker reels 0.6 s. Q / L2 parries with a shield
+  that can (`parry`: the parry's length, x; greatshields can't): 10 stamina, a `Move::Parry` that
+  commits to its end (0.75 s x the shield's). A hit from the front 0.1 to 0.33 s into it (at speed 1)
+  is deflected: no damage, and the attacker reels 1.5 s with its stance broken, open to a riposte; a
+  kind with `parries` above 1 only reels 0.6 s until its last one (they don't wear off; `Entity::
+  parried` counts them). Caught outside the window, or by a kind with `parryable: false`, the parry is
+  a weak guard (half the shield's negation and boost). The debug Player tab shows the guard and
+  tunes these.
 - `hurt()` damages any body; `damage()` is hurt() for attackable entities and also angers fighters
   and rolls loot on a kill.
 - Dealing or taking damage puts a body in combat for 5 s; spirit regeneration only runs out of
@@ -785,6 +796,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   `{"id": "iron_helm", "save_id": 5, "name": "Iron Helm", "slot": "head", "armor": 6}`; optional
   fields are `slot` (head, chest, hands, legs, feet, main_hand, off_hand, trinket, bag; default none),
   `attack` `{min, max, speed}` (required for main_hand), `bag_slots` (required for bag), `armor`,
+  `shield` (off_hand only, ADR-036: `{size: small | medium | great, negation, boost, parry}`, the
+  last two shares 0..1, `parry` the parry's length x, omitted for none; greatshields can't parry),
   `mods` (worn items only: up to 8 stat modifiers such as `{"stat": "spirit", "flat": 2}`, each a
   stat id of `kStatIds` and exactly one of `flat`, `increased` or `more`; ADR-022), and `copy_from` (another record's id: its fields but save_id, merge-patched with the record's own,
   so objects merge and `null` removes; at most 16 deep). Any bad record stops the game with a
@@ -793,7 +806,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - **Adding an item:** append a record with the next `save_id` (ids are saved in inventories: never
   renumber or reuse one). Code names an item only through the `ItemId` constants; an item that code
   must name gets one, at its save id, plus its row in `kNamedItems` (defs.cpp). Its icon (`inventory_ui.cpp`) and worn or held model
-  (`model.cpp`) are code; without them it shows no icon.
+  (`model.cpp`) are code; without them it shows no icon. Shields need neither: their size picks both.
 - The debug window's **Data** tab lists the loaded items (with their mods) and creatures and has **Reload defs**: it
   reloads `data/` between ticks and keeps the old definitions (showing the error) when the files
   are bad, drop an item or creature, or give a loaded save id another string id. Living NPCs keep
@@ -809,6 +822,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Iron Helm / Cuirass / Gauntlets / Greaves / Sabatons | Head / Chest / Hands / Legs / Feet | 6 / 12 / 4 / 10 / 5 armor (37 for the set) |
   | Wolf Pelt | – | crafting material later; dropped by wolves |
   | Bone Charm | Trinket | +2 spirit (regen 1 → 2 per second); dropped by barrow ghouls |
+  | Oak Buckler / Heater Shield / Tower Shield | Off Hand | shields (ADR-036): stop 80 / 100 / 100% of a blocked hit, guard boost 46 / 56 / 72%; the first two parry, the tower bounces weak attacks; no drop yet (the debug Items tab gives them) |
 
   Chest and legs pieces always give more armor than any head, hands, feet or hand item; a test
   checks the whole table.
@@ -856,7 +870,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   until then), `attack_recover` (0.5 s), `hit_stance` (15: the stance damage of its hits, ADR-035),
   `attack_cooldown` (0) and `flee_health` (a health fraction 0..0.95, default 0: never flees). A
   kind that fights must wander. Attackable kinds may set `stance` (default 30; 0: never breaks) and
-  `poise` (0: every hit makes it flinch), ADR-035.
+  `poise` (0: every hit makes it flinch), ADR-035; kinds that fight may set `parryable` (default
+  true) and `parries` (1..10, default 1: parries to open it to a riposte), ADR-036. The boar can't
+  be parried; the chief takes 2.
 
   | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Temper | Weapon | Drops | Talks |
   |---|---|---|---|---|---|---|---|---|

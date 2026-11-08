@@ -126,6 +126,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
         else if ((p.pressTime += dt) >= t.tapSeconds) p.pressing = false, p.chargeByHeavy = false, wish(Want::Heavy);
     }
     if (in.heavy) p.chargeByHeavy = true, wish(counter ? Want::Counter : Want::Heavy);
+    if (const Shield* s = shieldOf(p); in.parry && s && s->parry > 0) wish(Want::Parry);  // without a shield that parries, Q does nothing
     if (move.roll) wish(Want::Roll);
     move.roll = false;
     if (p.want != Want::None && (p.wantAge += dt) > t.bufferSeconds) p.want = Want::None;
@@ -144,7 +145,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
                 if (p.holding && p.moveTime >= holdTime(p) && (p.charge += dt) >= t.chargeSeconds) p.charged = true, p.holding = false;
             }
             if (jumpAttack(p.move)) p.holding = airborne(p);  // strikes on landing
-            bool cut = p.want == Want::Roll || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
+            bool cut = p.want == Want::Roll || p.want == Want::Parry || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
             if (u >= m.cancel && cut && !wantsAttack(p.want)) endMove(p, p.move);
         }
         // A wanted attack starts once the body is free, or from the current one's chain point.
@@ -163,6 +164,18 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
             spend(p, spec(next).stamina);
             p.want = Want::None;
             started = true;
+        }
+        // A parry (a shield that can) starts once the body is free; it commits through its recovery.
+        if (p.want == Want::Parry && !p.punching() && !p.rolling() && !airborne(p) && !p.inWater && p.stamina > 0) {
+            const Shield* s = shieldOf(p);
+            if (s && s->parry > 0) {
+                startMove(p, Move::Parry, glm::length(in.aim) > 1e-3f ? in.aim : aim);
+                p.moveScale = s->parry;
+                p.hitPending = false;  // it strikes nothing
+                spend(p, spec(Move::Parry).stamina);
+                started = true;
+            }
+            p.want = Want::None;
         }
         if (!p.punching() && p.want == Want::Roll && p.stamina > 0) move.roll = true;  // until updatePlayer can roll
     }
@@ -206,8 +219,37 @@ bool hyperarmor(const Combatant& b) { return (spec(b.move).heavy && b.hitPending
 
 float playerPoise(const Combatant& b) { return sheet(b)[Stat::Armor] * gMelee.poisePerArmor; }
 
-bool guards(const Player& b, glm::vec3 from) {
+// Whether `from` is in front of `b`, within the guard's angle.
+static bool inFront(const Player& b, glm::vec3 from) {
     glm::vec2 d(from.x - b.pos.x, from.z - b.pos.z);
     float dist = glm::length(d);
-    return b.guarding && (dist < 1e-3f || glm::dot(d / dist, facing(b)) >= gMelee.guardAngle);
+    return dist < 1e-3f || glm::dot(d / dist, facing(b)) >= gMelee.guardAngle;
 }
+
+bool guards(const Player& b, glm::vec3 from) { return b.guarding && inFront(b, from); }
+
+const Shield* shieldOf(const Player& b) {
+    const Shield& s = itemType(b.inv.equipped[SlotOffHand]).shield;
+    return s.size != ShieldSize::None ? &s : nullptr;
+}
+
+Guard guardOf(const Player& b) {
+    if (const Shield* s = shieldOf(b)) return {s->negation, s->boost};
+    if (b.inv.equipped[SlotMainHand] != NoItem) return {gMelee.guardNegation, gMelee.guardBoost};
+    return {gMelee.fistNegation, 0};
+}
+
+static float parryClock(const Player& b) { return b.moveTime / b.moveScale; }  // seconds into the parry at speed 1
+
+bool parries(const Player& b, glm::vec3 from) {
+    return b.move == Move::Parry && parryClock(b) >= gMelee.parryFrom && parryClock(b) < gMelee.parryTo && inFront(b, from);
+}
+
+std::optional<Guard> guardAgainst(const Player& b, glm::vec3 from) {
+    if (guards(b, from)) return guardOf(b);
+    if (b.move != Move::Parry || !inFront(b, from)) return std::nullopt;
+    Guard g = guardOf(b);
+    return Guard{g.negation * gMelee.parryGuard, g.boost * gMelee.parryGuard};
+}
+
+bool bounces(const Guard& g, float stance) { return g.boost >= gMelee.bounceBoost && stance < gMelee.bounceStance; }

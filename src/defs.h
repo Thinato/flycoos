@@ -14,7 +14,7 @@
 // each an array of records keyed by a snake_case string id. Runtime code holds dense handles (an ItemId is the record's save_id),
 // never strings. Move-only: the ItemType and EntityType names point into `itemNames` and `creatureNames`.
 struct Defs {
-    std::vector<ItemType> items{ItemType{"", SlotNone, {0, 0, 0}, 0, 0, {}}};  // by save id; 0 is NoItem
+    std::vector<ItemType> items{ItemType{"", SlotNone, {0, 0, 0}, 0, 0, {}, {}}};  // by save id; 0 is NoItem
     std::vector<std::string> itemIds{""}, itemNames{""};                     // parallel to `items`
     std::map<std::string, ItemId, std::less<>> itemById;                     // string id -> save id, for references
     std::vector<EntityType> creatures;                     // by save id (EntityKind), from 0

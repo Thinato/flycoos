@@ -300,6 +300,7 @@ static int run(SDL_Window* window, const Options& opt) {
 
     bool punchQueued = false;  // the attack button (LMB / R1) went down, not yet seen by a step (or the editor)
     bool heavyQueued = false;  // R2 likewise
+    bool parryQueued = false;  // Q / L2 likewise (ADR-036)
     bool pressInGame = false;  // the left button went down while no window was open
     float camYaw = std::numbers::pi_v<float>, camPitch = 0.45f;  // behind the player
     if (opt.fixedLook) {  // degrees on the CLI; yaw 0 looks toward -Z, 90 toward -X
@@ -343,6 +344,7 @@ static int run(SDL_Window* window, const Options& opt) {
     SDL_Gamepad* pad = nullptr;
     bool sprint = false;          // L3 pressed: runs until the left stick lets go
     bool triggerWas = false;      // R2 past half last frame
+    bool leftTriggerWas = false;  // L2 likewise
     PlayerTuning walking;  // movement settings from before entering the editor
     auto toggleLock = [&] {  // let go, else lock onto what's nearest the middle of the view, else turn the camera
         if (lock.target) lock = {};
@@ -352,7 +354,7 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.active = on;
         lock = {};
         editor.cursor = false;
-        punchQueued = heavyQueued = false;  // a press queued mid-swing must not become an editor action, nor the reverse
+        punchQueued = heavyQueued = parryQueued = false;  // a press queued mid-swing must not become an editor action, nor the reverse
         editor.corner.reset();
         if (on) {
             usedEditor = true;
@@ -448,6 +450,8 @@ static int run(SDL_Window* window, const Options& opt) {
                 } else if (editor.active && e.key.key == SDLK_Q) {
                     editor.cursor = !editor.cursor;
                     updateMouseMode();
+                } else if (e.key.key == SDLK_Q && !benchmark && !menus()) {
+                    parryQueued = true;
                 } else if (editor.active && e.key.key >= SDLK_1 && e.key.key <= SDLK_1 + int(Tool::Count) + 1) {
                     int tool = int(e.key.key - SDLK_1);  // the brushes, then Prefab, then Marker
                     editor.prefabTool = tool == int(Tool::Count);
@@ -576,6 +580,9 @@ static int run(SDL_Window* window, const Options& opt) {
         bool trigger = padPlays && SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16384;
         if (trigger && !triggerWas && !menus() && !editor.active) heavyQueued = true;
         triggerWas = trigger;
+        bool leftTrigger = padPlays && SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16384;
+        if (leftTrigger && !leftTriggerWas && !menus() && !editor.active) parryQueued = true;
+        leftTriggerWas = leftTrigger;
 
         const bool* keys = SDL_GetKeyboardState(nullptr);
         bool gameKeys = !ui.wantsKeyboard();
@@ -592,9 +599,9 @@ static int run(SDL_Window* window, const Options& opt) {
         if ((SDL_GetModState() & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) && (key(SDL_SCANCODE_Z) || key(SDL_SCANCODE_Y) || key(SDL_SCANCODE_S)))
             in = {};  // a shortcut (Ctrl+S) isn't movement
         // Left mouse / R1 attacks (a tap: a light, held: a heavy), R2 is a heavy, right mouse / L1 guards
-        // (ADR-035); they go the way you move, else face, or at the lock-on target. A press that began
-        // in a window (e.g. a drag) doesn't attack once the window closes.
-        if (menus()) punchQueued = heavyQueued = pressInGame = false;
+        // (ADR-035), Q / L2 parries with a shield (ADR-036); they go the way you move, else face, or at
+        // the lock-on target. A press that began in a window (e.g. a drag) doesn't attack once the window closes.
+        if (menus()) punchQueued = heavyQueued = parryQueued = pressInGame = false;
         if (noteOpen) interactQueued = rollQueued = false;
         uint32_t mouse = SDL_GetMouseState(nullptr, nullptr);
         bool punchHeld = (pressInGame && (mouse & SDL_BUTTON_LMASK)) || button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
@@ -624,10 +631,11 @@ static int run(SDL_Window* window, const Options& opt) {
             sim.attack = punchQueued;
             sim.attackHeld = punchHeld;
             sim.heavy = heavyQueued;
+            sim.parry = parryQueued;
             sim.interact = interactQueued;
             in.roll = rollQueued;
             StepResult stepped = step(session, sim, kTick);
-            if (!editor.active) punchQueued = heavyQueued = false;  // the step buffers them (the editor takes its clicks below)
+            if (!editor.active) punchQueued = heavyQueued = parryQueued = false;  // the step buffers them (the editor takes its clicks below)
             interactQueued = rollQueued = in.roll = false;
             respawned |= stepped.respawned;
         }
@@ -755,13 +763,17 @@ static int run(SDL_Window* window, const Options& opt) {
             punchQueued = false;
         }
         auto pushModel = [&](const Player& body, Model model) {  // with whatever it holds
-            glm::mat4 held(0);
-            fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held, alpha)});
-            if (held == glm::mat4(0)) return;
-            ModelInstance weapon;
-            weapon.parts.fill(heldModel(body.weapon()));
-            weapon.pose.fill(held);
-            fp.models.push_back(weapon);
+            glm::mat4 held(0), shield(0);
+            fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held, alpha, &shield)});
+            auto push = [&](Model m, const glm::mat4& pose) {
+                if (pose == glm::mat4(0)) return;
+                ModelInstance item;
+                item.parts.fill(m);
+                item.pose.fill(pose);
+                fp.models.push_back(item);
+            };
+            push(heldModel(body.weapon()), held);
+            push(shieldModel(body.inv.equipped[SlotOffHand]), shield);
         };
         pushModel(player, ModelPlayer);
         for (const Entity& npc : entities) pushModel(npc.body, npc.type().model);
@@ -944,7 +956,7 @@ static int run(SDL_Window* window, const Options& opt) {
             titleTimer = 0;
             int minutes = int(session.timeOfDay * 24 * 60);
             char title[256];
-            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack (hold: heavy) | RMB = guard | E = talk/loot | C = character | B = bags | J = journal | . = debug | Tab = lock on | F1 = editor",
+            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack (hold: heavy) | RMB = guard | Q = parry | E = talk/loot | C = character | B = bags | J = journal | . = debug | Tab = lock on | F1 = editor",
                           realDt * 1000.0, 1.0 / std::max(realDt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);
             SDL_SetWindowTitle(window, title);
         }

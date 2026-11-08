@@ -1461,3 +1461,43 @@
 - **Follow-ups:** parries and shields (an off-hand guard with more guard boost), backstabs, enemy
   combos and delayed attacks, enemies guarding or dodging, a sound and a spark on hit, weapon-specific
   movesets (the knife and fists reuse the sword's), an attack-token cap for packs (ADR-034).
+
+## ADR-036: Shields and the parry
+
+- **Status:** accepted (2026-11-08)
+- **Context:** The roadmap's next defense items (docs/COMBAT_ROADMAP.md): shields in the off hand
+  and a parry. Researched on the Elden Ring wiki: shield classes (small 74–89% physical negation,
+  guard boost 42–51; medium 83–100% / 42–64; great 91–100% / 52–82, and greatshields can't parry),
+  the parry's frames (small and medium shields about 4 startup, 6 active, 11–13 recovery at 30 fps:
+  ~0.13 / 0.2 / 0.4 s; 10 stamina), a parry hit early or late is a weak guard, a parry stuns the
+  attacker open to a critical, bosses may need 2–3 parries that don't wear off, and greatshields
+  bounce weak attacks.
+- **Decision:**
+  - **Shields are data:** an off-hand item's `shield` `{size, negation, boost, parry}`; three new
+    items (save ids 12–14): Oak Buckler (small, 80% / 46%, parries 10% faster), Heater Shield
+    (medium, 100% / 56%, parries), Tower Shield (great, 100% / 72%, no parry). The guard uses the
+    shield's numbers instead of the sword's; the model raises the shield in front and holds the
+    sword forward at the side.
+  - **Bounce:** a guard of at least 65% boost makes an attack of under 20 stance damage recoil
+    (0.6 s): bandits, wolves, boars, ghouls; not the guard or the chief.
+  - **Parry (Q / L2):** a left-arm swipe across the body and out, a `Move::Parry` that commits through
+    its recovery (0.75 s x the shield's `parry`), for 10 stamina, needing a shield that parries.
+    From 0.1 to 0.33 s in, a hit from the front is deflected (no damage) and the attacker's stance
+    breaks for 1.5 s: the existing riposte follows. Outside that window, or against a kind that
+    can't be parried, it guards at half the shield's negation and boost (no guard counter after it:
+    only a real guard opens one). Without a shield that parries, the button does nothing.
+  - **Creatures:** `parryable` (default true; the boar's charge isn't) and `parries` (default 1;
+    the chief needs 2, the first ones only rock it back 0.6 s; they don't wear off).
+- **Alternatives considered:**
+  - Parry on a guard tap (no new button): one button fewer, but a late guard would parry by
+    accident and guarding would get a delay. Elden Ring has its own button for it (the skill, L2).
+  - Parrying with the sword or bare hands: Elden Ring gives that to some weapons (daggers, fists)
+    through a skill; left for the weapon classes (roadmap), with the dagger's own moveset.
+  - Weight for the bigger shields: there's no equip load yet; the roadmap has it.
+  - A per-shield guard counter: Elden Ring's guard counter is the main-hand weapon's; kept.
+- **Consequences:** Defense has three textures: block (cheap and safe with a big shield, bounce
+  openings against weak foes), parry (risky, opens a riposte) and roll. New data: the items'
+  `shield`, the creatures' `parryable` and `parries`. `Move` and `Want` gained `Parry` (not saved).
+  Tests build their item records after the code-named items, whatever data adds after them.
+- **Follow-ups:** perfect guard (decide), backstep, damage types with per-shield negation, weight
+  (equip load), NPCs with shields that guard and parry, a parry flash and sound.

@@ -984,6 +984,17 @@ static void protection() {
     CHECK(partModels(ModelBoar, player.inv)[Torso] == ModelBoar);
 }
 
+// The shipped items.json cut to the items code names (ItemId), open for appending records: tests
+// add theirs from save id ItemCount on, whatever the data adds after those.
+static std::string codeNamedItems() {
+    std::ostringstream all;
+    all << std::ifstream(std::filesystem::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json").rdbuf();
+    std::string text = all.str();
+    size_t at = text.find(std::format("\"save_id\": {},", int(ItemCount)));
+    text.erase(at == std::string::npos ? text.rfind(']') : text.rfind(',', text.rfind('{', at)));
+    return text;
+}
+
 // The stat pipeline (ADR-022): compute's arithmetic, collect from worn gear, the trinket slot, the
 // sheet behind regen, max health and swing time, and resolveHit's order.
 static void statSheets() {
@@ -1055,10 +1066,7 @@ static void statSheets() {
     fs::path dir = fs::temp_directory_path() / "flycoos_stats_test";
     fs::create_directories(dir);
     fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json", dir / "creatures.json", fs::copy_options::overwrite_existing);
-    std::ostringstream text;
-    text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json").rdbuf();
-    std::string items = text.str();
-    items.erase(items.rfind(']'));
+    std::string items = codeNamedItems();
     std::ofstream(dir / "items.json") << items << R"(,
         {"id": "amulet", "save_id": 12, "name": "Amulet", "slot": "trinket",
          "mods": [{"stat": "stamina", "flat": 5}, {"stat": "max_health", "increased": 0.1}, {"stat": "agility", "flat": 50}]},
@@ -4045,15 +4053,21 @@ static void dataFiles() {
     std::string error;
     CHECK(loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error) && error.empty());
     if (!error.empty()) std::println(stderr, "FAIL shipped data: {}", error);
-    CHECK(shipped.items.size() == ItemCount && shipped.itemIds[0].empty() && shipped.itemById.at("iron_helm") == IronHelm);
+    CHECK(shipped.items.size() >= ItemCount && shipped.itemIds[0].empty() && shipped.itemById.at("iron_helm") == IronHelm);
+    {  // the shields (ADR-036): small to great, guarding better and parrying less
+        const Shield &small = shipped.items[shipped.itemById.at("oak_buckler")].shield, &medium = shipped.items[shipped.itemById.at("heater_shield")].shield,
+                     &great = shipped.items[shipped.itemById.at("tower_shield")].shield;
+        CHECK(small.size == ShieldSize::Small && medium.size == ShieldSize::Medium && great.size == ShieldSize::Great);
+        CHECK(small.negation < medium.negation && small.boost < medium.boost && medium.boost < great.boost);
+        CHECK(small.parry > 0 && small.parry < medium.parry && great.parry == 0);
+        CHECK(!shipped.creatures[size_t(EntityKind::Boar)].parryable && shipped.creatures[size_t(EntityKind::BanditChief)].parries == 2 &&
+              shipped.creatures[size_t(EntityKind::Bandit)].parryable && shipped.creatures[size_t(EntityKind::Bandit)].parries == 1);
+    }
 
     fs::path dir = fs::temp_directory_path() / "flycoos_defs_test";
     fs::create_directories(dir);
     fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json", dir / "creatures.json", fs::copy_options::overwrite_existing);
-    std::ostringstream all;
-    all << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json").rdbuf();
-    std::string base = all.str();
-    base.erase(base.rfind(']'));  // open for appending records
+    std::string base = codeNamedItems();
     auto write = [&](std::string_view text) { std::ofstream(dir / "items.json") << text; };
     auto load = [&](std::string_view text, Defs& d) {
         write(text);
@@ -4123,6 +4137,16 @@ static void dataFiles() {
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "bag", "bag_slots": 4, "mods": [{"stat": "spirit", "flat": 1}]}])",
               "field 'mods': only items worn in an equip slot have mods"},
              {base + R"(,{"id": "Bad Id", "save_id": 12, "name": "A"}])", "record 11: field 'id': must be a snake_case string"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "head", "shield": {"size": "small", "negation": 1, "boost": 0.5}}])",
+              "field 'shield': only off_hand items are shields"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "off_hand", "shield": {"size": "huge", "negation": 1, "boost": 0.5}}])",
+              "field 'shield.size': must be one of small, medium, great"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "off_hand", "shield": {"size": "small", "boost": 0.5}}])",
+              "field 'shield.negation': missing"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "off_hand", "shield": {"size": "great", "negation": 1, "boost": 0.7, "parry": 1}}])",
+              "field 'shield.parry': greatshields can't parry"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "off_hand", "shield": {"size": "small", "negation": 1, "boost": 0.5, "weight": 3}}])",
+              "field 'shield.weight': unknown field"},
              {base + R"(,{"id": "a", "save_id": 12}])", "record 11 'a': field 'name': must be 1..48 bytes of text"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A‮B"}])", "field 'name': must be 1..48 bytes of text without control"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A\nB"}])", "field 'name': must be 1..48 bytes of text without control"},
@@ -4141,6 +4165,11 @@ static void dataFiles() {
     CHECK(!loadDefs(dir, grown, error) && error.find("cannot open") != std::string::npos && grown.items.size() == 28);
 
     // Reloading may add items but never drop or repurpose a loaded save id; a refusal keeps the defs.
+    {  // from just the code-named items (the shipped ones after them would be repurposed)
+        Defs named;
+        CHECK(load(base + "]", named));
+        setDefs(std::move(named));
+    }
     write(base + R"(,{"id": "dented_helm", "save_id": 12, "copy_from": "iron_helm", "name": "Dented Helm"}])");
     CHECK(reloadDefs(dir, error) && defs().items.size() == 13 && defs().itemIds[12] == "dented_helm");
     write(base + R"(,{"id": "spare_helm", "save_id": 12, "copy_from": "iron_helm", "name": "Spare Helm"}])");
@@ -4210,6 +4239,9 @@ static void dataFiles() {
               "field 'stance': only attackable creatures are hit"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "dummy", "hit_stance": 10}])",
               "field 'hit_stance': harmless creatures don't fight"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "dummy", "parries": 2}])", "field 'parries': harmless creatures don't fight"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "parries": 2}])", "field 'parries': it can't be parried"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit", "parryable": 1}])", "field 'parryable': must be true or false"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "wanders": false}])",
               "field 'wanders': must be true for a creature that fights"},
              {scarecrow + "]",
@@ -5877,6 +5909,147 @@ static void melee() {
             updateCombat(s, none, dt, rng);
         }
         CHECK(rolled && !s.punching());
+    }
+    // The bandit's swing lands on `p` this tick (the player holding `in`). Returns the damage.
+    auto strikeNow = [&](Player& p, std::vector<Entity>& es, const MeleeInput& in) {
+        Player& b = es[0].body;
+        b.swingTimer = b.stagger = 0, b.broken = false;
+        CHECK(startPunch(b, glm::normalize(glm::vec2(p.pos.x - b.pos.x, p.pos.z - b.pos.z))));
+        b.hold = 0, b.moveTime = impactTime(b) - 1e-4f;
+        float before = p.health;
+        tick(p, in, es);
+        CHECK(!b.hitPending);
+        return before - p.health;
+    };
+    const ItemId buckler = defs().itemById.at("oak_buckler"), heater = defs().itemById.at("heater_shield"),
+                 tower = defs().itemById.at("tower_shield");
+    auto armored = [&] {  // poise: the bandit's hits don't make it flinch
+        Player p = fighter();
+        for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons}) p.inv.equipped[itemType(id).slot] = id;
+        p.yaw = 0;  // duel(): the bandit is at +Z
+        return p;
+    };
+    {  // Shields (ADR-036): a shield's guard stops more of a hit and of its stamina than the sword's; a
+       // greatshield's makes a weak attack bounce off (its attacker recoils), a strong one not.
+        Player p = armored();
+        std::vector<Entity> es = duel(p);
+        Entity& bandit = es[0];
+        CHECK(!shieldOf(p) && guardOf(p).negation == gMelee.guardNegation && guardOf(p).boost == gMelee.guardBoost);
+        auto blocked = [&](ItemId shield) {  // the same hit on a guard of `shield`: {damage, stamina spent}
+            p.inv.equipped[SlotOffHand] = shield;
+            p.stamina = gMelee.staminaMax, p.health = 100;
+            tick(p, {.guard = true}, es);
+            std::mt19937 keep = rng;
+            float hurt = strikeNow(p, es, {.guard = true});
+            rng = keep;
+            CHECK(p.blockTime < 0.1f && p.guarding);
+            return std::pair{hurt, gMelee.staminaMax - p.stamina};
+        };
+        auto [swordHurt, swordStamina] = blocked(NoItem);
+        auto [heaterHurt, heaterStamina] = blocked(heater);
+        CHECK(swordHurt > 0 && heaterHurt == 0 && heaterStamina < swordStamina && bandit.body.stagger == 0);  // no bounce
+        CHECK(guardOf(p).negation == 1 && guardOf(p).boost == itemType(heater).shield.boost);
+        auto [towerHurt, towerStamina] = blocked(tower);
+        CHECK(towerHurt == 0 && towerStamina < heaterStamina && bandit.body.stagger > 0 && !bandit.body.broken);  // bounced
+        updateEntities(es, g, p, dt);
+        CHECK(bandit.state == AiState::Stagger);
+        CHECK(!bounces(guardOf(p), typeOf(EntityKind::BanditChief).hitStance));  // the chief's hits are too heavy
+        auto [bucklerHurt, bucklerStamina] = blocked(buckler);
+        CHECK(bucklerHurt > 0 && bucklerHurt <= swordHurt && bucklerStamina > heaterStamina);  // small: not all of it
+    }
+    {  // The parry: a small or medium shield's, for stamina. A hit in its window deflects, the attacker
+       // reels open to a riposte; caught before or after it, the parry is a weak guard; from behind, nothing.
+        Player p = armored();
+        std::vector<Entity> es = duel(p);
+        Entity& bandit = es[0];
+        p.inv.equipped[SlotOffHand] = tower;  // a greatshield can't
+        CHECK(tick(p, {.parry = true}, es) == Move::None && p.want == Want::None && p.stamina == gMelee.staminaMax);
+        p.inv.equipped[SlotOffHand] = buckler;
+        CHECK(tick(p, {.parry = true}, es) == Move::Parry && p.stamina == gMelee.staminaMax - spec(Move::Parry).stamina);
+        CHECK(p.moveScale == itemType(buckler).shield.parry && !p.hitPending);
+        for (int i = 0; i < 60 && !parries(p, bandit.body.pos); ++i) tick(p, {}, es);
+        CHECK(strikeNow(p, es, {}) == 0 && bandit.body.broken && bandit.body.stagger > 1 && p.stagger == 0);
+        updateEntities(es, g, p, dt);
+        CHECK(bandit.state == AiState::Stagger && riposteTarget(es, p) == &bandit);
+        while (p.punching()) tick(p, {}, es);
+        CHECK(tick(p, {.attack = true, .aim = {0, 1}, .riposte = true}, es) == Move::Riposte);
+        while (p.punching()) tick(p, {}, es);
+
+        auto parryUntil = [&](float clock) {  // seconds into the parry at its speed 1
+            for (int i = 0; i < 60 && p.punching(); ++i) tick(p, {}, es);
+            for (int i = 0; i < 60; ++i) tick(p, {}, es);  // stamina back
+            tick(p, {.parry = true}, es);
+            for (int i = 0; i < 60 && p.moveTime / p.moveScale < clock; ++i) tick(p, {}, es);
+        };
+        parryUntil(gMelee.parryTo + 0.05f);  // late: a weak guard
+        float stamina = p.stamina;
+        CHECK(!parries(p, bandit.body.pos) && strikeNow(p, es, {}) > 0 && p.stamina < stamina);  // blocked, a little
+        CHECK(!bandit.body.broken && p.blockTime > 0.1f);  // no guard counter off a parry
+        stamina = p.stamina;
+        parryUntil(gMelee.parryFrom + 0.02f);
+        p.yaw = std::numbers::pi_v<float>;  // its back to the bandit
+        stamina = p.stamina;
+        CHECK(strikeNow(p, es, {}) > 0 && p.stamina == stamina && !bandit.body.broken);  // not blocked at all
+        p.yaw = 0;
+
+        bandit.kind = EntityKind::Boar;  // a boar's tusks can't be parried: a weak guard
+        parryUntil(gMelee.parryFrom + 0.02f);
+        CHECK(parries(p, bandit.body.pos) && !bandit.type().parryable);
+        stamina = p.stamina;
+        CHECK(strikeNow(p, es, {}) >= 0 && p.stamina < stamina && !bandit.body.broken);  // the weak guard took it
+        bandit.kind = EntityKind::BanditChief;  // the chief takes two parries: the first only rocks it back
+        parryUntil(gMelee.parryFrom + 0.02f);
+        CHECK(strikeNow(p, es, {}) == 0 && bandit.body.stagger > 0 && !bandit.body.broken && bandit.parried == 1);
+        parryUntil(gMelee.parryFrom + 0.02f);
+        CHECK(strikeNow(p, es, {}) == 0 && bandit.body.broken && bandit.parried == 0);
+        bandit.kind = EntityKind::Bandit;
+    }
+    {  // A parry waits for the body: not mid-roll, in the air, in water or reeling; mid-swing it cuts the
+       // swing at its cancel point. Without a shield that parries, Q does nothing (no cancel either).
+        Player p = armored();
+        p.inv.equipped[SlotOffHand] = buckler;
+        auto parryNow = [&](Player& q) { return tick(q, {.parry = true}, none) == Move::Parry; };
+        Player rolling = p, flying = p, wet = p, reeling = p;
+        rolling.rollTime = 0.1f, rolling.rollLength = 0.45f;
+        flying.onGround = false;
+        wet.inWater = true;
+        reeling.stagger = reeling.staggerLength = 1;
+        CHECK(!parryNow(rolling) && !parryNow(flying) && !parryNow(wet) && !parryNow(reeling));
+        tick(p, tap, none);
+        CHECK(!parryNow(p) && p.move == Move::Light1 && p.want == Want::Parry);  // buffered
+        Move m = p.move;
+        for (int i = 0; i < 60 && m != Move::Parry; ++i) m = tick(p, {}, none);
+        CHECK(m == Move::Parry);
+        Player bare = armored();
+        tick(bare, tap, none);
+        tick(bare, {.parry = true}, none);
+        CHECK(bare.want == Want::None);
+        for (int i = 0; i < 30; ++i) tick(bare, {}, none);
+        CHECK(bare.move == Move::Light1);  // no free cancel
+    }
+    {  // The shield is drawn on the left forearm: at the side, raised by the guard, swept out by a parry.
+        CHECK(shieldModel(buckler) == ModelBuckler && shieldModel(heater) == ModelHeater && shieldModel(tower) == ModelTower);
+        Player p = fighter();
+        glm::mat4 held(0), shield(0);
+        poseModel(p, ModelPlayer, &held, 1, &shield);
+        CHECK(shield == glm::mat4(0));  // none
+        p.inv.equipped[SlotOffHand] = heater;
+        poseModel(p, ModelPlayer, &held, 1, &shield);
+        glm::mat4 side = shield;
+        CHECK(side != glm::mat4(0));
+        p.guardBlend = 1;
+        poseModel(p, ModelPlayer, &held, 1, &shield);
+        glm::vec4 middle(4.5f, 6, 0, 1);  // the heater's, where it's held
+        CHECK((shield * middle).y > (side * middle).y + 0.25f && (shield * middle).z > (side * middle).z + 0.25f);  // up in front
+        p.guardBlend = 0;
+        p.inv.equipped[SlotOffHand] = buckler;
+        tick(p, {.parry = true}, none);
+        while (moveProgress(p) < spec(Move::Parry).holdAt) tick(p, {}, none);  // wound up: across the body
+        poseModel(p, ModelPlayer, &held, 1, &shield);
+        glm::mat4 swept = shield;
+        p.move = Move::None;
+        poseModel(p, ModelPlayer, &held, 1, &shield);
+        CHECK(swept[2].x < 0 && shield[2].x > 0);  // its face turned from out at the side (+x) across the front
     }
     {  // Through the session, with physics: a lunge steps the player forward into the hit.
         Player p = fighter();

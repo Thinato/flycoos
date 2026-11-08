@@ -693,16 +693,22 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
         if (lands(e.body) && inReach(e.body, player.pos) && player.alive() && !invulnerable(player)) {
             e.body.combatTimer = kCombatSeconds;
             int full = resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), ctx);
-            if (guards(player, e.body.pos)) {  // blocked: part of the damage, and stamina
-                bool armed = player.inv.equipped[SlotMainHand] != NoItem;
-                const MeleeTuning& t = gMelee;
-                player.stamina -= (t.blockStamina + t.blockStaminaPerDamage * float(full)) * (1 - (armed ? t.guardBoost : 0));
+            const MeleeTuning& t = gMelee;
+            if (e.type().parryable && parries(player, e.body.pos)) {  // deflected (ADR-036): the last of its parries opens it
+                player.combatTimer = kCombatSeconds;
+                if (++e.parried >= e.type().parries) e.parried = 0, interrupt(e.body, t.parrySeconds, true);
+                else interrupt(e.body, t.recoilSeconds, false);
+                player.freeze = e.body.freeze = 0.1f;
+                full = 0;
+            } else if (std::optional<Guard> guard = guardAgainst(player, e.body.pos)) {  // blocked: part of the damage, and stamina
+                player.stamina -= (t.blockStamina + t.blockStaminaPerDamage * float(full)) * (1 - guard->boost);
                 player.staminaWait = t.staminaDelay;
                 player.combatTimer = kCombatSeconds;
                 if (player.stamina < 0) player.stamina = 0, interrupt(player, t.guardBreakSeconds, true);  // guard broken
-                else player.blockTime = 0;
+                else if (player.guarding) player.blockTime = 0;  // a guard counter only off a real guard, not a parry's weak one
                 e.body.freeze = 0.08f;
-                full = int(std::lround(float(full) * (1 - (armed ? t.guardNegation : t.fistNegation))));
+                if (player.stamina > 0 && bounces(*guard, e.type().hitStance)) interrupt(e.body, t.recoilSeconds, false);  // off a greatshield
+                full = int(std::lround(float(full) * (1 - guard->negation)));
             } else if (full > 0 && !hyperarmor(player) && e.type().hitStance >= playerPoise(player)) {
                 interrupt(player, gMelee.flinchSeconds, false);
             }
@@ -713,6 +719,7 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             e.body.vel = {};
             e.body.health = float(maxHealth(sheet(e.body)));
             e.body.stance = e.type().stance;
+            e.parried = 0;
             e.body.deadTime = 0;
             e.body.combatTimer = 0;
             e.loot = NoItem;

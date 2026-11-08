@@ -207,9 +207,9 @@ void loadItems(const File& f, Defs& d) {
     SaveIds saves;
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
-        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods"});
+        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods", "shield"});
         size_t save = saves.claim(r);
-        ItemType t{nullptr, SlotNone, {0, 0, 0}, 0, 0, {}};
+        ItemType t{nullptr, SlotNone, {0, 0, 0}, 0, 0, {}, {}};
         std::string name = r.text("name");
         if (r.fields.contains("slot")) {
             const json& v = r.fields["slot"];
@@ -230,6 +230,22 @@ void loadItems(const File& f, Defs& d) {
         if (t.slot == SlotBag) t.bagSlots = int(r.number(r.fields, "bag_slots", 1, 32));
         else if (r.fields.contains("bag_slots")) throw r.fail("bag_slots", "only bag items have bag slots");
         t.armor = int(r.number(r.fields, "armor", 0, 1000, 0));
+        if (r.fields.contains("shield")) {  // ADR-036
+            const json& sh = r.fields["shield"];
+            if (t.slot != SlotOffHand) throw r.fail("shield", "only off_hand items are shields");
+            if (!sh.is_object()) throw r.fail("shield", "must be an object {size, negation, boost, parry}");
+            for (const auto& [k, v] : sh.items())
+                if (k != "size" && k != "negation" && k != "boost" && k != "parry") throw r.fail("shield." + k, "unknown field");
+            constexpr const char* kSizes[] = {"small", "medium", "great"};
+            const json& size = sh.contains("size") ? sh["size"] : json();
+            auto at = std::ranges::find(kSizes, size.is_string() ? size.get<std::string>() : "");
+            if (at == std::end(kSizes)) throw r.fail("shield.size", oneOf(kSizes));
+            t.shield.size = ShieldSize(1 + (at - std::begin(kSizes)));
+            t.shield.negation = float(r.number(sh, "shield.negation", 0, 1, kRequired, false));
+            t.shield.boost = float(r.number(sh, "shield.boost", 0, 1, kRequired, false));
+            t.shield.parry = float(r.number(sh, "shield.parry", 0.25, 4, 0, false));
+            if (t.shield.parry > 0 && t.shield.size == ShieldSize::Great) throw r.fail("shield.parry", "greatshields can't parry");
+        }
         if (r.fields.contains("mods")) {  // what wearing it adds (ADR-022)
             t.mods = readMods(r, r.fields["mods"], "mods");
             if (!t.mods.empty() && t.slot >= EquipCount) throw r.fail("mods", "only items worn in an equip slot have mods");
@@ -265,7 +281,7 @@ void loadCreatures(const File& f, Defs& d) {
         r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
                  "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds", "leash_radius",
                  "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
-                 "flee_health", "xp", "stance", "poise", "hit_stance"});
+                 "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
         auto flag = [&](const char* key) {
@@ -332,6 +348,12 @@ void loadCreatures(const File& f, Defs& d) {
         t.hitStance = float(r.number(r.fields, "hit_stance", 0, 1000, 15, false));
         if (given("hit_stance") && t.temper == Temper::Harmless) throw r.fail("hit_stance", "harmless creatures don't fight");
         if ((given("stance") || given("poise")) && !t.attackable) throw r.fail(given("stance") ? "stance" : "poise", "only attackable creatures are hit");
+        // Parries (ADR-036): whether its attacks can be parried, and how many it takes to open it to a riposte.
+        for (const char* key : {"parryable", "parries"})
+            if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");
+        t.parryable = !r.fields.contains("parryable") || flag("parryable");
+        t.parries = int(r.number(r.fields, "parries", 1, 10, 1));
+        if (given("parries") && !t.parryable) throw r.fail("parries", "it can't be parried");
         // Character XP for killing one (ADR-027); by default only fighters that can be hurt give any.
         bool gives = t.attackable && t.temper != Temper::Harmless;
         t.xp = int(r.number(r.fields, "xp", 0, 100000, gives ? defaultKillXp(t.level) : 0));

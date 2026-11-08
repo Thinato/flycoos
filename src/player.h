@@ -58,9 +58,9 @@ struct Body {
 // A melee move (ADR-035; melee.h has their timings): the four-swing light chain, the two heavies,
 // and the attacks that depend on what the body was doing.
 enum class Move : uint8_t { None, Light1, Light2, Light3, Light4, Heavy1, Heavy2, Running, Rolling, JumpLight, JumpHeavy,
-                            GuardCounter, Riposte, Count };
+                            GuardCounter, Riposte, Parry, Count };
 // What the player's attack buttons asked for and is still waiting to happen (melee.cpp).
-enum class Want : uint8_t { None, Light, Heavy, Roll, Counter };
+enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry };
 
 // What fights: attributes, health, the swing and damage timers, and the gear it wears and carries.
 struct Combatant {

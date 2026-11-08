@@ -9,5 +9,8 @@
   {"id": "iron_greaves", "save_id": 8, "name": "Iron Greaves", "slot": "legs", "armor": 10},
   {"id": "iron_sabatons", "save_id": 9, "name": "Iron Sabatons", "slot": "feet", "armor": 5},
   {"id": "wolf_pelt", "save_id": 10, "name": "Wolf Pelt"},
-  {"id": "bone_charm", "save_id": 11, "name": "Bone Charm", "slot": "trinket", "mods": [{"stat": "spirit", "flat": 2}]}
+  {"id": "bone_charm", "save_id": 11, "name": "Bone Charm", "slot": "trinket", "mods": [{"stat": "spirit", "flat": 2}]},
+  {"id": "oak_buckler", "save_id": 12, "name": "Oak Buckler", "slot": "off_hand", "shield": {"size": "small", "negation": 0.8, "boost": 0.46, "parry": 0.9}},
+  {"id": "heater_shield", "save_id": 13, "name": "Heater Shield", "slot": "off_hand", "shield": {"size": "medium", "negation": 1, "boost": 0.56, "parry": 1}},
+  {"id": "tower_shield", "save_id": 14, "name": "Tower Shield", "slot": "off_hand", "shield": {"size": "great", "negation": 1, "boost": 0.72}}
 ]

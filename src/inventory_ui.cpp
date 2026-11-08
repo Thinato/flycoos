@@ -11,6 +11,7 @@
 
 #include "defs.h"
 #include "hud.h"
+#include "melee.h"
 #include "session.h"
 
 namespace {
@@ -103,7 +104,32 @@ void icon(ImDrawList* dl, ItemId id, ImVec2 lo, float s) {
         }
         break;
     }
-    default: break;
+    default: {  // shields (ADR-036), by size: colored like their voxels
+        ImU32 wood = uiColor(0.62f, 0.45f, 0.27f), dark = uiColor(0.45f, 0.32f, 0.19f), red = uiColor(0.48f, 0.14f, 0.13f);
+        switch (itemType(id).shield.size) {
+        case ShieldSize::Small:
+            dl->AddCircleFilled(at(0.5f, 0.5f), s * 0.36f, iron);
+            dl->AddCircleFilled(at(0.5f, 0.5f), s * 0.29f, wood);
+            dl->AddCircleFilled(at(0.5f, 0.5f), s * 0.09f, steel);  // boss
+            break;
+        case ShieldSize::Medium: {
+            ImVec2 rim[] = {at(0.16f, 0.14f), at(0.84f, 0.14f), at(0.84f, 0.5f), at(0.5f, 0.9f), at(0.16f, 0.5f)};
+            ImVec2 field[] = {at(0.23f, 0.2f), at(0.77f, 0.2f), at(0.77f, 0.48f), at(0.5f, 0.81f), at(0.23f, 0.48f)};
+            dl->AddConvexPolyFilled(rim, 5, steel);
+            dl->AddConvexPolyFilled(field, 5, red);
+            dl->AddLine(at(0.23f, 0.36f), at(0.77f, 0.36f), plate, s * 0.06f);
+            break;
+        }
+        case ShieldSize::Great:
+            dl->AddRectFilled(at(0.24f, 0.08f), at(0.76f, 0.92f), iron, s * 0.04f);
+            for (int i = 0; i < 4; ++i)  // planks
+                dl->AddRectFilled(at(0.28f + 0.11f * float(i), 0.12f), at(0.39f + 0.11f * float(i), 0.88f), i % 2 ? dark : wood);
+            for (float y : {0.3f, 0.7f}) dl->AddLine(at(0.26f, y), at(0.74f, y), iron, s * 0.05f);  // bands
+            break;
+        default: break;
+        }
+        break;
+    }
     }
 }
 
@@ -114,6 +140,11 @@ void tooltip(ItemId id, SlotRef where) {
     if (t.slot == SlotBag) ImGui::Text("%d slot bag", t.bagSlots);
     else if (t.slot < EquipCount) ImGui::TextDisabled("%s", kSlotNames[t.slot]);
     if (t.armor) ImGui::Text("%d Armor", t.armor);
+    if (const Shield& sh = t.shield; sh.size != ShieldSize::None) {
+        ImGui::Text("Guard: stops %.0f%% of the damage, boost %.0f", double(sh.negation * 100), double(sh.boost * 100));
+        if (sh.parry > 0) ImGui::TextUnformatted("Parries (Q / L2)");
+        if (sh.boost >= gMelee.bounceBoost) ImGui::TextUnformatted("Weak attacks bounce off its guard");
+    }
     ImGui::PushStyleColor(ImGuiCol_Text, uiColor(0.4f, 0.9f, 0.4f));
     for (const Modifier& m : t.mods) {
         const char* stat = kStatNames[size_t(m.stat)];

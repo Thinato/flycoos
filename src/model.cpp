@@ -119,6 +119,48 @@ static Grid buildKnife() {  // shorter and narrower, single-edged
 
 Model heldModel(ItemId weapon) { return weapon == Knife ? ModelKnife : ModelSword; }
 
+// Shields face +z; the hand holds them at `grip`, just behind the face.
+struct ShieldGrid { glm::ivec3 size; glm::vec3 grip; };
+static ShieldGrid shieldGrid(Model m) {
+    switch (m) {
+    case ModelBuckler: return {{7, 7, 2}, {3.5f, 3.5f, -1.5f}};
+    case ModelHeater: return {{9, 11, 1}, {4.5f, 6, -1.5f}};
+    default: return {{10, 16, 1}, {5, 5.5f, -1.5f}};  // tower: held low, so it clears the ground at the side
+    }
+}
+static Grid buildShield(Model m) {
+    ShieldGrid s = shieldGrid(m);
+    Grid g(s.size);
+    int w = s.size.x, h = s.size.y;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            Block b = Air;
+            if (m == ModelBuckler) {  // a round oak board with an iron rim and a steel boss
+                float r2 = (x - 3.0f) * (x - 3.0f) + (y - 3.0f) * (y - 3.0f);
+                b = r2 > 11 ? Air : r2 > 6 ? Iron : Planks;
+                if (r2 <= 1) g.set({x, y, 1}, Steel);
+            } else if (m == ModelHeater) {  // flat-topped, pointed below: red field, steel rim, a plate band
+                float half = y >= 5 ? 4.5f : 1 + 0.75f * float(y);
+                float d = std::abs(float(x) - 4);
+                b = d > half ? Air : d > half - 1 || y == h - 1 ? Steel : y == 7 ? Plate : Hood;
+            } else {  // tower: oak planks, iron rim and two bands, the top corners cut
+                bool corner = y == h - 1 && (x == 0 || x == w - 1);
+                bool rim = x == 0 || x == w - 1 || y == 0 || y == h - 1 || y == 3 || y == 12;
+                b = corner ? Air : rim ? Iron : x % 2 ? DarkPlanks : Planks;
+            }
+            g.set({x, y, 0}, b);
+        }
+    return g;
+}
+
+Model shieldModel(ItemId shield) {
+    switch (itemType(shield).shield.size) {
+    case ShieldSize::Medium: return ModelHeater;
+    case ShieldSize::Great: return ModelTower;
+    default: return ModelBuckler;
+    }
+}
+
 std::array<Model, PartCount> partModels(Model model, const Inventory& inv) {
     std::array<Model, PartCount> out;
     out.fill(model);
@@ -191,6 +233,7 @@ static Block ghoulVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
 Grid buildPart(Model model, Part part) {
     if (model == ModelSword || model == ModelKnife)
         return part != Head ? Grid({1, 1, 1}) : model == ModelSword ? buildSword() : buildKnife();
+    if (model == ModelBuckler || model == ModelHeater || model == ModelTower) return part != Head ? Grid({1, 1, 1}) : buildShield(model);
     glm::ivec3 s = specs(model)[part].size;
     Grid g(s);
     Block tunic = model == ModelVillager ? Robe : model == ModelBandit ? Leather : Tunic;
@@ -260,9 +303,14 @@ static const Swing kSwings[] = {
     {{-0.2f, 18, 1.5f, -0.9f, 0, -0.2f, -0.3f, 0}, {0.1f, 3.5f, 7, 2.6f, 0, 0.1f, 0.55f, 3}}, // jump heavy: big chop
     {{1.0f, 5, 5, 2.0f, 0, 0.5f, 0.1f, 1}, {-1.2f, 14, 5, 0.6f, 0, -0.6f, -0.05f, 0}},       // guard counter: rising slash
     {{-0.4f, 10, 0, 1.57f, 0, -0.6f, -0.2f, 0.5f}, {0, 9, 10, 1.57f, 0, 0.3f, 0.4f, 1}},     // riposte: deep thrust
+    {{0.6f, 9, 3, 1, 0, 0.4f, 0, 0.3f}, {-1.3f, 10, 5, 1, 0, -0.4f, 0.1f, 0.6f}},             // parry: the shield hand, across the body and out
 };
 static_assert(std::size(kSwings) == size_t(Move::Count));
 static const Grip kGuard{0.35f, 10, 4, 0.15f, -1.2f, 0.25f, 0.05f, 0.8f};  // blade upright across the front
+static const Grip kShieldGuard{-0.67f, 8, 3.2f, 1.3f, 0.67f, 0.15f, 0.05f, 0.8f};  // behind a shield: the blade forward at the side
+// Where a raised shield's hand goes: in front of the chest (a tower shield's lower, so it covers the legs).
+static glm::vec3 shieldGuardHand(const Shield& s) { return {1, s.size == ShieldSize::Great ? 7.0f : 9.5f, 5.5f}; }
+constexpr float kShieldIdleYaw = 1.2f;  // at the side, its face turned out
 
 // The swing pose now and how far it has taken over from the idle grip (0 .. 1): it winds up until
 // the hold point, strikes through the hit to the follow-through, then settles back.
@@ -360,8 +408,9 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
         for (int i : {Head, Torso, HandL, HandR}) off[i].y -= dip;
     };
     auto [g, w] = swingPose(p, armed);
-    if (w > 0) {  // the swing: the sword hand (unarmed, the fists in turn: the left one mirrored) and the body with it
-        bool left = !armed && !p.punchRight;
+    const Shield* shield = shieldOf(p);
+    if (w > 0) {  // the swing: the sword hand (unarmed, the fists in turn; a parry, the shield hand: the left one mirrored) and the body with it
+        bool left = p.move == Move::Parry || (!armed && !p.punchRight);
         float side = left ? -1.0f : 1.0f;
         int hand = left ? HandL : HandR;
         glm::vec3 at(side * (-1.5f + g.reach * std::sin(g.arc)), g.height, 1.5f + g.reach * std::cos(g.arc));
@@ -369,12 +418,14 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
         off[hand] += (at - kHumanoid[hand].center) * w;
         posture(side * g.twist * w, g.lean * w, g.dip * w);
     }
-    if (float k = p.guardBlend * (1 - w); k > 0) {  // the guard: blade upright in front (unarmed, fists up), braced
-        glm::vec3 r = armed ? glm::vec3(-1.5f + kGuard.reach * std::sin(kGuard.arc), kGuard.height, 1.5f + kGuard.reach * std::cos(kGuard.arc))
+    if (float k = p.guardBlend * (1 - w); k > 0) {  // the guard: shield up, else blade upright in front (unarmed, fists up), braced
+        const Grip& gg = shield ? kShieldGuard : kGuard;
+        glm::vec3 r = armed ? glm::vec3(-1.5f + gg.reach * std::sin(gg.arc), gg.height, 1.5f + gg.reach * std::cos(gg.arc))
                             : glm::vec3(-2.5f, 11.5f, 4);
+        glm::vec3 l = shield ? shieldGuardHand(*shield) : glm::vec3(armed ? 2.0f : 2.5f, armed ? 7.0f : 11.5f, 4);
         off[HandR] += (r - kHumanoid[HandR].center) * k;
-        off[HandL] += (glm::vec3(armed ? 2.0f : 2.5f, armed ? 7.0f : 11.5f, 4) - kHumanoid[HandL].center) * k;
-        posture(kGuard.twist * k, kGuard.lean * k, kGuard.dip * k);
+        off[HandL] += (l - kHumanoid[HandL].center) * k;
+        posture(gg.twist * k, gg.lean * k, gg.dip * k);
         if (p.blockTime < 0.2f) {  // a blocked hit knocks it back
             float jolt = k * (1 - p.blockTime / 0.2f);
             off[HandR].z -= 2 * jolt, off[HandL].z -= 2 * jolt;
@@ -430,7 +481,7 @@ static void animateBoar(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 
     }
 }
 
-std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held, float alpha) {
+std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held, float alpha, glm::mat4* shieldPose) {
     bool armed = model != ModelDummy && !quadruped(model) && p.weapon() != NoItem;
     const PartSpec* parts = specs(model);
     glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
@@ -491,15 +542,25 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         for (glm::mat4& m : out) m = lift * m;
         base = lift * base;
     }
-    if (held && armed) {  // blade tilted forward from the fist; turned and pitched by the swing or the guard
-        auto [g, w] = swingPose(p, armed);
-        float guard = p.guardBlend * (1 - w);
-        float yaw = (g.arc + g.yaw) * w + (kGuard.arc + kGuard.yaw) * guard;
-        float pitch = 1.0f + (g.pitch - 1.0f) * w + (kGuard.pitch - 1.0f) * guard;
+    auto [g, w] = swingPose(p, armed);
+    const Shield* shield = model == ModelDummy || quadruped(model) ? nullptr : shieldOf(p);
+    float guard = p.guardBlend * (1 - w);
+    if (held && armed) {  // blade tilted forward from the fist; turned and pitched by the swing or the guard (a parry leaves it be)
+        const Grip& gg = shield ? kShieldGuard : kGuard;
+        float sw = p.move == Move::Parry ? 0 : w;
+        float yaw = (g.arc + g.yaw) * sw + (gg.arc + gg.yaw) * guard;
+        float pitch = 1.0f + (g.pitch - 1.0f) * sw + (gg.pitch - 1.0f) * guard;
         glm::mat4 m = glm::translate(base * tilt, parts[HandR].center + off[HandR]);
         m = glm::rotate(m, yaw, {0, 1, 0});
         m = glm::rotate(m, pitch, {1, 0, 0});
         *held = glm::translate(m, -kGrip);
+    }
+    if (shieldPose && shield) {  // its face out at the side, turned forward by the guard, swept along a parry's arc
+        float yaw = kShieldIdleYaw * (1 - guard);
+        if (p.move == Move::Parry) yaw += (-g.arc - yaw) * w;
+        glm::mat4 m = glm::translate(base * tilt, parts[HandL].center + off[HandL]);
+        m = glm::rotate(m, yaw, {0, 1, 0});
+        *shieldPose = glm::translate(m, -shieldGrid(shieldModel(p.inv.equipped[SlotOffHand])).grip);
     }
     return out;
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <optional>
 
 #include <glm/glm.hpp>
 
@@ -14,6 +15,10 @@
 // breaks it. Hits wear down an NPC's hidden stance: at 0 it reels, open to a riposte; hits of at least
 // its poise make it flinch, which cancels its attack. Unblocked hits make the player flinch too, except
 // in a heavy's windup (hyperarmor), and a roll can't be hit for most of its length.
+// A shield in the off hand (ADR-036) guards better than the sword, by its own negation and guard boost;
+// a greatshield's guard makes weak attacks recoil. Small and medium shields parry: an attack that meets
+// the parry's short active window deflects and leaves its attacker open to a riposte; caught before
+// or after it, the parry is a weak guard.
 
 struct MoveSpec {
     const char* name;
@@ -40,6 +45,7 @@ inline constexpr MoveSpec kMoves[] = {
     {"jump heavy",      0.95f, 0.34f, 0.46f, 0.64f, 0.70f, 1.65f, 28, 20, 0.0f, true},
     {"guard counter",   0.80f, 0.16f, 0.30f, 0.55f, 0.62f, 1.50f, 34, 16, 3.0f, true},   // rising slash off the guard
     {"riposte",         1.40f, 0.30f, 0.45f, 0.80f, 0.80f, 3.00f, 0, 0, 1.0f, false},    // a critical thrust: can't be hit
+    {"parry",           0.75f, 0.14f, 0.44f, 1.00f, 1.00f, 0.00f, 0, 10, 0.0f, false},   // a shield swipe (no hit; scaled by the shield)
 };
 static_assert(std::size(kMoves) == size_t(Move::Count));
 inline const MoveSpec& spec(Move m) { return kMoves[size_t(m)]; }
@@ -71,6 +77,12 @@ struct MeleeTuning {
     float guardBreakSeconds = 1.1f;
     float iframeFrom = 0.04f, iframeTo = 0.34f;  // seconds into a roll that hits pass through
     float trackSeconds = 0.12f;  // an NPC turns toward its target until this long before its strike
+    float parryFrom = 0.1f, parryTo = 0.33f;  // seconds into a parry (at the shield's speed 1) it deflects
+    float parrySeconds = 1.5f;   // a parried NPC reels this long, open to a riposte
+    float parryGuard = 0.5f;     // a parry caught outside its window guards this much as well as the shield
+    float recoilSeconds = 0.6f;  // an attack that bounces off a guard, or a parry short of opening it, rocks its attacker back
+    float bounceBoost = 0.65f;   // guards of at least this boost (a greatshield's) bounce attacks...
+    float bounceStance = 20;     // ...of less stance damage than this
 };
 inline MeleeTuning gMelee;
 
@@ -79,6 +91,7 @@ struct MeleeInput {
     bool attack = false, attackHeld = false;  // LMB / R1: pressed since the last tick; down now
     bool heavy = false, heavyHeld = false;    // R2
     bool guard = false;                       // RMB / L1, held
+    bool parry = false;                       // Q / L2: pressed since the last tick
     glm::vec2 aim{};                          // nonzero: attack this way (a lock-on); else the way it moves, else faces
     bool riposte = false;                     // a stance-broken enemy is in reach in front (riposteTarget)
 };
@@ -111,3 +124,17 @@ bool hyperarmor(const Combatant& b);
 float playerPoise(const Combatant& b);
 // Whether `b`'s guard takes a hit from feet position `from` (in front of it).
 bool guards(const Player& b, glm::vec3 from);
+
+// The shield in `b`'s off hand, or null.
+const Shield* shieldOf(const Player& b);
+// What a guard stops: the share of a blocked hit's damage and of its stamina damage.
+struct Guard { float negation = 0, boost = 0; };
+// `b`'s guard: its shield's, else its sword's, else its bare arms'.
+Guard guardOf(const Player& b);
+// The guard a hit from `from` meets now: the full one while guarding, a weak one (parryGuard) in a parry
+// outside its window; none from behind or not guarding.
+std::optional<Guard> guardAgainst(const Player& b, glm::vec3 from);
+// Whether a hit from `from` meets `b`'s parry in its active window (in front of it).
+bool parries(const Player& b, glm::vec3 from);
+// Whether a guard of `g` makes an attack of `stance` damage bounce off (its attacker recoils).
+bool bounces(const Guard& g, float stance);

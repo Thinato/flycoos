@@ -44,6 +44,8 @@ struct EntityType {
     float stance;          // stance damage it takes to break its stance (ADR-035); 0: never breaks
     float poise;           // a hit with at least this stance damage makes it flinch (cancels its attack)
     float hitStance;       // the stance damage of its hits: they make the player flinch if at least its poise (playerPoise)
+    bool parryable;        // a parry deflects its attacks (ADR-036)
+    int parries;           // parries it takes to open it to a riposte (the ones before only make it recoil)
     int xp;                // character XP the player gets for killing one (ADR-027)
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
@@ -91,6 +93,7 @@ struct Entity {
     int pack = 0;          // how many are fighting the player together (it included); 0: not fighting
     float xpWear = 0;      // the player's hits on it that earned XP lately: each one earns less (awardHitXp)
     float armorWear = 0;   // its hits on the player that earned armor XP lately
+    int parried = 0;       // the player's parries on it toward its kind's `parries` (they don't wear off)
     std::mt19937 rng;
 
     const EntityType& type() const { return typeOf(kind); }

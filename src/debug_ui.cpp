@@ -236,6 +236,15 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
     ImGui::Text("Guard %s   blocked %.1f s ago   %s %.2f s", p.guarding ? "up" : "down", double(std::min(p.blockTime, 99.0f)),
                 p.broken ? "guard broken" : "reeling", double(p.stagger));
     ImGui::Text("i-frames %s   hyperarmor %s", invulnerable(p) ? "yes" : "no", hyperarmor(p) ? "yes" : "no");
+    {  // ADR-036
+        const Shield* s = shieldOf(p);
+        Guard g = guardOf(p);
+        ImGui::Text("Guard with %s: stops %.0f%% of the damage, boost %.0f%%%s%s", s ? itemType(p.inv.equipped[SlotOffHand]).name
+                    : p.inv.equipped[SlotMainHand] ? "the sword" : "bare arms", double(g.negation * 100), double(g.boost * 100),
+                    s && s->parry > 0 ? std::format(", parries (x {:.2f})", s->parry).c_str() : "", g.boost >= m.bounceBoost ? ", bounces" : "");
+        if (p.move == Move::Parry)
+            ImGui::Text("Parry %.2f s: %s", double(p.moveTime / p.moveScale), parries(p, p.pos) ? "ACTIVE" : "weak guard");
+    }
     if (ImGui::TreeNode("Stamina, timing and the guard")) {
         ImGui::SliderFloat("Max stamina", &m.staminaMax, 10, 300, "%.0f");
         ImGui::SliderFloat("Regen", &m.staminaRegen, 0, 200, "%.0f / s");
@@ -265,6 +274,18 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
         ImGui::SliderFloat("Roll i-frames to", &m.iframeTo, 0, 1, "%.2f s");
         ImGui::SliderFloat("NPC tracking stops", &m.trackSeconds, 0, 1, "%.2f s before the strike");
         if (ImGui::Button("Reset melee")) m = MeleeTuning{};
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Shields and the parry (ADR-036)")) {
+        ImGui::SliderFloat("Parry from", &m.parryFrom, 0, 0.8f, "%.2f s");
+        ImGui::SliderFloat("Parry to", &m.parryTo, 0, 0.8f, "%.2f s");
+        ImGui::SetItemTooltip("Seconds into a parry (at the shield's speed 1) an attack is deflected; before and after, it's a weak guard.");
+        ImGui::SliderFloat("Parried reels", &m.parrySeconds, 0.2f, 4, "%.2f s");
+        ImGui::SliderFloat("Parry's weak guard", &m.parryGuard, 0, 1, "x %.2f");
+        ImGui::SliderFloat("Recoil", &m.recoilSeconds, 0, 2, "%.2f s");
+        ImGui::SetItemTooltip("An attack that bounces off a greatshield, or a parry short of the ones it takes, rocks the attacker back this long.");
+        ImGui::SliderFloat("Bounce: boost from", &m.bounceBoost, 0, 1, "%.2f");
+        ImGui::SliderFloat("Bounce: stance under", &m.bounceStance, 0, 60, "%.0f");
         ImGui::TreePop();
     }
 
@@ -328,6 +349,8 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
             ImGui::Text("stance %.0f / %.0f   poise %.0f   %s %.2f s", double(e.body.stance), double(t.stance), double(t.poise),
                         e.body.broken ? "BROKEN" : "reeling", double(e.body.stagger));
             ImGui::SetItemTooltip("Hits wear the stance down; at 0 it breaks (open to a riposte). A hit of at least its poise makes it flinch (ADR-035).");
+            if (t.parryable) ImGui::Text("parried %d / %d (to open it to a riposte)", e.parried, t.parries);
+            else ImGui::TextDisabled("can't be parried");
             ImGui::Text("gives up after %.0f s stuck   flees below %.0f%% health", t.giveUpSeconds, t.fleeHealth * 100);
         }
         if (e.transitions && ImGui::TreeNode("transitions", "Last %u transitions", std::min(e.transitions, uint32_t(e.history.size())))) {

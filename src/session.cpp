@@ -50,7 +50,7 @@ StepResult step(Session& s, const SimInput& in, float dt) {
     Input move = !p.alive() && !in.editing ? Input{} : in.move;
     if (in.editing) p.pressing = false, p.want = Want::None;  // nothing half-pressed swings on leaving the editor
     else {  // attacks, the guard and stamina (ADR-035); they shape this tick's movement
-        MeleeInput melee{in.attack, in.attackHeld, in.heavy, in.heavyHeld, in.guard, in.aim};
+        MeleeInput melee{in.attack, in.attackHeld, in.heavy, in.heavyHeld, in.guard, in.parry, in.aim};
         if (const Entity* e = riposteTarget(s.entities, p)) melee.riposte = true, melee.aim = {e->body.pos.x - p.pos.x, e->body.pos.z - p.pos.z};
         if (updateMelee(p, melee, move, dt) || (in.attack && !p.alive())) r.attacked = true;
     }

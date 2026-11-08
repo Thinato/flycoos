@@ -5,7 +5,7 @@
    "wanders": true, "talks": true, "model": "villager", "temper": "harmless", "wander_radius": 12, "respawn_seconds": 30},
   {"id": "boar", "save_id": 2, "name": "Boar", "level": 1, "stats": {"stamina": 10, "strength": 2, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "boar", "temper": "passive", "wander_radius": 10, "chase_speed": 6,
-   "loot": "boar_skin", "loot_chance": 0.75, "respawn_seconds": 30, "stance": 50, "hit_stance": 12},
+   "loot": "boar_skin", "loot_chance": 0.75, "respawn_seconds": 30, "stance": 50, "hit_stance": 12, "parryable": false},
   {"id": "bandit", "save_id": 3, "name": "Bandit", "level": 2, "stats": {"stamina": 12, "strength": 3, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "bandit", "temper": "aggressive", "aggro_range": 10, "wander_radius": 5, "chase_speed": 5.5,
    "weapon": "rusty_knife", "loot": "rusty_knife", "loot_chance": 0.4, "respawn_seconds": 30, "stance": 60, "hit_stance": 12},
@@ -17,7 +17,7 @@
    "weapon": "iron_shortsword", "respawn_seconds": 60, "stance": 90, "poise": 12, "hit_stance": 20},
   {"id": "bandit_chief", "save_id": 6, "name": "Bandit Chief", "level": 3, "stats": {"stamina": 11, "strength": 3, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "chief", "temper": "aggressive", "aggro_range": 10, "wander_radius": 6, "chase_speed": 5.5,
-   "weapon": "iron_shortsword", "loot": "iron_helm", "loot_chance": 1, "respawn_seconds": 120, "xp": 60, "stance": 180, "poise": 20, "attack_windup": 0.6, "attack_recover": 0.25, "hit_stance": 26},
+   "weapon": "iron_shortsword", "loot": "iron_helm", "loot_chance": 1, "respawn_seconds": 120, "xp": 60, "stance": 180, "poise": 20, "attack_windup": 0.6, "attack_recover": 0.25, "hit_stance": 26, "parries": 2},
   {"id": "ghoul", "save_id": 7, "name": "Barrow Ghoul", "level": 3, "stats": {"stamina": 7, "strength": 4, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "ghoul", "temper": "aggressive", "aggro_range": 8, "wander_radius": 4, "chase_speed": 4,
    "loot": "bone_charm", "loot_chance": 0.3, "respawn_seconds": 45, "stance": 90, "poise": 12, "attack_windup": 0.6, "attack_recover": 0.4, "hit_stance": 14}

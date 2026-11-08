@@ -52,7 +52,8 @@ GPU debug layer.
 | Wheel | Zoom |
 | T (hold) | Fast-forward time (60×) |
 | Left mouse | Attack (Elden Ring style, ADR-035): tap for the next of four light swings (a chain), hold for a heavy that charges while held. Running, late in a roll, in the air (it strikes on landing), right after a block (a guard counter) or at an enemy on its knee (a riposte) it's a different attack. Presses wait a moment for the current swing |
-| Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks |
+| Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks. A shield in the off hand guards better; a tower shield makes weak attacks bounce off |
+| Q | Parry (ADR-036) with a buckler or heater shield: timed just before a hit lands, it deflects the attack and leaves the attacker open to a riposte (left mouse); mistimed, it's a weak guard |
 | E | Loot a nearby corpse, otherwise talk to a nearby villager or guard |
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
@@ -80,6 +81,7 @@ A controller works too (SDL's gamepad layout; PlayStation names here, an Xbox pa
 | R1 | Attack (like left mouse: tap for lights, hold for a heavy) |
 | R2 | Heavy attack (hold to charge) |
 | L1 | Guard (like right mouse) |
+| L2 | Parry (like Q) |
 | Triangle | Bags |
 | D-pad left / up / right | Character / Journal / Progress; locked on, the D-pad (down too) switches to the next enemy that way |
 | Options | Close the windows |

@@ -13,14 +13,15 @@ system is summarized in ADR-035.
 - [x] NPC stance and poise (flinch, stance break), player poise from armor, hyperarmor, roll i-frames (ADR-035)
 - [x] NPC windup telegraphs with tracking, varied timing, a sword's-length spacing (ADR-035)
 - [x] Directional roll, jump-roll, coyote time (f0ff042); lock-on (ADR-033); packs flank (ADR-034)
+- [x] Shields in the off hand: small, medium and great, by negation and guard boost; shield pose (ADR-036)
+- [x] Parry (Q / L2): a short window that breaks the attacker open to a riposte; greatshields can't;
+      unparryable kinds; bosses that take several (ADR-036)
+- [x] Greatshield bounce: weak attacks recoil off a strong guard (ADR-036)
 
 ## Defense
 
-- [ ] **Shields** in the off hand (`SlotOffHand`): small, medium and great. They differ in physical
-      negation, guard boost, weight and guard-counter strength. Shield pose and animations.
-- [ ] **Parry:** a short active window that staggers the attacker and opens a riposte. Small shields
-      and some light weapons can parry; greatshields can't. Some attacks can't be parried.
-- [ ] Greatshield bounce: weak attacks recoil off a strong guard.
+- [ ] Shield weight (with equip load, below) and parrying with light weapons (daggers, fists: with
+      their weapon classes)
 - [ ] Perfect guard / just-block? (decide: a timed-block bonus or not)
 - [ ] Backstep (roll button with no direction) and its retreat attack
 - [ ] Damage types (slash, strike, pierce, and later elemental) with per-shield negation
