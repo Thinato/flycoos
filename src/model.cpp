@@ -6,6 +6,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "melee.h"
 #include "player.h"
 
 constexpr float kVoxel = 0.1f;  // character voxels are 1/10 of a world block
@@ -233,24 +234,63 @@ static float smooth(float a) {
     return a * a * (3 - 2 * a);
 }
 
-// Sword slash over the swing: wind up to the right side, sweep through the front at the impact
-// frame, follow through to the left, settle back. x: sweep angle in radians (+ = toward the
-// left hand), y: blend from the idle grip (0) into the slash pose (1).
-static glm::vec2 slash(const Player& p) {
-    if (!p.punching()) return {0, 0};
-    constexpr float kWind = 0.15f, kFollow = 2 * kPunchImpact - kWind, kSweep = 1.4f;
-    float u = p.punchTime / p.punchLength;
-    if (u < kWind) return {-kSweep * smooth(u / kWind), smooth(u / kWind)};
-    if (u < kFollow) return {kSweep * (2 * smooth((u - kWind) / (kFollow - kWind)) - 1), 1};
-    float back = 1 - smooth((u - kFollow) / (1 - kFollow));
-    return {kSweep * back, back};
+// The sword arm's pose (ADR-035): the hand on an arc around the right shoulder (`arc` radians from
+// straight ahead toward the left hand, `reach` voxels out, `height` voxels up), the blade pitched
+// `pitch` forward from upright and turned with the arc plus `yaw`, the torso turned `twist` (toward the
+// left hand) and leaning `lean` forward, and the body sunk `dip` voxels.
+struct Grip { float arc = 0, height = 9, reach = 4, pitch = 1, yaw = 0, twist = 0, lean = 0, dip = 0; };
+static Grip mix(const Grip& a, const Grip& b, float t) {
+    auto m = [t](float x, float y) { return x + (y - x) * t; };
+    return {m(a.arc, b.arc), m(a.height, b.height), m(a.reach, b.reach), m(a.pitch, b.pitch), m(a.yaw, b.yaw),
+            m(a.twist, b.twist), m(a.lean, b.lean), m(a.dip, b.dip)};
+}
+// Each move swings from its windup pose to its follow-through (unarmed: the fist does the same).
+struct Swing { Grip wind, through; };
+static const Swing kSwings[] = {
+    {},                                                                                     // none
+    {{-1.2f, 13, 5, 0.9f, 0, -0.5f, 0, 0}, {1.2f, 5, 5.5f, 2.0f, 0, 0.5f, 0.2f, 0.5f}},     // light 1: diagonal, high right to low left
+    {{1.3f, 10, 4, 1.4f, 0, 0.5f, 0, 0}, {-1.4f, 8.5f, 6.5f, 1.6f, 0, -0.5f, 0.1f, 0}},     // light 2: backhand
+    {{-1.7f, 8, 6.5f, 1.55f, 0, -0.6f, 0, 0.5f}, {1.7f, 8.5f, 6.5f, 1.55f, 0, 0.7f, 0.15f, 0.5f}},  // light 3: wide sweep
+    {{-0.3f, 9, 1, 1.57f, 0, -0.4f, -0.1f, 0}, {0, 9, 9.5f, 1.57f, 0, 0.3f, 0.25f, 0.5f}},   // light 4: thrust
+    {{-0.6f, 10, 0, 1.57f, 0, -0.7f, -0.2f, 1}, {0, 9, 10.5f, 1.57f, 0, 0.4f, 0.4f, 1.5f}},  // heavy 1: lunging thrust
+    {{-0.3f, 17, 2, -0.7f, 0, -0.2f, -0.25f, 0}, {0.1f, 5, 7, 2.3f, 0, 0.1f, 0.45f, 2}},     // heavy 2: overhead chop
+    {{-1.6f, 10, 6, 1.5f, 0, -0.6f, 0.3f, 0}, {1.8f, 8, 6.5f, 1.55f, 0, 0.7f, 0.35f, 0.5f}}, // running: leaping sweep
+    {{-0.2f, 5, 2, 1.3f, 0, -0.3f, 0.3f, 3}, {0, 10, 9, 1.3f, 0, 0.2f, 0.2f, 0.5f}},         // rolling: rising thrust
+    {{-0.2f, 16, 2, -0.4f, 0, -0.2f, -0.2f, 0}, {0.1f, 6, 6.5f, 2.1f, 0, 0.1f, 0.3f, 1}},    // jump light: chop
+    {{-0.2f, 18, 1.5f, -0.9f, 0, -0.2f, -0.3f, 0}, {0.1f, 3.5f, 7, 2.6f, 0, 0.1f, 0.55f, 3}}, // jump heavy: big chop
+    {{1.0f, 5, 5, 2.0f, 0, 0.5f, 0.1f, 1}, {-1.2f, 14, 5, 0.6f, 0, -0.6f, -0.05f, 0}},       // guard counter: rising slash
+    {{-0.4f, 10, 0, 1.57f, 0, -0.6f, -0.2f, 0.5f}, {0, 9, 10, 1.57f, 0, 0.3f, 0.4f, 1}},     // riposte: deep thrust
+};
+static_assert(std::size(kSwings) == size_t(Move::Count));
+static const Grip kGuard{0.35f, 10, 4, 0.15f, -1.2f, 0.25f, 0.05f, 0.8f};  // blade upright across the front
+
+// The swing pose now and how far it has taken over from the idle grip (0 .. 1): it winds up until
+// the hold point, strikes through the hit to the follow-through, then settles back.
+static std::pair<Grip, float> swingPose(Move move, float u) {
+    if (move == Move::None) return {{}, 0};
+    const MoveSpec& m = spec(move);
+    const Swing& sw = kSwings[size_t(move)];
+    float through = std::min(m.impact + 0.6f * (m.impact - m.holdAt), m.chain);
+    if (u <= m.holdAt) return {sw.wind, smooth(u / m.holdAt)};
+    if (u < through) return {mix(sw.wind, sw.through, smooth((u - m.holdAt) / (through - m.holdAt))), 1};
+    return {sw.through, 1 - smooth((u - through) / (1 - through))};
+}
+// The same for the body: a chained swing winds up from where the one it cut short was (with a sword:
+// fists change hands).
+static std::pair<Grip, float> swingPose(const Player& p, bool armed) {
+    auto [g, w] = swingPose(p.move, moveProgress(p));
+    const MoveSpec& m = spec(p.move);
+    if (!armed || p.fromMove == Move::None || !p.punching() || moveProgress(p) > m.holdAt) return {g, w};
+    auto [from, fromW] = swingPose(p.fromMove, p.fromU);
+    float k = smooth(moveProgress(p) / m.holdAt);
+    return {mix(fromW > 0 ? from : g, g, k), fromW + (1 - fromW) * k};
 }
 
-// 0 -> 1 up to the impact frame, then back to 0.
-static float thrust(const Player& p) {
-    if (!p.punching()) return 0;
-    float u = p.punchTime / p.punchLength;
-    return smooth(u < kPunchImpact ? u / kPunchImpact : 1 - (u - kPunchImpact) / (1 - kPunchImpact));
+// How hard the body reels now (0 .. 1): in fast, held, out over the last of it.
+static float reel(const Combatant& c) {
+    if (c.stagger <= 0 || c.staggerLength <= 0) return 0;
+    float in = std::min((c.staggerLength - c.stagger) / 0.08f, 1.0f), out = std::min(c.stagger / std::min(0.3f, c.staggerLength * 0.6f), 1.0f);
+    return smooth(in) * smooth(out);
 }
 
 // A roll: how tucked the body is (in over the first 15%, out over the last 20%) and how far it has
@@ -310,18 +350,58 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
         }
     }
 
-    if (armed) {  // the sword hand sweeps an arc at chest height around the body; the torso turns with it
-        glm::vec2 sl = slash(p);
-        glm::vec3 arc(-1.5f + 6.5f * std::sin(sl.x), 9, 1.5f + 6.5f * std::cos(sl.x));
-        off[HandR] += (arc - kHumanoid[HandR].center) * sl.y;
-        rot[Torso].y += 0.4f * sl.x * sl.y;
-    } else if (p.punching()) {  // jab: the fist shoots forward to shoulder height, the torso twists into it
-        float ext = thrust(p);
-        float side = p.punchRight ? 1.0f : -1.0f;  // the right hand is on -x, so it moves toward +x
-        off[p.punchRight ? HandR : HandL] += glm::vec3(side * 2.5f, 2.5f, 8.0f) * ext;
-        rot[Torso].y += side * 0.35f * ext;
-        off[Head].z += 0.5f * ext;
+    // The torso turned toward the left hand, leaning forward, the upper body sunk.
+    auto posture = [&](float twist, float lean, float dip) {
+        rot[Torso].y += twist;
+        rot[Head].y += 0.5f * twist;
+        off[HandL].z -= 2.5f * twist;
+        rot[Torso].x += lean;
+        off[Head] += glm::vec3(0, -lean, 2.5f * lean);
+        for (int i : {Head, Torso, HandL, HandR}) off[i].y -= dip;
+    };
+    auto [g, w] = swingPose(p, armed);
+    if (w > 0) {  // the swing: the sword hand (unarmed, the fists in turn: the left one mirrored) and the body with it
+        bool left = !armed && !p.punchRight;
+        float side = left ? -1.0f : 1.0f;
+        int hand = left ? HandL : HandR;
+        glm::vec3 at(side * (-1.5f + g.reach * std::sin(g.arc)), g.height, 1.5f + g.reach * std::cos(g.arc));
+        if (p.holding && p.moveTime >= holdTime(p)) at += glm::vec3(0.25f * std::sin(p.charge * 70), 0.2f * std::cos(p.charge * 55), 0);  // straining
+        off[hand] += (at - kHumanoid[hand].center) * w;
+        posture(side * g.twist * w, g.lean * w, g.dip * w);
     }
+    if (float k = p.guardBlend * (1 - w); k > 0) {  // the guard: blade upright in front (unarmed, fists up), braced
+        glm::vec3 r = armed ? glm::vec3(-1.5f + kGuard.reach * std::sin(kGuard.arc), kGuard.height, 1.5f + kGuard.reach * std::cos(kGuard.arc))
+                            : glm::vec3(-2.5f, 11.5f, 4);
+        off[HandR] += (r - kHumanoid[HandR].center) * k;
+        off[HandL] += (glm::vec3(armed ? 2.0f : 2.5f, armed ? 7.0f : 11.5f, 4) - kHumanoid[HandL].center) * k;
+        posture(kGuard.twist * k, kGuard.lean * k, kGuard.dip * k);
+        if (p.blockTime < 0.2f) {  // a blocked hit knocks it back
+            float jolt = k * (1 - p.blockTime / 0.2f);
+            off[HandR].z -= 2 * jolt, off[HandL].z -= 2 * jolt;
+            rot[Torso].x -= 0.25f * jolt;
+        }
+    }
+    if (float r = reel(p); r > 0) {
+        if (p.broken) {  // stance broken: sunk to a knee, hunched, arms hanging
+            posture(0, 0.6f * r, 4 * r);
+            off[Head] += glm::vec3(0, -1, 1) * r;
+            off[HandL] += glm::vec3(-1, -1.5f, 2) * r, off[HandR] += glm::vec3(1, -1.5f, 2) * r;
+        } else {  // a flinch: rocked back, head thrown back, arms up
+            rot[Torso].x -= 0.35f * r;
+            off[Head] += glm::vec3(0, 0.5f, -1.2f) * r;
+            off[HandL].y += 1.5f * r, off[HandR].y += 1.5f * r;
+        }
+    }
+}
+
+// A quadruped's gore: the head draws back through the windup, lunges out at the hit, comes back.
+static float gore(const Player& p) {
+    if (!p.punching()) return 0;
+    const MoveSpec& m = spec(p.move);
+    float u = moveProgress(p);
+    if (u <= m.holdAt) return -0.5f * smooth(u / m.holdAt);
+    if (u <= m.impact) return -0.5f + 1.5f * smooth((u - m.holdAt) / (m.impact - m.holdAt));
+    return 1 - smooth((u - m.impact) / (1 - m.impact));
 }
 
 // Trot (diagonal legs together), breathing, and a goring head thrust.
@@ -335,10 +415,19 @@ static void animateBoar(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 
         off[leg] = {0, std::max(0.0f, sign * c) * 1.2f * a, sign * s * 2.2f * a};
         rot[leg].x = -sign * s * 0.4f * a;
     }
-    float g = thrust(p);  // head down and forward, then tusks up at impact
+    float g = gore(p);  // head down and forward, then tusks up at impact
     off[Head] += glm::vec3(0, -0.8f, 3.0f) * g;
     rot[Head].x = -0.35f * g;
     off[Torso].z += 1.0f * g;
+    if (float r = reel(p); r > 0) {  // a flinch throws the head up; a stance break drops the body low
+        if (p.broken) {
+            for (int i : {Head, Torso}) off[i].y -= 2.5f * r;
+            off[Head] += glm::vec3(0, -1, 0) * r;
+        } else {
+            off[Head] += glm::vec3(0, 1, -1.5f) * r;
+            rot[Head].x -= 0.3f * r;
+        }
+    }
 }
 
 std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held, float alpha) {
@@ -402,11 +491,14 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         for (glm::mat4& m : out) m = lift * m;
         base = lift * base;
     }
-    if (held && armed) {  // blade tilted forward from the fist; flatter and swept around while slashing
-        glm::vec2 sl = slash(p);
+    if (held && armed) {  // blade tilted forward from the fist; turned and pitched by the swing or the guard
+        auto [g, w] = swingPose(p, armed);
+        float guard = p.guardBlend * (1 - w);
+        float yaw = (g.arc + g.yaw) * w + (kGuard.arc + kGuard.yaw) * guard;
+        float pitch = 1.0f + (g.pitch - 1.0f) * w + (kGuard.pitch - 1.0f) * guard;
         glm::mat4 m = glm::translate(base * tilt, parts[HandR].center + off[HandR]);
-        m = glm::rotate(m, sl.x, {0, 1, 0});
-        m = glm::rotate(m, 1.0f + 0.5f * sl.y, {1, 0, 0});
+        m = glm::rotate(m, yaw, {0, 1, 0});
+        m = glm::rotate(m, pitch, {1, 0, 0});
         *held = glm::translate(m, -kGrip);
     }
     return out;

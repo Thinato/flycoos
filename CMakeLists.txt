@@ -43,7 +43,7 @@ target_link_libraries(imgui PUBLIC SDL3::SDL3)
 
 # Engine core: no GPU code, so it is unit-testable.
 add_library(flycoos_core STATIC src/world.cpp src/trees.cpp src/story.cpp src/light.cpp src/mesher.cpp src/model.cpp src/plants.cpp src/player.cpp src/entity.cpp src/item.cpp src/edit.cpp
-  src/commands.cpp src/prefab.cpp src/session.cpp src/defs.cpp src/save.cpp src/quest.cpp src/progress.cpp src/notes.cpp src/stream.cpp src/lockon.cpp)
+  src/commands.cpp src/prefab.cpp src/session.cpp src/defs.cpp src/save.cpp src/quest.cpp src/progress.cpp src/notes.cpp src/stream.cpp src/lockon.cpp src/melee.cpp)
 target_include_directories(flycoos_core PUBLIC src)
 target_include_directories(flycoos_core SYSTEM PUBLIC ${glm_SOURCE_DIR} ${json_SOURCE_DIR}/single_include)
 target_include_directories(flycoos_core SYSTEM PRIVATE ${stb_SOURCE_DIR})

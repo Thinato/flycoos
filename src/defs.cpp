@@ -265,7 +265,7 @@ void loadCreatures(const File& f, Defs& d) {
         r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
                  "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds", "leash_radius",
                  "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
-                 "flee_health", "xp"});
+                 "flee_health", "xp", "stance", "poise", "hit_stance"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
         auto flag = [&](const char* key) {
@@ -321,14 +321,17 @@ void loadCreatures(const File& f, Defs& d) {
         if (t.reaggroRadius >= t.leashRadius) throw r.fail("reaggro_radius", "must be less than leash_radius (or it flaps at the edge)");
         t.reaggroCooldown = float(r.number(r.fields, "reaggro_cooldown", 0, 60, 3, false));
         t.giveUpSeconds = float(r.number(r.fields, "give_up_seconds", 0.5, 60, 5, false));
-        t.windup = float(r.number(r.fields, "attack_windup", 0.05, 2, kSwingWindup, false));
-        // The swing's impact comes at most kPunchImpact into it (startPunch), so a longer windup would be cut short.
-        float swing = swingTime(compute(t.stats, d.items[t.weapon].mods), t.weapon ? d.items[t.weapon].attack : kPunch);
-        if (t.temper != Temper::Harmless && t.windup >= kPunchImpact * swing)
-            throw r.fail("attack_windup", std::format("{} s must be less than {} x its swing time ({:.3f} s)", t.windup, kPunchImpact, swing));
-        t.recover = float(r.number(r.fields, "attack_recover", 0, 2, 0.2, false));
+        // A swing holds its windup pose until the hit is due (ADR-035): long enough to see coming.
+        t.windup = float(r.number(r.fields, "attack_windup", 0.05, 2, kDefaultWindup, false));
+        t.recover = float(r.number(r.fields, "attack_recover", 0, 2, kDefaultRecover, false));
         t.cooldown = float(r.number(r.fields, "attack_cooldown", 0, 10, 0, false));
         t.fleeHealth = float(r.number(r.fields, "flee_health", 0, 0.95, 0, false));
+        // Stance and poise (ADR-035): what it takes to break its stance, and the smallest hit that makes it flinch.
+        t.stance = float(r.number(r.fields, "stance", 0, 1000, 30, false));
+        t.poise = float(r.number(r.fields, "poise", 0, 1000, 0, false));
+        t.hitStance = float(r.number(r.fields, "hit_stance", 0, 1000, 15, false));
+        if (given("hit_stance") && t.temper == Temper::Harmless) throw r.fail("hit_stance", "harmless creatures don't fight");
+        if ((given("stance") || given("poise")) && !t.attackable) throw r.fail(given("stance") ? "stance" : "poise", "only attackable creatures are hit");
         // Character XP for killing one (ADR-027); by default only fighters that can be hurt give any.
         bool gives = t.attackable && t.temper != Temper::Harmless;
         t.xp = int(r.number(r.fields, "xp", 0, 100000, gives ? defaultKillXp(t.level) : 0));

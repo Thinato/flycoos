@@ -32,7 +32,7 @@ enum class Stat : uint8_t { Stamina, Strength, Agility, Intellect, Spirit,      
                             MaxHealth, Damage, Haste, Regen, Armor, DamageTaken, Count };  // derived from them
 inline constexpr const char* kStatIds[] = {"stamina", "strength", "agility", "intellect", "spirit", "max_health",
                                            "damage", "haste", "regen", "armor", "damage_taken"};  // in data files
-inline constexpr const char* kStatNames[] = {"Stamina", "Strength", "Agility", "Intellect", "Spirit", "Max health",
+inline constexpr const char* kStatNames[] = {"Vitality", "Strength", "Agility", "Intellect", "Spirit", "Max health",
                                              "Damage", "Attack speed", "Regen", "Armor", "Damage taken"};
 static_assert(std::size(kStatIds) == size_t(Stat::Count) && std::size(kStatNames) == size_t(Stat::Count));
 enum class ModKind : uint8_t { Flat, Increased, More };  // increased and more are fractions: 0.1 = 10%

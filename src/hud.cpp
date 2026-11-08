@@ -9,6 +9,7 @@
 #include <imgui.h>
 
 #include "lockon.h"
+#include "melee.h"
 
 // The swapchain is linear (sRGB format), so sRGB colors are linearized like the debug UI style.
 unsigned uiColor(float r, float g, float b, float a) {
@@ -143,6 +144,8 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     std::snprintf(hp, sizeof hp, "%d / %d", int(std::ceil(player.health)), most);
     ImVec2 hs = ImGui::CalcTextSize(hp);
     shadowText(dl, ImVec2(center.x - hs.x / 2, center.y - hs.y / 2), uiColor(1, 1, 1), 1, hp);
+    // Stamina under it (ADR-035): what attacks, rolls and blocks spend.
+    bar(dl, ImVec2(center.x, center.y + 15), ImVec2(280, 7), player.stamina / gMelee.staminaMax, uiColor(0.3f, 0.75f, 0.25f), 1);
 }
 
 void drawPlaces(const glm::mat4& view, float fovY, const Player& player, const std::vector<Marker>& markers,

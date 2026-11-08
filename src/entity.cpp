@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "defs.h"
+#include "melee.h"
 
 namespace {
 
@@ -96,6 +97,7 @@ Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 fa
     e.body.tuning.runSpeed = t.chaseSpeed;
     e.body.inv.equipped[SlotMainHand] = t.weapon;
     e.body.health = float(maxHealth(sheet(e.body)));
+    e.body.stance = t.stance;
     e.body.breathPhase = kTau * rand01(e.rng);
     glm::vec2 toFace = xz(face) - xz(pos);
     if (glm::length(toFace) > 0.01f) e.body.yaw = std::atan2(toFace.x, toFace.y);
@@ -256,7 +258,7 @@ void setState(Entity& e, AiState to, const char* reason) {
     if (to == AiState::Return) e.events = 0;
     // Enter Chase from calm: one with spawn marker lines shouts the next one, not more often than every
     // kShoutSeconds (e.g. when hit from outside its territory, where it can't stay in Chase).
-    bool calm = from != AiState::Windup && from != AiState::Recover && from != AiState::Chase;
+    bool calm = from != AiState::Windup && from != AiState::Recover && from != AiState::Chase && from != AiState::Stagger;
     if (to == AiState::Chase && calm && e.body.alive() && !e.spawn.lines.empty() && e.shoutTimer <= 0) {
         talk(e);
         e.shoutTimer = std::max(kShoutSeconds, e.speechTimer);
@@ -279,6 +281,8 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
     constexpr int kMaxHops = 8;  // the longest chain is 3 transitions (e.g. Recover, Chase, Return, Wander), then the input
     for (int hops = 0; hops < kMaxHops; ++hops) {
         if (!e.body.alive() && e.state != AiState::Dead) setState(e, AiState::Dead, "died");
+        else if (e.body.alive() && e.body.stagger > 0 && e.state != AiState::Stagger && e.state != AiState::Return && e.state != AiState::Flee)
+            setState(e, AiState::Stagger, e.body.broken ? "stance_broken" : "flinched");
         switch (e.state) {
         case AiState::Dead:  // lies where it fell
             if (!e.body.alive()) return in;
@@ -314,8 +318,13 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             else if (targetFromHome >= t.leashRadius) setState(e, AiState::Return, "target_left_leash");
             else if (e.lostTime >= t.giveUpSeconds) setState(e, AiState::Return, "lost_target");
             else if (e.body.health < t.fleeHealth * float(maxHealth(sheet(e.body)))) setState(e, AiState::Flee, "low_health");
-            else if (inReach && e.stateTime >= t.cooldown && startPunch(e.body, dir, t.windup)) setState(e, AiState::Windup, "in_reach");
-            else {
+            // The windup varies a little, so its timing can't just be counted (ADR-035).
+            else if (inReach && e.stateTime >= t.cooldown && startPunch(e.body, dir, t.windup * (0.85f + 0.5f * rand01(e.rng))))
+                setState(e, AiState::Windup, "in_reach");
+            else if (inReach && dist < kPunchReach - 0.5f) {  // a sword's length off: holds there, facing it, until it can swing
+                turnToward(e.body, dir, dt);
+                return in;
+            } else {
                 glm::vec2 go = dir;
                 if (e.pack > 1 && !inReach && dist < 6) {  // with others, once near: circle round to its side, then close in
                     float at = std::atan2(-dir.x, -dir.y);  // where it stands around the target
@@ -337,9 +346,17 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                 return in;
             }
             continue;
-        case AiState::Windup:  // committed: stands and doesn't turn; updateCombat lands the hit at its end, if still in reach
-            if (e.body.hitPending) return in;
+        case AiState::Windup:  // stands in its windup pose turning after the target, then commits to the strike; updateCombat lands it
+            if (e.body.hitPending) {
+                if (e.body.moveTime < holdTime(e.body) || e.body.hold > gMelee.trackSeconds) turnToward(e.body, dir, dt);
+                return in;
+            }
             setState(e, AiState::Recover, "swung");
+            continue;
+        case AiState::Stagger:  // reels (a stance break: open to a riposte), then fights on
+            if (e.body.stagger > 0) return in;
+            e.events = 0;  // the hit that staggered it is answered by fighting
+            setState(e, fighter ? AiState::Chase : t.wanders ? AiState::Wander : AiState::Idle, "steadied");
             continue;
         case AiState::Recover:
             if (e.stateTime < t.recover) return in;
@@ -391,8 +408,7 @@ static void assignSides(std::vector<Entity>& entities, const Player& player) {
     std::vector<std::pair<float, Entity*>> pack;
     for (Entity& e : entities) {
         e.pack = 0;
-        bool fighting = e.state == AiState::Chase || e.state == AiState::Windup || e.state == AiState::Recover;
-        if (fighting && e.body.alive() && e.type().wanders) {
+        if (e.angry() && e.body.alive() && e.type().wanders) {
             glm::vec2 d = xz(e.body.pos - player.pos);
             pack.emplace_back(std::atan2(d.x, d.y), &e);
         }
@@ -537,14 +553,11 @@ bool damage(Entity& e, int amount) {
 }
 
 bool startPunch(Player& b, glm::vec2 aim, float windup) {
-    if (!b.alive() || b.swingTimer > 0 || b.rolling()) return false;
-    b.swingWeapon = b.inv.equipped[SlotMainHand];
+    if (!b.alive() || b.swingTimer > 0 || b.rolling() || b.stagger > 0) return false;
+    bool chains = b.lastMove >= Move::Light1 && b.lastMove < Move::Light3;  // the first three lights in turn
+    startMove(b, chains ? Move(int(b.lastMove) + 1) : Move::Light1, aim);
+    b.hold = std::max(0.0f, windup - impactTime(b));
     b.swingTimer += swingTime(sheet(b, skillOf(b.swingWeapon)), weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
-    b.punchLength = std::min(windup / kPunchImpact, b.swingTimer);
-    b.punchTime = 0;
-    b.punchRight = !b.punchRight;
-    b.hitPending = true;
-    if (glm::length(aim) > 1e-4f) b.yaw = std::atan2(aim.x, aim.y);
     return true;
 }
 
@@ -569,10 +582,45 @@ Entity* punchTarget(std::vector<Entity>& entities, const Player& a) {
     return best;
 }
 
+Entity* riposteTarget(std::vector<Entity>& entities, const Player& a) {
+    Entity* best = nullptr;
+    float bestDist = kPunchReach;
+    for (Entity& e : entities) {
+        float dist = glm::distance(xz(e.body.pos), xz(a.pos));
+        if (e.type().attackable && e.body.alive() && e.body.broken && inReach(a, e.body.pos) && dist < bestDist) best = &e, bestDist = dist;
+    }
+    return best;
+}
+
+void staggerHit(Entity& e, float stance, bool riposte) {
+    const EntityType& t = e.type();
+    Player& b = e.body;
+    if (riposte && b.broken) {  // knocked down, its stance back
+        interrupt(b, 0, false);
+        b.stagger = b.staggerLength = gMelee.downSeconds;
+        b.broken = false;
+        b.stance = t.stance;
+        return;
+    }
+    if (b.broken || stance <= 0) return;
+    if (t.stance > 0) {  // 0: it never breaks (but may still flinch)
+        b.stance -= stance;
+        b.stanceWait = t.stance / 13;  // as Elden Ring's: it starts coming back after base/13 s, at 13 a second
+    }
+    if (t.stance > 0 && b.stance <= 0) {
+        b.stance = t.stance;
+        interrupt(b, gMelee.breakSeconds, true);
+    } else if (stance >= t.poise) {
+        interrupt(b, gMelee.flinchSeconds, false);
+    }
+}
+
 static void tick(Player& b, float dt) {
     // May go up to one frame negative, so back-to-back swings don't lose time to frame rounding.
     b.swingTimer = std::max(b.swingTimer - dt, -dt);
-    b.punchTime += dt;
+    advanceMove(b, dt);
+    b.stagger = std::max(0.0f, b.stagger - dt);
+    if (b.stagger == 0) b.broken = false;
     b.hitTime += dt;
     b.combatTimer = std::max(0.0f, b.combatTimer - dt);
     StatSheet s = sheet(b);
@@ -584,14 +632,14 @@ static void tick(Player& b, float dt) {
 // True once per swing, at its impact frame. A swing dies with its swinger.
 static bool lands(Player& b) {
     if (!b.alive()) b.hitPending = false;
-    if (!b.hitPending || b.punchTime < kPunchImpact * b.punchLength) return false;
+    if (!b.hitPending || b.moveTime < impactTime(b)) return false;
     b.hitPending = false;
     return true;
 }
 
 int resolveHit(const Combatant& attacker, const Combatant& defender, const Attack& attack, const HitContext& ctx) {
     StatSheet a = sheet(attacker, skillOf(attacker.swingWeapon)), d = sheet(defender);
-    float hit = float(rollDamage(a, attack, ctx.rng)) * a[Stat::Damage];
+    float hit = float(rollDamage(a, attack, ctx.rng)) * a[Stat::Damage] * ctx.power;
     return mitigate(hit, d[Stat::Armor], attacker.level, ctx.armorK, d[Stat::DamageTaken]);
 }
 
@@ -618,25 +666,53 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
     HitContext ctx{rng, armorK};
     tick(player, dt);
     if (lands(player)) {
-        Entity* target = punchTarget(entities, player);
-        if (target && damage(*target, resolveHit(player, target->body, weaponAttack(player.swingWeapon), ctx))) {
+        const MoveSpec& m = spec(player.move);
+        // A riposte lands on the broken stance it was for; if that's gone it's a plain hit.
+        bool riposte = player.move == Move::Riposte;
+        Entity* target = riposte ? riposteTarget(entities, player) : nullptr;
+        if (!target) target = punchTarget(entities, player);
+        riposte &= target && target->body.broken;
+        float power = player.move == Move::Riposte && !riposte ? 1 : m.damage * (player.charged ? gMelee.chargeDamage : 1);
+        HitContext hit{rng, armorK, power};
+        if (target && damage(*target, resolveHit(player, target->body, weaponAttack(player.swingWeapon), hit))) {
             player.combatTimer = kCombatSeconds;
-            awardHitXp(player, *target, true, !target->body.alive());
-            if (!target->body.alive() && events) events->push_back(Killed{target->kind, target->spawn.id});
+            bool killed = !target->body.alive();
+            awardHitXp(player, *target, true, killed);
+            if (killed && events) events->push_back(Killed{target->kind, target->spawn.id});
+            float stance = player.move == Move::Riposte && !riposte ? spec(Move::Light1).stance : m.stance * (player.charged ? gMelee.chargeStance : 1);
+            if (!killed) staggerHit(*target, stance, riposte);
+            player.freeze = target->body.freeze = std::min(0.04f + 0.003f * stance, 0.12f);  // hit-stop: heavier hits, longer
         }
     }
     for (Entity& e : entities) {
         tick(e.body, dt);
         e.xpWear = std::max(0.0f, e.xpWear - dt / kXpWearSeconds);
         e.armorWear = std::max(0.0f, e.armorWear - dt / kXpWearSeconds);
-        if (lands(e.body) && inReach(e.body, player.pos) && hurt(player, resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), ctx))) {
+        if (e.body.stanceWait > 0) e.body.stanceWait = std::max(0.0f, e.body.stanceWait - dt);
+        else e.body.stance = std::min(e.body.stance + 13 * dt, e.type().stance);
+        if (lands(e.body) && inReach(e.body, player.pos) && player.alive() && !invulnerable(player)) {
             e.body.combatTimer = kCombatSeconds;
-            awardHitXp(player, e, false, false);
+            int full = resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), ctx);
+            if (guards(player, e.body.pos)) {  // blocked: part of the damage, and stamina
+                bool armed = player.inv.equipped[SlotMainHand] != NoItem;
+                const MeleeTuning& t = gMelee;
+                player.stamina -= (t.blockStamina + t.blockStaminaPerDamage * float(full)) * (1 - (armed ? t.guardBoost : 0));
+                player.staminaWait = t.staminaDelay;
+                player.combatTimer = kCombatSeconds;
+                if (player.stamina < 0) player.stamina = 0, interrupt(player, t.guardBreakSeconds, true);  // guard broken
+                else player.blockTime = 0;
+                e.body.freeze = 0.08f;
+                full = int(std::lround(float(full) * (1 - (armed ? t.guardNegation : t.fistNegation))));
+            } else if (full > 0 && !hyperarmor(player) && e.type().hitStance >= playerPoise(player)) {
+                interrupt(player, gMelee.flinchSeconds, false);
+            }
+            if (hurt(player, full)) awardHitXp(player, e, false, false);
         }
         if (!e.body.alive() && e.body.deadTime >= e.type().respawnSeconds) {  // back home, fully healed
             e.body.teleport(e.home);
             e.body.vel = {};
             e.body.health = float(maxHealth(sheet(e.body)));
+            e.body.stance = e.type().stance;
             e.body.deadTime = 0;
             e.body.combatTimer = 0;
             e.loot = NoItem;

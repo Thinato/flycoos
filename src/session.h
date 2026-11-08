@@ -43,15 +43,18 @@ struct Session {
 // What the player wants this step; main.cpp maps keys and mouse to it.
 struct SimInput {
     Input move;             // walking; ignored while the player is knocked out (outside the editor)
-    glm::vec2 aim{};        // XZ direction attacks go toward
-    bool attack = false;    // swing toward `aim` as soon as the swing is ready
+    glm::vec2 aim{};        // nonzero: XZ direction attacks go toward (a lock-on); else the way it moves, else faces
+    bool attack = false;    // the attack button went down since the last step (a tap is a light, a hold a heavy: melee.h)
+    bool attackHeld = false;  // the attack button is down
+    bool heavy = false, heavyHeld = false;  // the heavy button: went down, is down
+    bool guard = false;     // the guard button is down
     bool interact = false;  // loot the nearest corpse, else talk to the nearest NPC
     bool editing = false;   // the editor is open: NPCs and combat pause, no attacks
     float timeRate = 1;     // time-of-day speed-up this step (1 normal, 0 frozen)
 };
 
 struct StepResult {
-    bool attacked = false;   // `attack` was used: a swing started, or the player is knocked out
+    bool attacked = false;   // an attack move started, or `attack` came while the player is knocked out
     bool respawned = false;  // the knocked-out player got back up at the player spawn
 };
 

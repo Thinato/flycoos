@@ -16,6 +16,7 @@
 
 #include "defs.h"
 #include "hud.h"
+#include "melee.h"
 #include "stream.h"
 #include "text.h"
 
@@ -146,7 +147,7 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
 static void attributes(Player& b, bool fights) {
     Stats& s = b.stats;
     ImGui::SliderFloat("Health", &b.health, 0, float(maxHealth(sheet(b))), "%.0f");
-    ImGui::SliderInt("Stamina", &s.stamina, 1, 100);
+    ImGui::SliderInt("Vitality", &s.stamina, 1, 100);
     ImGui::SetItemTooltip("+%d max health per point", kHealthPerStamina);
     ImGui::SliderInt("Strength", &s.strength, 0, 100);
     ImGui::SetItemTooltip("Physical damage + strength x attack speed");
@@ -225,6 +226,48 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
     ImGui::SliderFloat("Roll length", &t.rollSeconds, 0.1f, 1.5f, "%.2f s");
     ImGui::Text("Rolling %s   (%.1f blocks a roll)", p.rolling() ? "yes" : "no", double(t.rollSpeed * t.rollSeconds * 0.75f));
 
+    ImGui::SeparatorText("Melee (ADR-035)");
+    MeleeTuning& m = gMelee;
+    ImGui::ProgressBar(p.stamina / m.staminaMax, ImVec2(-FLT_MIN, 0), std::format("stamina {:.0f} / {:.0f}", p.stamina, m.staminaMax).c_str());
+    if (p.punching())
+        ImGui::Text("%s  %.2f / %.2f s%s%s", spec(p.move).name, double(p.moveTime), double(moveLength(p)),
+                    p.holding ? std::format("  charging {:.2f} s", p.charge).c_str() : "", p.charged ? "  charged" : "");
+    else ImGui::TextDisabled("not attacking (last: %s, %.1f s ago)", spec(p.lastMove).name, double(p.sinceMove));
+    ImGui::Text("Guard %s   blocked %.1f s ago   %s %.2f s", p.guarding ? "up" : "down", double(std::min(p.blockTime, 99.0f)),
+                p.broken ? "guard broken" : "reeling", double(p.stagger));
+    ImGui::Text("i-frames %s   hyperarmor %s", invulnerable(p) ? "yes" : "no", hyperarmor(p) ? "yes" : "no");
+    if (ImGui::TreeNode("Stamina, timing and the guard")) {
+        ImGui::SliderFloat("Max stamina", &m.staminaMax, 10, 300, "%.0f");
+        ImGui::SliderFloat("Regen", &m.staminaRegen, 0, 200, "%.0f / s");
+        ImGui::SliderFloat("Regen delay", &m.staminaDelay, 0, 3, "%.2f s");
+        ImGui::SliderFloat("Regen guarding", &m.guardRegen, 0, 1, "x %.2f");
+        ImGui::SliderFloat("Run drain (in combat)", &m.runDrain, 0, 50, "%.0f / s");
+        ImGui::SliderFloat("Roll cost", &m.rollStamina, 0, 60, "%.0f");
+        ImGui::SliderFloat("Tap or hold", &m.tapSeconds, 0.05f, 0.5f, "%.2f s");
+        ImGui::SetItemTooltip("The attack button held this long makes a heavy, not a light.");
+        ImGui::SliderFloat("Charge time", &m.chargeSeconds, 0.1f, 2, "%.2f s");
+        ImGui::SliderFloat("Charged damage", &m.chargeDamage, 1, 3, "x %.2f");
+        ImGui::SliderFloat("Charged stance", &m.chargeStance, 1, 3, "x %.2f");
+        ImGui::SliderFloat("Input buffer", &m.bufferSeconds, 0, 1.5f, "%.2f s");
+        ImGui::SliderFloat("Chain grace", &m.chainGrace, 0, 1, "%.2f s");
+        ImGui::SetItemTooltip("After a light ends, the next one still goes on with the chain this long.");
+        ImGui::SliderFloat("Fist moves", &m.fistScale, 0.3f, 1.5f, "x %.2f");
+        ImGui::SliderFloat("Sword guard stops", &m.guardNegation, 0, 1, "%.2f of the damage");
+        ImGui::SliderFloat("Arms guard stops", &m.fistNegation, 0, 1, "%.2f of the damage");
+        ImGui::SliderFloat("Guard boost", &m.guardBoost, 0, 1, "%.2f of the stamina");
+        ImGui::SliderFloat("Block stamina", &m.blockStamina, 0, 60, "%.0f");
+        ImGui::SliderFloat("  + per damage", &m.blockStaminaPerDamage, 0, 10, "%.1f");
+        ImGui::SliderFloat("Guard counter window", &m.counterWindow, 0.1f, 2, "%.2f s");
+        ImGui::SliderFloat("Flinch", &m.flinchSeconds, 0, 1, "%.2f s");
+        ImGui::SliderFloat("Stance break", &m.breakSeconds, 0.2f, 6, "%.2f s");
+        ImGui::SliderFloat("Guard break", &m.guardBreakSeconds, 0.2f, 4, "%.2f s");
+        ImGui::SliderFloat("Roll i-frames from", &m.iframeFrom, 0, 1, "%.2f s");
+        ImGui::SliderFloat("Roll i-frames to", &m.iframeTo, 0, 1, "%.2f s");
+        ImGui::SliderFloat("NPC tracking stops", &m.trackSeconds, 0, 1, "%.2f s before the strike");
+        if (ImGui::Button("Reset melee")) m = MeleeTuning{};
+        ImGui::TreePop();
+    }
+
     ImGui::SeparatorText("Flight");
     ImGui::Checkbox("Fly", &t.fly);
     ImGui::SetItemTooltip("Space rises, Ctrl sinks, Shift is 2.5x faster.");
@@ -282,6 +325,9 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
             ImGui::Text("aggro %.0f   leash %.0f   re-aggro %.0f (after %.0f s)   chase %.1f b/s", t.aggroRange, t.leashRadius,
                         t.reaggroRadius, t.reaggroCooldown, t.chaseSpeed);
             ImGui::Text("windup %.2f s   recover %.2f s   cooldown %.2f s", t.windup, t.recover, t.cooldown);
+            ImGui::Text("stance %.0f / %.0f   poise %.0f   %s %.2f s", double(e.body.stance), double(t.stance), double(t.poise),
+                        e.body.broken ? "BROKEN" : "reeling", double(e.body.stagger));
+            ImGui::SetItemTooltip("Hits wear the stance down; at 0 it breaks (open to a riposte). A hit of at least its poise makes it flinch (ADR-035).");
             ImGui::Text("gives up after %.0f s stuck   flees below %.0f%% health", t.giveUpSeconds, t.fleeHealth * 100);
         }
         if (e.transitions && ImGui::TreeNode("transitions", "Last %u transitions", std::min(e.transitions, uint32_t(e.history.size())))) {

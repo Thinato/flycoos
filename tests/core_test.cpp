@@ -28,6 +28,7 @@
 #include "entity.h"
 #include "light.h"
 #include "lockon.h"
+#include "melee.h"
 #include "mesher.h"
 #include "notes.h"
 #include "plants.h"
@@ -717,9 +718,9 @@ static void fighters() {
     CHECK(player.health < 100 && player.lastDamage >= 5 && player.lastDamage <= 8);  // 3-6 + strength 3 x speed 0.75
     CHECK(glm::distance(flat(bandit.body.pos), flat(player.pos)) < kPunchReach);
 
-    // Leash: once the player is out of its territory it gives up and walks home.
+    // Leash: once the player is out of its territory it gives up (after the swing under way) and walks home.
     player.pos = bandit.home + glm::vec3(-bandit.type().leashRadius - 1, 0, 0);
-    sim(0.1f);
+    sim(1);
     CHECK(!bandit.angry());
     sim(30);
     CHECK(!bandit.angry() && glm::distance(flat(bandit.body.pos), flat(bandit.home)) < bandit.type().wanderRadius + 1);
@@ -758,6 +759,7 @@ static void fighters() {
     CHECK(takeLoot(boar, player.inv) && boar.loot == NoItem && player.inv.containers[0][0] == BoarSkin);
     CHECK(lootTarget(es, player) == nullptr);
     // It lies still where it fell, then comes back at home, healed and calm.
+    boar.body.vel = {};  // (killed mid-stride it would slide to a stop first)
     glm::vec3 fell = boar.body.pos;
     boar.body.deadTime = 0;
     setState(boar, AiState::Chase, "test");
@@ -801,7 +803,7 @@ static void fighters() {
     Player b = boar.body;
     auto idle = poseModel(b, ModelBoar);
     CHECK(startPunch(b, {0, 1}));
-    b.punchTime = kPunchImpact * b.punchLength;
+    b.moveTime = impactTime(b);
     CHECK(poseModel(b, ModelBoar)[Head][3].z > idle[Head][3].z + 0.2f);
     b.health = 0;
     b.deadTime = 1;
@@ -891,8 +893,8 @@ static void items() {
     CHECK(held == glm::mat4(0));
     giveItem(p.inv, Shortsword);
     quickMove(p.inv, {Item, 0, 0});
-    CHECK(startPunch(p, {0, 1}));
-    p.punchTime = kPunchImpact * p.punchLength;
+    startMove(p, Move::Light4, {0, 1});  // the thrust: at its hit the blade points straight ahead
+    p.moveTime = impactTime(p);
     auto pose = poseModel(p, ModelPlayer, &held);
     glm::vec3 blade = glm::normalize(glm::vec3(held * glm::vec4(0, 1, 0, 0)));
     CHECK(blade.z > 0.95f);
@@ -2562,13 +2564,17 @@ static void storyNpcs() {
     poseModel(Player{}, ModelWolf, &held);
     CHECK(held == glm::mat4(0));  // no hands
 
-    // Fights: a level-1 player in the whole Iron set (armor 37) with the sword stands still and
-    // swings at the nearest foe; foes come from a spawn marker 6 blocks away. Returns the player's
-    // health left, or minus the foes' health left when the player goes down.
+    // Fights: a level-1 player in the whole Iron set (armor 37) with the sword stands still, facing
+    // the nearest foe, and plays it the way Elden Ring teaches (ADR-035): guards when a foe in front is
+    // about to strike, attacks when no strike can land before its light does (while there's stamina
+    // to), ripostes when a stance breaks. Foes
+    // come from a spawn marker 6 blocks away. Returns the player's health left, or minus the foes'
+    // health left when the player goes down.
     Grid g = meadow();
     auto fight = [&](EntityKind kind, int count, bool geared, uint32_t seed) {
         Player player;
         player.pos = {20.5f, 4, 32.5f};
+        player.onGround = true, player.offGround = 0;  // standing (no physics here)
         if (geared)
             for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, Shortsword}) {
                 giveItem(player.inv, id);
@@ -2586,7 +2592,21 @@ static void storyNpcs() {
             auto flat = [&](const Entity& e) { return glm::vec2(e.body.pos.x - player.pos.x, e.body.pos.z - player.pos.z); };
             auto foe = std::ranges::min_element(alive, {}, [&](const Entity& e) { return glm::length(flat(e)); });
             if (foe == alive.end()) return player.health;
-            if (glm::length(flat(*foe)) < kPunchReach - 0.1f) startPunch(player, glm::normalize(flat(*foe)));
+            glm::vec2 to = glm::normalize(flat(*foe));
+            if (!player.punching()) player.yaw = std::atan2(to.x, to.y);
+            auto due = [&](const Entity& e) {  // when a foe in reach strikes next (99: it isn't winding up)
+                if (e.state != AiState::Windup || !e.body.hitPending || glm::length(flat(e)) > kPunchReach + 0.5f) return 99.0f;
+                return e.body.hold + std::max(0.0f, impactTime(e.body) - e.body.moveTime);
+            };
+            MeleeInput melee{.aim = to};
+            melee.guard = !player.punching() && std::ranges::any_of(alive, [&](const Entity& e) {  // a guard only helps in front
+                return due(e) < 0.3f && glm::dot(glm::normalize(flat(e)), to) >= gMelee.guardAngle;
+            });
+            bool safe = std::ranges::none_of(alive, [&](const Entity& e) { return due(e) < 0.35f; });  // a light lands first
+            melee.attack = safe && glm::length(flat(*foe)) < kPunchReach - 0.1f && player.stamina > 15;
+            if (Entity* broken = riposteTarget(es, player)) melee.riposte = true, melee.aim = flat(*broken);
+            Input still;
+            updateMelee(player, melee, still, 1 / 60.0f);
             updateCombat(player, es, 1 / 60.0f, rng);
             if (!player.alive()) return -std::ranges::fold_left(es, 0.0f, [](float n, const Entity& e) { return n + e.body.health; });
         }
@@ -2616,7 +2636,7 @@ static void storyNpcs() {
     std::mt19937 rng(3);
     Player armored;
     for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons}) armored.inv.equipped[itemType(id).slot] = id;
-    for (auto [kind, lo, hi] : {std::tuple{EntityKind::Wolf, 2, 3}, std::tuple{EntityKind::Ghoul, 2, 5}, std::tuple{EntityKind::BanditChief, 5, 8}}) {
+    for (auto [kind, lo, hi] : {std::tuple{EntityKind::Wolf, 4, 5}, std::tuple{EntityKind::Ghoul, 4, 6}, std::tuple{EntityKind::BanditChief, 7, 10}}) {
         const EntityType& t = typeOf(kind);
         Player foe;
         foe.stats = t.stats, foe.level = t.level;
@@ -2626,6 +2646,7 @@ static void storyNpcs() {
             least = std::min(least, d), most = std::max(most, d);
         }
         CHECK(least == lo && most == hi);
+        if (least != lo || most != hi) std::println(stderr, "  {} hits {}..{}", t.name, least, most);
     }
 
     // The chief of a story camp: named by its marker, taunts when it turns on the player, always drops the helm.
@@ -2976,13 +2997,13 @@ static void tables() {
                            Temper::Passive,    0,    10,    6,    NoItem,     BoarSkin,  0.75f, 30},
         {"Bandit",         2, {12, 3, 2, 2, 2},  true,  true,  false, ModelBandit,
                            Temper::Aggressive, 10,   5,     5.5f, Knife,      Knife,     0.4f,  30},
-        {"Wolf",           1, {8, 2, 4, 2, 2},   true,  true,  false, ModelWolf,
+        {"Wolf",           1, {8, 6, 70, 2, 2},   true,  true,  false, ModelWolf,
                            Temper::Aggressive, 12,   10,    7.5f, NoItem,     WolfPelt,  0.6f,  30},
         {"Guard",          4, {16, 5, 3, 2, 4},  true,  true,  true,  ModelGuard,
                            Temper::Passive,    0,    6,     6,    Shortsword, NoItem,    0,     60},
-        {"Bandit Chief",   3, {11, 1, 2, 2, 2},  true,  true,  false, ModelChief,
+        {"Bandit Chief",   3, {11, 3, 2, 2, 2},  true,  true,  false, ModelChief,
                            Temper::Aggressive, 10,   6,     5.5f, Shortsword, IronHelm,  1,     120},
-        {"Barrow Ghoul",   3, {7, 2, 2, 2, 2},   true,  true,  false, ModelGhoul,
+        {"Barrow Ghoul",   3, {7, 4, 2, 2, 2},   true,  true,  false, ModelGhoul,
                            Temper::Aggressive, 8,    4,     4,    NoItem,     BoneCharm, 0.3f,  45},
     };
     static_assert(std::size(kWantTypes) == size_t(EntityKind::Count));
@@ -3077,18 +3098,19 @@ static void fightReplay() {
         if (!bandit.body.alive()) deathFrame = frame;
     }
     // The bandit hits for 3-5 (knife 3-6 + round(3 x 0.75) strength = 5-8, less 37 armor vs level 2: 32%),
-    // the player for 8-12 (sword 6-10 + 2 strength); the bandit has 120 health.
+    // the player for 8-12 (sword 6-10 + 2 strength); the bandit has 120 health. Re-pinned for ADR-035:
+    // the bandit's windup telegraphs (0.5 s, varied), and the player's hits make it flinch (cancelling
+    // its swing) while its own don't break the Iron set's poise; it died at frame 704, the player at 43.
     const std::vector<std::tuple<int, char, int>> want{
-        {57, 'b', 11}, {60, 'p', 3},   {104, 'p', 3}, {115, 'b', 9},  {148, 'p', 5}, {174, 'b', 8},  {192, 'p', 3},
-        {233, 'b', 9}, {236, 'p', 3},  {280, 'p', 5}, {292, 'b', 12}, {324, 'p', 5}, {351, 'b', 9},  {368, 'p', 5},
-        {409, 'b', 12}, {412, 'p', 5}, {457, 'p', 4}, {468, 'b', 10}, {501, 'p', 3}, {527, 'b', 11}, {545, 'p', 3},
-        {586, 'b', 10}, {589, 'p', 3}, {633, 'p', 4}, {645, 'b', 10}, {677, 'p', 3}, {704, 'b', 9},
+        {65, 'b', 11}, {121, 'b', 12}, {175, 'p', 3}, {182, 'b', 9},  {235, 'p', 5}, {241, 'b', 8},  {295, 'p', 3},
+        {298, 'b', 9}, {344, 'p', 3},  {359, 'b', 13}, {417, 'b', 9}, {474, 'b', 10}, {535, 'b', 13}, {590, 'p', 5},
+        {594, 'b', 10}, {638, 'p', 3}, {651, 'b', 11}, {704, 'p', 3}, {712, 'b', 11},
     };
     CHECK(hits == want);
     if (hits != want)
         for (auto [frame, who, amount] : hits) std::println(stderr, "  got {{{}, '{}', {}}}", frame, who, amount);
-    same("fightReplay", "deathFrame", deathFrame, 704);
-    if (std::abs(player.health - 43) >= 0.01f) same("fightReplay", "player.health", player.health, 43.0f);
+    same("fightReplay", "deathFrame", deathFrame, 712);
+    if (std::abs(player.health - 75) >= 0.01f) same("fightReplay", "player.health", player.health, 75.0f);
     same("fightReplay", "bandit.loot", bandit.loot, NoItem);  // the 40% knife roll fails for this seed
     CHECK(!takeLoot(bandit, player.inv) && freeSlots(player.inv) == kBackpackSlots);
 
@@ -3138,14 +3160,15 @@ static void boarReplay() {
     run(5 * 60, false);  // it fights back
     CHECK(boar.angry());
     same("boarReplay", "boar health", boar.body.health, 97.0f);  // one punch, no regen in combat
-    same("boarReplay", "player health", player.health, 71.0f);
+    same("boarReplay", "player health", player.health, 76.0f);  // was 71: its windup telegraphs now (ADR-035)
     player.pos = boar.home + glm::vec3(0, 0, 15);  // backs off, still in its territory
     run(3 * 60, false);  // it runs after them and keeps biting
     CHECK(boar.angry());
     auto near = [](float got, float want) { return std::abs(got - want) < 0.01f; };
-    // Was 13.75: the boar used to keep running through a swing; a windup now stands committed.
-    if (!near(glm::distance(boar.body.pos, boar.home), 13.65f))
-        same("boarReplay", "chase distance from home", glm::distance(boar.body.pos, boar.home), 13.65f);
+    // Was 13.75: the boar used to keep running through a swing; a windup now stands committed. Then
+    // 13.65, before the windup telegraphed (ADR-035).
+    if (!near(glm::distance(boar.body.pos, boar.home), 12.47f))
+        same("boarReplay", "chase distance from home", glm::distance(boar.body.pos, boar.home), 12.47f);
     player.pos = boar.home + glm::vec3(0, 0, boar.type().leashRadius + 5);  // out of its territory: gives up at once
     run(1, false);
     CHECK(!boar.angry());
@@ -3154,9 +3177,9 @@ static void boarReplay() {
     if (!near(glm::distance(boar.body.pos, boar.home), 0.067f))
         same("boarReplay", "distance from home", glm::distance(boar.body.pos, boar.home), 0.067f);
     same("boarReplay", "boar health", boar.body.health, 100.0f);
-    if (!near(player.health, 70.62f)) same("boarReplay", "player health", player.health, 70.62f);
-    const std::vector<std::tuple<int, char, int>> want{
-        {128, 'b', 3}, {137, 'p', 6}, {195, 'p', 4}, {254, 'p', 3}, {313, 'p', 5}, {372, 'p', 6}, {431, 'p', 5}, {624, 'p', 6},
+    if (!near(player.health, 84.84f)) same("boarReplay", "player health", player.health, 84.84f);
+    const std::vector<std::tuple<int, char, int>> want{  // fewer, later gores since ADR-035's telegraphed windup
+        {132, 'b', 3}, {180, 'p', 6}, {241, 'p', 4}, {299, 'p', 3}, {370, 'p', 5}, {431, 'p', 6},
     };
     CHECK(hits == want);
     if (hits != want)
@@ -3172,9 +3195,10 @@ static void npcAi() {
         return e.history[(e.transitions - 1 - back) % e.history.size()];
     };
     auto reason = [&](const Entity& e, uint32_t back = 0) { return std::string_view(newest(e, back).reason); };
-    // The shipped kinds: the old global leash, the old swing timing, nobody flees.
+    // The shipped kinds: the old global leash, nobody flees; a readable windup (ADR-035).
     for (const EntityType& t : defs().creatures)
-        CHECK(t.leashRadius == 20 && t.reaggroRadius == 16 && t.windup == kSwingWindup && t.cooldown == 0 && t.fleeHealth == 0);
+        CHECK(t.leashRadius == 20 && t.reaggroRadius == 16 && t.windup >= 0.28f && t.cooldown == 0 && t.fleeHealth == 0);
+    CHECK(typeOf(EntityKind::Bandit).windup == kDefaultWindup && typeOf(EntityKind::Bandit).recover == kDefaultRecover);
 
     Grid g = meadow();
     Player player;
@@ -3222,20 +3246,28 @@ static void npcAi() {
     sim(1, none);
     CHECK(bandit->state == AiState::Chase && reason(*bandit) == "saw_target");
 
-    // Windup: committed and timed; the hit lands once, at its end, and only if the player is still in reach.
+    // Windup (ADR-035): a telegraph of 0.85 .. 1.35 x attack_windup, turning after the player until
+    // just before the strike, then committed; the hit lands once, at its end, and only if the player is
+    // still in reach.
     player.pos = bandit->body.pos + glm::vec3(-1.5f, 0, 0);
     player.health = 100;
     int ticks = 0;
     while (bandit->state != AiState::Windup && ticks++ < 120) sim(1, none);
     CHECK(bandit->state == AiState::Windup && reason(*bandit) == "in_reach" && bandit->body.hitPending);
-    float yaw = bandit->body.yaw;
-    player.pos = bandit->body.pos + glm::vec3(-4, 0, 0);  // steps out of reach (and around it)
-    for (ticks = 0; bandit->state == AiState::Windup && ticks < 60; ++ticks) {
+    float windup = impactTime(bandit->body) + bandit->body.hold;
+    const EntityType& bt = bandit->type();
+    CHECK(windup > 0.85f * bt.windup - 1e-4f && windup < 1.35f * bt.windup + 1e-4f);
+    player.pos = bandit->body.pos + glm::vec3(0, 0, -4);  // steps out of reach, around to its side
+    bool turned = false, turnedLate = false;
+    for (ticks = 0; bandit->state == AiState::Windup && ticks < 90; ++ticks) {
+        float before = bandit->body.yaw;
+        bool late = bandit->body.moveTime >= holdTime(bandit->body) && bandit->body.hold <= gMelee.trackSeconds;
         sim(1, none);
-        if (bandit->state == AiState::Windup) CHECK(bandit->body.yaw == yaw);  // no turning (it only slides to a stop)
+        (late ? turnedLate : turned) |= bandit->body.yaw != before;
     }
-    CHECK(ticks == int(std::ceil(kSwingWindup * 60)) && player.health == 100);  // dodged
-    CHECK(bandit->state == AiState::Recover && reason(*bandit) == "swung" && newest(*bandit).after >= kSwingWindup - kTick);
+    CHECK(turned && !turnedLate);  // tracks, then commits
+    CHECK(std::abs(ticks - windup * 60) <= 2 && player.health == 100);  // dodged
+    CHECK(bandit->state == AiState::Recover && reason(*bandit) == "swung" && newest(*bandit).after >= windup - 2 * kTick);
     // Standing in reach: exactly one hit per windup.
     player.pos = bandit->body.pos + glm::vec3(-1.5f, 0, 0);
     int hits = 0, windups = 0;
@@ -3457,7 +3489,7 @@ static void session() {
     auto fight = [&](uint32_t seed) {
         Session f = make(seed);
         std::vector<std::tuple<int, float, float, float>> trace;  // frame, player health, bandit health, player x
-        for (int frame = 0; frame < 4 * 60; ++frame) {
+        for (int frame = 0; frame < 10 * 60; ++frame) {
             const Entity& bandit = f.entities[0];
             glm::vec2 to{bandit.body.pos.x - f.player.pos.x, bandit.body.pos.z - f.player.pos.z};
             SimInput in;
@@ -4174,8 +4206,10 @@ static void dataFiles() {
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "villager", "leash_radius": 10}])",
               "field 'leash_radius': harmless creatures don't fight"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "give_up_seconds": "soon"}])", "field 'give_up_seconds': must be a number"},
-             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "attack_windup": 0.4}])",
-              "field 'attack_windup': 0.4 s must be less than 0.4 x its swing time (0.980 s)"},  // punch 1.0 at agility 2
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "villager", "stance": 10}])",
+              "field 'stance': only attackable creatures are hit"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "dummy", "hit_stance": 10}])",
+              "field 'hit_stance': harmless creatures don't fight"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "wanders": false}])",
               "field 'wanders': must be true for a creature that fights"},
              {scarecrow + "]",
@@ -5609,6 +5643,255 @@ static void packs() {
     CHECK(es[0].pack == 1);
 }
 
+// Melee (ADR-035): the light chain, tap or hold, charging, stamina, the guard and guard counters,
+// stance breaks and ripostes, flinching and poise, i-frames and hyperarmor, and the attacks that come
+// from running, rolling and jumping.
+static void melee() {
+    Grid g = flatWorld(0);
+    constexpr float dt = 1 / 60.0f;
+    std::mt19937 rng(5);
+    std::vector<Entity> none;
+    auto fighter = [] {
+        Player p;
+        p.pos = {7.5f, 4, 7.5f};
+        p.onGround = true, p.offGround = 0;  // standing (no physics in most of these)
+        p.inv.equipped[SlotMainHand] = Shortsword;
+        return p;
+    };
+    // One tick of the player: its buttons, then the combat clocks. Returns the move it's in.
+    auto tick = [&](Player& p, const MeleeInput& in, std::vector<Entity>& es) {
+        Input move;
+        updateMelee(p, in, move, dt);
+        updateCombat(p, es, dt, rng);
+        return p.move;
+    };
+    MeleeInput tap{.attack = true};
+
+    {  // Tapping through a chain: four different lights, then round again; each costs stamina.
+        Player p = fighter();
+        std::vector<Move> seen;
+        for (int i = 0; i < 4 * 60 && seen.size() < 5; ++i) {
+            Move before = p.move;
+            if (Move m = tick(p, tap, none); m != before && m != Move::None) seen.push_back(m);
+        }
+        CHECK((seen == std::vector{Move::Light1, Move::Light2, Move::Light3, Move::Light4, Move::Light1}));
+        CHECK(p.stamina < gMelee.staminaMax - 4 * 12);
+        // A light after the chain has lapsed (chainGrace) starts it over.
+        while (p.punching()) tick(p, {}, none);
+        for (int i = 0; i < 30; ++i) tick(p, {}, none);
+        CHECK(tick(p, tap, none) == Move::Light1);
+    }
+    {  // Tap or hold: let go before tapSeconds, a light; held longer, a heavy that charges while held.
+        Player p = fighter();
+        tick(p, {.attack = true, .attackHeld = true}, none);
+        for (int i = 0; i < 5; ++i) tick(p, {.attackHeld = true}, none);
+        CHECK(!p.punching());  // not yet a tap or a hold
+        CHECK(tick(p, {}, none) == Move::Light1);  // let go: a light
+        while (p.punching()) tick(p, {}, none);
+        for (int i = 0; i < 30; ++i) tick(p, {}, none);
+        tick(p, {.attack = true, .attackHeld = true}, none);
+        int ticks = 1;
+        while (!p.punching() && ticks++ < 60) tick(p, {.attackHeld = true}, none);
+        CHECK(p.move == Move::Heavy1 && std::abs(float(ticks) * dt - gMelee.tapSeconds) < 2 * dt);
+        for (int i = 0; i < 3 * 60 && !p.charged; ++i) tick(p, {.attackHeld = true}, none);
+        CHECK(p.charged && p.charge >= gMelee.chargeSeconds && p.moveTime >= holdTime(p));
+        tick(p, {.attackHeld = true}, none);
+        CHECK(p.moveTime > holdTime(p));  // fully charged: it lets fly by itself
+        // The heavy button: a heavy at once; let go before it's charged, it swings uncharged.
+        Player q = fighter();
+        CHECK(tick(q, {.heavy = true, .heavyHeld = true}, none) == Move::Heavy1);
+        for (int i = 0; i < 40; ++i) tick(q, {.heavyHeld = true}, none);
+        CHECK(q.holding && q.charge > 0);
+        tick(q, {}, none);
+        for (int i = 0; i < 3; ++i) tick(q, {}, none);
+        CHECK(!q.charged && q.moveTime > holdTime(q));
+        // Heavies chain too: the second is the overhead chop.
+        Move next = Move::None;
+        for (int i = 0; i < 2 * 60 && next != Move::Heavy2; ++i) next = tick(q, {.heavy = true}, none);
+        CHECK(next == Move::Heavy2);
+    }
+    {  // Stamina: none left, no attack; it comes back after staminaDelay.
+        Player p = fighter();
+        p.stamina = 0;
+        CHECK(tick(p, tap, none) == Move::None);
+        CHECK(tick(p, {}, none) == Move::Light1);  // the press waited: the first bit of stamina back swings it
+        while (p.punching()) tick(p, {}, none);
+        for (int i = 0; i < int(gMelee.staminaDelay * 60) - 2; ++i) tick(p, {}, none);
+        CHECK(p.stamina < 1);  // not while swinging, nor just after
+        for (int i = 0; i < 60; ++i) tick(p, {}, none);
+        CHECK(p.stamina > 30);
+        // A power formula check: twice the power, twice the hit (before armor).
+        Player a = fighter(), b;
+        a.swingWeapon = NoItem;
+        std::mt19937 r1(9), r2(9);
+        CHECK(resolveHit(a, b, Attack{8, 8, 1}, {r1, kArmorK, 2}) == 2 * resolveHit(a, b, Attack{8, 8, 1}, {r2}));
+    }
+    // A bandit 1.5 blocks in front of the player, facing it.
+    auto duel = [&](Player& p) {
+        std::vector<Entity> es;
+        es.reserve(4);
+        spawnAhead(es, g, p, EntityKind::Bandit, 1, 1.5f);
+        es[0].body.onGround = true;
+        return es;
+    };
+    // Lets the bandit's swing land on `p`, the player holding `in` meanwhile. Returns the damage.
+    auto struck = [&](Player& p, std::vector<Entity>& es, const MeleeInput& in) {
+        Player& b = es[0].body;
+        glm::vec2 at(p.pos.x - b.pos.x, p.pos.z - b.pos.z);
+        b.swingTimer = 0;
+        CHECK(startPunch(b, glm::normalize(at)));
+        float before = p.health;
+        for (int i = 0; i < 60 && b.hitPending; ++i) tick(p, in, es);
+        return before - p.health;
+    };
+    {  // The guard: in front it stops most of a hit for stamina; a guard counter follows; from behind, nothing.
+        Player p = fighter();
+        for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons}) p.inv.equipped[itemType(id).slot] = id;  // poise: no flinch
+        std::vector<Entity> es = duel(p);
+        p.yaw = 0;  // the bandit is at +Z
+        std::mt19937 keep = rng;
+        float open = struck(p, es, {});
+        rng = keep;
+        p.health = 100;
+        tick(p, {.guard = true}, es);
+        CHECK(p.guarding);
+        float stamina = p.stamina, blocked = struck(p, es, {.guard = true});
+        CHECK(blocked < open && p.stamina < stamina - gMelee.blockStamina && p.blockTime < 0.1f && p.stagger == 0);
+        // Right after: an attack is a guard counter (once the block's stun has passed).
+        Move counter = Move::None;
+        for (int i = 0; i < 30 && counter == Move::None; ++i) counter = tick(p, {.attack = true, .attackHeld = true, .guard = true}, es);
+        CHECK(counter == Move::GuardCounter && p.blockTime >= gMelee.blockStun);
+        while (p.punching()) tick(p, {}, es);
+        p.yaw = std::numbers::pi_v<float>;  // its back to the bandit
+        p.health = 100;
+        CHECK(struck(p, es, {.guard = true}) > 0 && p.blockTime > 0.1f);
+        // Too little stamina: the guard breaks, and it reels.
+        p.yaw = 0;
+        p.stamina = 1;
+        tick(p, {.guard = true}, es);
+        struck(p, es, {.guard = true});
+        CHECK(p.stamina == 0 && p.stagger > 0 && p.broken && !p.guarding);
+        CHECK(tick(p, tap, es) == Move::None);  // no acting while it reels
+    }
+    {  // Hits wear an NPC's stance down: a flinch cancels its swing; at 0 it breaks, open to a riposte.
+        Player p = fighter();
+        std::vector<Entity> es = duel(p);
+        Entity& bandit = es[0];
+        p.yaw = 0;
+        bandit.body.swingTimer = 0;
+        CHECK(startPunch(bandit.body, {0, -1}, 1.0f));  // a long windup
+        setState(bandit, AiState::Windup, "test");
+        float stance = bandit.body.stance;
+        while (tick(p, tap, es) != Move::None && bandit.body.hitPending && p.hitPending) {}
+        for (int i = 0; i < 30 && bandit.body.hitPending; ++i) tick(p, {}, es);
+        CHECK(!bandit.body.hitPending && bandit.body.stance < stance && bandit.body.stagger > 0 && !bandit.body.broken);
+        updateEntities(es, g, p, dt);
+        CHECK(bandit.state == AiState::Stagger && bandit.history[(bandit.transitions - 1) % 8].reason == std::string_view("flinched"));
+        CHECK(riposteTarget(es, p) == nullptr);
+        staggerHit(bandit, bandit.body.stance, false);  // the rest of it
+        CHECK(bandit.body.broken && bandit.body.stagger == gMelee.breakSeconds && bandit.body.stance == bandit.type().stance);
+        CHECK(riposteTarget(es, p) == &bandit);
+        // An attack on it now is a riposte: it can't be hit meanwhile, and the riposte hits three times as
+        // hard, on the broken one (not a nearer one beside it).
+        while (p.punching()) tick(p, {}, es);
+        Entity& nearer = spawnAhead(es, g, p, EntityKind::Bandit, 2, 1.0f);  // (duel() reserved room: `bandit` stays put)
+        nearer.body.pos.x += 0.3f;
+        float nearHealth = nearer.body.health;
+        float health = bandit.body.health;
+        CHECK(tick(p, {.attack = true, .aim = {0, 1}, .riposte = true}, es) == Move::Riposte && invulnerable(p) && hyperarmor(p));
+        while (p.hitPending) tick(p, {}, es);
+        CHECK(health - bandit.body.health >= 3 * 6 && es[1].body.health == nearHealth);  // the sword rolls 6 at least
+        CHECK(!bandit.body.broken && bandit.body.stagger > gMelee.downSeconds - 0.1f);  // knocked down instead
+        es.pop_back();
+        // Its stance comes back once it hasn't been hit for a while.
+        staggerHit(bandit, 20, false);
+        float worn = bandit.body.stance;
+        for (int i = 0; i < 8 * 60; ++i) updateCombat(p, es, dt, rng);
+        CHECK(worn < bandit.type().stance && bandit.body.stance == bandit.type().stance);
+        // Poise: a guard shrugs off a light (10 < 12) but not the chain's finisher (14).
+        Entity guard = es[0];
+        guard.kind = EntityKind::Guard;
+        guard.body.stagger = 0, guard.body.stance = guard.type().stance;
+        staggerHit(guard, spec(Move::Light1).stance, false);
+        CHECK(guard.body.stagger == 0);
+        staggerHit(guard, spec(Move::Light4).stance, false);
+        CHECK(guard.body.stagger > 0 && !guard.body.broken);
+    }
+    {  // The player flinches from an open hit unless its poise holds or a heavy's hyperarmor does;
+       // a roll's i-frames let the hit pass through.
+        Player p = fighter();  // no armor: no poise
+        std::vector<Entity> es = duel(p);
+        p.yaw = 0;
+        CHECK(playerPoise(p) == 0);
+        tick(p, tap, es);
+        struck(p, es, {});
+        CHECK(!p.punching() && p.stagger > 0 && !p.broken);
+        for (int i = 0; i < 60; ++i) tick(p, {}, es);
+        tick(p, {.heavy = true, .heavyHeld = true}, es);
+        CHECK(hyperarmor(p) && struck(p, es, {.heavyHeld = true}) > 0 && p.move == Move::Heavy1 && p.stagger == 0);
+        while (p.punching()) tick(p, {}, es);
+        for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons}) p.inv.equipped[itemType(id).slot] = id;
+        CHECK(playerPoise(p) > es[0].type().hitStance);
+        tick(p, tap, es);
+        CHECK(struck(p, es, {}) > 0 && p.stagger == 0);  // the armor's poise holds
+        while (p.punching()) tick(p, {}, es);
+        p.rollTime = 0.1f, p.rollLength = 0.45f;  // mid-roll
+        CHECK(invulnerable(p) && struck(p, es, {}) == 0);
+    }
+    {  // What the body was doing picks the attack: a jump attack holds until it lands, running makes a
+       // running attack, late in a roll a rolling attack (the roll ends there); a roll pressed mid-swing
+       // waits for the swing's cancel point.
+        Player p = fighter();
+        p.onGround = false;
+        CHECK(tick(p, tap, none) == Move::JumpLight);
+        for (int i = 0; i < 60; ++i) tick(p, {}, none);
+        CHECK(p.punching() && p.moveTime == holdTime(p) && p.hitPending);  // still falling
+        p.onGround = true;
+        Input landed{.move = {1, 0}, .run = true, .jump = true};
+        updateMelee(p, {}, landed, dt);
+        CHECK(landed.move == glm::vec2(0) && !landed.jump && !landed.run);  // landed, it commits
+        for (int i = 0; i < 30; ++i) tick(p, {}, none);
+        CHECK(!p.hitPending);
+        while (p.punching()) tick(p, {}, none);
+
+        Player r = fighter();
+        r.vel = {0, 0, r.tuning.runSpeed};
+        Input running{.move = {0, 1}, .run = true};
+        CHECK(updateMelee(r, tap, running, dt) && r.move == Move::Running && !running.run);
+
+        Player q = fighter();
+        q.rollTime = 0.35f, q.rollLength = 0.45f;
+        Input rolling;
+        CHECK(updateMelee(q, tap, rolling, dt) && q.move == Move::Rolling && !q.rolling());
+
+        Player s = fighter();
+        tick(s, tap, none);
+        Input roll{.roll = true};
+        updateMelee(s, {}, roll, dt);
+        CHECK(!roll.roll && s.want == Want::Roll && s.punching());
+        bool rolled = false;
+        for (int i = 0; i < 60 && !rolled; ++i) {
+            Input in;
+            updateMelee(s, {}, in, dt);
+            rolled = in.roll;
+            updateCombat(s, none, dt, rng);
+        }
+        CHECK(rolled && !s.punching());
+    }
+    {  // Through the session, with physics: a lunge steps the player forward into the hit.
+        Player p = fighter();
+        p.pos.y = 4.001f;
+        float z = p.pos.z;
+        for (int i = 0; i < 20; ++i) {
+            Input move;
+            updateMelee(p, i == 0 ? tap : MeleeInput{}, move, dt);
+            updatePlayer(p, g, move, dt);
+            updateCombat(p, none, dt, rng);
+        }
+        CHECK(p.pos.z > z + 0.1f);
+    }
+}
+
 // Lock-on (lockon.h): the pick nearest the middle of the view, switching by screen direction, and
 // letting go on a kill (or passing the lock on), past the break range or long out of sight.
 static void lockOn() {
@@ -5709,6 +5992,7 @@ int main() {
     entities();
     lockOn();
     packs();
+    melee();
     combat();
     fighters();
     items();

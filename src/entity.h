@@ -41,6 +41,9 @@ struct EntityType {
     float recover;         // seconds it stands after the hit
     float cooldown;        // seconds of chasing before the next swing (the weapon's swing time gates it too)
     float fleeHealth;      // runs away below this fraction of its health; 0: never
+    float stance;          // stance damage it takes to break its stance (ADR-035); 0: never breaks
+    float poise;           // a hit with at least this stance damage makes it flinch (cancels its attack)
+    float hitStance;       // the stance damage of its hits: they make the player flinch if at least its poise (playerPoise)
     int xp;                // character XP the player gets for killing one (ADR-027)
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
@@ -49,8 +52,9 @@ const EntityType& typeOf(EntityKind kind);
 // The NPC AI's states (ADR-020). Idle: stands where it was put (kinds that don't wander). Talk:
 // stands facing the player while its balloon is up. Chase, Windup, Recover: fighting. Return: walks
 // home ignoring the player, then heals. Flee: runs from the player for a while, then returns.
-enum class AiState : uint8_t { Idle, Wander, Talk, Chase, Windup, Recover, Return, Flee, Dead, Count };
-inline constexpr const char* kAiStateNames[] = {"idle", "wander", "talk", "chase", "windup", "recover", "return", "flee", "dead"};
+// Stagger: reels from a hit (a flinch, or a stance break), then fights on (ADR-035).
+enum class AiState : uint8_t { Idle, Wander, Talk, Chase, Windup, Recover, Return, Flee, Dead, Stagger, Count };
+inline constexpr const char* kAiStateNames[] = {"idle", "wander", "talk", "chase", "windup", "recover", "return", "flee", "dead", "stagger"};
 static_assert(std::size(kAiStateNames) == size_t(AiState::Count));
 // What happened to an entity since its last AI update (bits of Entity::events).
 enum AiEvent : uint8_t { EventDamaged = 1 };
@@ -90,12 +94,16 @@ struct Entity {
     std::mt19937 rng;
 
     const EntityType& type() const { return typeOf(kind); }
-    bool angry() const { return state == AiState::Chase || state == AiState::Windup || state == AiState::Recover; }
+    bool angry() const {
+        return state == AiState::Chase || state == AiState::Windup || state == AiState::Recover || state == AiState::Stagger;
+    }
     const char* speech() const;  // current balloon text, null when silent
     // Its name on the nameplate: the spawn marker's name for a lone NPC with lines, else `name`.
     const std::string& displayName() const;
 };
 
+constexpr float kDefaultWindup = 0.5f;   // seconds from an NPC's swing to its hit (attack_windup)
+constexpr float kDefaultRecover = 0.5f;  // seconds it stands after (attack_recover): the opening to hit back
 constexpr float kTalkRange = 3.5f;   // blocks between feet; also how close you loot from
 constexpr float kPunchReach = 2.0f;  // blocks between feet
 constexpr float kFleeSeconds = 4;    // how long a fleeing NPC runs before it heads home
@@ -154,20 +162,29 @@ bool hurt(Player& body, int amount);
 // hurt() for attackable entities only. Tells fighters (EventDamaged); a kill rolls the loot.
 bool damage(Entity& e, int amount);
 
-// Starts an attack (main-hand weapon, or a punch) toward `aim` (XZ direction) if the body is alive and
-// its swing is ready. It hits `windup` seconds later (sooner if the swing is quicker than its animation).
-bool startPunch(Player& attacker, glm::vec2 aim, float windup = kSwingWindup);
+// An NPC's attack (main-hand weapon, or a punch): the next light of its chain toward `aim` (XZ
+// direction), if the body is alive, not reeling or rolling, and its swing is ready (the weapon's
+// swing time since the last). It holds its windup pose so the hit lands `windup` seconds in (no
+// sooner than the move's own impact frame).
+bool startPunch(Player& attacker, glm::vec2 aim, float windup = 0);
 // Whether a swing from `attacker` reaches feet position `target`: in reach, within 60 degrees of facing, about level.
 bool inReach(const Player& attacker, glm::vec3 target);
 // What a punch from `attacker` hits: the nearest living, attackable entity in reach.
 Entity* punchTarget(std::vector<Entity>& entities, const Player& attacker);
+// The nearest living, attackable entity in reach with its stance broken: an attack on it is a riposte.
+Entity* riposteTarget(std::vector<Entity>& entities, const Player& attacker);
+// A landed hit's `stance` damage on `e` (ADR-035): at 0 its stance breaks (it reels breakSeconds, open
+// to a riposte, and its stance is back); else a hit of at least its poise makes it flinch. A riposte
+// on a broken stance knocks it down instead.
+void staggerHit(Entity& e, float stance, bool riposte);
 // What a hit is resolved in: the damage roll's RNG and the armor balance (the K of armorReduction).
 struct HitContext {
     std::mt19937& rng;
     float armorK = kArmorK;
+    float power = 1;  // x the hit before armor: the move's damage (a heavy, a charge, a riposte)
 };
 // The one damage formula (ADR-022), in this order: the attack's roll, plus the attacker's strength
-// bonus, times the attacker's damage, less the defender's armor against the attacker's level, times
+// bonus, times the attacker's damage and the context's power, less the defender's armor against the attacker's level, times
 // the defender's damage taken; at least 1, unless the hit before armor is 0 (nothing rolled, or a
 // damage multiplier of 0): then 0. Reads both sheets; the attacker's with the conditional modifiers
 // of its swing's weapon skill (skillOf(attacker.swingWeapon)).
@@ -182,8 +199,12 @@ constexpr float kXpWearHalving = 20, kXpWearSeconds = 10, kTrainingRate = 0.25f;
 // count; the XP scales with the attack's average base damage (never the final hit), the NPC's wear
 // and, for harmless ones, kTrainingRate. A kill gives the creature's `xp` times its wear, once per kill.
 void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed);
-// Combat timers and out-of-combat regeneration for everyone; lands every swing at its impact frame
-// (the player's on entities, entities' on the player) through resolveHit (`armorK` is the K of
-// armorReduction) and awardHitXp; brings the dead back home. A kill by the player raises Killed into `events`.
+// Combat timers, the moves' clocks, stance recovery and out-of-combat regeneration for everyone; lands
+// every swing at its impact frame (the player's on entities, entities' on the player) through
+// resolveHit (`armorK` is the K of armorReduction) and awardHitXp; brings the dead back home. A kill
+// by the player raises Killed into `events`. The player's moves hit with their damage and stance
+// (staggerHit) and freeze both bodies a moment (hit-stop). An NPC's hit passes through a rolling
+// player's i-frames, is blocked by its guard from the front (part of the damage, stamina; a guard
+// with too little stamina breaks), and else makes it flinch unless it has hyperarmor (ADR-035).
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK = kArmorK,
                   std::vector<GameEvent>* events = nullptr);

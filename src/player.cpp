@@ -98,7 +98,7 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
             p.rollTime = 0, p.rollLength = t.rollSeconds;
             p.yaw = std::atan2(p.rollDir.x, p.rollDir.y);  // tucks facing the roll
         }
-        glm::vec2 target = in.move * (in.run ? t.runSpeed : t.walkSpeed) * (p.inWater ? 0.6f : 1.0f);
+        glm::vec2 target = in.move * (in.speed > 0 ? in.speed : in.run ? t.runSpeed : t.walkSpeed) * (p.inWater ? 0.6f : 1.0f);
         float control = p.onGround || p.inWater ? 12.0f : 3.0f;
         p.vel.x = approach(p.vel.x, target.x, control, dt);
         p.vel.z = approach(p.vel.z, target.y, control, dt);

@@ -298,7 +298,8 @@ static int run(SDL_Window* window, const Options& opt) {
     CommandServer server;  // remote commands (the MCP bridge); runs once per frame below
     if (!benchmark && opt.serve && server.start(opt.port)) editor.server = std::format("127.0.0.1:{}", opt.port);
 
-    bool punchQueued = false;  // clicked before the swing was ready
+    bool punchQueued = false;  // the attack button (LMB / R1) went down, not yet seen by a step (or the editor)
+    bool heavyQueued = false;  // R2 likewise
     bool pressInGame = false;  // the left button went down while no window was open
     float camYaw = std::numbers::pi_v<float>, camPitch = 0.45f;  // behind the player
     if (opt.fixedLook) {  // degrees on the CLI; yaw 0 looks toward -Z, 90 toward -X
@@ -351,7 +352,7 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.active = on;
         lock = {};
         editor.cursor = false;
-        punchQueued = false;  // a click queued mid-swing must not become an editor action
+        punchQueued = heavyQueued = false;  // a press queued mid-swing must not become an editor action, nor the reverse
         editor.corner.reset();
         if (on) {
             usedEditor = true;
@@ -573,7 +574,7 @@ static int run(SDL_Window* window, const Options& opt) {
         }
         if (leftStick == glm::vec2(0)) sprint = false;
         bool trigger = padPlays && SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16384;
-        if (trigger && !triggerWas && !menus()) punchQueued = true;
+        if (trigger && !triggerWas && !menus() && !editor.active) heavyQueued = true;
         triggerWas = trigger;
 
         const bool* keys = SDL_GetKeyboardState(nullptr);
@@ -590,17 +591,19 @@ static int run(SDL_Window* window, const Options& opt) {
         in.descend = key(SDL_SCANCODE_LCTRL) || button(SDL_GAMEPAD_BUTTON_EAST);
         if ((SDL_GetModState() & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) && (key(SDL_SCANCODE_Z) || key(SDL_SCANCODE_Y) || key(SDL_SCANCODE_S)))
             in = {};  // a shortcut (Ctrl+S) isn't movement
-        // Left mouse attacks toward where the camera looks; holding it keeps swinging.
-        // A press that began in a window (e.g. a drag) doesn't attack once the window closes.
-        if (menus()) punchQueued = pressInGame = false;
+        // Left mouse / R1 attacks (a tap: a light, held: a heavy), R2 is a heavy, right mouse / L1 guards
+        // (ADR-035); they go the way you move, else face, or at the lock-on target. A press that began
+        // in a window (e.g. a drag) doesn't attack once the window closes.
+        if (menus()) punchQueued = heavyQueued = pressInGame = false;
         if (noteOpen) interactQueued = rollQueued = false;
-        bool punchHeld = (pressInGame && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) ||
-                         button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) || (trigger && !menus());
+        uint32_t mouse = SDL_GetMouseState(nullptr, nullptr);
+        bool punchHeld = (pressInGame && (mouse & SDL_BUTTON_LMASK)) || button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+        sim.heavyHeld = trigger && !menus();
+        sim.guard = (!menus() && !editor.active && !benchmark && (mouse & SDL_BUTTON_RMASK)) || button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
         if (switchDir != glm::vec2(0)) lock.target = switchTarget(lock, entities, world, lockView, player.pos, game.lock, switchDir);
         switchDir = {};
         if (!player.alive() || benchmark) lock = {};
         updateLock(lock, entities, world, lockView, player.pos, game.lock, dt);
-        sim.aim = forward;
         if (const Entity* t = lockedEntity(lock, entities)) {  // face it while walking; swing at it
             glm::vec2 to(t->body.pos.x - player.pos.x, t->body.pos.z - player.pos.z);
             if (glm::length(to) > 1e-3f) in.face = sim.aim = glm::normalize(to);
@@ -618,11 +621,13 @@ static int run(SDL_Window* window, const Options& opt) {
                 in.move = {std::sin(t * 0.4), std::cos(t * 0.4)};  // walk a circle
                 player.health = float(maxHealth(sheet(player)));  // a passing fight mustn't change the benchmark's path
             }
-            sim.attack = punchHeld || punchQueued;
+            sim.attack = punchQueued;
+            sim.attackHeld = punchHeld;
+            sim.heavy = heavyQueued;
             sim.interact = interactQueued;
             in.roll = rollQueued;
             StepResult stepped = step(session, sim, kTick);
-            if (stepped.attacked) punchQueued = false;
+            if (!editor.active) punchQueued = heavyQueued = false;  // the step buffers them (the editor takes its clicks below)
             interactQueued = rollQueued = in.roll = false;
             respawned |= stepped.respawned;
         }
@@ -939,7 +944,7 @@ static int run(SDL_Window* window, const Options& opt) {
             titleTimer = 0;
             int minutes = int(session.timeOfDay * 24 * 60);
             char title[256];
-            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack | E = talk/loot | C = character | B = bags | J = journal | . = debug | Tab = lock on | F1 = editor",
+            std::snprintf(title, sizeof title, "flycoos | %.2f ms (%.0f fps) | chunks %d/%d | %02d:%02d | LMB = attack (hold: heavy) | RMB = guard | E = talk/loot | C = character | B = bags | J = journal | . = debug | Tab = lock on | F1 = editor",
                           realDt * 1000.0, 1.0 / std::max(realDt, 1e-6f), s.chunksDrawn, s.chunksTotal, minutes / 60, minutes % 60);
             SDL_SetWindowTitle(window, title);
         }

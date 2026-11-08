@@ -38,6 +38,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |
+| `src/melee.h/.cpp` | Melee (ADR-035): the move table `kMoves` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise` |
 | `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`; plants become `PlantInstance`s, not faces), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
@@ -678,7 +679,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 
   | Attribute | Effect |
   |---|---|
-  | Stamina | +10 max health per point |
+  | Stamina (shown as Vitality) | +10 max health per point (the id stays `stamina`; "Stamina" in the UI is the melee bar, ADR-035) |
   | Strength | physical damage: `damage = baseDamage + strength * speed` |
   | Agility | +1% physical attack speed per point (haste: swing time = speed / (1 + 1% x agility)) |
   | Intellect | unused until magic |
@@ -744,10 +745,29 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   points in its tree, `requires` a lower-tier talent of the tree at max rank, all in `canLearn`;
   respec clears the ranks. The Progress window (K) spends points; the debug Progression tab grants
   XP, sets level and skills, respecs and shows the formulas.
-- Left mouse starts an attack toward where the camera looks, once the swing timer allows. Holding
-  keeps swinging; a click during the cooldown is queued. Damage lands at the fist's impact frame
-  (40% into a 0.35 s animation) on the nearest living, attackable entity within 2 blocks and
-  60° of the facing direction (`inReach`). NPC swings land the same way, on the player.
+- **Melee** (ADR-035, melee.h): every attack is a `Move` from `kMoves`, its timings scaled by the
+  weapon's swing time (fists 0.75x). A tap of LMB / R1 is the next of four lights (diagonal,
+  backhand, sweep, a thrust finisher; the chain goes on from a light's chain point or within 0.25 s
+  after one); held 0.16 s it's a heavy (a thrust, then an overhead chop), as is R2 at once. A heavy
+  holds its windup pose while its button is held and is charged after 0.55 s (x1.45 damage, x1.5
+  stance damage). The move under way picks a different one: running (a leaping sweep), late in a roll
+  or just after (a rising thrust; the roll ends), in the air (a chop that waits for the landing),
+  just after a block (a guard counter), at a stance-broken enemy in reach (a riposte, x3, can't be
+  hit). Presses wait up to 0.5 s for the body to be free (the input buffer); a roll, the guard or
+  walking cuts a swing from its cancel point. Attacks step forward into the hit (`Input::speed`) and
+  turn toward the aim through the windup: the lock-on target, else the way the player moves, else
+  the facing. Damage lands once, at the impact frame, on the nearest living, attackable entity within
+  2 blocks and 60° of the facing (`inReach`), times the move's damage (`HitContext::power`); hits
+  freeze both bodies a moment (hit-stop). Stamina (100) pays for attacks (12 to 22), rolls (14),
+  blocked hits and running in combat; it refills at 45/s after 0.5 s without acting (x0.35 while
+  guarding). RMB / L1 guards: a hit from the front (70°) loses 75% of its damage (bare arms 40%) and
+  costs 10 + 2.5 per point of damage in stamina (35% less with a sword); with too little left the
+  guard breaks and the player reels 1.1 s. Unblocked hits make the player flinch (0.3 s, cancelling
+  its swing) unless its poise (0.4 x armor) is above the hitter's `hit_stance` or it's in a heavy's
+  windup (hyperarmor); a roll can't be hit from 0.04 to 0.34 s in. NPCs have a hidden stance
+  (`stance`): hits wear it down (it comes back after stance/13 s, at 13 a second), at 0 it breaks
+  (2.5 s on a knee, open to a riposte, which knocks it down 1.2 s), and a hit of at least its `poise`
+  makes it flinch, cancelling its swing. NPC swings land the same way on the player.
 - `hurt()` damages any body; `damage()` is hurt() for attackable entities and also angers fighters
   and rolls loot on a kill.
 - Dealing or taking damage puts a body in combat for 5 s; spirit regeneration only runs out of
@@ -832,10 +852,11 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   attackable kinds and 0 for the rest; one that can't be hurt can't have any.
   The AI's numbers (ADR-020) are optional and only for kinds that fight: `leash_radius` (2..64,
   default 20), `reaggro_radius` (default 0.8 × leash, must be smaller), `reaggro_cooldown` (3 s),
-  `give_up_seconds` (5), `attack_windup` (0.05..2 and under 0.4 × the kind's swing time, default
-  0.14 s), `attack_recover` (0.2 s),
+  `give_up_seconds` (5), `attack_windup` (0.05..2, default 0.5 s: the swing holds its windup pose
+  until then), `attack_recover` (0.5 s), `hit_stance` (15: the stance damage of its hits, ADR-035),
   `attack_cooldown` (0) and `flee_health` (a health fraction 0..0.95, default 0: never flees). A
-  kind that fights must wander.
+  kind that fights must wander. Attackable kinds may set `stance` (default 30; 0: never breaks) and
+  `poise` (0: every hit makes it flinch), ADR-035.
 
   | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Temper | Weapon | Drops | Talks |
   |---|---|---|---|---|---|---|---|---|
@@ -843,19 +864,23 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Villager | random from a name list (seeded) | 5 | 25/5/5/5/5 | 250 | harmless (not attackable) | – | – | yes (E) |
   | Boar | "Boar" | 1 | 10/2/2/2/2 (the player's) | 100 | passive | tusks (= punch, 3–6) | Boar Skin 75% | no |
   | Bandit | "Bandit" | 2 | 12/3/2/2/2 | 120 | aggressive, aggro 10 | Rusty Knife (5–8) | Rusty Knife 40% | no |
-  | Wolf | "Wolf" | 1 | 8/2/4/2/2 | 80 | aggressive, aggro 12 | bite (= punch, 3–6) | Wolf Pelt 60% | no |
+  | Wolf | "Wolf" | 1 | 8/6/70/2/2 | 80 | aggressive, aggro 12 | bite (= punch, 7–10, quick) | Wolf Pelt 60% | no |
   | Guard | "Guard" | 4 | 16/5/3/2/4 | 160 | passive | Iron Shortsword (11–15) | – | yes (E) |
-  | Bandit Chief | "Bandit Chief" | 3 | 11/1/2/2/2 | 110 | aggressive, aggro 10 | Iron Shortsword (7–11) | Iron Helm 100% | no |
-  | Barrow Ghoul | "Barrow Ghoul" | 3 | 7/2/2/2/2 | 70 | aggressive, aggro 8 | claws (= punch, 3–6) | Bone Charm 30% | no |
+  | Bandit Chief | "Bandit Chief" | 3 | 11/3/2/2/2 | 110 | aggressive, aggro 10 | Iron Shortsword (9–13) | Iron Helm 100% | no |
+  | Barrow Ghoul | "Barrow Ghoul" | 3 | 7/4/2/2/2 | 70 | aggressive, aggro 8 | claws (= punch, 5–8) | Bone Charm 30% | no |
 
   The story's foes are tuned for a level-1 player (there's no leveling yet): in the whole Iron set
-  with the sword, the chief alone or a pair of wolves or ghouls is won with about a fifth to two
-  fifths of the player's health left, a pack of three wolves is lost, and bare-handed without armor
-  the chief wins (`storyNpcs` simulates these fights). Higher levels get through more armor, so the
+  with the sword, played the Elden Ring way (guarding a foe about to strike, attacking when its
+  light lands first, riposting a broken stance), the chief alone or a pair of wolves or ghouls is won
+  with about a fifth to two fifths of the player's health left, a pack of three wolves is lost, and
+  bare-handed without armor the chief wins (`storyNpcs` simulates these fights). Stance and poise
+  (ADR-035): dummy 80 / never flinches, boar 50, bandit 60, wolf 70, ghoul 90 / 12, guard 90 / 12,
+  chief 180 / 20; windups wolf 0.28, ghoul 0.6, chief 0.6 s (the rest 0.5), recoveries wolf 0.15, chief
+  0.25, ghoul 0.4 s; `hit_stance` wolf 8, boar and bandit 12, ghoul 14, guard 20, chief 26. Higher levels get through more armor, so the
   chief and the ghouls pay for theirs with less health. Per kind there's also a wander radius (villager 12, boar and wolf 10, guard
   and chief 6, bandit 5, ghoul 4), a chase speed (ghoul 4, bandit and chief 5.5, boar and guard 6,
   wolf 7.5 b/s; the player walks 5 and runs 9) and a respawn time (30 s; guard 60, ghoul 45, chief
-  120). Against the whole Iron set (armor 37) a wolf hits for 2–3, a ghoul 2–5, the chief 5–8.
+  120). Against the whole Iron set (armor 37) a wolf hits for 4–5 (quickly: agility 70), a ghoul 4–6, the chief 7–10.
 - **Adding an NPC kind:** append a record to `data/creatures.json` with the next `save_id` (spawn
   markers save it: never renumber or reuse one). Reload defs in the Data tab, then place it with a
   spawn marker: the editor's Entity list, `mark`/`edit_marker` and the MCP schemas all read the
@@ -873,15 +898,19 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   Beyond its wander radius it heads home. NPC bodies use the same `updatePlayer` physics as the
   player, driven by AI input.
 - **Temper and AI** (ADR-020): one state machine for every kind, `Idle` (kinds that don't wander) /
-  `Wander` / `Talk` / `Chase` / `Windup` / `Recover` / `Return` / `Flee` / `Dead`, in `think()`; every
+  `Wander` / `Talk` / `Chase` / `Windup` / `Recover` / `Return` / `Flee` / `Dead` / `Stagger`, in `think()`; every
   transition goes through `setState` with a reason, kept in an 8-entry ring per entity. Harmless
   kinds never fight. Passive ones chase when damaged (`damage()` sets `EventDamaged`, read on the
   entity's next update); aggressive ones also when a living player is within their aggro range and
   within `reaggro_radius` (16) of their home, unless they got home in the last `reaggro_cooldown`
-  (3 s). A chasing NPC runs at the player; within reach it winds up (`startPunch` with the kind's
-  `attack_windup`, 0.14 s, committed: no moving or turning), the hit lands once at the impact frame
-  if the player is still in reach and in front, then it stands `attack_recover` (0.2 s) and chases
-  again; the weapon's swing time gates the cadence (the boar's swing is a head-down gore). It gives
+  (3 s). A chasing NPC runs at the player; within reach it winds up (`startPunch`: the next of the
+  first three lights, holding its windup pose until `attack_windup` x 0.85..1.35 has passed, turning
+  after the player until 0.12 s before the strike, then committed), the hit lands once at the impact
+  frame if the player is still in reach and in front, then it stands `attack_recover` and chases
+  again; waiting for its next swing in reach it holds a sword's length off; the weapon's swing time
+  gates the cadence (the boar's swing is a head-down gore: drawn back, then lunging). A hit that
+  makes it reel (ADR-035) puts it in `Stagger` (reason `flinched` or `stance_broken`) until it
+  steadies, cancelling its windup; then it fights on. It gives
   up (`Return`) when the player is `leash_radius` (20) from its home or knocked out, or after
   `give_up_seconds` (5) unable to step toward a player out of reach (too far, or a body height above
   or below; no pathfinding). `Return` walks home ignoring the player and hits (pending ones are

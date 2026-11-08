@@ -202,7 +202,7 @@ void attributes(const Player& p, float armorK) {
     if (!ImGui::BeginTable("attributes", 2, ImGuiTableFlags_SizingFixedFit)) return;
     statRow("Health", nullptr, "%d / %d", int(std::ceil(p.health)), maxHealth(s));
     std::snprintf(tip, sizeof tip, "+%d max health per point", kHealthPerStamina);
-    gearRow("Stamina", tip, "%.0f", s, base, Stat::Stamina);
+    gearRow("Vitality", tip, "%.0f", s, base, Stat::Stamina);
     gearRow("Strength", "Adds strength x weapon speed to every hit", "%.0f", s, base, Stat::Strength);
     std::snprintf(tip, sizeof tip, "+%.0f%% attack speed per point", kHastePerAgility * 100);
     gearRow("Agility", tip, "%.0f", s, base, Stat::Agility);

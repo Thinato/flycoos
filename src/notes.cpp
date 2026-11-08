@@ -8,6 +8,7 @@
 #include <fstream>
 
 #include "defs.h"
+#include "melee.h"
 #include "quest.h"
 
 using nlohmann::json;
@@ -20,9 +21,12 @@ json vec(glm::vec3 v) { return {round2(v.x), round2(v.y), round2(v.z)}; }
 json itemId(ItemId id) { return id ? json(defs().itemIds[id]) : json(nullptr); }
 
 // What the body is doing, in one word: the first that holds of knocked_out, flying, swimming,
-// falling, jumping, rolling, on_ground.
+// reeling, attacking, guarding, rolling, on_ground, falling, jumping.
 const char* motion(const Player& p) {
     if (!p.alive()) return "knocked_out";
+    if (p.stagger > 0) return p.broken ? "broken" : "flinching";
+    if (p.punching()) return "attacking";
+    if (p.guarding) return "guarding";
     if (p.tuning.fly || p.tuning.noclip) return "flying";
     if (p.inWater) return "swimming";
     if (p.rolling()) return "rolling";
@@ -33,7 +37,8 @@ const char* motion(const Player& p) {
 json combat(const Combatant& c) {
     return {{"health", round2(c.health)}, {"max_health", maxHealth(sheet(c))}, {"level", c.level},
             {"in_combat", c.combatTimer > 0}, {"combat_timer", round2(c.combatTimer)}, {"seconds_since_hit", round2(std::min(c.hitTime, 99.0f))},
-            {"last_damage", c.lastDamage}, {"swinging", c.punching()}, {"weapon", itemId(c.weapon())}};
+            {"last_damage", c.lastDamage}, {"swinging", c.punching()}, {"move", spec(c.move).name}, {"stance", round2(c.stance)},
+            {"stagger", round2(c.stagger)}, {"broken", c.broken}, {"weapon", itemId(c.weapon())}};
 }
 
 std::string localTime(const char* format) {
@@ -54,7 +59,7 @@ json noteContext(const Session& s, const GameView& view) {
 
     json player = combat(p);
     player.update({{"pos", vec(p.pos)}, {"vel", vec(p.vel)}, {"yaw_degrees", std::round(glm::degrees(p.yaw))},
-                   {"motion", motion(p)}, {"on_ground", p.onGround}, {"in_water", p.inWater}, {"fly", p.tuning.fly},
+                   {"motion", motion(p)}, {"stamina", round2(p.stamina)}, {"guarding", p.guarding}, {"on_ground", p.onGround}, {"in_water", p.inWater}, {"fly", p.tuning.fly},
                    {"noclip", p.tuning.noclip}, {"seconds_knocked_out", round2(p.deadTime)}, {"xp", p.progress.xp},
                    {"block_at_feet", kBlockNames[s.world.get(glm::ivec3(glm::floor(p.pos)))]},
                    {"block_below", kBlockNames[s.world.get(glm::ivec3(glm::floor(p.pos - glm::vec3(0, 0.05f, 0))))]}});

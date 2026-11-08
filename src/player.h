@@ -19,6 +19,7 @@ struct Input {
     bool descend = false;  // flight only
     bool roll = false;     // a tap: roll the way it moves (else the way it faces), on the ground or just after a jump
     glm::vec2 face{};      // nonzero: keep facing this XZ direction while walking (a lock-on); running and rolls don't
+    float speed = 0;       // > 0: moves at this many blocks/s instead of walking or running (an attack's lunge)
 };
 
 // Movement knobs, tweakable live from the debug UI.
@@ -54,16 +55,50 @@ struct Body {
     void teleport(glm::vec3 to) { pos = prevPos = to; prevYaw = yaw; }
 };
 
+// A melee move (ADR-035; melee.h has their timings): the four-swing light chain, the two heavies,
+// and the attacks that depend on what the body was doing.
+enum class Move : uint8_t { None, Light1, Light2, Light3, Light4, Heavy1, Heavy2, Running, Rolling, JumpLight, JumpHeavy,
+                            GuardCounter, Riposte, Count };
+// What the player's attack buttons asked for and is still waiting to happen (melee.cpp).
+enum class Want : uint8_t { None, Light, Heavy, Roll, Counter };
+
 // What fights: attributes, health, the swing and damage timers, and the gear it wears and carries.
 struct Combatant {
     Stats stats;                           // base attributes; sheet() adds gear on top
     int level = 1;                         // an NPC's is its kind's; the player's grows with XP (ADR-027)
     float health = float(maxHealth(Stats{}));
     float combatTimer = 0;                 // > 0: in combat, no regeneration
-    float swingTimer = 0;                  // > 0: the next swing isn't ready
-    float punchTime = 0, punchLength = 0;  // seconds into the punch animation, and its length
-    bool punchRight = false;               // which hand the current punch uses
-    bool hitPending = false;               // the current punch hasn't reached its impact frame
+    float swingTimer = 0;                  // NPCs (startPunch): > 0, the next swing isn't ready
+    Move move = Move::None;                // the attack under way
+    float moveTime = 0;                    // seconds into it (stops while it holds its windup pose or freezes)
+    float moveScale = 1;                   // its seconds per second of the move's own timing (weapon speed, haste)
+    float hold = 0;                        // seconds more it holds the windup pose: an NPC's telegraph
+    bool holding = false;                  // the player holds it there: charging a heavy, or a jump attack in the air
+    float charge = 0;                      // seconds a heavy has charged
+    bool charged = false;                  // fully: it hits harder
+    bool punchRight = false;               // which hand the current punch uses (unarmed)
+    bool hitPending = false;               // the current move hasn't reached its impact frame
+    float freeze = 0;                      // seconds of hit-stop left: the move's clock stops
+    Move fromMove = Move::None;            // the move this one cut short (a chain), and how far in: its windup blends from there
+    float fromU = 0;
+    Move lastMove = Move::None;            // the latest move to end, and seconds since: the chain goes on from it
+    float sinceMove = 99;
+    float stagger = 0, staggerLength = 0;  // seconds left reeling from a hit (no acting), of how many
+    bool broken = false;                   // the reeling is a stance break (NPCs) or guard break (the player)
+    float stance = 0;                      // NPCs: stance damage left before it breaks (EntityType::stance)
+    float stanceWait = 0;                  // seconds until it starts coming back
+    // The player's (melee.cpp): stamina, the guard, and button presses waiting for their moment.
+    float stamina = 100;
+    float staminaWait = 0;                 // seconds until it refills
+    bool guarding = false;
+    bool rollPaid = false;                 // the roll under way has spent its stamina
+    float guardBlend = 0;                  // 0 .. 1: how far the guard is up (the pose)
+    float blockTime = 99;                  // seconds since the guard took a hit
+    Want want = Want::None;                // a press waiting until the body can act on it
+    float wantAge = 0;
+    bool pressing = false;                 // the attack button is down and not yet a tap or a hold
+    float pressTime = 0;
+    bool chargeByHeavy = false;            // the charging heavy follows the heavy button (else the attack button)
     ItemId swingWeapon = NoItem;           // main hand when the swing started; it lands and animates with that
     float hitTime = 99;                    // seconds since this body last took damage
     int lastDamage = 0;
@@ -72,7 +107,7 @@ struct Combatant {
     Progress progress;                     // skills, XP and talents: the player's (NPCs' stay at the start)
 
     bool alive() const { return health > 0; }
-    bool punching() const { return punchTime < punchLength; }  // any attack swing, armed or not
+    bool punching() const { return move != Move::None; }  // any attack move, armed or not
     // What's in hand: the main hand, or what the current swing started with (swapping mid-swing waits).
     ItemId weapon() const { return punching() ? swingWeapon : inv.equipped[SlotMainHand]; }
 };
@@ -90,9 +125,6 @@ constexpr Skill skillOf(ItemId weapon) { return weapon ? Skill::OneHanded : Skil
 // of keys).
 struct Player : Body, Combatant {};
 
-constexpr float kPunchSeconds = 0.35f;  // punch animation length (shorter if swings are faster)
-constexpr float kPunchImpact = 0.4f;    // fraction of the animation where the fist lands
-constexpr float kSwingWindup = kPunchImpact * kPunchSeconds;  // seconds from a swing's start to its hit
 
 // Where to draw a body `alpha` of the way through the current tick (0: as it was, 1: as it is).
 inline glm::vec3 drawPos(const Body& b, float alpha) { return glm::mix(b.prevPos, b.pos, alpha); }

@@ -51,7 +51,8 @@ GPU debug layer.
 | Mouse | Orbit the camera |
 | Wheel | Zoom |
 | T (hold) | Fast-forward time (60×) |
-| Left mouse | Attack: sword slash with one equipped, otherwise punch (hold to keep swinging) |
+| Left mouse | Attack (Elden Ring style, ADR-035): tap for the next of four light swings (a chain), hold for a heavy that charges while held. Running, late in a roll, in the air (it strikes on landing), right after a block (a guard counter) or at an enemy on its knee (a riposte) it's a different attack. Presses wait a moment for the current swing |
+| Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks |
 | E | Loot a nearby corpse, otherwise talk to a nearby villager or guard |
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
@@ -76,7 +77,9 @@ A controller works too (SDL's gamepad layout; PlayStation names here, an Xbox pa
 | Cross | Jump / swim up (fly: rise); with a window open, click |
 | Circle | Roll (like Alt); fly: sink; with a window open, close the windows |
 | Square | Loot or talk (like E); with a window open, right-click (equip / unequip) |
-| R1 / R2 | Attack (hold to keep swinging) |
+| R1 | Attack (like left mouse: tap for lights, hold for a heavy) |
+| R2 | Heavy attack (hold to charge) |
+| L1 | Guard (like right mouse) |
 | Triangle | Bags |
 | D-pad left / up / right | Character / Journal / Progress; locked on, the D-pad (down too) switches to the next enemy that way |
 | Options | Close the windows |

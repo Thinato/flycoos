@@ -1409,3 +1409,55 @@
   helps to keep track. The Entities tab shows each fighter's side and pack size.
 - **Follow-ups:** a cap on how many swing at once (the rest circle and wait, in the soulslike way);
   ranged kinds that keep their distance and back off from melee, once there are projectiles.
+
+## ADR-035: Melee after Elden Ring's one-handed sword
+
+- **Status:** accepted (2026-11-07)
+- **Context:** Combat was a WoW-style swing timer: hold the button and the same two swings repeat,
+  NPCs hit 0.14 s after deciding to, and nothing can be blocked, dodged on purpose or broken. The
+  user asked for Elden Ring's one-handed sword: blocking, staggering enemies, a power attack on a
+  held button, different animations for repeated swings, and generally what makes its combat good.
+  Researched from the Elden Ring wikis (stance, poise, guard boost, attack types) and soulslike
+  design notes (windup, active and recovery frames; input buffers; commitment).
+- **Decision:**
+  - **Moves:** every attack is a `Move` with a windup (to a hold point), an impact frame, a chain point
+    (the next attack may start), a cancel point (a roll, the guard or walking may cut it), and its
+    damage, stance damage, stamina and lunge (`kMoves`, scaled by the weapon's swing time). It commits:
+    no walking, a step forward into the hit, turning toward the aim only through the windup.
+  - **Buttons (the user picked "both"):** a tap of LMB / R1 is the next of four lights (diagonal,
+    backhand, sweep, thrust finisher); held 0.16 s it's a heavy (lunging thrust, then overhead chop),
+    which R2 starts at once. A held heavy holds its windup and is charged after 0.55 s. Presses wait
+    0.5 s for the body (the input buffer). RMB / L1 guards.
+  - **What the body was doing picks the attack:** running, late in or just after a roll, in the air
+    (strikes on landing), just after a block (guard counter: fast, stance damage like a charged
+    heavy) or at a broken stance in reach (riposte: x3, invulnerable, knocks it down).
+  - **Stamina (the user picked a bar named Stamina; the max-health attribute shows as Vitality, its
+    data and save id unchanged):** 100, spent by attacks, rolls, blocked hits and running in combat
+    (free out of combat, as in Elden Ring); refills at 45/s after 0.5 s without acting.
+  - **Guard:** covers 70° in front: 75% of a hit stopped by a sword, 40% by bare arms; stamina damage
+    10 + 2.5 per point of damage, 35% less with a sword (guard boost). Too little stamina breaks the
+    guard (1.1 s reeling).
+  - **Stance and poise:** NPCs have a hidden stance (data `stance`) that hits wear down and that
+    recovers as Elden Ring's (after base/13 s, 13/s); at 0 they kneel 2.5 s, open to a riposte. A hit
+    of at least their `poise` makes them flinch, cancelling their swing (AI state `Stagger`). The
+    player flinches from unblocked hits unless its poise (0.4 x armor) is above the hitter's
+    `hit_stance`, or a heavy's windup gives hyperarmor. Rolls can't be hit from 0.04 to 0.34 s in.
+  - **Enemy timing:** an NPC's swing holds its windup pose until `attack_windup` (0.85..1.35 x, so
+    it can't be counted) has passed, tracking the player until 0.12 s before a fast strike; it then
+    stands `attack_recover` (default 0.5 s, the opening). In reach and waiting it keeps a sword's
+    length. Hit-stop freezes both bodies a moment on every landed hit.
+  - **Story balance:** re-tuned so a careful player (the test bot guards a foe about to strike,
+    attacks when its light lands first, ripostes) keeps the old bands: chief alone ~25 health left,
+    two wolves ~40, two ghouls ~30, three wolves lose. Wolves became quick and light-biting.
+- **Alternatives considered:**
+  - Hold-to-power on the attack button only: every light waits for the release. Elden Ring's own
+    layout (a separate heavy button): lights start at once, but no held power on the attack button.
+    The user chose both.
+  - No stamina, a guard meter only: faster fights, but no economy behind rolls and chains.
+  - A visible stance bar: Elden Ring hides it; the debug window shows it.
+- **Consequences:** Standing and trading loses to packs; reading windups, guarding and rolling win.
+  Armor matters beyond damage (poise). Characterization replays were re-pinned. New data fields:
+  `stance`, `poise`, `hit_stance`; `attack_windup` lost its cap against the swing time.
+- **Follow-ups:** parries and shields (an off-hand guard with more guard boost), backstabs, enemy
+  combos and delayed attacks, enemies guarding or dodging, a sound and a spark on hit, weapon-specific
+  movesets (the knife and fists reuse the sword's), an attack-token cap for packs (ADR-034).
