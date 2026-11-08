@@ -203,11 +203,33 @@ constexpr std::pair<ItemId, const char*> kNamedItems[] = {
 };
 static_assert(std::size(kNamedItems) == ItemCount - 1);
 
+// One of kDamageTypeIds.
+DamageType damageType(const Record& r, const json& v, std::string_view field) {
+    auto at = std::ranges::find(kDamageTypeIds, v.is_string() ? v.get<std::string>() : "");
+    if (at == std::end(kDamageTypeIds)) throw r.fail(field, oneOf(kDamageTypeIds));
+    return DamageType(at - std::begin(kDamageTypeIds));
+}
+// A number for every damage type: one for all, or an object with each ({"slash": 0.9, ...}). Absent:
+// `def` for all (kRequired: it must be there).
+PerType perType(const Record& r, const json& v, std::string_view field, double lo, double hi, double def) {
+    PerType out;
+    std::string f(field), key = f.substr(f.rfind('.') + 1);
+    if (v.is_null() || v.is_number()) {
+        out.fill(float(r.number(v.is_null() ? json::object() : json{{key, v}}, f, lo, hi, def, false)));
+        return out;
+    }
+    if (!v.is_object()) throw r.fail(field, "must be a number or an object {slash, strike, pierce}");
+    for (const auto& [k, x] : v.items())
+        if (std::ranges::find(kDamageTypeIds, k) == std::end(kDamageTypeIds)) throw r.fail(f + "." + k, "unknown damage type");
+    for (size_t i = 0; i < out.size(); ++i) out[i] = float(r.number(v, f + "." + kDamageTypeIds[i], lo, hi, kRequired, false));
+    return out;
+}
+
 void loadItems(const File& f, Defs& d) {
     SaveIds saves;
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
-        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods", "shield"});
+        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods", "shield", "weight", "damage", "parry"});
         size_t save = saves.claim(r);
         ItemType t{nullptr, SlotNone, {0, 0, 0}, 0, 0, {}, {}};
         std::string name = r.text("name");
@@ -227,6 +249,15 @@ void loadItems(const File& f, Defs& d) {
             t.attack.maxDamage = int(r.number(a, "attack.max", t.attack.minDamage, 1000));
             t.attack.speed = float(r.number(a, "attack.speed", 0.1, 10, kRequired, false));
         } else if (t.slot == SlotMainHand) throw r.fail("attack", "missing (a main-hand item is a weapon)");
+        // Weight (ADR-039), what a weapon's swings do (ADR-040), whether it parries (ADR-041).
+        t.weight = float(r.number(r.fields, "weight", 0, 100, 0, false));
+        if (t.weight > 0 && t.slot >= EquipCount) throw r.fail("weight", "only items worn in an equip slot weigh on the equip load");
+        if (r.fields.contains("damage")) {
+            if (!r.fields.contains("attack")) throw r.fail("damage", "only weapons (with an 'attack') do damage");
+            t.damage = damageType(r, r.fields["damage"], "damage");
+        }
+        t.parry = float(r.number(r.fields, "parry", 0.25, 4, 0, false));
+        if (t.parry > 0 && t.slot != SlotMainHand) throw r.fail("parry", "only main_hand weapons parry (shields: shield.parry)");
         if (t.slot == SlotBag) t.bagSlots = int(r.number(r.fields, "bag_slots", 1, 32));
         else if (r.fields.contains("bag_slots")) throw r.fail("bag_slots", "only bag items have bag slots");
         t.armor = int(r.number(r.fields, "armor", 0, 1000, 0));
@@ -241,7 +272,7 @@ void loadItems(const File& f, Defs& d) {
             auto at = std::ranges::find(kSizes, size.is_string() ? size.get<std::string>() : "");
             if (at == std::end(kSizes)) throw r.fail("shield.size", oneOf(kSizes));
             t.shield.size = ShieldSize(1 + (at - std::begin(kSizes)));
-            t.shield.negation = float(r.number(sh, "shield.negation", 0, 1, kRequired, false));
+            t.shield.negation = perType(r, sh.contains("negation") ? sh["negation"] : json(), "shield.negation", 0, 1, kRequired);
             t.shield.boost = float(r.number(sh, "shield.boost", 0, 1, kRequired, false));
             t.shield.parry = float(r.number(sh, "shield.parry", 0.25, 4, 0, false));
             if (t.shield.parry > 0 && t.shield.size == ShieldSize::Great) throw r.fail("shield.parry", "greatshields can't parry");
@@ -281,7 +312,8 @@ void loadCreatures(const File& f, Defs& d) {
         r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
                  "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds", "leash_radius",
                  "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
-                 "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body"});
+                 "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "damage",
+                 "resist"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
         auto flag = [&](const char* key) {
@@ -367,6 +399,13 @@ void loadCreatures(const File& f, Defs& d) {
         std::string body = given("body") ? r.text("body") : "flesh";
         if (body != "flesh" && body != "wood") throw r.fail("body", "must be flesh or wood");
         t.wooden = body == "wood";
+        // Damage types (ADR-040): what its own attacks do (with no weapon: teeth, tusks, claws, fists) and
+        // what it resists (0.2: takes 20% less) or is weak to (-0.3: 30% more).
+        if (given("damage") && t.temper == Temper::Harmless) throw r.fail("damage", "harmless creatures don't fight");
+        if (given("damage") && t.weapon) throw r.fail("damage", "its weapon decides (only creatures without one have their own)");
+        t.damage = given("damage") ? damageType(r, r.fields["damage"], "damage") : DamageType::Strike;
+        if (given("resist") && !t.attackable) throw r.fail("resist", "only attackable creatures are hit");
+        t.resist = perType(r, given("resist") ? r.fields["resist"] : json(), "resist", -1, 0.9, 0);
         if (d.creatures.size() <= save) d.creatures.resize(save + 1), d.creatureIds.resize(save + 1), d.creatureNames.resize(save + 1);
         d.creatures[save] = t;
         d.creatureIds[save] = r.id();

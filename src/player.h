@@ -28,8 +28,20 @@ struct PlayerTuning {
     bool fly = false;     // no gravity: jump rises, descend sinks; run = 2.5x
     bool noclip = false;  // fly through terrain (implies fly)
     float flySpeed = 15;
-    float rollSpeed = 12, rollSeconds = 0.45f;  // a roll's speed at its start (it slows to half) and length
+    float rollSpeed = 12, rollSeconds = 0.45f;  // a roll's speed at its start (it slows to half) and length (a medium load's)
+    // The equip load (ADR-039): what the worn gear may weigh, from vitality; its share picks the roll.
+    float loadBase = 30, loadPerVitality = 2.5f;
+    float lightLoad = 0.3f, heavyLoad = 0.7f;   // under the first: light, over the second: heavy, over 1: overloaded
+    float lightRollSpeed = 14;                  // light: farther, as quick
+    float heavyRollSpeed = 7, heavyRollSeconds = 0.6f, heavyRollRecovery = 0.3f;  // heavy: shorter, slower, slower to get up
+    float overloadedSpeed = 0.6f;               // overloaded: walks only, this much slower, can't roll or backstep
+    // A backstep (ADR-038): the roll button standing still hops back, still facing ahead.
+    float backstepSpeed = 7, backstepSeconds = 0.35f;
 };
+
+// How heavy the worn gear is against what the body can carry (ADR-039).
+enum class Load : uint8_t { Light, Medium, Heavy, Over };
+inline constexpr const char* kLoadNames[] = {"Light", "Medium", "Heavy", "Overloaded"};
 
 // The moving body: position and physics (updatePlayer), its animation state, and where to draw it.
 struct Body {
@@ -47,6 +59,8 @@ struct Body {
     float breathPhase = 0;  // idle breathing cycle, radians
     float rollTime = 99, rollLength = 0;  // seconds since the latest roll began, and its length
     glm::vec2 rollDir{};                  // unit XZ direction of the latest roll
+    bool backstep = false;                // the latest roll is a backstep (ADR-038): a hop back, facing ahead
+    Load rollLoad = Load::Medium;         // the load it rolled with: a heavy one rolls short and slow (ADR-039)
     float jumpTime = 99;                  // seconds since the latest jump took off
     float offGround = 99;                 // seconds since it last stood on the ground (99 once it jumped)
     PlayerTuning tuning;
@@ -60,11 +74,11 @@ struct Body {
 // A melee move (ADR-035; melee.h has their timings): the four-swing light chain, the two heavies,
 // and the attacks that depend on what the body was doing.
 enum class Move : uint8_t { None, Light1, Light2, Light3, Light4, Heavy1, Heavy2, Running, Rolling, JumpLight, JumpHeavy,
-                            GuardCounter, Riposte, Parry, Count };
+                            GuardCounter, Riposte, Parry, Backstep, Count };
 // What a body did this tick that can be heard (ADR-037): bits of Combatant::noises, set where it
 // happens and gathered by step() into Session::sounds. Steps and swim strokes come from the gait.
 enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup, Charged, GuardUp, Hurt, Crit, Death,
-                             StanceBreak, Parry, Block, GuardBreak, Bounce, Loot, Talk, Count };
+                             StanceBreak, Parry, Block, GuardBreak, Bounce, Loot, Talk, Backstep, PerfectGuard, Count };
 // What the player's attack buttons asked for and is still waiting to happen (melee.cpp).
 enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry };
 
@@ -100,6 +114,9 @@ struct Combatant {
     bool rollPaid = false;                 // the roll under way has spent its stamina
     float guardBlend = 0;                  // 0 .. 1: how far the guard is up (the pose)
     float blockTime = 99;                  // seconds since the guard took a hit
+    float guardTime = 99;                  // seconds since the guard went up (or down)
+    bool perfectReady = false;             // this guard went up after a rest: its first moments are a perfect guard (ADR-041)
+    Load load = Load::Light;               // the worn gear's (updatePlayer)
     Want want = Want::None;                // a press waiting until the body can act on it
     float wantAge = 0;
     bool pressing = false;                 // the attack button is down and not yet a tap or a hold
@@ -132,6 +149,10 @@ std::vector<Modifier> collect(const Combatant& c);
 inline StatSheet sheet(const Combatant& c, Skill with = Skill::Count) { return compute(c.stats, collect(c), with); }
 // The weapon skill a swing with `weapon` uses: a punch is unarmed, every weapon so far one-handed.
 constexpr Skill skillOf(ItemId weapon) { return weapon ? Skill::OneHanded : Skill::Unarmed; }
+
+// The equip load (ADR-039): what `c` can wear (from its vitality), and how heavy what it wears is.
+float maxEquipLoad(const Combatant& c, const PlayerTuning& t);
+Load loadOf(const Combatant& c, const PlayerTuning& t);
 
 // A walking, fighting character: the player, and the body of every NPC (driven by AI input instead
 // of keys).

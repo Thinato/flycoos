@@ -217,7 +217,8 @@ static void physics() {
         CHECK(maxY > 4.9f);
         CHECK(p.pos.x > 11);
     }
-    {  // a roll goes the way it moves (standing: the way it faces), about 4 blocks, on the ground only
+    {  // a roll goes the way it moves, about 4 blocks, on the ground only; standing still it's a
+       // backstep (ADR-038): a hop back under 2 blocks, still facing ahead
         auto rolled = [](glm::vec2 move, float yaw, bool airborne) {
             Grid g = flatWorld(0);
             Player p;
@@ -233,9 +234,20 @@ static void physics() {
             for (int i = 0; i < 60; ++i) updatePlayer(p, g, {}, 1 / 120.0f);  // past the roll's 0.45 s
             return std::tuple{started, punch, glm::vec2(p.pos.x - 7.5f, p.pos.z - 7.5f), yawAfter, p.rolling()};
         };
-        auto [started, punch, by, yaw, still] = rolled({}, 0, false);
+        auto [started, punch, by, yaw, still] = rolled({0, 1}, 0, false);
         CHECK(started && !punch && !still);  // no swing mid-roll; over after its length
-        CHECK(by.y > 3.5f && by.y < 4.8f && std::abs(by.x) < 0.01f);  // straight ahead (yaw 0 faces +Z)
+        CHECK(by.y > 4.4f && by.y < 5.4f && std::abs(by.x) < 0.01f);  // straight ahead (yaw 0 faces +Z), light: unarmored
+        auto [startedB, punchB, byB, yawB, stillB] = rolled({}, 0, false);
+        CHECK(startedB && !punchB && !stillB && byB.y < -1.4f && byB.y > -2.3f && std::abs(byB.x) < 0.01f && yawB == 0);
+        Grid flat = flatWorld(0);  // and it still faces ahead once it has slid to a stop
+        Player b;
+        b.pos = {7.5f, 4.001f, 7.5f};
+        updatePlayer(b, flat, {}, 1 / 120.0f);
+        Input back;
+        back.roll = true;
+        updatePlayer(b, flat, back, 1 / 120.0f);
+        for (int i = 0; i < 120; ++i) updatePlayer(b, flat, {}, 1 / 120.0f);
+        CHECK(b.backstep && !b.rolling() && b.yaw == 0 && glm::length(glm::vec2(b.vel.x, b.vel.z)) < 0.1f);
         auto [started2, punch2, by2, yaw2, still2] = rolled({-1, 0}, 0, false);
         CHECK(started2 && by2.x < -3.5f && std::abs(by2.y) < 0.01f);  // toward -X, turned to face it
         CHECK(std::abs(yaw2 + std::numbers::pi_v<float> / 2) < 1e-4f);
@@ -4064,6 +4076,16 @@ static void dataFiles() {
         CHECK(!shipped.creatures[size_t(EntityKind::Boar)].parryable && shipped.creatures[size_t(EntityKind::BanditChief)].parries == 2 &&
               shipped.creatures[size_t(EntityKind::Bandit)].parryable && shipped.creatures[size_t(EntityKind::Bandit)].parries == 1);
     }
+    {  // weights (ADR-039): everything worn weighs, shields the more the bigger; a knife parries (ADR-041);
+       // beasts bite, gore and claw, ghouls are weak to strike (ADR-040)
+        for (size_t i = 1; i < shipped.items.size(); ++i)
+            if (shipped.items[i].slot < EquipCount && shipped.items[i].weight <= 0) std::println(stderr, "FAIL {} weighs nothing", shipped.itemIds[i]), ++failures;
+        auto weight = [&](const char* id) { return shipped.items[shipped.itemById.at(id)].weight; };
+        CHECK(weight("oak_buckler") < weight("heater_shield") && weight("heater_shield") < weight("tower_shield") && weight("iron_cuirass") > weight("iron_helm"));
+        CHECK(shipped.items[Knife].parry > 0 && shipped.items[Shortsword].parry == 0);
+        const EntityType &wolf = shipped.creatures[size_t(EntityKind::Wolf)], &ghoul = shipped.creatures[size_t(EntityKind::Ghoul)];
+        CHECK(wolf.damage == DamageType::Pierce && ghoul.resist[size_t(DamageType::Strike)] < 0 && ghoul.resist[size_t(DamageType::Pierce)] > 0);
+    }
 
     fs::path dir = fs::temp_directory_path() / "flycoos_defs_test";
     fs::create_directories(dir);
@@ -4079,7 +4101,8 @@ static void dataFiles() {
     Defs grown;
     CHECK(load(base + R"(,{"id": "dented_helm", "save_id": 12, "copy_from": "iron_helm", "name": "Dented Helm", "armor": 4},
                          {"id": "quick_sword", "save_id": 13, "copy_from": "iron_shortsword", "name": "Quick Sword", "attack": {"speed": 0.5}},
-                         {"id": "sword_pommel", "save_id": 14, "copy_from": "iron_shortsword", "name": "Pommel", "slot": null, "attack": null}])", grown));
+                         {"id": "sword_pommel", "save_id": 14, "copy_from": "iron_shortsword", "name": "Pommel", "slot": null, "attack": null,
+                          "weight": null}])", grown));
     if (!error.empty()) std::println(stderr, "FAIL grown data: {}", error);
     CHECK(grown.items.size() == 15 && grown.items[12].slot == SlotHead && grown.items[12].armor == 4 &&
           std::string_view(grown.items[12].name) == "Dented Helm" && grown.itemIds[12] == "dented_helm");
@@ -4148,6 +4171,23 @@ static void dataFiles() {
               "field 'shield.parry': greatshields can't parry"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "off_hand", "shield": {"size": "small", "negation": 1, "boost": 0.5, "weight": 3}}])",
               "field 'shield.weight': unknown field"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "bag", "bag_slots": 4, "weight": 1}])",
+              "field 'weight': only items worn in an equip slot weigh on the equip load"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "head", "weight": 101}])", "field 'weight': 101 is out of range 0..100"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "head", "damage": "slash"}])",
+              "field 'damage': only weapons (with an 'attack') do damage"},
+             {base + R"(,{"id": "a", "save_id": 12, "copy_from": "iron_shortsword", "name": "A", "damage": "fire"}])",
+              "field 'damage': must be one of slash, strike, pierce"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "head", "parry": 1}])",
+              "field 'parry': only main_hand weapons parry (shields: shield.parry)"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "off_hand", "shield": {"size": "small", "negation": {"slash": 1, "fire": 1}, "boost": 0.5}}])",
+              "field 'shield.negation.fire': unknown damage type"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "off_hand", "shield": {"size": "small", "negation": {"slash": 1}, "boost": 0.5}}])",
+              "field 'shield.negation.strike': missing"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "off_hand", "shield": {"size": "small", "negation": "all", "boost": 0.5}}])",
+              "field 'shield.negation': must be a number or an object {slash, strike, pierce}"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "off_hand", "shield": {"size": "small", "negation": 2, "boost": 0.5}}])",
+              "field 'shield.negation': 2 is out of range 0..1"},
              {base + R"(,{"id": "a", "save_id": 12}])", "record 11 'a': field 'name': must be 1..48 bytes of text"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A‮B"}])", "field 'name': must be 1..48 bytes of text without control"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A\nB"}])", "field 'name': must be 1..48 bytes of text without control"},
@@ -4242,6 +4282,12 @@ static void dataFiles() {
               "field 'hit_stance': harmless creatures don't fight"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "dummy", "parries": 2}])", "field 'parries': harmless creatures don't fight"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "parries": 2}])", "field 'parries': it can't be parried"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit", "damage": "pierce"}])",
+              "field 'damage': its weapon decides (only creatures without one have their own)"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "dummy", "damage": "slash"}])", "field 'damage': harmless creatures don't fight"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "wolf", "damage": "bite"}])", "field 'damage': must be one of slash, strike, pierce"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "villager", "resist": 0.2}])", "field 'resist': only attackable creatures are hit"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "wolf", "resist": {"slash": 2}}])", "field 'resist.slash': 2 is out of range -1..0.9"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit", "parryable": 1}])", "field 'parryable': must be true or false"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "wanders": false}])",
               "field 'wanders': must be true for a creature that fights"},
@@ -5939,7 +5985,7 @@ static void melee() {
         auto blocked = [&](ItemId shield) {  // the same hit on a guard of `shield`: {damage, stamina spent}
             p.inv.equipped[SlotOffHand] = shield;
             p.stamina = gMelee.staminaMax, p.health = 100;
-            tick(p, {.guard = true}, es);
+            for (int i = 0; i < 12; ++i) tick(p, {.guard = true}, es);  // up a while: not a perfect guard
             std::mt19937 keep = rng;
             float hurt = strikeNow(p, es, {.guard = true});
             rng = keep;
@@ -6109,6 +6155,181 @@ static void melee() {
         for (int i = 0; i < 120 && !heavy.charged; ++i) tick(heavy, {.heavyHeld = true}, none);
         CHECK(heavy.charged && heavy.made(Noise::Charged));
     }
+    {  // The backstep (ADR-038): standing still, the roll button hops back facing ahead, for less stamina
+       // than a roll and with fewer i-frames; attacking out of it is its own lunging sweep.
+        Player p = fighter();
+        Input in;
+        in.roll = true;
+        updateMelee(p, {}, in, dt);  // the press waits for updatePlayer to roll
+        updatePlayer(p, g, in, dt);
+        CHECK(p.rolling() && p.backstep && p.yaw == 0 && p.made(Noise::Backstep) && p.rollDir.y < -0.99f);
+        tick(p, {}, none);  // pays for it
+        CHECK(p.stamina == gMelee.staminaMax - gMelee.backstepStamina && gMelee.backstepStamina < gMelee.rollStamina);
+        p.rollTime = gMelee.backstepIframeFrom + 0.01f;
+        CHECK(invulnerable(p));
+        p.rollTime = gMelee.backstepIframeTo + 0.01f;
+        CHECK(p.rolling() && !invulnerable(p));  // a roll would still be untouchable here
+        p.backstep = false;
+        CHECK(invulnerable(p));
+        p.backstep = true, p.rollTime = 0.7f * p.rollLength;
+        CHECK(tick(p, tap, none) == Move::Backstep && !p.rolling());  // takes over from the backstep
+        while (p.punching()) tick(p, {}, none);
+        p.backstep = false, p.rollLength = 0.45f;
+        p.rollTime = 0.7f * p.rollLength;
+        CHECK(tick(p, tap, none) == Move::Rolling);  // out of a roll: the rolling attack
+    }
+    {  // Equip load (ADR-039): the worn gear's weight against what vitality carries picks the roll: light
+       // goes farther, heavy shorter and slower, with fewer i-frames, slower to roll again and to get its
+       // stamina back; overloaded, no roll, no backstep and no running.
+        Player p = fighter(), m = armored();
+        const PlayerTuning& t = p.tuning;
+        CHECK(maxEquipLoad(p, t) == t.loadBase + t.loadPerVitality * 10 && loadOf(p, t) == Load::Light);  // a sword, 3 of 55
+        CHECK(equipWeight(m.inv) == 27 && loadOf(m, t) == Load::Medium);  // iron and a sword: half
+        Player h = m;
+        h.inv.equipped[SlotOffHand] = tower;
+        CHECK(loadOf(h, t) == Load::Heavy);
+        h.inv.equipped[SlotOffHand] = heater;
+        CHECK(loadOf(h, t) == Load::Medium);
+        h.inv.equipped[SlotOffHand] = tower;
+        auto rollFrom = [&](Player q, glm::vec2 move) {  // how far a roll carries it, its length and its load
+            q.pos = q.prevPos = {7.5f, 4.001f, 2.5f};
+            q.vel = {}, q.yaw = 0;
+            updatePlayer(q, g, {}, dt);
+            Input go;
+            go.move = move, go.roll = true;
+            updatePlayer(q, g, go, dt);
+            float length = q.rolling() ? q.rollLength : 0;
+            Load load = q.rollLoad;
+            for (int i = 0; i < 90; ++i) updatePlayer(q, g, {}, dt);
+            return std::tuple{q.pos.z - 2.5f, length, load};
+        };
+        auto [light, lightLength, lightLoad] = rollFrom(p, {0, 1});
+        auto [medium, mediumLength, mediumLoad] = rollFrom(m, {0, 1});
+        auto [heavy, heavyLength, heavyLoad] = rollFrom(h, {0, 1});
+        CHECK(lightLoad == Load::Light && mediumLoad == Load::Medium && heavyLoad == Load::Heavy);
+        CHECK(light > medium + 0.4f && medium > heavy + 0.4f && heavyLength > mediumLength && lightLength == mediumLength);
+        auto [back, backLength, backLoad] = rollFrom(h, {});
+        CHECK(back < 0 && back > -2.5f && backLength > t.backstepSeconds);  // a heavy backstep: a little slower
+        h.rollTime = gMelee.heavyIframeTo + 0.01f, h.rollLength = 1, h.backstep = false, h.rollLoad = Load::Heavy;
+        CHECK(!invulnerable(h));
+        h.rollLoad = Load::Medium;
+        CHECK(invulnerable(h));
+        h.rollTime = 99, h.rollLength = 0;
+        // Rolls again only after a longer recovery.
+        auto rollsAgainAfter = [&](Player q, float seconds) {
+            q.pos = q.prevPos = {7.5f, 4.001f, 2.5f};
+            updatePlayer(q, g, {}, dt);
+            Input go;
+            go.move = {0, 1}, go.roll = true;
+            updatePlayer(q, g, go, dt);
+            for (float s = 0; s < q.rollLength + seconds; s += dt) updatePlayer(q, g, {}, dt);
+            updatePlayer(q, g, go, dt);
+            return q.rollTime < 0.1f;
+        };
+        CHECK(rollsAgainAfter(m, 0.2f) && !rollsAgainAfter(h, 0.2f) && rollsAgainAfter(h, 0.35f));
+        // Its stamina comes back slower.
+        Player a = fighter(), b = fighter();
+        a.stamina = b.stamina = 0, a.load = Load::Heavy;
+        for (int i = 0; i < 30; ++i) tick(a, {}, none), tick(b, {}, none);
+        CHECK(a.stamina > 0 && a.stamina < b.stamina * 0.75f);
+        // Overloaded: no roll, no backstep, no running.
+        Player o = h;
+        o.tuning.loadBase = 0, o.tuning.loadPerVitality = 3;  // carries 30 of its 40
+        CHECK(loadOf(o, o.tuning) == Load::Over);
+        auto [over, overLength, overLoad] = rollFrom(o, {0, 1});
+        CHECK(overLength == 0 && over < 0.1f);  // a tick of walking, no roll
+        CHECK(std::get<1>(rollFrom(o, {})) == 0);
+        o.pos = o.prevPos = {7.5f, 4.001f, 2.5f};
+        Input run;
+        run.move = {0, 1}, run.run = true;
+        for (int i = 0; i < 60; ++i) updatePlayer(o, g, run, dt);
+        CHECK(o.vel.z > 1 && o.vel.z < t.walkSpeed * t.overloadedSpeed + 0.1f);
+        // Holding run or roll does nothing then: no stamina drain, the guard stays up.
+        o.combatTimer = kCombatSeconds, o.stamina = 50;
+        Input held;
+        held.move = {0, 1}, held.run = true, held.roll = true;
+        updateMelee(o, {.guard = true}, held, dt);
+        CHECK(!held.run && !held.roll && o.want == Want::None && o.guarding && o.stamina >= 50);  // (guarding, it refills a little)
+    }
+    {  // The perfect guard (ADR-041): a hit as the guard goes up takes no damage and half the stamina, and
+       // still opens a guard counter; a guard held up a while, or raised again too soon, is a plain one.
+        Player p = armored();
+        std::vector<Entity> es = duel(p);
+        auto block = [&](int down, int up) {  // guard down `down` ticks, then up `up` ticks before the hit
+            for (int i = 0; i < down; ++i) tick(p, {}, es);
+            for (int i = 0; i < up; ++i) tick(p, {.guard = true}, es);
+            p.stamina = gMelee.staminaMax, p.health = 100, p.noises = 0;
+            std::mt19937 keep = rng;
+            float hurt = strikeNow(p, es, {.guard = true});
+            rng = keep;
+            return std::tuple{hurt, gMelee.staminaMax - p.stamina, p.made(Noise::PerfectGuard), p.blockTime};
+        };
+        auto [held, heldStamina, heldPerfect, heldBlock] = block(40, 20);
+        auto [fresh, freshStamina, freshPerfect, freshBlock] = block(40, 0);  // up the very tick it lands
+        CHECK(held > 0 && !heldPerfect && fresh == 0 && freshPerfect && freshBlock < 0.1f);
+        CHECK(std::abs(freshStamina - heldStamina * gMelee.perfectStamina) < 0.01f);
+        auto [tapped, tappedStamina, tappedPerfect, tappedBlock] = block(5, 0);  // down only 5 ticks: raised again too soon
+        CHECK(tapped > 0 && !tappedPerfect);
+        auto [edge, edgeStamina, edgePerfect, edgeBlock] = block(40, 8);  // up 8 ticks (0.13 s): still in the window
+        CHECK(edge == 0 && edgePerfect);
+        auto [late, lateStamina, latePerfect, lateBlock] = block(40, 10);  // 0.17 s: past it
+        CHECK(late > 0 && !latePerfect);
+        auto [rested, restedStamina, restedPerfect, restedBlock] = block(20, 0);  // down 0.33 s: rested enough
+        auto [hasty, hastyStamina, hastyPerfect, hastyBlock] = block(17, 0);     // 0.28 s: not
+        CHECK(restedPerfect && !hastyPerfect);
+    }
+    {  // Parrying without a shield (ADR-041): a knife and bare fists parry; a sword can't, and a shield's
+       // parry (or a greatshield's none) comes first.
+        Player p = fighter();
+        CHECK(parryOf(p) == 0 && tick(p, {.parry = true}, none) == Move::None);  // a sword
+        p.inv.equipped[SlotMainHand] = Knife;
+        CHECK(parryOf(p) == itemType(Knife).parry && itemType(Knife).parry > 0);
+        p.inv.equipped[SlotOffHand] = tower;
+        CHECK(parryOf(p) == 0);
+        p.inv.equipped[SlotOffHand] = buckler;
+        CHECK(parryOf(p) == itemType(buckler).shield.parry);
+        p.inv.equipped[SlotOffHand] = p.inv.equipped[SlotMainHand] = NoItem;
+        CHECK(parryOf(p) == gMelee.fistParry && tick(p, {.parry = true}, none) == Move::Parry);
+        p = armored();
+        p.inv.equipped[SlotMainHand] = Knife;
+        std::vector<Entity> es = duel(p);
+        tick(p, {.parry = true}, es);
+        CHECK(p.move == Move::Parry && p.moveScale == itemType(Knife).parry);
+        for (int i = 0; i < 60 && p.punching() && p.moveTime / p.moveScale < gMelee.parryFrom + 0.02f; ++i) tick(p, {}, es);
+        p.noises = 0;
+        CHECK(strikeNow(p, es, {}) == 0 && p.made(Noise::Parry) && es[0].body.broken);  // deflected: open to a riposte
+    }
+    {  // Damage types (ADR-040): a blade's swings slash and its thrusts pierce, fists strike, a beast's
+       // own attacks have its kind's; creatures resist or are weak to each, shields stop each apart.
+        Player p = fighter();
+        p.swingWeapon = Shortsword, p.move = Move::Light1;
+        CHECK(damageOf(p) == DamageType::Slash);
+        p.move = Move::Light4;
+        CHECK(damageOf(p) == DamageType::Pierce);
+        p.swingWeapon = NoItem;
+        CHECK(damageOf(p) == DamageType::Strike && damageOf(p, DamageType::Pierce) == DamageType::Pierce);
+        p.move = Move::None;
+        CHECK(typeOf(EntityKind::Wolf).damage == DamageType::Pierce && typeOf(EntityKind::Boar).damage == DamageType::Strike);
+        p.inv.equipped[SlotOffHand] = buckler;
+        CHECK(guardOf(p, DamageType::Strike).negation < guardOf(p, DamageType::Slash).negation);
+        // The same roll on a ghoul (weak to strike, resists pierce) and on a bandit (neither).
+        auto hitOn = [&](EntityKind kind, ItemId weapon, Move move) {
+            Player q = fighter();
+            q.inv.equipped[SlotMainHand] = weapon;
+            std::vector<Entity> es;
+            es.reserve(2);
+            spawnAhead(es, g, q, kind, 1, 1.5f);
+            startMove(q, move, {0, 1});
+            q.moveTime = impactTime(q) - 1e-4f;
+            float before = es[0].body.health;
+            std::mt19937 same(9);
+            updateCombat(q, es, dt, same);
+            return before - es[0].body.health;
+        };
+        float fistsGhoul = hitOn(EntityKind::Ghoul, NoItem, Move::Light1), fistsBandit = hitOn(EntityKind::Bandit, NoItem, Move::Light1);
+        float thrustGhoul = hitOn(EntityKind::Ghoul, Shortsword, Move::Light4), thrustBandit = hitOn(EntityKind::Bandit, Shortsword, Move::Light4);
+        CHECK(fistsBandit > 0 && fistsGhoul > fistsBandit && thrustGhoul > 0 && thrustGhoul < thrustBandit);
+    }
 }
 
 // Sound (ADR-037): what a session hears (footsteps from the gait, a jump and its landing, a roll, a
@@ -6138,10 +6359,16 @@ static void sounds() {
     CHECK(count(Noise::Jump) == 1 && count(Noise::Land) == 1 && land->amount > 5 && land->ground == Grass && count(Noise::Step) == 0);
     s.sounds.clear();
     SimInput roll;
-    roll.move.roll = true;
+    roll.move.roll = true, roll.move.move = {0, 1};
+    step(s, roll, kTick);
+    while (s.player.rolling()) step(s, {}, kTick);
+    CHECK(count(Noise::Roll) == 1 && count(Noise::Step) <= 1);  // a roll has no footsteps (but the foot it gets up on)
+    for (int i = 0; i < 60; ++i) step(s, {}, kTick);
+    s.sounds.clear();
+    roll.move.move = {};
     step(s, roll, kTick);
     for (int i = 0; i < 60; ++i) step(s, {}, kTick);
-    CHECK(count(Noise::Roll) == 1 && count(Noise::Step) == 0);  // a roll has no footsteps
+    CHECK(count(Noise::Backstep) == 1 && count(Noise::Roll) == 0 && count(Noise::Step) == 0);  // standing: a backstep, a hop
     s.player.teleport({40.5f, 4.5f, 10.5f});  // the shallows (x >= 32)
     s.sounds.clear();
     for (int i = 0; i < 60; ++i) step(s, {}, kTick);
@@ -6196,7 +6423,8 @@ static void sounds() {
     CHECK(names({.what = Noise::Swing, .move = Move::Light2, .with = Shortsword}) == Names{"swing_light"});
     CHECK(names({.what = Noise::Swing, .move = Move::Heavy1, .with = Shortsword}) == (Names{"swing_heavy", "player_attack"}));
     CHECK(names({.what = Noise::Swing, .kind = bandit, .move = Move::Light1, .with = Knife}) == Names{"swing_fast"});
-    CHECK(names({.what = Noise::Swing, .move = Move::Parry, .with = Shortsword}) == Names{"swing_shield"});
+    CHECK(names({.what = Noise::Swing, .move = Move::Parry, .with = defs().itemById.at("oak_buckler")}) == Names{"swing_shield"});
+    CHECK(names({.what = Noise::Swing, .move = Move::Parry, .with = Knife}) == Names{"swing_fast"});  // a knife's parry (ADR-041)
     CHECK(names({.what = Noise::Windup, .kind = boar}) == Names{"boar_windup"} && names({.what = Noise::Parry}) == Names{"parry"});
     CHECK(names({.what = Noise::Block, .with = buckler}) == Names{"block_shield"} && names({.what = Noise::Block, .with = Shortsword}) == Names{"block_metal"});
     CHECK(names({.what = Noise::Block}) == Names{"block_arms"} && layersOf({.what = Noise::Block, .with = tower})[0].pitch < 1);  // a deeper thud
@@ -6204,6 +6432,10 @@ static void sounds() {
     CHECK(names({.what = Noise::Death, .kind = boar}) == (Names{"hit_blunt", "boar_death", "body_fall"}) && death[2].delay > 0.2f);
     CHECK(layersOf({.what = Noise::Hurt, .kind = chief}).back().pitch == typeOf(EntityKind::BanditChief).voicePitch && typeOf(EntityKind::BanditChief).voicePitch < 1);
     CHECK(layersOf({.what = Noise::Loot})[0].bus == BusInterface);
+    CHECK(names({.what = Noise::Backstep, .ground = Grass}) == (Names{"step_grass", "step_grass", "jump"}));  // a hop: off, and down
+    CHECK(names({.what = Noise::PerfectGuard}) == Names{"block_perfect"});
+    CHECK(names({.what = Noise::Roll, .ground = Grass}) == (Names{"roll", "step_grass"}));
+    CHECK(names({.what = Noise::Roll, .ground = Grass, .amount = float(Load::Heavy)}) == (Names{"roll", "step_grass", "land"}));  // thuds down
 
     // The mixer: a take plays once (panned), waits out its delay, loops, stops for room; mute is silence.
     {

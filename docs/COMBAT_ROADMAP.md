@@ -20,11 +20,12 @@ system is summarized in ADR-035.
 
 ## Defense
 
-- [ ] Shield weight (with equip load, below) and parrying with light weapons (daggers, fists: with
-      their weapon classes)
-- [ ] Perfect guard / just-block? (decide: a timed-block bonus or not)
-- [ ] Backstep (roll button with no direction) and its retreat attack
-- [ ] Damage types (slash, strike, pierce, and later elemental) with per-shield negation
+- [x] Shield weight (with the equip load, ADR-039) and parrying with a knife or bare fists (ADR-041)
+- [x] Perfect guard: decided yes, a small bonus (no damage, half the stamina; ADR-041)
+- [x] Backstep (roll button with no direction) and its attack (ADR-038)
+- [x] Damage types (slash, strike, pierce) with per-shield negation and creature resistances (ADR-040);
+      elemental types later, with magic
+- [ ] NPCs with shields that guard and parry (with "Enemies that guard, parry, dodge")
 
 ## Melee weapon classes (each needs its own moveset, timings, stance damage and animation set)
 
@@ -65,7 +66,7 @@ system is summarized in ADR-035.
 - [ ] Backstabs and criticals (from behind an unaware or turned enemy)
 - [ ] Status effects: bleed, poison, frost, stun build-up bars
 - [ ] Weapon scaling with attributes (strength, agility, intellect, spirit)
-- [ ] Equip load: light, medium and heavy rolls
+- [x] Equip load: light, medium and heavy rolls; overloaded can't roll (ADR-039)
 - [ ] Healing flasks (limited charges, refilled at rest points)
 - [ ] Per-weapon timings and stance values in the data (items.json), not one shared table
 
@@ -77,7 +78,7 @@ system is summarized in ADR-035.
 - [ ] Attack tokens: only a few in a pack swing at once, the rest circle (ADR-034 follow-up)
 - [ ] Grabs, area attacks, charges, jumping attacks
 - [ ] Bosses: phases, unique movesets, stance bars shown
-- [ ] Enemy weakness and resistance per damage type
+- [x] Enemy weakness and resistance per damage type (ADR-040)
 
 ## Feel
 

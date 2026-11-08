@@ -265,7 +265,30 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
     ImGui::SliderFloat("Roll speed", &t.rollSpeed, 1, 40, "%.1f b/s");
     ImGui::SetItemTooltip("At the roll's start; it slows to half by the end. Alt (Option) or Circle rolls; just after a jump it rolls through the air; jumping cuts it short.");
     ImGui::SliderFloat("Roll length", &t.rollSeconds, 0.1f, 1.5f, "%.2f s");
-    ImGui::Text("Rolling %s   (%.1f blocks a roll)", p.rolling() ? "yes" : "no", double(t.rollSpeed * t.rollSeconds * 0.75f));
+    ImGui::Text("Rolling %s   (%.1f blocks a roll)", p.rolling() ? p.backstep ? "a backstep" : "yes" : "no", double(t.rollSpeed * t.rollSeconds * 0.75f));
+    if (ImGui::TreeNode("Equip load and the backstep (ADR-038, ADR-039)")) {
+        float w = equipWeight(p.inv), most = maxEquipLoad(p, t);
+        ImGui::Text("Load %.1f / %.1f (%.0f%%): %s   rolled %s", double(w), double(most), double(w / most * 100), kLoadNames[size_t(p.load)],
+                    kLoadNames[size_t(p.rollLoad)]);
+        ImGui::SliderFloat("Load base", &t.loadBase, 0, 200, "%.0f");
+        ImGui::SliderFloat("  + per vitality", &t.loadPerVitality, 0, 10, "%.2f");
+        ImGui::SliderFloat("Light under", &t.lightLoad, 0, 1, "%.2f");
+        ImGui::SliderFloat("Heavy over", &t.heavyLoad, 0, 1, "%.2f");
+        ImGui::SliderFloat("Light roll speed", &t.lightRollSpeed, 1, 40, "%.1f b/s");
+        ImGui::SliderFloat("Heavy roll speed", &t.heavyRollSpeed, 1, 40, "%.1f b/s");
+        ImGui::SliderFloat("Heavy roll length", &t.heavyRollSeconds, 0.1f, 1.5f, "%.2f s");
+        ImGui::SliderFloat("Heavy roll recovery", &t.heavyRollRecovery, 0, 1, "%.2f s");
+        ImGui::SliderFloat("Heavy roll i-frames to", &gMelee.heavyIframeTo, 0, 1, "%.2f s");
+        ImGui::SliderFloat("Heavy stamina regen", &gMelee.heavyRegen, 0, 1, "x %.2f");
+        ImGui::SliderFloat("Overloaded walk", &t.overloadedSpeed, 0.1f, 1, "x %.2f");
+        ImGui::SliderFloat("Backstep speed", &t.backstepSpeed, 1, 30, "%.1f b/s");
+        ImGui::SetItemTooltip("The roll button standing still hops back, still facing ahead; attacking out of it is a lunging sweep.");
+        ImGui::SliderFloat("Backstep length", &t.backstepSeconds, 0.1f, 1, "%.2f s");
+        ImGui::SliderFloat("Backstep cost", &gMelee.backstepStamina, 0, 60, "%.0f");
+        ImGui::SliderFloat("Backstep i-frames from", &gMelee.backstepIframeFrom, 0, 1, "%.2f s");
+        ImGui::SliderFloat("Backstep i-frames to", &gMelee.backstepIframeTo, 0, 1, "%.2f s");
+        ImGui::TreePop();
+    }
 
     ImGui::SeparatorText("Melee (ADR-035)");
     MeleeTuning& m = gMelee;
@@ -279,10 +302,14 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
     ImGui::Text("i-frames %s   hyperarmor %s", invulnerable(p) ? "yes" : "no", hyperarmor(p) ? "yes" : "no");
     {  // ADR-036
         const Shield* s = shieldOf(p);
-        Guard g = guardOf(p);
-        ImGui::Text("Guard with %s: stops %.0f%% of the damage, boost %.0f%%%s%s", s ? itemType(p.inv.equipped[SlotOffHand]).name
-                    : p.inv.equipped[SlotMainHand] ? "the sword" : "bare arms", double(g.negation * 100), double(g.boost * 100),
-                    s && s->parry > 0 ? std::format(", parries (x {:.2f})", s->parry).c_str() : "", g.boost >= m.bounceBoost ? ", bounces" : "");
+        Guard g = guardOf(p), strike = guardOf(p, DamageType::Strike), pierce = guardOf(p, DamageType::Pierce);
+        float parry = parryOf(p);
+        ImGui::Text("Guard with %s: stops %.0f/%.0f/%.0f%% (slash/strike/pierce), boost %.0f%%%s%s", s ? itemType(p.inv.equipped[SlotOffHand]).name
+                    : p.inv.equipped[SlotMainHand] ? "the weapon" : "bare arms", double(g.negation * 100), double(strike.negation * 100),
+                    double(pierce.negation * 100), double(g.boost * 100),
+                    parry > 0 ? std::format(", parries (x {:.2f})", parry).c_str() : "", g.boost >= m.bounceBoost ? ", bounces" : "");
+        ImGui::Text("Perfect guard %s   (guard up %.2f s, %s)", perfectGuard(p) ? "NOW" : "no", double(std::min(p.guardTime, 99.0f)),
+                    p.perfectReady ? "rested" : "raised too soon");
         if (p.move == Move::Parry)
             ImGui::Text("Parry %.2f s: %s", double(p.moveTime / p.moveScale), parries(p, p.pos) ? "ACTIVE" : "weak guard");
     }
@@ -327,6 +354,13 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
         ImGui::SetItemTooltip("An attack that bounces off a greatshield, or a parry short of the ones it takes, rocks the attacker back this long.");
         ImGui::SliderFloat("Bounce: boost from", &m.bounceBoost, 0, 1, "%.2f");
         ImGui::SliderFloat("Bounce: stance under", &m.bounceStance, 0, 60, "%.0f");
+        ImGui::SliderFloat("Fists parry", &m.fistParry, 0, 4, "x %.2f");
+        ImGui::SetItemTooltip("The parry's length with bare fists (0: they can't). A knife's is its item's; a shield's comes first.");
+        ImGui::SliderFloat("Perfect guard", &m.perfectGuardSeconds, 0, 0.5f, "%.2f s");
+        ImGui::SetItemTooltip("A hit this soon after the guard goes up is a perfect guard (ADR-041): no damage, less stamina.");
+        ImGui::SliderFloat("  stamina", &m.perfectStamina, 0, 1, "x %.2f");
+        ImGui::SliderFloat("  rearm", &m.perfectRearm, 0, 2, "%.2f s");
+        ImGui::SetItemTooltip("The guard must have been down this long before (tapping it doesn't keep the window open).");
         ImGui::TreePop();
     }
 

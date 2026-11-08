@@ -304,6 +304,7 @@ static const Swing kSwings[] = {
     {{1.0f, 5, 5, 2.0f, 0, 0.5f, 0.1f, 1}, {-1.2f, 14, 5, 0.6f, 0, -0.6f, -0.05f, 0}},       // guard counter: rising slash
     {{-0.4f, 10, 0, 1.57f, 0, -0.6f, -0.2f, 0.5f}, {0, 9, 10, 1.57f, 0, 0.3f, 0.4f, 1}},     // riposte: deep thrust
     {{0.6f, 9, 3, 1, 0, 0.4f, 0, 0.3f}, {-1.3f, 10, 5, 1, 0, -0.4f, 0.1f, 0.6f}},             // parry: the shield hand, across the body and out
+    {{-1.5f, 9.5f, 5, 1.5f, 0, -0.6f, 0.2f, 0.4f}, {1.6f, 8.5f, 6.5f, 1.55f, 0, 0.6f, 0.3f, 0.5f}},  // backstep: a lunging sweep back in
 };
 static_assert(std::size(kSwings) == size_t(Move::Count));
 static const Grip kGuard{0.35f, 10, 4, 0.15f, -1.2f, 0.25f, 0.05f, 0.8f};  // blade upright across the front
@@ -345,7 +346,7 @@ static float reel(const Combatant& c) {
 // turned forward (one full turn, easing in and out).
 struct Roll { float tuck = 0, turn = 0; };
 static Roll roll(const Body& p) {
-    if (!p.rolling()) return {};
+    if (!p.rolling() || p.backstep) return {};
     float u = p.rollTime / p.rollLength;
     return {smooth(u / 0.15f) * smooth((1 - u) / 0.2f), 2 * std::numbers::pi_v<float> * smooth(u)};
 }
@@ -398,6 +399,16 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
         }
     }
 
+    if (p.rolling() && p.backstep) {  // a backstep: a small hop, leaning back, the hands up in front
+        float u = p.rollTime / p.rollLength, k = smooth(u / 0.2f) * smooth((1 - u) / 0.35f);
+        float hop = 1.5f * std::sin(std::numbers::pi_v<float> * std::min(u / 0.8f, 1.0f));
+        for (int i = 0; i < PartCount; ++i) off[i].y += hop;
+        rot[Torso].x -= 0.3f * k;
+        off[Head] += glm::vec3(0, 0, -1.2f) * k;
+        off[HandL] += glm::vec3(0, 2, 2) * k, off[HandR] += glm::vec3(0, 2, 2) * k;
+        off[FootL] += glm::vec3(0, 0.5f, 1.5f) * k, off[FootR] += glm::vec3(0, 0.3f, -1.5f) * k;  // landing in a stance
+    }
+
     // The torso turned toward the left hand, leaning forward, the upper body sunk.
     auto posture = [&](float twist, float lean, float dip) {
         rot[Torso].y += twist;
@@ -409,8 +420,9 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
     };
     auto [g, w] = swingPose(p, armed);
     const Shield* shield = shieldOf(p);
-    if (w > 0) {  // the swing: the sword hand (unarmed, the fists in turn; a parry, the shield hand: the left one mirrored) and the body with it
-        bool left = p.move == Move::Parry || (!armed && !p.punchRight);
+    if (w > 0) {  // the swing: the sword hand (unarmed, the fists in turn; a parry, the shield hand or the left fist:
+                  // the left one mirrored; a knife's parry, the knife hand) and the body with it
+        bool left = p.move == Move::Parry ? shield || !armed : !armed && !p.punchRight;
         float side = left ? -1.0f : 1.0f;
         int hand = left ? HandL : HandR;
         glm::vec3 at(side * (-1.5f + g.reach * std::sin(g.arc)), g.height, 1.5f + g.reach * std::cos(g.arc));
@@ -547,7 +559,7 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
     float guard = p.guardBlend * (1 - w);
     if (held && armed) {  // blade tilted forward from the fist; turned and pitched by the swing or the guard (a parry leaves it be)
         const Grip& gg = shield ? kShieldGuard : kGuard;
-        float sw = p.move == Move::Parry ? 0 : w;
+        float sw = p.move == Move::Parry && shield ? 0 : w;  // a knife's parry sweeps the blade across
         float yaw = (g.arc + g.yaw) * sw + (gg.arc + gg.yaw) * guard;
         float pitch = 1.0f + (g.pitch - 1.0f) * sw + (gg.pitch - 1.0f) * guard;
         glm::mat4 m = glm::translate(base * tilt, parts[HandR].center + off[HandR]);

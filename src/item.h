@@ -17,12 +17,22 @@ extern const char* const kSlotNames[EquipCount];
 enum ItemId : uint8_t { NoItem, Shortsword, Satchel, Knife, BoarSkin,
                         IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, WolfPelt, BoneCharm, ItemCount };
 
+// What a physical hit does (ADR-040): a blade's swings slash and its thrusts pierce, fists and blunt
+// weapons strike. Creatures resist (or are weak to) each apart, and shields stop each apart.
+enum class DamageType : uint8_t { Slash, Strike, Pierce, Count };
+inline constexpr const char* kDamageTypeIds[] = {"slash", "strike", "pierce"};  // in data files
+inline constexpr const char* kDamageTypeNames[] = {"Slash", "Strike", "Pierce"};
+static_assert(std::size(kDamageTypeIds) == size_t(DamageType::Count) && std::size(kDamageTypeNames) == size_t(DamageType::Count));
+using PerType = std::array<float, size_t(DamageType::Count)>;  // a number for each damage type
+
 // What an off-hand shield does when guarding (ADR-036): the share of a blocked hit's damage it stops
-// and of its stamina damage it saves, and whether it can parry. Its size picks its model.
+// (per damage type, ADR-040) and of its stamina damage it saves, and whether it can parry. Its size
+// picks its model.
 enum class ShieldSize : uint8_t { None, Small, Medium, Great };
 struct Shield {
     ShieldSize size = ShieldSize::None;  // None: not a shield
-    float negation = 0, boost = 0;
+    PerType negation{};
+    float boost = 0;
     float parry = 0;                     // the parry's length (x its base timing); 0: can't parry
 };
 
@@ -34,6 +44,9 @@ struct ItemType {
     int armor;      // armor pieces; chest and legs always give the most (a test enforces it)
     std::vector<Modifier> mods;  // what wearing it adds to the stat pipeline, besides its armor (source unset)
     Shield shield;               // off-hand shields
+    float weight = 0;            // worn, it counts toward the equip load (ADR-039)
+    DamageType damage = DamageType::Slash;  // weapons: what their swings do (a blade's thrusts pierce)
+    float parry = 0;             // main-hand weapons that parry (a knife: ADR-041): the parry's length; 0: can't
 };
 const ItemType& itemType(ItemId id);  // from the loaded defs (defs.h); NoItem's row when out of range
 
@@ -70,6 +83,8 @@ bool takeItem(Inventory& inv, ItemId id);
 // Destroys what's in `ref` (Ctrl+right-click): an item slot's or a worn item, or an empty bag from the bar.
 bool discardItem(Inventory& inv, SlotRef ref);
 int itemSlots(const Inventory& inv);
+// What the worn items weigh (the equip load, ADR-039; bags and what's in them don't count).
+float equipWeight(const Inventory& inv);
 int freeSlots(const Inventory& inv);
 
 // A weapon's attack; a punch for NoItem.

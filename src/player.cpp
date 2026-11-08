@@ -25,6 +25,17 @@ std::vector<Modifier> collect(const Combatant& c) {
     return out;
 }
 
+float maxEquipLoad(const Combatant& c, const PlayerTuning& t) {
+    return t.loadBase + t.loadPerVitality * sheet(c)[Stat::Stamina];
+}
+
+Load loadOf(const Combatant& c, const PlayerTuning& t) {
+    float w = equipWeight(c.inv);
+    if (w <= 0) return Load::Light;  // naked: no need to look at the stats
+    float share = w / maxEquipLoad(c, t);
+    return share > 1 ? Load::Over : share > t.heavyLoad ? Load::Heavy : share >= t.lightLoad ? Load::Medium : Load::Light;
+}
+
 bool overlapsSolid(const Grid& g, glm::vec3 p) {
     glm::ivec3 lo(glm::floor(p - glm::vec3(kHalfWidth, 0, kHalfWidth)));
     glm::ivec3 hi(glm::floor(p + glm::vec3(kHalfWidth, kHeight, kHalfWidth)));
@@ -71,6 +82,9 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
 
     const PlayerTuning& t = p.tuning;
     bool flying = t.fly || t.noclip;
+    p.load = loadOf(p, t);
+    bool over = p.load == Load::Over && !flying;
+    bool backstepping = p.rolling() && p.backstep;
     p.rollTime = std::min(p.rollTime + dt, 99.0f);
     p.jumpTime = std::min(p.jumpTime + dt, 99.0f);
     p.offGround = p.onGround ? 0 : std::min(p.offGround + dt, 99.0f);
@@ -95,19 +109,36 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
             }
         }
         // On the ground, or just after a jump: then the roll goes through the air with the jump.
-        if (in.roll && (p.onGround || p.jumpTime < kAirRollWindow) && !p.inWater && !p.punching() && p.rollTime >= p.rollLength + kRollRecovery) {
+        // Standing still on the ground it's a backstep instead (ADR-038); a heavy load rolls short and
+        // slow, and gets up slower (ADR-039); overloaded, it can't.
+        float recovery = p.rollLoad == Load::Heavy ? t.heavyRollRecovery : kRollRecovery;
+        if (in.roll && !over && (p.onGround || p.jumpTime < kAirRollWindow) && !p.inWater && !p.punching() && p.rollTime >= p.rollLength + recovery) {
             glm::vec2 facing{std::sin(p.yaw), std::cos(p.yaw)};
-            p.rollDir = glm::length(in.move) > 0.1f ? glm::normalize(in.move) : facing;
-            p.rollTime = 0, p.rollLength = t.rollSeconds;
-            p.yaw = std::atan2(p.rollDir.x, p.rollDir.y);  // tucks facing the roll
-            p.noise(Noise::Roll);
+            p.backstep = glm::length(in.move) <= 0.1f && p.onGround;
+            p.rollLoad = p.load;
+            p.rollTime = 0;
+            if (p.backstep) {  // keeps facing ahead
+                p.rollDir = -facing;
+                p.rollLength = t.backstepSeconds * (p.load == Load::Heavy ? 1.25f : 1);
+                p.noise(Noise::Backstep);
+            } else {
+                p.rollDir = glm::length(in.move) > 0.1f ? glm::normalize(in.move) : facing;
+                p.rollLength = p.load == Load::Heavy ? t.heavyRollSeconds : t.rollSeconds;
+                p.yaw = std::atan2(p.rollDir.x, p.rollDir.y);  // tucks facing the roll
+                p.noise(Noise::Roll);
+            }
+            backstepping = p.backstep;
         }
-        glm::vec2 target = in.move * (in.speed > 0 ? in.speed : in.run ? t.runSpeed : t.walkSpeed) * (p.inWater ? 0.6f : 1.0f);
+        bool runs = in.run && !over;
+        glm::vec2 target = in.move * (in.speed > 0 ? in.speed : runs ? t.runSpeed : t.walkSpeed) * (p.inWater ? 0.6f : 1.0f) *
+                           (over ? t.overloadedSpeed : 1.0f);
         float control = p.onGround || p.inWater ? 12.0f : 3.0f;
         p.vel.x = approach(p.vel.x, target.x, control, dt);
         p.vel.z = approach(p.vel.z, target.y, control, dt);
         if (p.rolling()) {  // the roll carries it, slowing from full speed to half
-            glm::vec2 v = p.rollDir * t.rollSpeed * (1 - 0.5f * p.rollTime / p.rollLength);
+            float speed = p.backstep ? t.backstepSpeed * (p.rollLoad == Load::Heavy ? 0.8f : 1)
+                        : p.rollLoad == Load::Light ? t.lightRollSpeed : p.rollLoad == Load::Heavy ? t.heavyRollSpeed : t.rollSpeed;
+            glm::vec2 v = p.rollDir * speed * (1 - 0.5f * p.rollTime / p.rollLength);
             p.vel.x = v.x, p.vel.z = v.y;
         }
         if (p.inWater) {
@@ -154,7 +185,7 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     // Backing away (facing a lock-on target) walks the gait backwards.
     bool backwards = glm::dot(step, glm::vec2(std::sin(p.yaw), std::cos(p.yaw))) < -0.3f * moved;
     p.gaitPhase = std::fmod(p.gaitPhase + (backwards ? -moved : moved) * kTau / kStride + kTau, kTau);
-    bool walking = speed > 0.3f && !flying;
+    bool walking = speed > 0.3f && !flying && !backstepping;  // a backstep is a hop, not steps
     p.gaitAmount = approach(p.gaitAmount, walking ? std::min(speed / t.walkSpeed, 1.4f) : 0, 10, dt);
     p.airAmount = approach(p.airAmount, (p.onGround || p.inWater) && !flying ? 0.0f : 1.0f, 12, dt);
     p.swimAmount = approach(p.swimAmount, p.inWater && !flying ? 1.0f : 0.0f, 6, dt);
@@ -163,7 +194,9 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
     glm::vec2 want = glm::length(in.face) > 1e-3f && !in.run && !p.rolling() && !flying ? in.face
                    : glm::length(glm::vec2(p.vel.x, p.vel.z)) > 0.3f                  ? glm::vec2(p.vel.x, p.vel.z)
                                                                                       : glm::vec2(0);
-    if (!p.punching() && want != glm::vec2(0)) {
+    // A backstep keeps facing ahead, also while it slides to a stop after it (unless steered).
+    bool settling = p.backstep && p.rollTime < p.rollLength + 0.4f && glm::length(in.move) < 0.1f;
+    if (!p.punching() && !backstepping && !settling && want != glm::vec2(0)) {
         float diff = std::remainder(std::atan2(want.x, want.y) - p.yaw, kTau);
         p.yaw = std::remainder(p.yaw + diff * (1 - std::exp(-12 * dt)), kTau);
     }

@@ -47,10 +47,14 @@ static void hear(Session& s, Player& b, int kind) {
         Sound h{Noise(n), b.pos, kind, ground, b.move, b.swingWeapon, 0};
         switch (Noise(n)) {
             case Noise::Step: h.amount = b.gaitAmount; break;
-            case Noise::Swing: h.move = b.swung; break;
+            case Noise::Swing:  // a shield's parry swings the shield
+                h.move = b.swung;
+                if (h.move == Move::Parry && shieldOf(b)) h.with = b.inv.equipped[SlotOffHand];
+                break;
+            case Noise::Roll: case Noise::Backstep: h.amount = float(b.rollLoad); break;
             case Noise::Land: h.amount = b.landSpeed; break;
             case Noise::Hurt: case Noise::Death: case Noise::Crit: h.with = b.hitWith, h.amount = b.hitStance; break;
-            case Noise::Block: case Noise::Bounce: case Noise::Parry: case Noise::GuardBreak:
+            case Noise::Block: case Noise::Bounce: case Noise::Parry: case Noise::GuardBreak: case Noise::PerfectGuard:
                 h.with = shieldOf(b) ? b.inv.equipped[SlotOffHand] : b.inv.equipped[SlotMainHand];
                 break;
             default: break;

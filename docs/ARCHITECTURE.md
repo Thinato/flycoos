@@ -38,7 +38,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |
-| `src/melee.h/.cpp` | Melee (ADR-035): the move table `kMoves` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces` |
+| `src/melee.h/.cpp` | Melee (ADR-035): the move table `kMoves` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces`; `parryOf` (a knife or fists parry too) and `perfectGuard` (ADR-041); `damageOf` (ADR-040) |
 | `src/audio.h/.cpp` | Sound (ADR-037): `Audio` (loads `data/sounds/*.ogg` with stb_vorbis into groups of takes; `play` picks a take never twice running with a little random pitch and volume; `mix` is the device thread's stereo mix: up to 48 resampled voices, three buses, a soft limiter), `place` (falloff and pan from the listener), `layersOf`/`hear` (what a `Sound` from the sim plays), `updateAmbience` (looping beds faded by what's around). No device here: main.cpp's `Speaker` feeds `mix` to SDL3's audio stream |
 | `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
@@ -780,6 +780,20 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   parried` counts them). Caught outside the window, or by a kind with `parryable: false`, the parry is
   a weak guard (half the shield's negation and boost). The debug Player tab shows the guard and
   tunes these.
+- **The backstep** (ADR-038, player.cpp): the roll button with no direction, on the ground, hops back
+  about 2 blocks facing ahead (`Body::backstep`; it counts as a roll), for 8 stamina, with i-frames
+  0.02 to 0.14 s in; attacking late in it or just after is `Move::Backstep`, a lunging sweep.
+- **Equip load** (ADR-039): the worn items' `weight` (`equipWeight`) against 30 + 2.5 per vitality
+  (`maxEquipLoad`): under 30% light (rolls farther), up to 70% medium, over it heavy (a short, slow
+  roll with fewer i-frames, slower to roll again and to regain stamina), over 100% overloaded (no
+  roll, backstep or run). `loadOf` classes it; the body keeps `load` and the roll's `rollLoad`.
+- **Damage types** (ADR-040): slash, strike, pierce. A weapon's `damage` is its swings' (a slashing
+  weapon's thrusts, `MoveSpec::thrust`, pierce), fists strike, a creature without a weapon uses its
+  `damage`. A hit on a creature is scaled by 1 − its `resist` for the type; a shield stops its
+  `negation` for the type.
+- **Perfect guard** (ADR-041): a hit in the first 0.15 s of a guard raised after 0.3 s down takes no
+  damage and half the stamina. With the off hand empty a knife (its `parry`) or fists parry like a
+  shield.
 - `hurt()` damages any body; `damage()` is hurt() for attackable entities and also angers fighters
   and rolls loot on a kill.
 - Dealing or taking damage puts a body in combat for 5 s; spirit regeneration only runs out of
@@ -798,7 +812,10 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   fields are `slot` (head, chest, hands, legs, feet, main_hand, off_hand, trinket, bag; default none),
   `attack` `{min, max, speed}` (required for main_hand), `bag_slots` (required for bag), `armor`,
   `shield` (off_hand only, ADR-036: `{size: small | medium | great, negation, boost, parry}`, the
-  last two shares 0..1, `parry` the parry's length x, omitted for none; greatshields can't parry),
+  last two shares 0..1, `parry` the parry's length x, omitted for none; greatshields can't parry;
+  `negation` is one share or one per damage type `{slash, strike, pierce}`, ADR-040), `weight`
+  (worn items, 0..100, the equip load: ADR-039), `damage` (weapons: slash, the default, strike or
+  pierce, ADR-040), `parry` (main_hand weapons: they parry with the off hand empty, ADR-041),
   `mods` (worn items only: up to 8 stat modifiers such as `{"stat": "spirit", "flat": 2}`, each a
   stat id of `kStatIds` and exactly one of `flat`, `increased` or `more`; ADR-022), and `copy_from` (another record's id: its fields but save_id, merge-patched with the record's own,
   so objects merge and `null` removes; at most 16 deep). Any bad record stops the game with a
@@ -823,7 +840,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Iron Helm / Cuirass / Gauntlets / Greaves / Sabatons | Head / Chest / Hands / Legs / Feet | 6 / 12 / 4 / 10 / 5 armor (37 for the set) |
   | Wolf Pelt | – | crafting material later; dropped by wolves |
   | Bone Charm | Trinket | +2 spirit (regen 1 → 2 per second); dropped by barrow ghouls |
-  | Oak Buckler / Heater Shield / Tower Shield | Off Hand | shields (ADR-036): stop 80 / 100 / 100% of a blocked hit, guard boost 46 / 56 / 72%; the first two parry, the tower bounces weak attacks; no drop yet (the debug Items tab gives them) |
+  | Oak Buckler / Heater Shield / Tower Shield | Off Hand | shields (ADR-036): stop 80 / 100 / 100% of a blocked hit (the buckler 85 / 70 / 80% of slash / strike / pierce, the heater 90% of strikes: ADR-040), guard boost 46 / 56 / 72%; the first two parry, the tower bounces weak attacks; weigh 2 / 4.5 / 13; no drop yet (the debug Items tab gives them) |
 
   Chest and legs pieces always give more armor than any head, hands, feet or hand item; a test
   checks the whole table.
@@ -875,7 +892,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   true) and `parries` (1..10, default 1: parries to open it to a riposte), ADR-036. The boar can't
   be parried; the chief takes 2. Sound (ADR-037): `voice` (its sounds are `<voice>_windup`,
   `_attack`, `_hurt`, `_death`; lowercase and `_`; none: silent), `voice_pitch` (0.5..2, default 1)
-  and `body` (`flesh`, the default, or `wood`: how hits on it sound).
+  and `body` (`flesh`, the default, or `wood`: how hits on it sound). Damage types (ADR-040):
+  `damage` (kinds that fight without a weapon: what their attacks do, default strike) and `resist`
+  (attackable kinds: one share or one per type, -1..0.9, default 0; negative is a weakness).
 
   | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Temper | Weapon | Drops | Talks |
   |---|---|---|---|---|---|---|---|---|

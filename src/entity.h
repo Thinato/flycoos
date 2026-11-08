@@ -52,6 +52,8 @@ struct EntityType {
     std::string voice;
     float voicePitch;
     bool wooden;
+    DamageType damage;  // what its attacks do without a weapon (ADR-040): teeth pierce, claws slash, tusks and fists strike
+    PerType resist;     // the share of each damage type it shrugs off (negative: it's weak to it)
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);

@@ -21,6 +21,7 @@ Changes: trimmed to single calls, levelled, faded.
 |---|---|---|
 | [Swishes Sound Pack](https://opengameart.org/content/swishes-sound-pack) | artisticdude | swing_fast, swing_shield |
 | [Zombies Sound Pack](https://opengameart.org/content/zombies-sound-pack) | artisticdude | ghoul_hurt, ghoul_windup |
+| [Metal Impact Sounds](https://opengameart.org/content/metal-impact-sounds) | BMacZero | block_perfect |
 | [Wolf Monster Sound](https://opengameart.org/content/wolf-monster-sound) | CaveboyTup | wolf_attack |
 | [Fantozzi's Footsteps (Grass/Sand & Stone)](https://opengameart.org/content/fantozzis-footsteps-grasssand-stone) | Fantozzi | step_sand, step_stone |
 | [Male Grunt/Yelling sounds](https://opengameart.org/content/male-gruntyelling-sounds) | HaelDB | human_hurt, human_windup, player_attack, player_death, player_hurt |

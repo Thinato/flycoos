@@ -46,14 +46,14 @@ GPU debug layer.
 | W A S D | Move (relative to the camera) |
 | Shift | Run |
 | Space | Jump / swim up (fly: rise) |
-| Alt (Option) | Roll the way you're moving (standing still: the way you face): on the ground, or just after jumping to roll through the air; jump while rolling to jump out of it |
+| Alt (Option) | Roll the way you're moving: on the ground, or just after jumping to roll through the air; jump while rolling to jump out of it. Standing still it's a backstep (ADR-038): a quick hop back, still facing ahead; attack out of it for a lunging sweep. Heavier gear rolls shorter and slower; too much and you can't roll (the equip load, ADR-039, in the character window) |
 | Ctrl | Fly: sink |
 | Mouse | Orbit the camera |
 | Wheel | Zoom |
 | T (hold) | Fast-forward time (60×) |
 | Left mouse | Attack (Elden Ring style, ADR-035): tap for the next of four light swings (a chain), hold for a heavy that charges while held. Running, late in a roll, in the air (it strikes on landing), right after a block (a guard counter) or at an enemy on its knee (a riposte) it's a different attack. Presses wait a moment for the current swing |
-| Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks. A shield in the off hand guards better; a tower shield makes weak attacks bounce off |
-| Q | Parry (ADR-036) with a buckler or heater shield: timed just before a hit lands, it deflects the attack and leaves the attacker open to a riposte (left mouse); mistimed, it's a weak guard |
+| Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks. A shield in the off hand guards better; a tower shield makes weak attacks bounce off. Raised just as a hit lands it's a perfect guard (ADR-041): no damage, half the stamina, a bright clink |
+| Q | Parry (ADR-036) with a buckler or heater shield, or with the off hand empty a knife or bare fists (ADR-041): timed just before a hit lands, it deflects the attack and leaves the attacker open to a riposte (left mouse); mistimed, it's a weak guard |
 | E | Loot a nearby corpse, otherwise talk to a nearby villager or guard |
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |

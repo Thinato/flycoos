@@ -166,10 +166,14 @@ std::vector<Layer> layersOf(const Sound& s) {
         add("land", g * others), add(step, 0.7f * g * others);
         break;
     }
-    case Noise::Roll: add("roll", 0.9f * others), add(step, 0.5f * others); break;
+    case Noise::Roll:  // a heavy load's roll thuds down (ADR-039)
+        add("roll", 0.9f * others, s.amount >= float(Load::Heavy) ? 0.85f : 1), add(step, 0.5f * others);
+        if (s.amount >= float(Load::Heavy)) add("land", 0.5f * others, 0.9f, 0.12f);
+        break;
+    case Noise::Backstep: add(step, 0.6f * others), add(step, 0.55f * others, 1.05f, 0.14f), add("jump", 0.3f * others); break;  // a hop: off, and down
     case Noise::Splash: add("splash", 0.9f); break;
     case Noise::Swing: {
-        if (s.move == Move::Parry) {
+        if (s.move == Move::Parry && s.with && defs().items[s.with].shield.size != ShieldSize::None) {
             add("swing_shield", 0.8f);
             break;
         }
@@ -187,7 +191,7 @@ std::vector<Layer> layersOf(const Sound& s) {
     case Noise::GuardUp: add("guard_up", 0.5f); break;
     case Noise::Hurt:
     case Noise::Death:
-        add(type && type->wooden ? "hit_wood" : s.with ? "hit_blade" : "hit_blunt");
+        add(type && type->wooden ? "hit_wood" : s.with && defs().items[s.with].damage != DamageType::Strike ? "hit_blade" : "hit_blunt");
         if (s.amount >= 20) add("hit_heavy", std::min(1.0f, s.amount / 40));
         if (s.what == Noise::Hurt) say("hurt", 0.9f);
         else say("death", 1, 0.05f), add("body_fall", 0.8f, 1, 0.45f);
@@ -202,6 +206,7 @@ std::vector<Layer> layersOf(const Sound& s) {
         else add(s.with ? "block_metal" : "block_arms");
         break;
     }
+    case Noise::PerfectGuard: add("block_perfect", 0.9f); break;  // a bright clink over the block: timed right
     case Noise::GuardBreak: add("guard_break"); break;
     case Noise::Bounce: add("bounce"); break;
     case Noise::Loot: add("pickup", 0.8f, 1, 0, BusInterface); break;

@@ -1564,3 +1564,104 @@
 - **Follow-ups:** a settings menu (volumes, mute, saved); reverb and muffling (caves, underwater);
   music; per-weapon-class sounds with the weapon classes (roadmap); armored-body hits; NPC
   footsteps by kind (hooves, paws).
+
+## ADR-038: The backstep
+
+- **Status:** accepted (2026-11-08)
+- **Context:** The roadmap's defense list: a backstep (the roll button with no direction) and its
+  retreat attack. In Elden Ring the dodge button standing still is a backstep: a short hop back with
+  only minor i-frames (the official combat guide; the wikis and players say it has few or none), less
+  ground than a roll, and its own attack out of it. Until now a roll standing still went the way the
+  body faced.
+- **Decision:**
+  - The roll button with no direction, on the ground, is a **backstep**: the body hops back about 2
+    blocks in 0.35 s (`backstepSpeed` 7, `backstepSeconds`), keeping its facing (it doesn't turn, its
+    feet don't walk; nor while it slides to a stop after, unless steered), for 8 stamina (a roll: 14), with i-frames only from 0.02 to 0.14 s in (a roll:
+    0.04 to 0.34). In the air no direction still rolls ahead. It's a roll as far as the rest of the code
+    is concerned (`rolling()`, `Body::backstep` tells which).
+  - **Backstep attack** (`Move::Backstep`): attacking late in a backstep or just after it, as the
+    rolling attack does after a roll: a lunging sweep (7 blocks/s into the hit) that closes the gap
+    the hop opened. One per backstep.
+  - Pose: a small hop, leaning back, the hands up in front, landing in a stance. Sound: two quick
+    footfalls and a little effort (`Noise::Backstep`).
+- **Alternatives considered:** a backstep with no i-frames (some players' reading of Elden Ring): the
+  official guide says minor ones, and with none it would be a worse roll; a backstep that keeps the
+  rolling attack: its own attack reads better and covers the gap.
+- **Consequences:** Standing still and pressing roll no longer rolls forward. Tunable in the debug
+  window (Player tab, Equip load and the backstep).
+
+## ADR-039: Equip load
+
+- **Status:** accepted (2026-11-08)
+- **Context:** The roadmap's shield weight and equip load (light, medium and heavy rolls). Elden Ring's
+  equip load (eldenring.wiki.gg, Equip Load): what's worn against a maximum from an attribute; under
+  30% light (the longest roll), 30–70% medium (the same recovery, a shorter roll), over 70% heavy
+  (recovery almost twice as long, worse i-frames, slower stamina recovery), over 100% overloaded (no
+  roll or backstep). Shields weigh 1–3.5 (small), 3–7 (medium), 8–29 (great).
+- **Decision:**
+  - Items have a `weight` (worn ones count; bags and what's in them don't). The iron set weighs 24,
+    the sword 3, the knife 1.5, the charm 0.5; the buckler 2, the heater 4.5, the tower 13.
+  - The maximum is `loadBase` 30 + 2.5 per point of vitality: 55 at the start. So a sword alone is
+    light, the iron set with a sword medium (49%), with the tower shield heavy (73%).
+  - **Light:** rolls at 14 blocks/s (medium 12): about 4.7 blocks. **Heavy:** 7 blocks/s for 0.6 s
+    (3.2 blocks), i-frames to 0.28 s (0.34), 0.3 s before the next roll (0.15), a slower backstep,
+    stamina back at 70%. **Overloaded:** no roll, no backstep, no running (holding the buttons does nothing: no stamina
+    drain, the guard stays up), walking at 60%, stamina back at 70% as when heavy.
+  - The character window shows the load (weight, maximum and class), tooltips the items' weight. A
+    heavy roll thuds down (the roll's sound with a landing).
+- **Alternatives considered:** carrying capacity from strength (Skyrim's is from stamina, Elden Ring's
+  from endurance): vitality is this game's closest; the base and per-point are knobs. Weight slowing
+  the walk or stamina in every load class: Elden Ring keeps the light-to-medium step about the roll only.
+- **Consequences:** Armor and big shields now cost mobility. New data: the items' `weight` (a test
+  wants every wearable item to weigh something). `Body` and `Combatant` gained `rollLoad` and `load`
+  (not saved).
+
+## ADR-040: Damage types
+
+- **Status:** accepted (2026-11-08)
+- **Context:** The roadmap: damage types (slash, strike, pierce, later elemental) with per-shield
+  negation. Elden Ring's physical damage is standard, slash, strike or pierce, by the attack: a straight
+  sword's swings slash and its thrusts pierce; enemies resist or are weak to each (skeletons to strike).
+- **Decision:**
+  - `DamageType` Slash, Strike, Pierce. A weapon's `damage` (default slash) is what its swings do; a
+    slashing weapon's thrusts (`MoveSpec::thrust`: the fourth light, the first heavy, the rolling
+    attack, the riposte) pierce. Fists strike. A creature without a weapon has its own `damage`
+    (default strike): wolves bite (pierce), ghouls claw (slash), boars gore (strike).
+  - Creatures' `resist` per type takes off (or, negative, adds) a share of a hit: the boar's hide 20%
+    of slashes, 10% of strikes, and it's weak to pierce (20%); the wolf weak to slash (15%); the ghoul
+    weak to strike (30%) and resisting pierce (30%). Armored men have none for now (the story fights
+    are tuned without them).
+  - Shields' `negation` is a number for all, or one per type: the oak buckler stops 85% of slashes,
+    70% of strikes, 80% of pierces; the heater 90% of strikes. The sword's and the arms' guards stop the
+    same of every type.
+  - Hits of a striking weapon sound blunt.
+- **Alternatives considered:** a fourth, standard type: it adds a column with nothing to tell it
+  apart yet. Armor resistances per type for the player: they'd need per-type numbers on every piece;
+  shields and creatures carry the texture for now. Strike adding stance damage: that's the weapon
+  classes' (hammers) to decide.
+- **Consequences:** Which attack to use depends on the foe (swings on ghouls, thrusts on boars, fists
+  aren't bad on ghouls). New data: the items' `damage`, the shields' per-type `negation`, the
+  creatures' `damage` and `resist`.
+- **Follow-ups:** elemental types with magic; armor per type; damage numbers by type (roadmap, feel).
+
+## ADR-041: The perfect guard and parrying without a shield
+
+- **Status:** accepted (2026-11-08)
+- **Context:** Two roadmap items. A perfect guard ("decide"): the user picked a small bonus. Lies of
+  P's perfect guard is the reference: a guard raised about 0.15 s (9 frames) before the hit negates all
+  of its damage (a plain guard lets some through) and still costs some stamina. And parrying with light
+  weapons: in Elden Ring daggers (3/5/13 frames at 30 fps) and fists (4/6/13) parry, as small shields do.
+- **Decision:**
+  - **Perfect guard:** a hit in the first 0.15 s after the guard goes up takes no damage and half the
+    stamina a block would, and opens the guard counter as a block does. It needs the guard to have been
+    down for 0.3 s before (`perfectRearm`), so tapping the guard doesn't keep the window open. A guard
+    that breaks isn't perfect. It sounds as the block plus a bright metal clink (`block_perfect`, CC0).
+  - **Parrying without a shield:** with the off hand empty, Q / L2 parries with the main hand: a knife
+    (its item's `parry`, 0.9: as quick as the buckler) or bare fists (`fistParry` 1). A sword can't. A
+    shield's parry comes first, and a greatshield's none means none. The knife sweeps across the body
+    in the right hand; fists parry with the left. The rest is the shield's parry (window, deflect,
+    riposte, the weak guard around it).
+- **Alternatives considered:** a strong perfect guard that also staggers the attacker or refunds
+  stamina: it would overlap the parry. No rearm time: the window could be kept open by tapping.
+- **Consequences:** Blocking rewards timing a little, without competing with the parry's riposte. New
+  data: the weapons' `parry`. `Combatant` gained `guardTime` and `perfectReady` (not saved).

@@ -141,7 +141,10 @@ void tooltip(ItemId id, SlotRef where) {
     else if (t.slot < EquipCount) ImGui::TextDisabled("%s", kSlotNames[t.slot]);
     if (t.armor) ImGui::Text("%d Armor", t.armor);
     if (const Shield& sh = t.shield; sh.size != ShieldSize::None) {
-        ImGui::Text("Guard: stops %.0f%% of the damage, boost %.0f", double(sh.negation * 100), double(sh.boost * 100));
+        const PerType& n = sh.negation;
+        if (n[0] == n[1] && n[1] == n[2]) ImGui::Text("Guard: stops %.0f%% of the damage, boost %.0f", double(n[0] * 100), double(sh.boost * 100));
+        else ImGui::Text("Guard: stops %.0f%% slash, %.0f%% strike, %.0f%% pierce, boost %.0f", double(n[0] * 100), double(n[1] * 100),
+                         double(n[2] * 100), double(sh.boost * 100));
         if (sh.parry > 0) ImGui::TextUnformatted("Parries (Q / L2)");
         if (sh.boost >= gMelee.bounceBoost) ImGui::TextUnformatted("Weak attacks bounce off its guard");
     }
@@ -156,7 +159,11 @@ void tooltip(ItemId id, SlotRef where) {
     if (a.speed > 0) {
         ImGui::Text("%d - %d damage    Speed %.2f", a.minDamage, a.maxDamage, a.speed);
         ImGui::Text("(%.1f damage per second)", float(a.minDamage + a.maxDamage) / 2 / a.speed);
+        if (t.slot == SlotMainHand)
+            ImGui::TextUnformatted(t.damage == DamageType::Slash ? "Slashes; thrusts pierce" : t.damage == DamageType::Strike ? "Strikes" : "Pierces");
+        if (t.parry > 0) ImGui::TextUnformatted("Parries with the off hand empty (Q / L2)");
     }
+    if (t.weight > 0) ImGui::TextDisabled("Weight %g", double(t.weight));
     if (t.slot != SlotNone) ImGui::TextDisabled(where.kind == SlotRef::Item ? "Right-click to equip" : "Right-click to unequip");
     ImGui::TextDisabled("Ctrl+right-click to destroy");
     ImGui::EndTooltip();
@@ -248,6 +255,10 @@ void attributes(const Player& p, float armorK) {
     statRow("Damage/sec", nullptr, "%.1f", float(lo + hi) / 2 / swing);
     gearRow("Regen", "Health per second, out of combat", "%.1f /s", s, base, Stat::Regen);
     statRow("Armor", "From gear, skills and talents", "%.0f", double(s[Stat::Armor]));
+    float load = equipWeight(p.inv), most = maxEquipLoad(p, p.tuning);  // ADR-039
+    std::string loadTip = std::format("What the worn gear weighs, of {:.1f} (from vitality). Under {:.0f}% it rolls light and far, "
+                                      "over {:.0f}% heavy and slow, over 100% it can't roll or run.", most, p.tuning.lightLoad * 100, p.tuning.heavyLoad * 100);
+    statRow("Equip load", loadTip.c_str(), "%s", std::format("{:g} / {:.1f}  {}", load, most, kLoadNames[size_t(loadOf(p, p.tuning))]).c_str());
     float taken = (1 - armorReduction(s[Stat::Armor], 1, armorK)) * s[Stat::DamageTaken];
     statRow("Damage taken", "Against a level 1 enemy, after armor and damage taken modifiers. Higher levels get through more.",
             "%+.1f%%", double(taken - 1) * 100);

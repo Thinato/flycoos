@@ -40,7 +40,10 @@ Move pick(const Player& p, Want want, bool riposte, bool running) {
     if (riposte) return Move::Riposte;
     if (airborne(p)) return heavy ? Move::JumpHeavy : Move::JumpLight;
     bool rolledInto = p.move == Move::Rolling || (p.lastMove == Move::Rolling && p.sinceMove < 0.3f);  // one per roll
-    if (!heavy && !rolledInto && p.rollTime > 0.6f * p.rollLength && p.rollTime < p.rollLength + 0.3f) return Move::Rolling;
+    bool rolledOut = !heavy && p.rollTime > 0.6f * p.rollLength && p.rollTime < p.rollLength + 0.3f;
+    bool backstepInto = p.move == Move::Backstep || (p.lastMove == Move::Backstep && p.sinceMove < 0.3f);  // one per backstep
+    if (rolledOut && p.backstep && !backstepInto) return Move::Backstep;
+    if (rolledOut && !p.backstep && !rolledInto) return Move::Rolling;
     if (!heavy && running) return Move::Running;
     // Goes on from the move it chains from (the one still playing, or one that just ended).
     Move prev = p.punching() ? p.move : p.sinceMove < gMelee.chainGrace ? p.lastMove : Move::None;
@@ -109,7 +112,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
         return false;
     }
     if (p.rolling() && !p.rollPaid) {  // updatePlayer started the roll last tick
-        spend(p, t.rollStamina);
+        spend(p, p.backstep ? t.backstepStamina : t.rollStamina);
         p.rollPaid = true;
         if (p.want == Want::Roll) p.want = Want::None;
     }
@@ -127,8 +130,10 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
         else if ((p.pressTime += dt) >= t.tapSeconds) p.pressing = false, p.chargeByHeavy = false, wish(Want::Heavy);
     }
     if (in.heavy) p.chargeByHeavy = true, wish(counter ? Want::Counter : Want::Heavy);
-    if (const Shield* s = shieldOf(p); in.parry && s && s->parry > 0) wish(Want::Parry);  // without a shield that parries, Q does nothing
-    if (move.roll) wish(Want::Roll);
+    if (in.parry && parryOf(p) > 0) wish(Want::Parry);  // with nothing that parries (a greatshield, a sword), Q does nothing
+    bool over = p.load == Load::Over && !p.tuning.fly && !p.tuning.noclip;  // overloaded: no roll, no run (ADR-039)
+    if (move.roll && !over) wish(Want::Roll);
+    if (over) move.run = false;
     move.roll = false;
     if (p.want != Want::None && (p.wantAge += dt) > t.bufferSeconds) p.want = Want::None;
 
@@ -166,12 +171,12 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
             p.want = Want::None;
             started = true;
         }
-        // A parry (a shield that can) starts once the body is free; it commits through its recovery.
+        // A parry (a shield that can, else a knife or fists) starts once the body is free; it commits
+        // through its recovery.
         if (p.want == Want::Parry && !p.punching() && !p.rolling() && !airborne(p) && !p.inWater && p.stamina > 0) {
-            const Shield* s = shieldOf(p);
-            if (s && s->parry > 0) {
+            if (float length = parryOf(p); length > 0) {
                 startMove(p, Move::Parry, glm::length(in.aim) > 1e-3f ? in.aim : aim);
-                p.moveScale = s->parry;
+                p.moveScale = length;
                 p.hitPending = false;  // it strikes nothing
                 spend(p, spec(Move::Parry).stamina);
                 started = true;
@@ -182,7 +187,12 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     }
     bool wasGuarding = p.guarding;
     p.guarding = in.guard && p.stagger <= 0 && !p.punching() && !p.rolling() && !move.roll && p.offGround < 0.1f && !p.inWater;
-    if (p.guarding && !wasGuarding) p.noise(Noise::GuardUp);
+    if (p.guarding != wasGuarding) {  // a guard raised after a rest starts with a perfect guard's moment
+        if (p.guarding) p.noise(Noise::GuardUp), p.perfectReady = p.guardTime >= t.perfectRearm;
+        p.guardTime = 0;
+    } else {
+        p.guardTime = std::min(p.guardTime + dt, 99.0f);
+    }
     p.guardBlend += ((p.guarding ? 1.0f : 0.0f) - p.guardBlend) * (1 - std::exp(-25 * dt));
 
     // What the body does: nothing while reeling; an attack steps forward into its hit (in the air it
@@ -209,13 +219,16 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
 
     if (p.punching() || p.rolling() || runs) p.staminaWait = t.staminaDelay;  // reeling doesn't stop it: a broken guard refills
     else if (p.staminaWait > 0) p.staminaWait -= dt;
-    else p.stamina += t.staminaRegen * (p.guarding ? t.guardRegen : 1) * dt;
+    else p.stamina += t.staminaRegen * (p.guarding ? t.guardRegen : 1) * (p.load >= Load::Heavy ? t.heavyRegen : 1) * dt;
     p.stamina = std::min(p.stamina, t.staminaMax);
     return started;
 }
 
 bool invulnerable(const Player& b) {
-    return (b.rolling() && b.rollTime >= gMelee.iframeFrom && b.rollTime < gMelee.iframeTo) || b.move == Move::Riposte;
+    const MeleeTuning& t = gMelee;
+    float from = b.backstep ? t.backstepIframeFrom : t.iframeFrom;
+    float to = b.backstep ? t.backstepIframeTo : b.rollLoad == Load::Heavy ? t.heavyIframeTo : t.iframeTo;
+    return (b.rolling() && b.rollTime >= from && b.rollTime < to) || b.move == Move::Riposte;
 }
 
 bool hyperarmor(const Combatant& b) { return (spec(b.move).heavy && b.hitPending) || b.move == Move::Riposte; }
@@ -236,8 +249,15 @@ const Shield* shieldOf(const Player& b) {
     return s.size != ShieldSize::None ? &s : nullptr;
 }
 
-Guard guardOf(const Player& b) {
-    if (const Shield* s = shieldOf(b)) return {s->negation, s->boost};
+float parryOf(const Player& b) {
+    if (const Shield* s = shieldOf(b)) return s->parry;
+    if (b.inv.equipped[SlotOffHand] != NoItem) return 0;
+    ItemId w = b.inv.equipped[SlotMainHand];
+    return w ? itemType(w).parry : gMelee.fistParry;
+}
+
+Guard guardOf(const Player& b, DamageType type) {
+    if (const Shield* s = shieldOf(b)) return {s->negation[size_t(type)], s->boost};
     if (b.inv.equipped[SlotMainHand] != NoItem) return {gMelee.guardNegation, gMelee.guardBoost};
     return {gMelee.fistNegation, 0};
 }
@@ -248,11 +268,19 @@ bool parries(const Player& b, glm::vec3 from) {
     return b.move == Move::Parry && parryClock(b) >= gMelee.parryFrom && parryClock(b) < gMelee.parryTo && inFront(b, from);
 }
 
-std::optional<Guard> guardAgainst(const Player& b, glm::vec3 from) {
-    if (guards(b, from)) return guardOf(b);
+std::optional<Guard> guardAgainst(const Player& b, glm::vec3 from, DamageType type) {
+    if (guards(b, from)) return guardOf(b, type);
     if (b.move != Move::Parry || !inFront(b, from)) return std::nullopt;
-    Guard g = guardOf(b);
+    Guard g = guardOf(b, type);
     return Guard{g.negation * gMelee.parryGuard, g.boost * gMelee.parryGuard};
 }
 
 bool bounces(const Guard& g, float stance) { return g.boost >= gMelee.bounceBoost && stance < gMelee.bounceStance; }
+
+bool perfectGuard(const Player& b) { return b.guarding && b.perfectReady && b.guardTime < gMelee.perfectGuardSeconds; }
+
+DamageType damageOf(const Combatant& c, DamageType bare) {
+    if (!c.swingWeapon) return bare;
+    DamageType d = itemType(c.swingWeapon).damage;
+    return d == DamageType::Slash && spec(c.move).thrust ? DamageType::Pierce : d;
+}

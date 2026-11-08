@@ -18,7 +18,10 @@
 // A shield in the off hand (ADR-036) guards better than the sword, by its own negation and guard boost;
 // a greatshield's guard makes weak attacks recoil. Small and medium shields parry: an attack that meets
 // the parry's short active window deflects and leaves its attacker open to a riposte; caught before
-// or after it, the parry is a weak guard.
+// or after it, the parry is a weak guard. Without a shield a knife or bare fists parry too (ADR-041), and a
+// guard raised just before a hit is a perfect guard: no damage and half the stamina. The roll button
+// standing still is a backstep (ADR-038), with its own attack after it; the worn gear's weight makes
+// rolls light, medium or heavy (ADR-039). Hits slash, strike or pierce (ADR-040).
 
 struct MoveSpec {
     const char* name;
@@ -29,23 +32,25 @@ struct MoveSpec {
     float stamina;              // stamina it costs
     float lunge;                // blocks/s it steps forward at its start, easing to 0 at the hit
     bool heavy;                 // charges while held; can't be made to flinch before its hit (hyperarmor)
+    bool thrust = false;        // a blade's thrust pierces (its swings slash; ADR-040)
 };
 inline constexpr MoveSpec kMoves[] = {
-    //  name              s     hold  hit   chain cancel dmg   stance stam lunge heavy
+    //  name              s     hold  hit   chain cancel dmg   stance stam lunge heavy thrust
     {"none",            1.0f, 0.00f, 0.00f, 0.00f, 0.00f, 0.00f, 0, 0, 0.0f, false},
     {"light 1",         0.70f, 0.30f, 0.40f, 0.50f, 0.62f, 1.00f, 10, 12, 2.5f, false},  // diagonal, high right to low left
     {"light 2",         0.65f, 0.28f, 0.38f, 0.48f, 0.60f, 1.00f, 10, 12, 2.0f, false},  // backhand, left to right
     {"light 3",         0.70f, 0.30f, 0.40f, 0.50f, 0.62f, 1.05f, 11, 12, 2.5f, false},  // wide sweep, right to left
-    {"light 4",         0.85f, 0.36f, 0.46f, 0.58f, 0.68f, 1.30f, 14, 14, 3.5f, false},  // thrust: the chain's finisher
-    {"heavy 1",         1.05f, 0.40f, 0.52f, 0.62f, 0.72f, 1.50f, 22, 22, 4.0f, true},   // lunging thrust
+    {"light 4",         0.85f, 0.36f, 0.46f, 0.58f, 0.68f, 1.30f, 14, 14, 3.5f, false, true},  // thrust: the chain's finisher
+    {"heavy 1",         1.05f, 0.40f, 0.52f, 0.62f, 0.72f, 1.50f, 22, 22, 4.0f, true, true},   // lunging thrust
     {"heavy 2",         1.10f, 0.42f, 0.54f, 0.64f, 0.74f, 1.55f, 24, 22, 3.0f, true},   // overhead chop
     {"running",         0.85f, 0.22f, 0.36f, 0.55f, 0.64f, 1.15f, 14, 14, 8.0f, false},  // leaping sweep
-    {"rolling",         0.60f, 0.20f, 0.34f, 0.50f, 0.58f, 0.95f, 8, 10, 5.0f, false},   // rising thrust out of the roll
+    {"rolling",         0.60f, 0.20f, 0.34f, 0.50f, 0.58f, 0.95f, 8, 10, 5.0f, false, true},   // rising thrust out of the roll
     {"jump light",      0.75f, 0.30f, 0.42f, 0.60f, 0.64f, 1.25f, 18, 14, 0.0f, false},  // chop on landing
     {"jump heavy",      0.95f, 0.34f, 0.46f, 0.64f, 0.70f, 1.65f, 28, 20, 0.0f, true},
     {"guard counter",   0.80f, 0.16f, 0.30f, 0.55f, 0.62f, 1.50f, 34, 16, 3.0f, true},   // rising slash off the guard
-    {"riposte",         1.40f, 0.30f, 0.45f, 0.80f, 0.80f, 3.00f, 0, 0, 1.0f, false},    // a critical thrust: can't be hit
+    {"riposte",         1.40f, 0.30f, 0.45f, 0.80f, 0.80f, 3.00f, 0, 0, 1.0f, false, true},    // a critical thrust: can't be hit
     {"parry",           0.75f, 0.14f, 0.44f, 1.00f, 1.00f, 0.00f, 0, 10, 0.0f, false},   // a shield swipe (no hit; scaled by the shield)
+    {"backstep",        0.70f, 0.22f, 0.38f, 0.55f, 0.62f, 1.05f, 12, 12, 7.0f, false},  // out of a backstep: a lunging sweep back in
 };
 static_assert(std::size(kMoves) == size_t(Move::Count));
 inline const MoveSpec& spec(Move m) { return kMoves[size_t(m)]; }
@@ -83,6 +88,14 @@ struct MeleeTuning {
     float recoilSeconds = 0.6f;  // an attack that bounces off a guard, or a parry short of opening it, rocks its attacker back
     float bounceBoost = 0.65f;   // guards of at least this boost (a greatshield's) bounce attacks...
     float bounceStance = 20;     // ...of less stance damage than this
+    float backstepStamina = 8;   // a backstep's cost (a roll: rollStamina)
+    float backstepIframeFrom = 0.02f, backstepIframeTo = 0.14f;  // a backstep's few i-frames
+    float heavyIframeTo = 0.28f; // a heavy load's roll: fewer i-frames
+    float heavyRegen = 0.7f;     // x the stamina regen with a heavy load
+    float perfectGuardSeconds = 0.15f;  // a guard this fresh is perfect (ADR-041): no damage...
+    float perfectStamina = 0.5f; // ...this much of the stamina damage...
+    float perfectRearm = 0.3f;   // ...if the guard was down this long before (no tapping it)
+    float fistParry = 1;         // the parry's length with bare fists (a knife's: its item's `parry`)
 };
 inline MeleeTuning gMelee;
 
@@ -127,13 +140,21 @@ bool guards(const Player& b, glm::vec3 from);
 
 // The shield in `b`'s off hand, or null.
 const Shield* shieldOf(const Player& b);
+// What `b` parries with: the parry's length (x its base timing) of its shield, else (the off hand empty)
+// of its main-hand weapon or its fists; 0: it can't parry (a greatshield, a sword).
+float parryOf(const Player& b);
 // What a guard stops: the share of a blocked hit's damage and of its stamina damage.
 struct Guard { float negation = 0, boost = 0; };
-// `b`'s guard: its shield's, else its sword's, else its bare arms'.
-Guard guardOf(const Player& b);
-// The guard a hit from `from` meets now: the full one while guarding, a weak one (parryGuard) in a parry
-// outside its window; none from behind or not guarding.
-std::optional<Guard> guardAgainst(const Player& b, glm::vec3 from);
+// `b`'s guard against `type`: its shield's, else its sword's, else its bare arms'.
+Guard guardOf(const Player& b, DamageType type = DamageType::Slash);
+// The guard a hit of `type` from `from` meets now: the full one while guarding, a weak one (parryGuard)
+// in a parry outside its window; none from behind or not guarding.
+std::optional<Guard> guardAgainst(const Player& b, glm::vec3 from, DamageType type = DamageType::Slash);
+// Whether `b`'s guard went up just now (perfectGuardSeconds, after a rest): a hit on it is a perfect guard.
+bool perfectGuard(const Player& b);
+// What the swing under way does: its weapon's damage type (a blade's thrusts pierce), else `bare` (its
+// creature's, or fists': strike).
+DamageType damageOf(const Combatant& c, DamageType bare = DamageType::Strike);
 // Whether a hit from `from` meets `b`'s parry in its active window (in front of it).
 bool parries(const Player& b, glm::vec3 from);
 // Whether a guard of `g` makes an attack of `stance` damage bounce off (its attacker recoils).

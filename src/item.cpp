@@ -117,6 +117,12 @@ bool discardItem(Inventory& inv, SlotRef ref) {
     return true;
 }
 
+float equipWeight(const Inventory& inv) {
+    float w = 0;
+    for (ItemId id : inv.equipped) w += itemType(id).weight;
+    return w;
+}
+
 int itemSlots(const Inventory& inv) {
     int n = 0;
     for (const auto& c : inv.containers) n += int(c.size());

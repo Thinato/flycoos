@@ -675,6 +675,7 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
         if (!target) target = punchTarget(entities, player);
         riposte &= target && target->body.broken;
         float power = player.move == Move::Riposte && !riposte ? 1 : m.damage * (player.charged ? gMelee.chargeDamage : 1);
+        if (target) power *= 1 - target->type().resist[size_t(damageOf(player))];  // its weakness or resistance (ADR-040)
         HitContext hit{rng, armorK, power};
         if (target && damage(*target, resolveHit(player, target->body, weaponAttack(player.swingWeapon), hit))) {
             player.combatTimer = kCombatSeconds;
@@ -708,8 +709,10 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
                 player.noise(Noise::Parry);
                 player.freeze = e.body.freeze = 0.1f;
                 full = 0;
-            } else if (std::optional<Guard> guard = guardAgainst(player, e.body.pos)) {  // blocked: part of the damage, and stamina
-                player.stamina -= (t.blockStamina + t.blockStaminaPerDamage * float(full)) * (1 - guard->boost);
+            } else if (std::optional<Guard> guard = guardAgainst(player, e.body.pos, damageOf(e.body, e.type().damage))) {
+                // Blocked: part of the damage (by its type), and stamina; a guard raised just now takes none (ADR-041).
+                bool perfect = perfectGuard(player);
+                player.stamina -= (t.blockStamina + t.blockStaminaPerDamage * float(full)) * (1 - guard->boost) * (perfect ? t.perfectStamina : 1);
                 player.staminaWait = t.staminaDelay;
                 player.combatTimer = kCombatSeconds;
                 player.noise(Noise::Block), guarded = true;
@@ -717,7 +720,9 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
                 else if (player.guarding) player.blockTime = 0;  // a guard counter only off a real guard, not a parry's weak one
                 e.body.freeze = 0.08f;
                 if (player.stamina > 0 && bounces(*guard, e.type().hitStance)) interrupt(e.body, t.recoilSeconds, false), player.noise(Noise::Bounce);  // off a greatshield
-                full = int(std::lround(float(full) * (1 - guard->negation)));
+                perfect &= !player.broken;  // a guard that broke wasn't perfect
+                full = perfect ? 0 : int(std::lround(float(full) * (1 - guard->negation)));
+                if (perfect) player.noise(Noise::PerfectGuard);
             } else if (full > 0 && !hyperarmor(player) && e.type().hitStance >= playerPoise(player)) {
                 interrupt(player, gMelee.flinchSeconds, false);
             }

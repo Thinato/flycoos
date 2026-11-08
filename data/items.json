@@ -1,16 +1,16 @@
 [
-  {"id": "iron_shortsword", "save_id": 1, "name": "Iron Shortsword", "slot": "main_hand", "attack": {"min": 6, "max": 10, "speed": 1.0}},
+  {"id": "iron_shortsword", "save_id": 1, "name": "Iron Shortsword", "slot": "main_hand", "attack": {"min": 6, "max": 10, "speed": 1.0}, "weight": 3},
   {"id": "canvas_satchel", "save_id": 2, "name": "Canvas Satchel", "slot": "bag", "bag_slots": 6},
-  {"id": "rusty_knife", "save_id": 3, "name": "Rusty Knife", "slot": "main_hand", "attack": {"min": 3, "max": 6, "speed": 0.75}},
+  {"id": "rusty_knife", "save_id": 3, "name": "Rusty Knife", "slot": "main_hand", "attack": {"min": 3, "max": 6, "speed": 0.75}, "weight": 1.5, "parry": 0.9},
   {"id": "boar_skin", "save_id": 4, "name": "Boar Skin"},
-  {"id": "iron_helm", "save_id": 5, "name": "Iron Helm", "slot": "head", "armor": 6},
-  {"id": "iron_cuirass", "save_id": 6, "name": "Iron Cuirass", "slot": "chest", "armor": 12},
-  {"id": "iron_gauntlets", "save_id": 7, "name": "Iron Gauntlets", "slot": "hands", "armor": 4},
-  {"id": "iron_greaves", "save_id": 8, "name": "Iron Greaves", "slot": "legs", "armor": 10},
-  {"id": "iron_sabatons", "save_id": 9, "name": "Iron Sabatons", "slot": "feet", "armor": 5},
+  {"id": "iron_helm", "save_id": 5, "name": "Iron Helm", "slot": "head", "armor": 6, "weight": 4},
+  {"id": "iron_cuirass", "save_id": 6, "name": "Iron Cuirass", "slot": "chest", "armor": 12, "weight": 9},
+  {"id": "iron_gauntlets", "save_id": 7, "name": "Iron Gauntlets", "slot": "hands", "armor": 4, "weight": 2.5},
+  {"id": "iron_greaves", "save_id": 8, "name": "Iron Greaves", "slot": "legs", "armor": 10, "weight": 6},
+  {"id": "iron_sabatons", "save_id": 9, "name": "Iron Sabatons", "slot": "feet", "armor": 5, "weight": 2.5},
   {"id": "wolf_pelt", "save_id": 10, "name": "Wolf Pelt"},
-  {"id": "bone_charm", "save_id": 11, "name": "Bone Charm", "slot": "trinket", "mods": [{"stat": "spirit", "flat": 2}]},
-  {"id": "oak_buckler", "save_id": 12, "name": "Oak Buckler", "slot": "off_hand", "shield": {"size": "small", "negation": 0.8, "boost": 0.46, "parry": 0.9}},
-  {"id": "heater_shield", "save_id": 13, "name": "Heater Shield", "slot": "off_hand", "shield": {"size": "medium", "negation": 1, "boost": 0.56, "parry": 1}},
-  {"id": "tower_shield", "save_id": 14, "name": "Tower Shield", "slot": "off_hand", "shield": {"size": "great", "negation": 1, "boost": 0.72}}
+  {"id": "bone_charm", "save_id": 11, "name": "Bone Charm", "slot": "trinket", "mods": [{"stat": "spirit", "flat": 2}], "weight": 0.5},
+  {"id": "oak_buckler", "save_id": 12, "name": "Oak Buckler", "slot": "off_hand", "shield": {"size": "small", "negation": {"slash": 0.85, "strike": 0.7, "pierce": 0.8}, "boost": 0.46, "parry": 0.9}, "weight": 2},
+  {"id": "heater_shield", "save_id": 13, "name": "Heater Shield", "slot": "off_hand", "shield": {"size": "medium", "negation": {"slash": 1, "strike": 0.9, "pierce": 1}, "boost": 0.56, "parry": 1}, "weight": 4.5},
+  {"id": "tower_shield", "save_id": 14, "name": "Tower Shield", "slot": "off_hand", "shield": {"size": "great", "negation": 1, "boost": 0.72}, "weight": 13}
 ]
