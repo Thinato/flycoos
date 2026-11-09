@@ -69,6 +69,7 @@ system is summarized in ADR-035.
 - [x] Equip load: light, medium and heavy rolls; overloaded can't roll (ADR-039)
 - [ ] Healing flasks (limited charges, refilled at rest points)
 - [ ] Per-weapon timings and stance values in the data (items.json), not one shared table
+- [ ] Talent trees (Warrior, Ranger, Mage; planned in docs/TALENTS.md): last, once every other item on this roadmap is done. Until then, follow the foundations rules in that file
 
 ## Enemies
 
