@@ -5,6 +5,7 @@
 #include <format>
 #include <fstream>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <set>
 #include <span>
@@ -196,7 +197,7 @@ void loadWeaponClasses(const File& f, Defs& d) {
     std::array<bool, size_t(WeaponClass::Count)> seen{};
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
-        r.allow({"id", "copy_from", "name", "speed", "hit_stop", "moves"});
+        r.allow({"id", "copy_from", "name", "speed", "hit_stop", "two_handed", "reach", "arc", "moves"});
         auto at = std::ranges::find(kWeaponClassIds, r.id());
         if (at == std::end(kWeaponClassIds)) throw r.fail("id", oneOf(kWeaponClassIds));
         size_t c = size_t(at - std::begin(kWeaponClassIds));
@@ -205,6 +206,15 @@ void loadWeaponClasses(const File& f, Defs& d) {
         w.name = r.text("name");
         w.speed = float(r.number(r.fields, "speed", 0.25, 4, 1, false));
         w.hitStop = float(r.number(r.fields, "hit_stop", 0, 4, 1, false));
+        // Great weapons (ADR-049): always in both hands; how far and how wide their swings reach.
+        if (r.fields.contains("two_handed")) {
+            if (!r.fields["two_handed"].is_boolean()) throw r.fail("two_handed", "must be true or false");
+            w.twoHanded = r.fields["two_handed"].get<bool>();
+            if (w.twoHanded && c == size_t(WeaponClass::Fists)) throw r.fail("two_handed", "bare hands have nothing to hold");
+        }
+        w.reach = float(r.number(r.fields, "reach", 1, 4, 2, false));
+        w.arc = float(r.number(r.fields, "arc", 15, 120, 60, false));
+        w.arcCos = float(std::cos(double(w.arc) * std::numbers::pi / 180));  // in double: 60 gives exactly 0.5f, the old test
         const json& ms = r.fields.contains("moves") ? r.fields["moves"] : json();
         if (!ms.is_object()) throw r.fail("moves", "must be an object of every attack move: {light_1: {...}, ...}");
         for (const auto& [k, v] : ms.items())
@@ -388,7 +398,7 @@ void loadCreatures(const File& f, Defs& d) {
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
         r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
-                 "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds", "leash_radius",
+                 "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "rare_loot", "rare_loot_chance", "respawn_seconds", "leash_radius",
                  "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
                  "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "damage",
                  "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield", "mods"});
@@ -436,6 +446,11 @@ void loadCreatures(const File& f, Defs& d) {
         t.loot = item("loot");
         t.lootChance = float(r.number(r.fields, "loot_chance", 0, 1, 0, false));
         if (t.lootChance > 0 && !t.loot) throw r.fail("loot_chance", "no 'loot' to drop");
+        t.rareLoot = item("rare_loot");  // rolled when `loot` isn't dropped (ADR-049)
+        t.rareChance = float(r.number(r.fields, "rare_loot_chance", 0, 1, 0, false));
+        if (t.rareChance > 0 && !t.rareLoot) throw r.fail("rare_loot_chance", "no 'rare_loot' to drop");
+        if (t.rareLoot && t.rareChance == 0) throw r.fail("rare_loot", "needs a rare_loot_chance");
+        if (t.rareLoot && t.lootChance >= 1) throw r.fail("rare_loot", "never dropped: loot_chance is 1");
         t.respawnSeconds = float(r.number(r.fields, "respawn_seconds", 0, 3600, kRequired, false));
         // The AI's numbers (ADR-020): only for creatures that fight; the defaults are the AI before them.
         for (const char* key : {"leash_radius", "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup",

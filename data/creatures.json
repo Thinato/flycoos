@@ -9,7 +9,7 @@
    "damage": "strike", "resist": {"slash": 0.2, "strike": 0.1, "pierce": -0.2}},
   {"id": "bandit", "save_id": 3, "name": "Bandit", "level": 2, "stats": {"stamina": 12, "strength": 3, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "bandit", "temper": "aggressive", "aggro_range": 10, "wander_radius": 5, "chase_speed": 5.5,
-   "weapon": "rusty_knife", "loot": "rusty_knife", "loot_chance": 0.4, "respawn_seconds": 30, "stance": 60, "hit_stance": 12, "voice": "human",
+   "weapon": "rusty_knife", "loot": "rusty_knife", "loot_chance": 0.4, "rare_loot": "iron_greatsword", "rare_loot_chance": 0.1, "respawn_seconds": 30, "stance": 60, "hit_stance": 12, "voice": "human",
    "combo": 2, "parry": 0.15, "dodge": 0.2, "back_off": 0.3},
   {"id": "wolf", "save_id": 4, "name": "Wolf", "level": 1, "stats": {"stamina": 8, "strength": 6, "agility": 70, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "wolf", "temper": "aggressive", "aggro_range": 12, "wander_radius": 10, "chase_speed": 7.5,
@@ -26,7 +26,7 @@
    "combo": 3, "delay": 0.35, "guard": 0.1, "back_off": 0.3},
   {"id": "ghoul", "save_id": 7, "name": "Barrow Ghoul", "level": 3, "stats": {"stamina": 7, "strength": 4, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "ghoul", "temper": "aggressive", "aggro_range": 8, "wander_radius": 4, "chase_speed": 4,
-   "loot": "bone_charm", "loot_chance": 0.3, "respawn_seconds": 45, "stance": 90, "poise": 12, "attack_windup": 0.6, "attack_recover": 0.5, "hit_stance": 14, "voice": "ghoul",
+   "loot": "bone_charm", "loot_chance": 0.3, "rare_loot": "barrow_greataxe", "rare_loot_chance": 0.12, "respawn_seconds": 45, "stance": 90, "poise": 12, "attack_windup": 0.6, "attack_recover": 0.5, "hit_stance": 14, "voice": "ghoul",
    "damage": "slash", "resist": {"slash": 0, "strike": -0.3, "pierce": 0.3}, "combo": 2, "delay": 0.4,
    "mods": [{"stat": "poison", "flat": 25}, {"stat": "poison_resist", "flat": 400}]}
 ]

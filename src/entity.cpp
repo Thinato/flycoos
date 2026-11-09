@@ -283,8 +283,10 @@ bool quadruped(const EntityType& t) { return t.model == ModelBoar || t.model == 
 void answer(Entity& e, const Grid& g, const Player& target, glm::vec2 dir, float dist, float dt, Input& in) {
     const EntityType& t = e.type();
     glm::vec2 fwd{std::sin(target.yaw), std::cos(target.yaw)};
+    const WeaponClassDef& w = weaponClass(classOf(target.weapon()));  // a great weapon reaches farther and wider (ADR-049)
     bool threat = target.alive() && target.punching() && target.hitPending && !codeMove(target.move) &&
-                  dist < kPunchReach + 1.5f && glm::dot(-dir, fwd) > 0.3f && std::abs(target.pos.y - e.body.pos.y) < kHeight;
+                  dist < std::max(kPunchReach, w.reach) + 1.5f && glm::dot(-dir, fwd) > std::min(0.3f, w.arcCos) &&
+                  std::abs(target.pos.y - e.body.pos.y) < kHeight;
     if (!threat) e.picked = false;
     if (threat && !e.picked && e.state == AiState::Chase && t.guard + t.parry + t.dodge > 0) {
         e.picked = true;
@@ -678,7 +680,10 @@ bool damage(Entity& e, int amount, bool crit, Status kind) {
     const EntityType& t = e.type();
     if (!t.attackable || !hurt(e.body, amount, crit, kind)) return false;
     if (t.temper != Temper::Harmless && kind != Status::Poison) e.events |= EventDamaged;  // poison's ticks don't call it back
-    if (!e.body.alive() && (t.lootChance >= 1 || rand01(e.rng) < t.lootChance)) e.loot = t.loot;  // rand01 may return 1
+    if (!e.body.alive()) {  // the usual drop, else (ADR-049) a rare one; rand01 may return 1
+        if (t.lootChance >= 1 || rand01(e.rng) < t.lootChance) e.loot = t.loot;
+        else if (t.rareChance > 0 && (t.rareChance >= 1 || rand01(e.rng) < t.rareChance)) e.loot = t.rareLoot;
+    }
     return true;
 }
 
@@ -693,16 +698,17 @@ bool startPunch(Player& b, glm::vec2 aim, float windup) {
 }
 
 bool inReach(const Player& a, glm::vec3 target) {
+    const WeaponClassDef& w = weaponClass(classOf(a.weapon()));  // a sword's: 2 blocks, 60 degrees; great weapons more (ADR-049)
     glm::vec2 forward{std::sin(a.yaw), std::cos(a.yaw)};
     glm::vec2 d = xz(target - a.pos);
     float dist = glm::length(d);
-    bool inFront = dist < 1e-3f || glm::dot(d / dist, forward) > 0.5f;  // within 60 degrees
-    return inFront && dist < kPunchReach && std::abs(target.y - a.pos.y) < kHeight;
+    bool inFront = dist < 1e-3f || glm::dot(d / dist, forward) > w.arcCos;
+    return inFront && dist < w.reach && std::abs(target.y - a.pos.y) < kHeight;
 }
 
 Entity* punchTarget(std::vector<Entity>& entities, const Player& a) {
     Entity* best = nullptr;
-    float bestDist = kPunchReach;
+    float bestDist = 1e9f;  // inReach says how far
     for (Entity& e : entities) {
         float dist = glm::distance(xz(e.body.pos), xz(a.pos));
         if (e.type().attackable && e.body.alive() && inReach(a, e.body.pos) && dist < bestDist) {
@@ -726,7 +732,7 @@ bool opensToCritical(const Entity& e, const Player& a) {
 
 Entity* criticalTarget(std::vector<Entity>& entities, const Player& a, bool caught) {
     Entity* best = nullptr;
-    float bestDist = kPunchReach;
+    float bestDist = 1e9f;
     for (Entity& e : entities) {
         float dist = glm::distance(xz(e.body.pos), xz(a.pos));
         const Player& b = e.body;

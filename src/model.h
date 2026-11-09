@@ -18,7 +18,8 @@ enum Part { Head, Torso, HandL, HandR, FootL, FootR, PartCount };
 // The guard, the bandit chief and the ghoul are humanoids (the chief scaled up, the ghoul thinner).
 enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelBoar, ModelBandit, ModelSword, ModelDagger, ModelIronArmor,
              ModelWolf, ModelGuard, ModelChief, ModelGhoul, ModelBuckler, ModelHeater, ModelTower, ModelAxe, ModelMace,
-             ModelFlask, ModelFlaskEmpty, ModelCount };  // the healing flask (ADR-047), held while drinking
+             ModelFlask, ModelFlaskEmpty,  // the healing flask (ADR-047), held while drinking
+             ModelGreatsword, ModelGreataxe, ModelCount };  // great weapons (ADR-049), held in both hands
 Grid buildPart(Model model, Part part);
 Model heldModel(ItemId weapon);
 Model shieldModel(ItemId shield);  // an off-hand shield's, by its size (ADR-036)

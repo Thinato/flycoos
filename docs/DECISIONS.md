@@ -2070,3 +2070,77 @@
     rejects bad ones. Mutation-checked: each of 34 rules broken alone fails a test.
   - **Talents:** "+10% scaling" is an increased modifier on `scaling`; a two-handed condition can key
     on `twoHanding()`.
+
+## ADR-049: Great weapons: greatswords and greataxes
+
+- **Status:** accepted (2026-11-09)
+- **Context:**
+  - Two roadmap weapon classes: "Greatswords / two-handed swords: slow, high stance, wide sweeps" and
+    "Greataxes". ADR-048 built two-handing and left two-handed movesets to them.
+  - Every swing reached the same 2 blocks and 60 degrees either side (`kPunchReach`, `inReach`),
+    whatever the weapon.
+  - Foundation 5 (TALENTS.md): no new use-based skills.
+- **Decision:**
+  - **Two classes**, appended: `greatsword` and `greataxe`, each with a moveset in
+    data/weapon_classes.json, swing poses (`kGreatswordSwings`: wide sweeps both ways, a diagonal,
+    overhead smashes, thrusts for the rolling attack and riposte; `kGreataxeSwings`: the axe's chops,
+    bigger, the head leading, a wide horizontal cleave for light 4 and heavy 2) and held models with
+    long grips (`ModelGreatsword`, `ModelGreataxe`; the left hand `pommel()` voxels below the right).
+  - **Always in both hands:** a class's `two_handed` makes `twoHanding()` true while its weapon is in
+    hand: ADR-048's strength x1.5, the better guard, the shield on the back, no parry. The grip press
+    does nothing then; the player's own `twoHanded` flag is kept, so a two-handed sword stays so after
+    swapping through a great weapon.
+  - **Slow and heavy:** lights about 1.05 s (greatsword, speed 1.45) and 1.12 s (greataxe, 1.55)
+    against the sword's 0.69; 18–30 stamina a swing; the most stance damage (lights 17–22 and 19–24,
+    so every light makes a poise-12 ghoul flinch, as the mace's do; only the last lights reach the
+    chief's 20);
+    hyperarmor on the heavies, the jumping heavy and the guard counter; hit-stop x1.35 and x1.5; every
+    swing plays the heavy whoosh, deeper.
+  - **Reach and arc per class:** `reach` (blocks, default 2) and `arc` (degrees either side, default
+    60) in weapon_classes.json, used by `inReach` with the held weapon's class, so `punchTarget`,
+    `criticalTarget` and NPCs' swings reach by weapon. Greatsword 2.6 / 75, greataxe 2.5 / 70.
+  - **Items:** Iron Greatsword (9–13, strength A 1.1, agility D 0.4, weight 9) and Barrow Greataxe
+    (10–14, strength S 1.45, weight 10), save ids 17 and 18.
+  - **Found as rare drops:** creatures take an optional `rare_loot` / `rare_loot_chance`, rolled only
+    when the usual drop's roll fails (a corpse holds one item, so saves don't change; kinds without one
+    draw exactly as before). Bandits: the greatsword at 10% (6% of kills); barrow ghouls: the
+    greataxe at 12% (8%).
+  - **Skill:** they earn One-Handed XP as swords do (foundation 5).
+  - **UI:** class icons, a tooltip line (reach, two-handed), the debug moveset node shows reach, arc
+    and two-handedness, and the two-handing node says a great weapon is always two-handed; the
+    creature tables and the MCP catalog show rare drops.
+- **Alternatives considered:**
+  - One-handing a great weapon with enough strength (Elden Ring's requirement): attributes are in the
+    single digits, so it would be a wall, not a choice. Always two-handed is simpler and reads clearly.
+  - Hitting every foe in the arc (cleaving a pack): a real difference, but it reshapes the hit
+    resolution (one target per swing today). A wider arc and longer reach give the sweep its feel;
+    multi-target swings can come with colossal weapons.
+  - A list of drops per creature: one rare drop covers the need with a smaller change and no save
+    change.
+  - A new heavy enemy wielding them: the story world's spawns are authored in the editor with the
+    user; the bandit and ghoul drops work in both worlds now.
+  - A Two-Handed skill: foundation 5 forbids new use-based skills.
+- **Consequences:**
+  - **Balance:** with the sword nothing changes (the story fights and level bands measure the same).
+    The story fights now also run with the axe, the mace and both great weapons (health left, 12
+    seeds): chief 38 / 27 / 40 / 52 (sword 32), wolves 41 / 5 / 15 / 6 (31), ghouls 53 / 65 / 72 / 72
+    (21). Heavy weapons win where openings are few; quick wolves punish slow swings. Per second of
+    lights at level 1: sword 14.6, greatsword 16.2, greataxe 17.7.
+  - **Tests:** `greatWeapons` checks the classes' flags and reach, the items' leanings and weights,
+    stance and hit-stop above the mace's, hyperarmor on heavies only, swing lengths, always
+    two-handed (strength, no shield or parry, the grip press ignored, the sword's grip kept across a
+    swap), lights landing at 2.3 blocks and 70 degrees for the greatsword and not the sword, NPC and
+    backstab reach, the light chains with their stance and hit-stop, the rare drops' rates and the
+    first roll's draw unchanged, both hands on the long grip in every pose, and the blade, pommel and
+    beard staying out of the ground through every move. The data test rejects bad `two_handed`,
+    `reach`, `arc` and rare drops (and one behind a certain drop, never rolled); the sound test checks
+    the deeper whoosh. The draw order of a bandit's two rolls is pinned, and a sword's grip survives
+    a swap to a great weapon mid-swing. Mutation-checked: each of
+    29 rules broken alone fails a test.
+  - **Rng:** a bandit or ghoul whose usual drop fails takes one more draw from its rng, so what it
+    does after a respawn shifts; a pinned run through a respawn would need re-pinning (none does).
+  - **NPCs:** an NPC sees a swing coming by the attacker's weapon too (a greatsword's arc and reach).
+    No creature wields a great weapon; one would two-hand it (no shield), but its AI still spaces
+    itself at a sword's length.
+  - **Later:** colossal weapons and great hammers can be more two-handed classes with data alone
+    (plus poses and a model).

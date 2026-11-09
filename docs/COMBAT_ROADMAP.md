@@ -31,11 +31,11 @@ system is summarized in ADR-035.
 
 - [x] Daggers / knives: fast, low stance, good for crits (ADR-044)
 - [x] Straight swords (the baseline moveset, ADR-035)
-- [ ] Greatswords / two-handed swords: slow, high stance, wide sweeps
+- [x] Greatswords / two-handed swords: slow, high stance, wide sweeps (always two-handed, longer reach and arc; ADR-049)
 - [ ] Curved swords / sabres: flowing slashes, long chains
 - [ ] Thrusting swords / rapiers: pierce, counter-attack bonus
 - [x] Axes: hard chops, high stance (ADR-044)
-- [ ] Greataxes
+- [x] Greataxes (ADR-049)
 - [x] Maces: strike damage, the most stance damage (ADR-044)
 - [ ] Great hammers
 - [ ] Spears / halberds: reach, thrusts, attacking from behind a shield
@@ -62,7 +62,7 @@ system is summarized in ADR-035.
 
 ## Systems
 
-- [x] Two-handing (a toggle: strength x1.5, a better guard, no shield or parry, both hands on the hilt; ADR-048). Its own moveset comes with greatswords
+- [x] Two-handing (a toggle: strength x1.5, a better guard, no shield or parry, both hands on the hilt; ADR-048). Two-handed movesets: the great weapons' (ADR-049)
 - [ ] Dual wielding / power stance
 - [ ] Weapon skills (a special move per weapon or per skill gem, costing mana)
 - [x] Backstabs and criticals (from behind an unaware or turned enemy; random crits as stats, ADR-045)

@@ -140,6 +140,8 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     if (!p.weapon()) {  // bare hands have nothing to two-hand: let go (the next weapon starts one-handed; a swap keeps the grip)
         p.twoHanded = false;
         if (p.want == Want::Grip) p.want = Want::None;
+    } else if (weaponClass(classOf(p.weapon())).twoHanded && p.want == Want::Grip) {
+        p.want = Want::None;  // a great weapon (ADR-049) stays in both hands: the press does nothing
     }
     bool over = p.load == Load::Over && !p.tuning.fly && !p.tuning.noclip;  // overloaded: no roll, no run (ADR-039)
     if (move.roll && !over) wish(Want::Roll);
@@ -203,8 +205,8 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
         }
         // Two-handing (ADR-048) changes once the body is free; mid-roll it waits.
         if (p.want == Want::Grip && !p.punching() && !p.rolling()) {
-            p.twoHanded = !p.twoHanded;  // (with no weapon the press was dropped above)
-            p.noise(Noise::Grip);
+            if (!weaponClass(classOf(p.weapon())).twoHanded)  // a great weapon swapped in mid-swing: nothing (ADR-049)
+                p.twoHanded = !p.twoHanded, p.noise(Noise::Grip);  // (with no weapon the press was dropped above)
             p.want = Want::None;
         }
         if (!p.punching() && p.want == Want::Roll && p.stamina > 0) move.roll = true;  // until updatePlayer can roll

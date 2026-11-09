@@ -137,6 +137,30 @@ static Grid buildMace() {  // a haft and a flanged iron head, the flanges out on
     g.set({2, 13, 2}, Iron);
     return g;
 }
+// Great weapons (ADR-049), held in both hands: a long grip (both hands on it, the right at heldGrip
+// under the guard, the left pommel() below), a greatsword's broad blade, a greataxe's bearded head.
+static Grid buildGreatsword() {
+    Grid g({7, 24, 1});
+    g.set({3, 0, 0}, Iron);                                    // pommel
+    for (int y = 1; y <= 5; ++y) g.set({3, y, 0}, Belt);       // grip
+    for (int x = 0; x < 7; ++x) g.set({x, 6, 0}, Iron);        // crossguard
+    for (int y = 7; y <= 22; ++y)
+        for (int x = 2; x <= 4; ++x) g.set({x, y, 0}, Steel);  // blade
+    g.set({3, 23, 0}, Steel);                                  // tip
+    return g;
+}
+static Grid buildGreataxe() {  // the head out to +x near the top, its beard reaching down the haft, a spike behind
+    Grid g({9, 27, 1});
+    g.set({3, 0, 0}, Iron);
+    for (int y = 1; y <= 25; ++y) g.set({3, y, 0}, y <= 7 ? Belt : Wood);
+    for (int y = 19; y <= 24; ++y) g.set({4, y, 0}, Iron), g.set({5, y, 0}, Iron);
+    for (int y = 17; y <= 25; ++y) g.set({6, y, 0}, Iron);
+    for (int y = 15; y <= 26; ++y) g.set({7, y, 0}, Steel);
+    for (int y = 16; y <= 25; ++y) g.set({8, y, 0}, Steel);
+    g.set({1, 21, 0}, Iron), g.set({2, 21, 0}, Iron), g.set({2, 22, 0}, Iron);
+    g.set({3, 26, 0}, Iron);
+    return g;
+}
 // The healing flask (ADR-047): a round-bellied bottle up along +y, its liquid red (empty: glass), a
 // neck and a cork; held at kFlaskGrip, the belly's middle.
 static Grid buildFlask(bool full) {
@@ -151,13 +175,25 @@ static Grid buildFlask(bool full) {
 }
 constexpr glm::vec3 kFlaskGrip{2.5f, 2.5f, 2.5f};
 
-static glm::vec3 heldGrip(Model m) { return m == ModelMace ? glm::vec3(2.5f, 2.5f, 2.5f) : glm::vec3(2.5f, 2.5f, 0.5f); }
+static glm::vec3 heldGrip(Model m) {
+    switch (m) {
+    case ModelMace: return {2.5f, 2.5f, 2.5f};
+    case ModelGreatsword: return {3.5f, 4.5f, 0.5f};
+    case ModelGreataxe: return {3.5f, 6.5f, 0.5f};
+    default: return {2.5f, 2.5f, 0.5f};
+    }
+}
+// Two-handed (ADR-048), the left hand this many voxels below the right, down the weapon's length:
+// at a one-handed weapon's pommel, on a great weapon's long grip.
+static float pommel(Model m) { return m == ModelGreatsword ? 3.0f : m == ModelGreataxe ? 3.5f : 2.7f; }
 
 Model heldModel(ItemId weapon) {
     switch (classOf(weapon)) {
     case WeaponClass::Dagger: return ModelDagger;
     case WeaponClass::Axe: return ModelAxe;
     case WeaponClass::Mace: return ModelMace;
+    case WeaponClass::Greatsword: return ModelGreatsword;
+    case WeaponClass::Greataxe: return ModelGreataxe;
     default: return ModelSword;
     }
 }
@@ -274,9 +310,17 @@ static Block ghoulVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
 }
 
 Grid buildPart(Model model, Part part) {
-    if (model == ModelSword || model == ModelDagger || model == ModelAxe || model == ModelMace)
-        return part != Head ? Grid({1, 1, 1})
-             : model == ModelSword ? buildSword() : model == ModelDagger ? buildDagger() : model == ModelAxe ? buildAxe() : buildMace();
+    if (model == ModelSword || model == ModelDagger || model == ModelAxe || model == ModelMace || model == ModelGreatsword || model == ModelGreataxe) {
+        if (part != Head) return Grid({1, 1, 1});
+        switch (model) {
+        case ModelSword: return buildSword();
+        case ModelDagger: return buildDagger();
+        case ModelAxe: return buildAxe();
+        case ModelMace: return buildMace();
+        case ModelGreatsword: return buildGreatsword();
+        default: return buildGreataxe();
+        }
+    }
     if (model == ModelBuckler || model == ModelHeater || model == ModelTower) return part != Head ? Grid({1, 1, 1}) : buildShield(model);
     if (model == ModelFlask || model == ModelFlaskEmpty) return part != Head ? Grid({1, 1, 1}) : buildFlask(model == ModelFlask);
     glm::ivec3 s = specs(model)[part].size;
@@ -408,11 +452,52 @@ static const Swings kMaceSwings = [] {
     s[size_t(Move::Light4)] = {{-0.2f, 17, 2, -0.7f, 0, -0.3f, -0.25f, 0}, {0.1f, 4, 7, 2.5f, 0, 0.1f, 0.5f, 2}};
     return s;
 }();
+// Greatswords (ADR-049): wide sweeps both ways, a diagonal, overhead smashes; the blade ends its
+// downswings above the ground (it's long).
+static const Swings kGreatswordSwings = rows({
+    {},
+    {{-1.9f, 9, 5.5f, 1.5f, 0, -0.8f, 0, 0.5f}, {1.8f, 8, 6.5f, 1.6f, 0, 0.8f, 0.2f, 1}},             // light 1: wide sweep, right to left
+    {{1.6f, 10, 4.5f, 1.45f, 0, 0.7f, 0, 0.5f}, {-1.8f, 8.5f, 6.5f, 1.6f, 0, -0.8f, 0.15f, 1}},       // light 2: sweep back
+    {{-1.3f, 15, 4.5f, 0.5f, 0, -0.6f, -0.1f, 0}, {1.3f, 6, 6, 1.75f, 0, 0.6f, 0.3f, 1.2f}},          // light 3: diagonal, high right to low left
+    {{-0.3f, 18, 1.5f, -0.8f, 0, -0.3f, -0.3f, 0}, {0.1f, 7, 7.5f, 1.8f, 0, 0.1f, 0.5f, 2}},          // light 4: overhead smash
+    {{-0.3f, 19, 1, -1.0f, 0, -0.3f, -0.35f, 0}, {0.1f, 7, 8, 1.8f, 0, 0.1f, 0.6f, 2.5f}},            // heavy 1: great overhead smash
+    {{-2.1f, 9, 5, 1.5f, 0, -1.0f, 0.1f, 1}, {2.1f, 7.5f, 7, 1.65f, 0, 1.0f, 0.3f, 1.5f}},            // heavy 2: the widest sweep
+    {{-1.8f, 10, 6, 1.5f, 0, -0.7f, 0.3f, 0}, {1.9f, 8, 6.5f, 1.6f, 0, 0.8f, 0.35f, 1}},              // running: leaping sweep
+    {{-0.2f, 5, 2, 1.3f, 0, -0.3f, 0.3f, 3}, {0, 10, 9, 1.35f, 0, 0.2f, 0.2f, 0.5f}},                 // rolling: rising thrust
+    {{-0.2f, 17, 2, -0.5f, 0, -0.2f, -0.2f, 0}, {0.1f, 7, 7, 1.8f, 0, 0.1f, 0.35f, 1}},               // jump light: chop
+    {{-0.2f, 19, 1.5f, -1.0f, 0, -0.2f, -0.3f, 0}, {0.1f, 7.5f, 7.5f, 1.8f, 0, 0.1f, 0.55f, 3}},      // jump heavy: big chop
+    {{1.1f, 6, 5, 1.75f, 0, 0.6f, 0.1f, 1}, {-1.3f, 15, 5, 0.5f, 0, -0.7f, -0.05f, 0}},               // guard counter: rising slash
+    {{-0.4f, 10, 0, 1.57f, 0, -0.6f, -0.2f, 0.5f}, {0, 9, 10, 1.57f, 0, 0.3f, 0.4f, 1}},              // riposte: deep thrust
+    kParrySwing,
+    {{-1.7f, 9.5f, 5, 1.5f, 0, -0.7f, 0.2f, 0.4f}, {1.8f, 8.5f, 6.5f, 1.6f, 0, 0.7f, 0.3f, 0.6f}},    // backstep: a sweep back in
+    {},  // drink
+});
+// Greataxes (ADR-049): the axe's chops, bigger, the chain's last one a wide horizontal cleave.
+static const Swings kGreataxeSwings = rows({
+    {},
+    {{-1.1f, 16, 4, 0.1f, 0, -0.6f, -0.15f, 0, -1.2f}, {0.9f, 8.5f, 6.5f, 1.6f, 0, 0.6f, 0.35f, 1.2f, -1.2f}},    // light 1: diagonal chop
+    {{1.3f, 12, 4, 0.9f, 0, 0.6f, 0, 0.3f, -2.3f}, {-1.4f, 7.5f, 6.5f, 1.75f, 0, -0.6f, 0.2f, 0.8f, -2.3f}},  // light 2: backhand chop
+    {{-0.3f, 18, 1.5f, -0.7f, 0, -0.25f, -0.3f, 0, kChop}, {0.1f, 8.5f, 7.5f, 1.6f, 0, 0.1f, 0.5f, 2, kChop}},   // light 3: overhead chop
+    {{-2.0f, 10, 5.5f, 1.5f, 0, -0.9f, 0.1f, 0.5f}, {2.0f, 8, 7, 1.6f, 0, 0.9f, 0.3f, 1.2f}},                 // light 4: wide cleave
+    {{-0.3f, 19, 1, -1.0f, 0, -0.35f, -0.35f, 0, kChop}, {0.1f, 8.5f, 8, 1.6f, 0, 0.1f, 0.6f, 2.8f, kChop}},     // heavy 1: great overhead cleave
+    {{-2.2f, 9.5f, 5, 1.5f, 0, -1.0f, 0.1f, 1}, {2.2f, 7.5f, 7, 1.65f, 0, 1.0f, 0.35f, 1.5f}},                // heavy 2: the widest cleave
+    {{-0.3f, 17, 3, -0.5f, 0, -0.3f, 0.2f, 0, kChop}, {0.1f, 8.5f, 7.5f, 1.6f, 0, 0.1f, 0.5f, 1.5f, kChop}},     // running: leaping chop
+    {{0.6f, 7, 4, 1.75f, 0, 0.4f, 0.3f, 3, 2.0f}, {-0.6f, 15, 5, 0.5f, 0, -0.4f, 0, 0.5f, 2.0f}},             // rolling: rising chop
+    {{-0.2f, 17, 2, -0.5f, 0, -0.2f, -0.2f, 0, kChop}, {0.1f, 8.5f, 7, 1.6f, 0, 0.1f, 0.35f, 1, kChop}},         // jump light: chop
+    {{-0.2f, 19, 1.5f, -1.0f, 0, -0.2f, -0.3f, 0, kChop}, {0.1f, 9, 7.5f, 1.6f, 0, 0.1f, 0.55f, 3, kChop}},  // jump heavy: big chop
+    {{1.0f, 7, 5, 1.75f, 0, 0.5f, 0.1f, 1, 2.3f}, {-1.2f, 15, 5, 0.5f, 0, -0.6f, -0.05f, 0, 2.3f}},           // guard counter: rising chop
+    {{-0.2f, 18, 2, -0.7f, 0, -0.2f, -0.2f, 0.5f, kChop}, {0.1f, 8.5f, 7.5f, 1.6f, 0, 0.1f, 0.5f, 2, kChop}},    // riposte: a hack from above
+    kParrySwing,
+    {{-1.7f, 9.5f, 5, 1.5f, 0, -0.7f, 0.2f, 0.4f}, {1.8f, 8.5f, 6.5f, 1.6f, 0, 0.7f, 0.3f, 0.6f}},           // backstep: a cleave back in
+    {},  // drink
+});
 static const Swings& swings(WeaponClass c) {
     switch (c) {
     case WeaponClass::Dagger: return kDaggerSwings;
     case WeaponClass::Axe: return kAxeSwings;
     case WeaponClass::Mace: return kMaceSwings;
+    case WeaponClass::Greatsword: return kGreatswordSwings;
+    case WeaponClass::Greataxe: return kGreataxeSwings;
     default: return kSwordSwings;  // fists swing as a sword does
     }
 }
@@ -422,9 +507,8 @@ static const Grip kShieldGuard{-0.67f, 8, 3.2f, 1.3f, 0.67f, 0.15f, 0.05f, 0.8f}
 static glm::vec3 shieldGuardHand(const Shield& s) { return {1, s.size == ShieldSize::Great ? 7.0f : 9.5f, 5.5f}; }
 constexpr float kShieldIdleYaw = 1.2f;  // at the side, its face turned out
 // Two-handing (ADR-048): at rest the weapon is held in front, the tip up and forward; the left hand
-// below the right on the hilt, kPommel voxels down the weapon's length (in every pose: swings, the guard).
+// below the right on the hilt, pommel() voxels down the weapon's length (in every pose: swings, the guard).
 static const Grip kTwoHandIdle{0.7f, 7.5f, 3.5f, 0.75f, -0.55f, 0.2f, 0.05f, 0.3f};
-constexpr float kPommel = 2.7f;
 // Where a shield hangs on the back while two-handing: its grip this far from the torso's middle.
 constexpr glm::vec3 kShieldBack{0, 1, -1.5f};
 
@@ -680,7 +764,7 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
     if (float k = armed ? p.gripBlend * (1 - sip(p).raise) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {
         // Two-handing (ADR-048): the left hand below the right on the hilt, down the weapon's length.
         glm::vec3 along(std::sin(pitch) * std::sin(yaw), std::cos(pitch), std::sin(pitch) * std::cos(yaw));
-        glm::vec3 at = parts[HandR].center + off[HandR] - kPommel * along;
+        glm::vec3 at = parts[HandR].center + off[HandR] - pommel(heldModel(p.weapon())) * along;
         off[HandL] = glm::mix(off[HandL], at - parts[HandL].center, k);
     }
 

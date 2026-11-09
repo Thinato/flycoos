@@ -326,6 +326,8 @@ static void playerTab(Session& session, float& armorK, DebugActions& actions, co
         const WeaponClassDef& c = weaponClass(classOf(w));
         ImGui::Text("%s: %s, speed x %.2f (weapon) x %.2f (class), hit-stop x %.2f", w ? itemType(w).name : "Bare hands", c.name.c_str(),
                     double(weaponAttack(w).speed), double(c.speed), double(c.hitStop));
+        ImGui::Text("Reach %.2f blocks, %.0f degrees either side%s", double(c.reach), double(c.arc),
+                    c.twoHanded ? ", always two-handed (ADR-049)" : "");
         ImGui::TextDisabled("Edit data/weapon_classes.json, then Data > Reload defs.");
         if (ImGui::BeginTable("moves", 11, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
             for (const char* h : {"move", "s", "hold", "hit", "chain", "cancel", "dmg", "stance", "stam", "lunge", "kind"}) ImGui::TableSetupColumn(h);
@@ -425,6 +427,7 @@ static void playerTab(Session& session, float& armorK, DebugActions& actions, co
         ImGui::Checkbox("Two-handed (F / Triangle+R1)", &p.twoHanded);
         ImGui::EndDisabled();
         if (!armed) ImGui::SameLine(), ImGui::TextDisabled("(nothing in the main hand)");
+        else if (weaponClass(classOf(p.inv.equipped[SlotMainHand])).twoHanded) ImGui::SameLine(), ImGui::TextDisabled("(a great weapon: always, ADR-049)");
         ImGui::ProgressBar(p.gripBlend, {160, 0}, std::format("left hand on the hilt {:.2f}", p.gripBlend).c_str());
         ImGui::SliderFloat("Two-handed strength", &m.twoHandStrength, 1, 3, "x %.2f");
         ImGui::SliderFloat("Two-handed guard stops", &m.twoHandNegation, 0, 1, "%.2f of the damage");
@@ -587,9 +590,10 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
             }
             ImGui::TreePop();
         }
-        if (t.lootChance > 0)
-            ImGui::Text("Drops %s %.0f%%%s%s", itemType(t.loot).name, t.lootChance * 100, e.loot ? ", corpse holds " : "",
-                        e.loot ? itemType(e.loot).name : "");
+        if (t.lootChance > 0 || t.rareChance > 0)
+            ImGui::Text("Drops %s %.0f%%%s%s%s", t.loot ? itemType(t.loot).name : "-", t.lootChance * 100,
+                        t.rareLoot ? std::format(", else {} {:.0f}%", itemType(t.rareLoot).name, t.rareChance * 100).c_str() : "",
+                        e.loot ? ", corpse holds " : "", e.loot ? itemType(e.loot).name : "");
         if (t.weapon) ImGui::Text("Wields %s", itemType(t.weapon).name);
         if (t.shield) ImGui::Text("Holds %s", itemType(t.shield).name);
         ImGui::Text("At %.1f %.1f %.1f, %.1f from you", e.body.pos.x, e.body.pos.y, e.body.pos.z,
@@ -726,6 +730,7 @@ static void dataTab(std::string& status, Player& player) {
             ImGui::TableNextColumn(), ImGui::TextUnformatted(t.weapon ? itemType(t.weapon).name : "-");
             ImGui::TableNextColumn();
             if (t.loot) ImGui::Text("%s %.0f%%", itemType(t.loot).name, t.lootChance * 100);
+            if (t.rareLoot) ImGui::Text("else %s %.0f%%", itemType(t.rareLoot).name, t.rareChance * 100);  // ADR-049
             ImGui::TableNextColumn(), ImGui::Text("%d", t.xp);
         }
         ImGui::EndTable();

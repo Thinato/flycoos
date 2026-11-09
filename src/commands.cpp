@@ -477,6 +477,7 @@ json catalogJson() {
                   {"wander_radius", t.wanderRadius}, {"chase_speed", t.chaseSpeed}, {"aggro_range", t.aggroRange}};
         if (t.weapon) e["weapon"] = itemType(t.weapon).name;
         if (t.loot) e["loot"] = itemType(t.loot).name, e["loot_chance"] = t.lootChance;
+        if (t.rareLoot) e["rare_loot"] = itemType(t.rareLoot).name, e["rare_loot_chance"] = t.rareChance;
         kinds.push_back(std::move(e));
     }
     for (int b = 0; b < BlockCount; ++b) {

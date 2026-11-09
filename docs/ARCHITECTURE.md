@@ -808,6 +808,13 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   once the body is free and eases `gripBlend`; model.cpp holds the weapon in front at rest
   (`kTwoHandIdle`), puts the left hand `kPommel` voxels down the weapon's axis in every pose, and
   hangs the shield on the back (`kShieldBack`).
+- **Great weapons** (ADR-049): `WeaponClassDef::twoHanded` makes `twoHanding()` true with that
+  class's weapon in hand (or swinging), whatever `twoHanded` says; updateMelee drops a grip press
+  then (the flag is kept for the next one-handed weapon). `reach` and `arc` (`arcCos`, worked out
+  at load) replace `kPunchReach` and the 60 degrees in `inReach` (the held weapon's, NPCs' too), so
+  `punchTarget` and `criticalTarget` reach as far, and `answer` sees a swing coming as far. model.cpp: `ModelGreatsword` / `ModelGreataxe` with long grips
+  (`heldGrip`, the left hand `pommel()` voxels below), `kGreatswordSwings` / `kGreataxeSwings`
+  (long blades end their downswings above the ground; a test checks every move).
 - **Shields and the parry** (ADR-036, melee.h): an off-hand item with a `shield` guards by its own
   numbers instead of the sword's (`guardOf`): the Oak Buckler stops 80% and saves 46% of the stamina,
   the Heater Shield 100% / 56%, the Tower Shield 100% / 72%. A guard of at least 65% boost makes an
@@ -882,11 +889,14 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Bone Charm | Trinket | +2 spirit (regen 1 → 2 per second); dropped by barrow ghouls |
   | Oak Buckler / Heater Shield / Tower Shield | Off Hand | shields (ADR-036): stop 80 / 100 / 100% of a blocked hit (the buckler 85 / 70 / 80% of slash / strike / pierce, the heater 90% of strikes: ADR-040), guard boost 46 / 56 / 72%; the first two parry, the tower bounces weak attacks; weigh 2 / 4.5 / 13; no drop yet (the debug Items tab gives them) |
   | Iron Hand Axe / Iron Mace | Main Hand | axe 7–11 (speed 1.1, weight 3.5) / mace 6–10 strike (speed 1.15, weight 4), ADR-044; no drop yet (the debug Items tab gives them) |
+  | Iron Greatsword / Barrow Greataxe | Main Hand (both hands) | greatsword 9–13 (speed 1.45, strength A, agility D, weight 9) / greataxe 10–14 (speed 1.55, strength S, weight 10), ADR-049; rare drops of bandits (10% when the knife doesn't drop) / barrow ghouls (12% when the charm doesn't) |
 
   Weapon classes (ADR-044, `data/weapon_classes.json`): one record per class (fists, dagger, sword,
-  axe, mace), each with every attack move (`seconds`, `hold`, `hit`, `chain`, `cancel` in order,
+  axe, mace, greatsword, greataxe), each with every attack move (`seconds`, `hold`, `hit`, `chain`, `cancel` in order,
   `damage`, `stance`, `stamina`, `lunge`, optional `heavy` and `thrust`) and optional `speed` and
   `hit_stop` multipliers; `copy_from` works as in items (fists copy the sword at speed 0.75).
+  ADR-049 adds optional `two_handed` (always held in both hands; not fists), `reach` (blocks, 1–4,
+  default 2) and `arc` (degrees either side of the facing, 15–120, default 60).
 
   | Class | Lights: stance / stamina | Thrusts | Hit-stop | Feel |
   |---|---|---|---|---|
@@ -894,7 +904,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Dagger | 6–9 / 9–11 | light 3–4, heavies, running, rolling, jumps, riposte | x0.7 | slashes and stabs; riposte x3.5 |
   | Sword | 10–14 / 12–14 | light 4, heavy 1, rolling, riposte | x1 | the baseline |
   | Axe | 13–18 / 14–16 | none | x1.15 | chops, the head leading (pose `roll`) |
-  | Mace | 16–22 / 15–17 | none (strike) | x1.3 | smashes, the most stance damage |
+  | Mace | 16–22 / 15–17 | none (strike) | x1.3 | smashes, the most stance damage of one-handers |
+  | Greatsword | 17–22 / 18–20 | rolling, riposte | x1.35 | two-handed; wide sweeps, overhead smashes; reach 2.6, 75 degrees |
+  | Greataxe | 19–24 / 20–22 | none | x1.5 | two-handed; big chops, a wide cleave; reach 2.5, 70 degrees |
 
   Chest and legs pieces always give more armor than any head, hands, feet or hand item; a test
   checks the whole table.
@@ -934,6 +946,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   NPC a random villager name; flags default to false, ranges and speeds to 0; `weapon` (a main_hand
   item's id) and `loot` (any item's id) to none. `aggro_range` is for aggressive kinds only, a
   `loot_chance` needs `loot`, kinds that fight need a `chase_speed`, and stamina is at least 1. `copy_from` works as for items.
+  `rare_loot` and `rare_loot_chance` (ADR-049, both or neither) are a drop rolled only when `loot`
+  isn't dropped; a corpse still holds one item (the save is unchanged), and kinds without one draw
+  their drop roll as before.
   `xp` (0–100000, ADR-027) is the character XP for a kill: by default 10 × level for hostile,
   attackable kinds and 0 for the rest; one that can't be hurt can't have any.
   The AI's numbers (ADR-020) are optional and only for kinds that fight: `leash_radius` (2..64,

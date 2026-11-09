@@ -45,6 +45,18 @@ void icon(ImDrawList* dl, ItemId id, ImVec2 lo, float s) {
                 dl->AddLine(at(0.68f, 0.32f), at(x, y), steel, s * 0.07f);       // flanges
             dl->AddLine(at(0.20f, 0.84f), at(0.30f, 0.73f), leather, s * 0.09f); // grip
             break;
+        case WeaponClass::Greatsword:  // ADR-049: corner to corner, a long grip
+            dl->AddLine(at(0.26f, 0.74f), at(0.92f, 0.08f), steel, s * 0.15f);   // blade
+            dl->AddLine(at(0.12f, 0.58f), at(0.42f, 0.88f), iron, s * 0.09f);    // crossguard
+            dl->AddLine(at(0.26f, 0.74f), at(0.08f, 0.92f), leather, s * 0.09f); // grip
+            dl->AddCircleFilled(at(0.07f, 0.93f), s * 0.06f, iron);               // pommel
+            break;
+        case WeaponClass::Greataxe:
+            dl->AddLine(at(0.10f, 0.94f), at(0.70f, 0.10f), wood, s * 0.09f);    // haft
+            dl->AddQuadFilled(at(0.50f, 0.30f), at(0.66f, 0.06f), at(0.96f, 0.30f), at(0.74f, 0.70f), iron);  // head, its beard down the haft
+            dl->AddLine(at(0.96f, 0.30f), at(0.74f, 0.70f), steel, s * 0.07f);   // edge
+            dl->AddLine(at(0.10f, 0.94f), at(0.24f, 0.74f), leather, s * 0.10f); // grip
+            break;
         default:  // a sword
             dl->AddLine(at(0.32f, 0.68f), at(0.86f, 0.14f), steel, s * 0.12f);   // blade
             dl->AddLine(at(0.18f, 0.54f), at(0.46f, 0.82f), iron, s * 0.08f);    // crossguard
@@ -194,6 +206,8 @@ void tooltip(ItemId id, SlotRef where) {
         if (t.slot == SlotMainHand)
             ImGui::TextUnformatted(t.damage == DamageType::Slash ? "Slashes; thrusts pierce" : t.damage == DamageType::Strike ? "Strikes" : "Pierces");
         if (t.parry > 0) ImGui::TextUnformatted("Parries with the off hand empty (Q / L2)");
+        if (const WeaponClassDef& c = weaponClass(t.weaponClass); t.slot == SlotMainHand)  // ADR-049
+            ImGui::Text("Reach %g blocks%s", double(c.reach), c.twoHanded ? "    Two-handed (a shield goes on the back)" : "");
     }
     if (t.weight > 0) ImGui::TextDisabled("Weight %g", double(t.weight));
     if (t.slot != SlotNone) ImGui::TextDisabled(where.kind == SlotRef::Item ? "Right-click to equip" : "Right-click to unequip");

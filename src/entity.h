@@ -32,6 +32,8 @@ struct EntityType {
     ItemId weapon;        // held in the main hand
     ItemId loot;          // can drop when killed
     float lootChance;
+    ItemId rareLoot;      // dropped instead when `loot` isn't (ADR-049: a great weapon)
+    float rareChance;
     float respawnSeconds; // dead this long, then back at home fully healed
     // The AI's numbers (ADR-020); fighters only.
     float leashRadius;     // a chase ends once the player is this far from home

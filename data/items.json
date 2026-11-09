@@ -14,5 +14,7 @@
   {"id": "heater_shield", "save_id": 13, "name": "Heater Shield", "slot": "off_hand", "shield": {"size": "medium", "negation": {"slash": 1, "strike": 0.9, "pierce": 1}, "boost": 0.56, "parry": 1}, "weight": 4.5},
   {"id": "tower_shield", "save_id": 14, "name": "Tower Shield", "slot": "off_hand", "shield": {"size": "great", "negation": 1, "boost": 0.72}, "weight": 13},
   {"id": "iron_hand_axe", "save_id": 15, "name": "Iron Hand Axe", "slot": "main_hand", "class": "axe", "attack": {"min": 7, "max": 11, "speed": 1.1}, "scaling": {"strength": 1.2, "agility": 0.2}, "weight": 3.5},
-  {"id": "iron_mace", "save_id": 16, "name": "Iron Mace", "slot": "main_hand", "class": "mace", "attack": {"min": 6, "max": 10, "speed": 1.15}, "scaling": {"strength": 1.5}, "weight": 4, "damage": "strike"}
+  {"id": "iron_mace", "save_id": 16, "name": "Iron Mace", "slot": "main_hand", "class": "mace", "attack": {"min": 6, "max": 10, "speed": 1.15}, "scaling": {"strength": 1.5}, "weight": 4, "damage": "strike"},
+  {"id": "iron_greatsword", "save_id": 17, "name": "Iron Greatsword", "slot": "main_hand", "class": "greatsword", "attack": {"min": 9, "max": 13, "speed": 1.45}, "scaling": {"strength": 1.1, "agility": 0.4}, "weight": 9},
+  {"id": "barrow_greataxe", "save_id": 18, "name": "Barrow Greataxe", "slot": "main_hand", "class": "greataxe", "attack": {"min": 10, "max": 14, "speed": 1.55}, "scaling": {"strength": 1.45}, "weight": 10}
 ]

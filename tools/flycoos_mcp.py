@@ -296,6 +296,7 @@ def fetch():
             traits += [f"chases at {e['chase_speed']:g} b/s"] if e["chase_speed"] else []
             traits += [f"wields {e['weapon']}"] if "weapon" in e else []
             traits += [f"drops {e['loot']} {e['loot_chance']:.0%}"] if "loot" in e else []
+            traits += [f"else {e['rare_loot']} {e['rare_loot_chance']:.0%}"] if "rare_loot" in e else []
             traits += [f"wanders {e['wander_radius']:g}"] if e["wander_radius"] else []
             groups.setdefault(e["temper"], []).append(f"{e['id']} ({', '.join(traits)})")
         order = sorted(groups, key=lambda t: list(TEMPERS).index(t) if t in TEMPERS else len(TEMPERS))

@@ -186,7 +186,9 @@ std::vector<Layer> layersOf(const Sound& s) {
             break;
         }
         bool heavy = spec(classOf(s.with), s.move).heavy || s.move == Move::Riposte, small = classOf(s.with) <= WeaponClass::Dagger;  // fists, daggers
-        add(heavy ? "swing_heavy" : small ? "swing_fast" : "swing_light", heavy ? 1 : 0.8f, small && !s.with ? 1.15f : 1);
+        bool great = weaponClass(classOf(s.with)).twoHanded;  // a great weapon's every swing whooshes heavy, deeper (ADR-049)
+        add(heavy || great ? "swing_heavy" : small ? "swing_fast" : "swing_light", heavy ? 1 : great ? 0.9f : 0.8f,
+            small && !s.with ? 1.15f : great ? 0.85f : 1);
         if (heavy && !type) say("attack", 0.6f);  // the player's effort
         break;
     }

@@ -1021,11 +1021,14 @@ static std::string codeNamedItems() {
 }
 
 // The shipped creatures.json for codeNamedItems: less the shields they hold (code doesn't name those),
-// and with them the rest of their record from there (the tactics a shield makes valid).
+// and with them the rest of their record from there (the tactics a shield makes valid), and less their
+// rare drops (the great weapons, ADR-049).
 static std::string codeItemCreatures() {
     std::ostringstream all;
     all << std::ifstream(std::filesystem::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
     std::string text = all.str();
+    for (size_t at; (at = text.find(R"( "rare_loot": ")")) != std::string::npos;)
+        text.erase(at, text.find(',', text.find("rare_loot_chance", at)) + 1 - at);
     for (size_t at; (at = text.find(R"("shield": ")")) != std::string::npos;) {
         size_t from = text.rfind(',', at);
         text.erase(from, text.find('}', at) - from);
@@ -2621,16 +2624,23 @@ static void storyNpcs() {
     // come from a spawn marker 6 blocks away. Returns the player's health left, or minus the foes'
     // health left when the player goes down.
     Grid g = meadow();
-    auto fight = [&](EntityKind kind, int count, bool geared, uint32_t seed) {
+    // (Another weapon in hand, ADR-049: it attacks when its light lands first.)
+    auto fight = [&](EntityKind kind, int count, bool geared, uint32_t seed, ItemId weapon = Shortsword) {
         Player player;
         player.pos = {20.5f, 4, 32.5f};
         player.onGround = true, player.offGround = 0;  // standing (no physics here)
         if (geared)
-            for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, Shortsword}) {
+            for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons, weapon}) {
                 giveItem(player.inv, id);
                 quickMove(player.inv, {SlotRef::Item, 0, 0});
             }
-        CHECK(sheet(player)[Stat::Armor] == (geared ? 37 : 0) && player.inv.equipped[SlotMainHand] == (geared ? Shortsword : NoItem));
+        CHECK(sheet(player)[Stat::Armor] == (geared ? 37 : 0) && player.inv.equipped[SlotMainHand] == (geared ? weapon : NoItem));
+        float reach = kPunchReach - 0.1f, first = 0.35f;  // swings from a sword's length (a longer reach catches a foe backing off)
+        if (weapon != Shortsword) {
+            Player swing = player;
+            startMove(swing, Move::Light1, {});
+            first = impactTime(swing) + 0.07f;
+        }
         Marker m{.id = 1, .kind = MarkerKind::Spawn, .pos = {26.5f, 4, 32.5f}, .radius = 3, .entity = kind, .count = count};
         std::vector<Entity> es;
         syncSpawns(es, g, {m}, seed, player.pos, 0.5f);
@@ -2653,8 +2663,8 @@ static void storyNpcs() {
             melee.guard = !player.punching() && std::ranges::any_of(alive, [&](const Entity& e) {  // a guard only helps in front
                 return due(e) < 0.3f && glm::dot(glm::normalize(flat(e)), to) >= gMelee.guardAngle;
             });
-            bool safe = std::ranges::none_of(alive, [&](const Entity& e) { return due(e) < 0.35f; });  // a light lands first
-            melee.attack = safe && glm::length(flat(*foe)) < kPunchReach - 0.1f && player.stamina > 15;
+            bool safe = std::ranges::none_of(alive, [&](const Entity& e) { return due(e) < first; });  // a light lands first
+            melee.attack = safe && glm::length(flat(*foe)) < reach && player.stamina > 15;
             if (Entity* broken = criticalTarget(es, player)) melee.riposte = true, melee.aim = flat(*broken);
             Input still;
             updateMelee(player, melee, still, 1 / 60.0f);
@@ -2687,6 +2697,22 @@ static void storyNpcs() {
     // 12 seeds swing it by about 4 either way.
     CHECK(chiefMean >= 20 && chiefMean <= 35);
     CHECK(wolvesMean >= 25 && wolvesMean <= 45 && ghoulsMean >= 20 && ghoulsMean <= 40);  // a quarter to two fifths
+    // The heavier weapons in the same fights (ADR-049): the axe and the mace, and the great weapons, slower
+    // but harder hits that make a ghoul flinch (its poise is 12) and break stances. A foe with few openings
+    // (the chief, ghouls) goes better than with the sword; quick wolves worse, the slowest weapons winning
+    // only about half.
+    for (const char* id : {"iron_hand_axe", "iron_mace", "iron_greatsword", "barrow_greataxe"}) {
+        ItemId w = defs().itemById.at(id);
+        float sum[3]{};
+        int won[3]{};
+        for (uint32_t seed = 1; seed <= kSeeds; ++seed) {
+            float r[3] = {fight(EntityKind::BanditChief, 1, true, seed, w), fight(EntityKind::Wolf, 2, true, seed, w), fight(EntityKind::Ghoul, 2, true, seed, w)};
+            for (int k = 0; k < 3; ++k) sum[k] += r[k], won[k] += r[k] > 0;
+        }
+        std::println("story fights with the {}: health left on average chief {:.0f}, wolves {:.0f}, ghouls {:.0f}; won {} {} {} of {}", itemType(w).name,
+                     sum[0] / kSeeds, sum[1] / kSeeds, sum[2] / kSeeds, won[0], won[1], won[2], kSeeds);
+        CHECK(won[0] >= 10 && won[1] >= 6 && won[2] >= 10);
+    }
     CHECK(fight(EntityKind::Wolf, 3, true, 1) < 0);  // a pack of three is too much alone
     // Their hits on that player: punch or sword + the attributes by its scaling x speed, less armor / (armor + 40 x level).
     std::mt19937 rng(3);
@@ -4234,6 +4260,13 @@ static void dataFiles() {
                  {edited(R"("light_1": {"seconds": 0.7, "hold": 0.3,)", R"("light_1": {"seconds": 0.7, "pose": 1, "hold": 0.3,)"),
                   "record 0 'sword': field 'moves.light_1.pose': unknown field"},
                  {edited(R"("speed": 0.75)", R"("speed": 0)"), "record 1 'fists': field 'speed': 0 is out of range"},
+                 // Great weapons (ADR-049): held in both hands, their reach and arc.
+                 {edited(R"("hit_stop": 1.35, "two_handed": true)", R"("hit_stop": 1.35, "two_handed": 1)"),
+                  "record 5 'greatsword': field 'two_handed': must be true or false"},
+                 {edited(R"("id": "fists", "name": "Fists",)", R"("id": "fists", "name": "Fists", "two_handed": true,)"),
+                  "record 1 'fists': field 'two_handed': bare hands have nothing to hold"},
+                 {edited(R"("reach": 2.6)", R"("reach": 5)"), "record 5 'greatsword': field 'reach': 5 is out of range"},
+                 {edited(R"("arc": 70)", R"("arc": 200)"), "record 6 'greataxe': field 'arc': 200 is out of range"},
              }) {
             std::ofstream(dir / "weapon_classes.json", std::ios::trunc) << text;
             Defs d;
@@ -4413,6 +4446,14 @@ static void dataFiles() {
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "aggro_range": 5}])",
               "field 'aggro_range': only aggressive creatures attack on sight"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "loot": null}])", "field 'loot_chance': no 'loot' to drop"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "rare_loot_chance": 0.5}])", "field 'rare_loot_chance': no 'rare_loot' to drop"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "rare_loot": "wolf_pelt"}])", "field 'rare_loot': needs a rare_loot_chance"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "loot_chance": 1, "rare_loot": "wolf_pelt", "rare_loot_chance": 0.5}])",
+              "field 'rare_loot': never dropped: loot_chance is 1"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "rare_loot": "boar_hide", "rare_loot_chance": 0.5}])",
+              "field 'rare_loot': unknown item \"boar_hide\""},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "rare_loot": "wolf_pelt", "rare_loot_chance": 2}])",
+              "field 'rare_loot_chance': 2 is out of range"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "stats": {"luck": 3}}])", "field 'stats.luck': unknown field"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "stats": {"stamina": null}}])", "field 'stats.stamina': missing"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "attackable": 1}])", "field 'attackable': must be true or false"},
@@ -7393,6 +7434,298 @@ static void scaling() {
     }
 }
 
+// Great weapons (ADR-049): greatswords and greataxes, always in both hands (strength x1.5, no shield or
+// parry, the grip button does nothing), slow and heavy on stance, hyperarmor on their heavies, a longer
+// and wider reach; dropped rarely by bandits and ghouls; held with both hands on the long grip.
+static void greatWeapons() {
+    constexpr float dt = 1 / 60.0f;
+    std::mt19937 rng(7);
+    const Defs& d = defs();
+    ItemId gs = d.itemById.at("iron_greatsword"), ga = d.itemById.at("barrow_greataxe"), mace = d.itemById.at("iron_mace");
+    CHECK(classOf(gs) == WeaponClass::Greatsword && classOf(ga) == WeaponClass::Greataxe);
+    CHECK(heldModel(gs) == ModelGreatsword && heldModel(ga) == ModelGreataxe);
+    for (size_t c = 0; c < size_t(WeaponClass::Count); ++c) {  // only the great classes are two-handed, and reach farther and wider
+        const WeaponClassDef& w = weaponClass(WeaponClass(c));
+        bool great = WeaponClass(c) == WeaponClass::Greatsword || WeaponClass(c) == WeaponClass::Greataxe;
+        CHECK(w.twoHanded == great && (w.reach > 2.4f) == great && (w.arc > 65) == great);
+        CHECK(great || (w.reach == 2 && w.arc == 60 && w.arcCos == 0.5f));  // the one-handed reach is the old kPunchReach's, 60 degrees (exactly the old 0.5)
+        CHECK(std::abs(w.arcCos - std::cos(glm::radians(w.arc))) < 1e-6f);
+    }
+    // Strength weapons, heavier than any one-handed one; the greataxe the slowest and the most strength.
+    const Attack &a = itemType(gs).attack, &x = itemType(ga).attack;
+    CHECK(scalingGrade(a.scaling[0]) == 'A' && scalingGrade(x.scaling[0]) == 'S' && a.scaling[1] > x.scaling[1]);
+    CHECK(itemType(gs).weight > itemType(mace).weight && itemType(ga).weight > itemType(gs).weight && itemType(gs).damage == DamageType::Slash);
+    auto stance = [](WeaponClass c) {
+        float sum = 0;
+        for (Move m : {Move::Light1, Move::Light2, Move::Light3, Move::Light4, Move::Heavy1, Move::Heavy2}) sum += spec(c, m).stance;
+        return sum;
+    };
+    CHECK(stance(WeaponClass::Mace) < stance(WeaponClass::Greatsword) && stance(WeaponClass::Greatsword) < stance(WeaponClass::Greataxe));
+    CHECK(weaponClass(WeaponClass::Greatsword).hitStop > weaponClass(WeaponClass::Mace).hitStop &&
+          weaponClass(WeaponClass::Greataxe).hitStop > weaponClass(WeaponClass::Greatsword).hitStop);
+    for (WeaponClass c : {WeaponClass::Greatsword, WeaponClass::Greataxe}) {  // hyperarmor on the heavies, none on the lights
+        CHECK(spec(c, Move::Heavy1).heavy && spec(c, Move::Heavy2).heavy && spec(c, Move::JumpHeavy).heavy);
+        CHECK(!spec(c, Move::Light1).heavy && !spec(c, Move::Light4).heavy);
+        CHECK(spec(c, Move::Light1).stamina > spec(WeaponClass::Mace, Move::Light1).stamina);
+    }
+    auto holder = [&](ItemId w) {
+        Player p;
+        p.pos = {7.5f, 4, 7.5f};
+        p.onGround = true, p.offGround = 0;
+        p.inv.equipped[SlotMainHand] = w;
+        return p;
+    };
+    auto tick = [&](Player& p, MeleeInput in = {}, std::vector<Entity>* es = nullptr) {
+        Input move;
+        updateMelee(p, in, move, dt);
+        std::vector<Entity> none;
+        updateCombat(p, es ? *es : none, dt, rng);
+    };
+    auto light = [&](ItemId w) {
+        Player p = holder(w);
+        startMove(p, Move::Light1, {});
+        return std::pair{moveLength(p), impactTime(p)};
+    };
+    CHECK(light(mace).first < light(gs).first && light(gs).first < light(ga).first && light(mace).second < light(gs).second);
+    {  // Always in both hands: no flag needed, strength x1.5, the shield on the back, no parry; the grip button does nothing.
+        Player p = holder(gs);
+        p.inv.equipped[SlotOffHand] = d.itemById.at("oak_buckler");
+        CHECK(!p.twoHanded && twoHanding(p) && !shieldOf(p) && parryOf(p) == 0);
+        CHECK(sheet(p)[Stat::Strength] == sheet(Player{})[Stat::Strength] * gMelee.twoHandStrength);
+        CHECK(guardOf(p, DamageType::Slash).negation == gMelee.twoHandNegation);
+        tick(p, {.grip = true});
+        CHECK(!p.twoHanded && twoHanding(p) && p.want == Want::None && !p.made(Noise::Grip));
+        for (int i = 0; i < 30; ++i) tick(p);
+        CHECK(p.gripBlend > 0.99f);
+        tick(p, {.parry = true});
+        CHECK(p.move == Move::None);
+        tick(p, {.attack = true});  // nor does it cut a swing's recovery short, as a press that did something would
+        tick(p);
+        while (p.punching() && moveProgress(p) < spec(p).cancel + 0.02f) tick(p);
+        tick(p, {.grip = true});
+        CHECK(p.punching() && p.want == Want::None);
+        while (p.punching()) tick(p);
+        p.inv.equipped[SlotMainHand] = Shortsword;  // swapped for a one-handed weapon: one-handed again, the shield back in hand
+        CHECK(!twoHanding(p) && shieldOf(p) && parryOf(p) > 0);
+        p.twoHanded = true;  // two-handing the sword, through a great weapon and back: the sword's grip is kept
+        p.inv.equipped[SlotMainHand] = ga;
+        tick(p, {.grip = true});
+        p.inv.equipped[SlotMainHand] = Shortsword;
+        CHECK(p.twoHanded && twoHanding(p));
+        // Swapped for the greatsword mid-swing, a grip press cutting the swing's recovery doesn't flip the sword's grip.
+        tick(p, {.attack = true});
+        tick(p);
+        CHECK(p.punching());
+        p.inv.equipped[SlotMainHand] = gs;
+        while (p.punching() && moveProgress(p) < spec(p).cancel - 0.05f) tick(p);
+        p.noises = 0;
+        for (int i = 0; i < 20; ++i) tick(p, {.grip = i == 0});
+        p.inv.equipped[SlotMainHand] = Shortsword;
+        CHECK(p.twoHanded && !p.made(Noise::Grip) && p.want == Want::None);
+    }
+    {  // Hyperarmor: an NPC hit in a heavy's windup doesn't make it flinch; in a light's it does.
+        for (Move m : {Move::Light1, Move::Heavy1}) {
+            Player p = holder(gs);
+            startMove(p, m, {});
+            CHECK(hyperarmor(p) == (m == Move::Heavy1));
+        }
+    }
+    // Reach: a dummy 2.3 blocks ahead is out of a sword's reach, in a greatsword's and a greataxe's; one
+    // 70 degrees off the facing (close) is in the greatsword's arc (75) only. Each lands a light (or not).
+    Grid g = flatWorld(0);
+    auto lands = [&](ItemId w, float dist, float degrees) {
+        Player p = holder(w);
+        std::vector<Entity> es;
+        es.reserve(2);
+        p.yaw = glm::radians(degrees);
+        float before = spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, dist).body.health;
+        p.yaw = 0;
+        tick(p, {.attack = true}, &es);
+        for (int i = 0; i < 120 && p.punching(); ++i) tick(p, {}, &es);
+        return es[0].body.health < before;
+    };
+    CHECK(lands(Shortsword, 1.6f, 0) && !lands(Shortsword, 2.3f, 0) && lands(gs, 2.3f, 0) && lands(ga, 2.3f, 0) && !lands(gs, 2.8f, 0));
+    CHECK(!lands(Shortsword, 1.5f, 70) && lands(gs, 1.5f, 70) && !lands(ga, 1.5f, 72));
+    CHECK(lands(gs, 1.5f, -70));  // either side
+    {  // An NPC's swing reaches by its weapon too: a greatsword-wielding guard's at 2.3, a sword's not.
+        Player npc = holder(gs);
+        npc.yaw = 0;
+        CHECK(inReach(npc, npc.pos + glm::vec3(0, 0, 2.3f)));
+        npc.inv.equipped[SlotMainHand] = Shortsword;
+        CHECK(!inReach(npc, npc.pos + glm::vec3(0, 0, 2.3f)));
+    }
+    {  // An NPC sees a swing coming by its weapon (ADR-043's answers): 74 degrees off, or 3.8 blocks ahead,
+       // a greatsword's swing threatens it and a sword's doesn't.
+        for (auto [degrees, dist] : {std::pair{74.0f, 2.4f}, std::pair{0.0f, 3.8f}})
+            for (ItemId w : {gs, Shortsword}) {
+                Player p = holder(w);
+                std::vector<Entity> es;
+                es.reserve(2);
+                p.yaw = glm::radians(degrees);
+                Entity& b = spawnAhead(es, g, p, EntityKind::Guard, 4, dist);
+                p.yaw = 0;
+                setState(b, AiState::Chase, "test");
+                Input m;
+                updateMelee(p, {.attack = true}, m, dt), updateMelee(p, {}, m, dt);
+                updateEntities(es, g, p, dt);
+                CHECK(p.punching() && b.threatened == (w == gs));
+            }
+    }
+    {  // The swing reaches by the weapon it swings: a sword's swing, the greatsword swapped in mid-windup, misses at 2.3.
+        Player p = holder(Shortsword);
+        p.yaw = 0;
+        std::vector<Entity> es;
+        es.reserve(2);
+        float before = spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 2.3f).body.health;
+        tick(p, {.attack = true}, &es);
+        tick(p, {}, &es);
+        p.inv.equipped[SlotMainHand] = gs;
+        for (int i = 0; i < 120 && p.punching(); ++i) tick(p, {}, &es);
+        CHECK(es[0].body.health == before);
+    }
+    {  // A backstab reaches as far: a dummy 2.3 blocks ahead with its back turned is open to the greatsword's, not the sword's.
+        Player p = holder(gs);
+        p.yaw = 0;
+        std::vector<Entity> es;
+        es.reserve(2);
+        Entity& e = spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 2.3f);
+        e.body.yaw = 0, e.body.hitTime = 99;  // facing away
+        CHECK(criticalTarget(es, p) == &e);
+        p.inv.equipped[SlotMainHand] = Shortsword;
+        CHECK(!criticalTarget(es, p));
+    }
+    // The light chain lands all four hits with each class's stance damage and hit-stop.
+    for (ItemId w : {gs, ga}) {
+        Player p = holder(w);
+        std::vector<Entity> es;
+        es.reserve(2);
+        spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 1.6f);
+        Player& dummy = es[0].body;
+        WeaponClass c = classOf(w);
+        int hits = 0;
+        Move want = Move::Light1;
+        for (int i = 0; i < 8 * 60 && hits < 4; ++i) {
+            Input move;
+            updateMelee(p, {.attack = !p.punching() || moveProgress(p) >= spec(p).chain}, move, dt);
+            float before = dummy.health;
+            dummy.stance = 1000;
+            Move m = p.move;
+            updateCombat(p, es, dt, rng);
+            if (dummy.health < before) {
+                CHECK(m == want && dummy.hitStance == spec(c, m).stance);
+                CHECK(std::abs(p.freeze - std::min(0.04f + 0.003f * spec(c, m).stance, 0.12f) * weaponClass(c).hitStop) < 1e-5f);
+                ++hits, want = Move(int(want) + 1);
+                dummy.health = float(maxHealth(sheet(dummy)));
+                p.stamina = gMelee.staminaMax;
+            }
+        }
+        same("greatWeapons", std::format("{} chain hits", kWeaponClassIds[size_t(c)]), hits, 4);
+    }
+    {  // What a level 1 body does with each per second of light swings on an unarmored dummy (for balance; printed).
+        Player p = holder(NoItem);
+        for (ItemId w : {Shortsword, mace, gs, ga}) {
+            p.inv.equipped[SlotMainHand] = w;
+            const Attack& at = itemType(w).attack;
+            float per = (float(at.minDamage + at.maxDamage) / 2 + float(attributeBonus(sheet(p, skillOf(w)), at))) * spec(classOf(w), Move::Light1).damage;
+            std::println("great weapons: {} light 1 {:.1f} damage, {:.2f} s, {:.1f} per second", itemType(w).name, per, light(w).first, per / light(w).first);
+        }
+    }
+
+    // Found: a bandit's corpse holds its knife 40% of the time, else rarely a greatsword; a ghoul's its
+    // charm, else rarely a greataxe. A creature without a rare drop rolls once, as before.
+    const EntityType &bandit = typeOf(EntityKind::Bandit), &ghoul = typeOf(EntityKind::Ghoul);
+    CHECK(bandit.rareLoot == gs && bandit.rareChance == 0.1f && ghoul.rareLoot == ga && ghoul.rareChance == 0.12f);
+    CHECK(!typeOf(EntityKind::BanditChief).rareLoot && typeOf(EntityKind::BanditChief).rareChance == 0);
+    for (EntityKind k : {EntityKind::Bandit, EntityKind::Ghoul}) {
+        const EntityType& t = typeOf(k);
+        int usual = 0, rare = 0, n = 4000;
+        for (int i = 0; i < n; ++i) {
+            std::vector<Entity> es;
+            Entity& e = spawnAhead(es, g, holder(NoItem), k, uint32_t(i), 3);
+            CHECK(damage(e, 100000));
+            usual += e.loot == t.loot, rare += e.loot == t.rareLoot;
+        }
+        float want = (1 - t.lootChance) * t.rareChance * float(n);
+        CHECK(std::abs(float(usual) - t.lootChance * float(n)) < 0.05f * float(n) && std::abs(float(rare) - want) < 0.3f * want);
+        std::println("great weapons: {} of {} {} corpses hold a {} ({:.0f} expected), {} the usual drop", rare, n, kEntityKindNames[size_t(k)],
+                     itemType(t.rareLoot).name, double(want), usual);
+    }
+    {  // Same seed, same rolls: the usual drop's roll is the first draw either way.
+        std::vector<Entity> es;
+        Entity& e = spawnAhead(es, g, holder(NoItem), EntityKind::Boar, 3, 3);
+        std::mt19937 r = e.rng;
+        damage(e, 100000);
+        CHECK((e.loot == BoarSkin) == (std::uniform_real_distribution<float>(0, 1)(r) < typeOf(EntityKind::Boar).lootChance) && e.rng == r);
+        int failed = 0;
+        for (uint32_t seed = 0; seed < 40; ++seed) {  // a boar (no rare drop): one roll, made or missed
+            std::vector<Entity> bs;
+            Entity& b = spawnAhead(bs, g, holder(NoItem), EntityKind::Boar, seed, 3);
+            std::mt19937 q = b.rng;
+            damage(b, 100000);
+            bool drops = std::uniform_real_distribution<float>(0, 1)(q) < typeOf(EntityKind::Boar).lootChance;
+            CHECK((b.loot == BoarSkin) == drops && b.rng == q);
+            failed += !drops;
+        }
+        CHECK(failed > 3);
+        for (uint32_t seed = 0; seed < 40; ++seed) {  // a bandit: the knife's roll first, then (missed) the greatsword's, nothing more
+            std::vector<Entity> bs;
+            Entity& b = spawnAhead(bs, g, holder(NoItem), EntityKind::Bandit, seed, 3);
+            std::mt19937 q = b.rng;
+            damage(b, 100000);
+            auto draw = [&] { return std::uniform_real_distribution<float>(0, 1)(q); };
+            ItemId want = draw() < bandit.lootChance ? bandit.loot : draw() < bandit.rareChance ? bandit.rareLoot : NoItem;
+            CHECK(b.loot == want && b.rng == q);
+        }
+    }
+
+    {  // The pose: both hands on the long grip, the left pommel() below the right, at rest, guarding and mid-swing.
+        auto center = [](const glm::mat4& m) { return glm::vec3(m * glm::vec4(1.5f, 1.5f, 1.5f, 1)); };
+        for (auto [w, apartWant] : {std::pair{gs, 0.30f}, std::pair{ga, 0.35f}}) {
+            Player p = holder(w);
+            p.yaw = 0, p.gripBlend = 1;
+            for (int pose = 0; pose < 3; ++pose) {
+                if (pose == 1) p.guardBlend = 1;
+                if (pose == 2) p.guardBlend = 0, startMove(p, Move::Light1, {}), p.moveTime = impactTime(p);
+                glm::mat4 h(0);
+                auto two = poseModel(p, ModelPlayer, &h);
+                float apart = glm::distance(center(two[HandL]), center(two[HandR]));
+                if (std::abs(apart - apartWant) > 0.03f) std::println(stderr, "FAIL {} pose {}: hands {} apart", itemType(w).name, pose, apart), ++failures;
+                glm::vec3 up = glm::normalize(glm::vec3(h * glm::vec4(0, 1, 0, 0)));
+                CHECK(glm::dot(glm::normalize(center(two[HandL]) - center(two[HandR])), -up) > 0.95f);
+                // In the model's voxels: the right hand just under the crossguard (a greataxe's grip ends at 7), the left above the pommel.
+                float right = (glm::inverse(h) * glm::vec4(center(two[HandR]), 1)).y, left = (glm::inverse(h) * glm::vec4(center(two[HandL]), 1)).y;
+                float guard = w == gs ? 6 : 8;
+                CHECK(right > guard - 2.5f && right < guard && left > 0.5f && left < right);
+            }
+        }
+        // Long blades: through every move, start to end, the tip and the pommel (an axe's beard) stay out of the ground.
+        for (auto [w, tip, beard] : {std::tuple{gs, glm::vec4(3.5f, 23.5f, 0.5f, 1), glm::vec4(3.5f, 0.5f, 0.5f, 1)},
+                                     std::tuple{ga, glm::vec4(7.5f, 26.5f, 0.5f, 1), glm::vec4(7.5f, 15.5f, 0.5f, 1)}}) {
+            for (size_t m = 1; m < size_t(Move::Count); ++m) {
+                if (codeMove(Move(m))) continue;
+                Player p = holder(w);
+                p.yaw = 0, p.gripBlend = 1;
+                startMove(p, Move(m), {});
+                float low = 99;
+                for (float u = 0; u <= 1.001f; u += 0.02f) {
+                    p.moveTime = std::min(u, 1.0f) * moveLength(p);
+                    glm::mat4 h(0);
+                    poseModel(p, ModelPlayer, &h);
+                    low = std::min({low, (h * tip).y - p.pos.y, (h * beard).y - p.pos.y, (h * glm::vec4(3.5f, 0.5f, 0.5f, 1)).y - p.pos.y});
+                }
+                if (low < -0.1f) std::println(stderr, "FAIL {} {}: down to {:.2f} below the ground", itemType(w).name, kMoveNames[m], low), ++failures;
+            }
+            for (float guard : {0.0f, 1.0f}) {  // at rest and guarding
+                Player p = holder(w);
+                p.gripBlend = 1, p.guardBlend = guard;
+                glm::mat4 h(0);
+                poseModel(p, ModelPlayer, &h);
+                CHECK(std::min({(h * tip).y, (h * beard).y, (h * glm::vec4(3.5f, 0.5f, 0.5f, 1)).y}) - p.pos.y > 0);
+            }
+        }
+    }
+}
+
 // Status effects (ADR-046): build-up and resists in the stat pipeline, from items and creatures;
 // build-up that fills and wears off; bleed's burst, poison's ticks, frostbite's damage taken; a guard's
 // share; the lockout while poison or frost is on; the timed effects' list; kills by poison; the shipped
@@ -7731,6 +8064,11 @@ static void sounds() {
     CHECK(names({.what = Noise::Swing, .move = Move::Light2, .with = Shortsword}) == Names{"swing_light"});
     CHECK(names({.what = Noise::Swing, .move = Move::Heavy1, .with = Shortsword}) == (Names{"swing_heavy", "player_attack"}));
     CHECK(names({.what = Noise::Swing, .kind = bandit, .move = Move::Light1, .with = Knife}) == Names{"swing_fast"});
+    {  // a great weapon's light whooshes as a heavy does, deeper, without the effort's voice (ADR-049)
+        ItemId gs = defs().itemById.at("iron_greatsword");
+        auto layers = layersOf({.what = Noise::Swing, .move = Move::Light1, .with = gs});
+        CHECK(names({.what = Noise::Swing, .move = Move::Light1, .with = gs}) == Names{"swing_heavy"} && layers.size() == 1 && layers[0].pitch < 0.9f);
+    }
     CHECK(names({.what = Noise::Swing, .move = Move::Parry, .with = defs().itemById.at("oak_buckler")}) == Names{"swing_shield"});
     CHECK(names({.what = Noise::Swing, .move = Move::Parry, .with = Knife}) == Names{"swing_fast"});  // a knife's parry (ADR-041)
     CHECK(names({.what = Noise::Windup, .kind = boar}) == Names{"boar_windup"} && names({.what = Noise::Parry}) == Names{"parry"});
@@ -7916,6 +8254,7 @@ int main() {
     statusEffects();
     flasks();
     scaling();
+    greatWeapons();
     sounds();
     combat();
     fighters();

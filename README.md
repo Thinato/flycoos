@@ -55,7 +55,7 @@ GPU debug layer.
 | Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks. A shield in the off hand guards better; a tower shield makes weak attacks bounce off. Raised just as a hit lands it's a perfect guard (ADR-041): no damage, half the stamina, a bright clink |
 | Q | Parry (ADR-036) with a buckler or heater shield, or with the off hand empty a knife or bare fists (ADR-041): timed just before a hit lands, it deflects the attack and leaves the attacker open to a riposte (left mouse); mistimed, it's a weak guard |
 | R | Drink from the healing flask (ADR-047): a slow walk for a second, then 40% of your health back; a hit that staggers you first cancels it, the charge kept. The red flask by the health bar counts the charges (3); empty, you just shake it |
-| F | Two-hand the weapon, or let go (ADR-048): strength counts 1.5x and the weapon guards better, but the shield goes on your back and nothing parries. A 2H tag shows right of the health bar |
+| F | Two-hand the weapon, or let go (ADR-048): strength counts 1.5x and the weapon guards better, but the shield goes on your back and nothing parries. A 2H tag shows right of the health bar. Great weapons are always two-handed (ADR-049) |
 | E | Loot a nearby corpse, otherwise talk to a nearby villager or guard, otherwise rest by a fire (ADR-047) |
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
@@ -294,6 +294,12 @@ Each weapon swings by its class (ADR-044): **daggers** slash and stab quickly bu
 foe's stance; the **sword** is the all-rounder; **axes** chop hard; **maces** smash, wear down
 stance the fastest and strike (ghouls are weak to it). The Iron Hand Axe and Iron Mace have no
 drop yet: the debug window's Items tab gives them.
+
+**Great weapons** (ADR-049): the **Iron Greatsword** sweeps wide and smashes overhead, the **Barrow
+Greataxe** chops and cleaves. Both are always held in both hands (strength 1.5x, the better guard,
+the shield on your back, no parry; F does nothing), swing slowly for heavy stamina, break stances
+fastest, can't be interrupted in their heavies' windups, and reach farther (2.6 and 2.5 blocks)
+and wider. Bandits rarely drop the greatsword, barrow ghouls the greataxe.
 
 **Criticals** (ADR-045): attack an enemy from behind while it isn't attacking or reeling to
 **backstab** it: it's caught, hit for the riposte's damage and knocked down. Enemies that have

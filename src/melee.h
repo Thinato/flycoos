@@ -33,6 +33,8 @@
 // Two-handing (ADR-048): F / Triangle+R1 takes the main-hand weapon in both hands (and back). Its hits
 // count strength x1.5 (a modifier in collect), it guards better (twoHandNegation, twoHandBoost), and the
 // off hand does nothing: no shield guard, no parry. The shield goes on the back.
+// Great weapons (ADR-049): greatswords and greataxes are always in both hands (their class's
+// two_handed), slow, heavy on stance, and sweep wider and farther (the class's reach and arc).
 
 // A move's timing and what it does. Every weapon class has its own (ADR-044): data/weapon_classes.json
 // gives each class every attack move; None, Parry and Drink are code's (kParrySpec: the parry is the off
@@ -64,6 +66,10 @@ struct WeaponClassDef {
     std::string name;
     float speed = 1;    // x every move's length on top of the weapon's speed (fists: 0.75, there's no item to say)
     float hitStop = 1;  // x a landed hit's hit-stop
+    bool twoHanded = false;  // always held in both hands (ADR-049: greatswords, greataxes; twoHanding)
+    float reach = 2;    // blocks between feet its swings hit within (a sword's, kPunchReach)...
+    float arc = 60;     // ...and degrees off the facing, either side (ADR-049: great weapons sweep wider)
+    float arcCos = 0.5f;  // cos(arc), worked out once in double precision (60 degrees: exactly 0.5)
     std::array<MoveSpec, size_t(Move::Count)> moves{};  // by Move
 };
 const WeaponClassDef& weaponClass(WeaponClass c);  // from the loaded defs
@@ -162,9 +168,12 @@ float playerPoise(const Combatant& b);
 // Whether `b`'s guard takes a hit from feet position `from` (in front of it).
 bool guards(const Player& b, glm::vec3 from);
 
-// Whether `b` holds its main-hand weapon in both hands (ADR-048): two-handed with a weapon to hold.
-// (Mid-swing it's the swing's weapon: put away then, the swing keeps its grip to the end.)
-inline bool twoHanding(const Combatant& b) { return b.twoHanded && b.weapon() != NoItem; }
+// Whether `b` holds its main-hand weapon in both hands (ADR-048): two-handed with a weapon to hold, or
+// a weapon of a two-handed class (ADR-049). (Mid-swing it's the swing's weapon: put away then, the
+// swing keeps its grip to the end.)
+inline bool twoHanding(const Combatant& b) {
+    return b.weapon() != NoItem && (b.twoHanded || weaponClass(classOf(b.weapon())).twoHanded);
+}
 // The shield in `b`'s off hand, or null; null too while two-handing (it's on the back).
 const Shield* shieldOf(const Player& b);
 // What `b` parries with: the parry's length (x its base timing) of its shield, else (the off hand empty)
