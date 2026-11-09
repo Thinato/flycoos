@@ -177,6 +177,7 @@ std::vector<Layer> layersOf(const Sound& s) {
             add("flask_open", 0.6f);
             break;
         }
+        if (s.move == Move::Shot) break;  // the string lets go: Loose has it (ADR-050)
         if (s.move == Move::Parry && s.with && defs().items[s.with].shield.size != ShieldSize::None) {
             add("swing_shield", 0.8f);
             break;
@@ -192,12 +193,25 @@ std::vector<Layer> layersOf(const Sound& s) {
         if (heavy && !type) say("attack", 0.6f);  // the player's effort
         break;
     }
-    case Noise::Windup: say("windup", 0.9f); break;  // the tell: it's coming
-    case Noise::Charged: add("charge", 0.8f); break;
+    case Noise::Windup:  // the tell: it's coming; a bow being drawn creaks (ADR-050)
+        if (s.move == Move::Shot) add("bow_draw", 0.7f);
+        else say("windup", 0.9f);
+        break;
+    case Noise::Charged:  // a heavy charged; a bow at full draw, a last creak
+        if (s.move == Move::Shot) add("bow_draw", 0.45f, 1.2f);
+        else add("charge", 0.8f);
+        break;
+    case Noise::Loose: add("bow_loose", 0.9f); break;
+    case Noise::Thunk: {  // an arrow into terrain: brighter off stone, duller in earth
+        std::string_view on = surface(s.ground);
+        add("arrow_hit", 0.8f, on == "stone" ? 1.2f : on == "wood" ? 1 : 0.85f);
+        break;
+    }
     case Noise::GuardUp: add("guard_up", 0.5f); break;
     case Noise::Hurt:
     case Noise::Death:
-        add(type && type->wooden ? "hit_wood" : s.with && defs().items[s.with].damage != DamageType::Strike ? "hit_blade" : "hit_blunt");
+        if (s.with && weaponClass(classOf(s.with)).ranged) add(type && type->wooden ? "arrow_hit" : "arrow_flesh");  // an arrow (ADR-050)
+        else add(type && type->wooden ? "hit_wood" : s.with && defs().items[s.with].damage != DamageType::Strike ? "hit_blade" : "hit_blunt");
         if (s.amount >= 20) add("hit_heavy", std::min(1.0f, s.amount / 40));
         if (s.what == Noise::Hurt) say("hurt", 0.9f);
         else say("death", 1, 0.05f), add("body_fall", 0.8f, 1, 0.45f);

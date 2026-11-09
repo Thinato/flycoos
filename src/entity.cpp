@@ -292,7 +292,8 @@ void answer(Entity& e, const Grid& g, const Player& target, glm::vec2 dir, float
         e.picked = true;
         float r = rand01(e.rng);
         e.answer = r < t.guard ? Answer::Guard : r < t.guard + t.parry ? Answer::Parry : r < t.guard + t.parry + t.dodge ? Answer::Dodge : Answer::None;
-        if (e.answer == Answer::Parry && (spec(target).heavy || target.move == Move::Riposte)) e.answer = Answer::Guard;
+        if (e.answer == Answer::Parry && (spec(target).heavy || target.move == Move::Riposte || target.move == Move::Shot))
+            e.answer = Answer::Guard;  // (an arrow can't be parried: ADR-050)
         e.react = gAi.reactFrom + (gAi.reactTo - gAi.reactFrom) * rand01(e.rng);
         e.aimOff = gAi.aimError * (2 * rand01(e.rng) - 1);
     }
@@ -815,6 +816,7 @@ void drink(Player& b) {
 void rest(Player& b) {
     StatSheet s = sheet(b);
     b.flasks = maxFlasks(s);
+    b.arrows = std::max(b.arrows, kQuiver);  // the quiver full again (ADR-050)
     b.health = float(maxHealth(s));
     b.stamina = gMelee.staminaMax;
     b.effects.clear(), b.buildup = {};
@@ -893,11 +895,63 @@ void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed) {
     }
 }
 
+void strike(Player& player, Entity& target, const Strike& s, std::mt19937& rng, float armorK, std::vector<GameEvent>* events) {
+    const MeleeTuning& t = gMelee;
+    Player& b = target.body;
+    // A random critical (ADR-045) by the attacker's crit chance; a riposte or backstab always is one.
+    bool crit = s.riposte || (s.canCrit && rollCrit(player, rng));
+    float power = s.power, stance = s.stance;
+    if (crit && !s.riposte) power *= critDamage(player);
+    power *= 1 - target.type().resist[size_t(s.type)];  // its weakness or resistance (ADR-040)
+    int full = resolveHit(player, b, weaponAttack(player.swingWeapon), {rng, armorK, power});
+    std::optional<Guard> guard = !s.riposte ? guardAgainst(b, s.from, s.type) : std::nullopt;
+    if (guard) {  // its guard (ADR-043), as the player's: part of the damage by type, its stamina; empty, it breaks
+        b.stamina -= (t.blockStamina + t.blockStaminaPerDamage * float(full)) * (1 - guard->boost);
+        b.staminaWait = t.staminaDelay;
+        b.combatTimer = player.combatTimer = kCombatSeconds;
+        b.noise(Noise::Block);
+        if (s.melee) player.freeze = b.freeze = 0.06f;
+        target.events |= EventDamaged;
+        if (b.stamina <= 0) {
+            b.stamina = 0;
+            interrupt(b, t.guardBreakSeconds, false);
+            b.noise(Noise::GuardBreak);
+        } else {
+            target.counterTimer = gAi.counterWindow;
+            if (s.melee && bounces(*guard, stance)) interrupt(player, t.recoilSeconds, false), b.noise(Noise::Bounce);
+        }
+        full = int(std::lround(float(full) * (1 - guard->negation)));
+        stance = 0;  // a guard takes the stance damage on its stamina
+    }
+    bool landed = damage(target, full, crit && !guard);  // a blocked crit is marked as the block
+    if (landed || guard) {  // statuses build up by what a guard let through, a light hit's too (ADR-046)
+        std::string_view with = player.swingWeapon ? itemType(player.swingWeapon).name : "Fists";
+        auto bursts = buildUp(player, b, guard ? 1 - guard->negation : 1, with);
+        for (size_t k = 0; k < bursts.size(); ++k) landed |= damage(target, bursts[k], false, Status(k));
+    }
+    if (!landed) return;
+    player.combatTimer = kCombatSeconds;
+    bool killed = !b.alive();
+    awardHitXp(player, target, true, killed);
+    if (killed || !guard) b.noise(killed ? Noise::Death : Noise::Hurt);  // a blocked hit sounds as the block
+    if (crit && !guard) b.noise(Noise::Crit);
+    b.hitWith = player.swingWeapon;
+    if (killed && events) events->push_back(Killed{target.kind, target.spawn.id});
+    b.hitStance = s.riposte ? 100 : stance;
+    if (!killed) staggerHit(target, stance, s.riposte);
+    if (!guard && s.melee) {  // hit-stop: heavier hits, longer, and longer or shorter by the weapon class (ADR-044)
+        player.freeze = b.freeze = std::min(0.04f + 0.003f * stance, 0.12f) * weaponClass(classOf(player.swingWeapon)).hitStop;
+        // Camera shake (ADR-045): a riposte or backstab's full, a random crit's more than its stance's, heavy hits a little.
+        shake(player, t.hitShake * (s.riposte ? 1 : std::max(crit ? 0.6f : 0.0f, std::clamp((stance - 20) / 60, 0.0f, 1.0f))));
+    }
+}
+
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK,
                   std::vector<GameEvent>* events) {
     if (hurt(player, tick(player, dt), false, Status::Poison) && !player.alive()) player.noise(Noise::Death);
     bool strikes = lands(player);
     if (strikes && player.move == Move::Drink) strikes = false, drink(player);  // the flask's drink frame (ADR-047)
+    if (strikes && player.move == Move::Shot) strikes = false, player.loosed = true;  // a bow's release: step() looses it (ADR-050)
     if (strikes) {
         const MoveSpec& m = spec(player);
         // A riposte lands on the broken stance it was for, a backstab on the back it caught; if that's gone it's a plain hit.
@@ -918,55 +972,16 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             target->events |= EventDamaged;  // a passive one fights back
             target = nullptr;
         }
-        // Any other hit may be a random critical (ADR-045); the riposte move's never is (it is one, or a plain hit).
-        bool crit = riposte || (target && player.move != Move::Riposte && rollCrit(player, rng));
-        float power = player.move == Move::Riposte && !riposte ? 1 : m.damage * (player.charged ? t.chargeDamage : 1);
-        if (crit && !riposte) power *= critDamage(player);
-        if (target) power *= 1 - target->type().resist[size_t(damageOf(player))];  // its weakness or resistance (ADR-040)
-        HitContext hit{rng, armorK, power};
-        float stance = player.move == Move::Riposte && !riposte ? spec(player, Move::Light1).stance : m.stance * (player.charged ? t.chargeStance : 1);
-        int full = target ? resolveHit(player, target->body, weaponAttack(player.swingWeapon), hit) : 0;
-        std::optional<Guard> guard = target && !riposte ? guardAgainst(target->body, player.pos, damageOf(player)) : std::nullopt;
-        if (guard) {  // its guard (ADR-043), as the player's: part of the damage by type, its stamina; empty, it breaks
-            Player& b = target->body;
-            b.stamina -= (t.blockStamina + t.blockStaminaPerDamage * float(full)) * (1 - guard->boost);
-            b.staminaWait = t.staminaDelay;
-            b.combatTimer = player.combatTimer = kCombatSeconds;
-            b.noise(Noise::Block);
-            player.freeze = b.freeze = 0.06f;
-            target->events |= EventDamaged;
-            if (b.stamina <= 0) {
-                b.stamina = 0;
-                interrupt(b, t.guardBreakSeconds, false);
-                b.noise(Noise::GuardBreak);
-            } else {
-                target->counterTimer = gAi.counterWindow;
-                if (bounces(*guard, stance)) interrupt(player, t.recoilSeconds, false), b.noise(Noise::Bounce);
-            }
-            full = int(std::lround(float(full) * (1 - guard->negation)));
-            stance = 0;  // a guard takes the stance damage on its stamina
-        }
-        bool landed = target && damage(*target, full, crit && !guard);  // a blocked crit is marked as the block
-        if (target && (landed || guard)) {  // statuses build up by what a guard let through, a light hit's too (ADR-046)
-            std::string_view with = player.swingWeapon ? itemType(player.swingWeapon).name : "Fists";
-            auto bursts = buildUp(player, target->body, guard ? 1 - guard->negation : 1, with);
-            for (size_t s = 0; s < bursts.size(); ++s) landed |= damage(*target, bursts[s], false, Status(s));
-        }
-        if (landed) {
-            player.combatTimer = kCombatSeconds;
-            bool killed = !target->body.alive();
-            awardHitXp(player, *target, true, killed);
-            if (killed || !guard) target->body.noise(killed ? Noise::Death : Noise::Hurt);  // a blocked hit sounds as the block
-            if (crit && !guard) target->body.noise(Noise::Crit);
-            target->body.hitWith = player.swingWeapon;
-            if (killed && events) events->push_back(Killed{target->kind, target->spawn.id});
-            target->body.hitStance = riposte ? 100 : stance;
-            if (!killed) staggerHit(*target, stance, riposte);
-            if (!guard) {  // hit-stop: heavier hits, longer, and longer or shorter by the weapon class (ADR-044)
-                player.freeze = target->body.freeze = std::min(0.04f + 0.003f * stance, 0.12f) * weaponClass(classOf(player.swingWeapon)).hitStop;
-                // Camera shake (ADR-045): a riposte or backstab's full, a random crit's more than its stance's, heavy hits a little.
-                shake(player, t.hitShake * (riposte ? 1 : std::max(crit ? 0.6f : 0.0f, std::clamp((stance - 20) / 60, 0.0f, 1.0f))));
-            }
+        if (target) {  // the riposte move whose opening is gone hits as a plain light
+            bool plain = player.move == Move::Riposte && !riposte;
+            Strike st;
+            st.power = plain ? 1 : m.damage * (player.charged ? t.chargeDamage : 1);
+            st.stance = plain ? spec(player, Move::Light1).stance : m.stance * (player.charged ? t.chargeStance : 1);
+            st.from = player.pos;
+            st.type = damageOf(player);
+            st.riposte = riposte;
+            st.canCrit = player.move != Move::Riposte;  // it is one, or a plain hit
+            strike(player, *target, st, rng, armorK, events);
         }
     }
     for (Entity& e : entities) {

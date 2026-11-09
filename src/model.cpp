@@ -9,6 +9,7 @@
 
 #include "melee.h"
 #include "player.h"
+#include "projectile.h"
 
 constexpr float kVoxel = 0.1f;  // character voxels are 1/10 of a world block
 
@@ -174,6 +175,28 @@ static Grid buildFlask(bool full) {
     return g;
 }
 constexpr glm::vec3 kFlaskGrip{2.5f, 2.5f, 2.5f};
+// A bow (ADR-050), upright along +y, its belly bowed out to +z and the string behind at z 0; drawn, the
+// string is pulled back to a point at the middle (the stave 3 voxels further out). Gripped at the
+// middle of the stave (bowGrip). An arrow, up along +y: fletching, the shaft, an iron head at the tip.
+static int bowBelly(int y) { return int(std::lround(3 * (1 - (y - 7) * (y - 7) / 49.0))); }
+static Grid buildBow(bool drawn) {
+    int back = drawn ? 3 : 0;
+    Grid g({1, 15, 4 + back});
+    for (int y = 0; y <= 14; ++y) {
+        g.set({0, y, bowBelly(y) + back}, y >= 6 && y <= 8 ? Belt : Wood);
+        if (y > 0 && y < 14) g.set({0, y, drawn ? int(std::lround(3.0 * std::abs(y - 7) / 7)) : 0}, Straw);  // the string
+    }
+    return g;
+}
+static Grid buildArrow() {
+    Grid g({3, 10, 1});
+    for (int y = 0; y <= 8; ++y) g.set({1, y, 0}, Wood);
+    g.set({0, 0, 0}, Tunic), g.set({2, 0, 0}, Tunic), g.set({0, 1, 0}, Tunic), g.set({2, 1, 0}, Tunic);  // fletching
+    g.set({1, 9, 0}, Iron);
+    return g;
+}
+constexpr glm::vec3 kArrowTip{1.5f, 10, 0.5f};  // its nock is at y 0, 10 voxels back
+static glm::vec3 bowGrip(bool drawn) { return {0.5f, 7.5f, drawn ? 6.5f : 3.5f}; }
 
 static glm::vec3 heldGrip(Model m) {
     switch (m) {
@@ -189,6 +212,7 @@ static float pommel(Model m) { return m == ModelGreatsword ? 3.0f : m == ModelGr
 
 Model heldModel(ItemId weapon) {
     switch (classOf(weapon)) {
+    case WeaponClass::Bow: return ModelBow;
     case WeaponClass::Dagger: return ModelDagger;
     case WeaponClass::Axe: return ModelAxe;
     case WeaponClass::Mace: return ModelMace;
@@ -323,6 +347,8 @@ Grid buildPart(Model model, Part part) {
     }
     if (model == ModelBuckler || model == ModelHeater || model == ModelTower) return part != Head ? Grid({1, 1, 1}) : buildShield(model);
     if (model == ModelFlask || model == ModelFlaskEmpty) return part != Head ? Grid({1, 1, 1}) : buildFlask(model == ModelFlask);
+    if (model == ModelBow || model == ModelBowDrawn) return part != Head ? Grid({1, 1, 1}) : buildBow(model == ModelBowDrawn);
+    if (model == ModelArrow) return part != Head ? Grid({1, 1, 1}) : buildArrow();
     glm::ivec3 s = specs(model)[part].size;
     Grid g(s);
     Block tunic = model == ModelVillager ? Robe : model == ModelBandit ? Leather : Tunic;
@@ -406,6 +432,7 @@ static const Swings kSwordSwings = rows({
     kParrySwing,
     {{-1.5f, 9.5f, 5, 1.5f, 0, -0.6f, 0.2f, 0.4f}, {1.6f, 8.5f, 6.5f, 1.55f, 0, 0.6f, 0.3f, 0.5f}},  // backstep: a lunging sweep back in
     {},  // drink: its own pose (sip)
+    {},  // shot: a bow's own pose (ADR-050)
 });
 // Daggers: tight slashes close in, and stabs (thrusts) for most of the rest; ice-pick stabs from above.
 static const Swings kDaggerSwings = rows({
@@ -425,6 +452,7 @@ static const Swings kDaggerSwings = rows({
     kParrySwing,
     {{-1.3f, 9.5f, 4.5f, 1.5f, 0, -0.5f, 0.2f, 0.4f}, {1.4f, 8.5f, 6, 1.55f, 0, 0.5f, 0.3f, 0.5f}},  // backstep: a slash back in
     {},  // drink
+    {},  // shot: a bow's own pose (ADR-050)
 });
 // Axes: chops from high, the head turned to lead (roll), a sweeping cleave, no thrusts.
 constexpr float kChop = -1.57f;  // the head ahead of a downward chop
@@ -445,6 +473,7 @@ static const Swings kAxeSwings = rows({
     kParrySwing,
     {{-1.5f, 9.5f, 5, 1.5f, 0, -0.6f, 0.2f, 0.4f}, {1.6f, 8.5f, 6.5f, 1.55f, 0, 0.6f, 0.3f, 0.5f}},      // backstep: a sweep back in
     {},  // drink
+    {},  // shot: a bow's own pose (ADR-050)
 });
 // Maces: the axe's chops as smashes, the chain's last one a big overhead smash.
 static const Swings kMaceSwings = [] {
@@ -471,6 +500,7 @@ static const Swings kGreatswordSwings = rows({
     kParrySwing,
     {{-1.7f, 9.5f, 5, 1.5f, 0, -0.7f, 0.2f, 0.4f}, {1.8f, 8.5f, 6.5f, 1.6f, 0, 0.7f, 0.3f, 0.6f}},    // backstep: a sweep back in
     {},  // drink
+    {},  // shot: a bow's own pose (ADR-050)
 });
 // Greataxes (ADR-049): the axe's chops, bigger, the chain's last one a wide horizontal cleave.
 static const Swings kGreataxeSwings = rows({
@@ -490,6 +520,7 @@ static const Swings kGreataxeSwings = rows({
     kParrySwing,
     {{-1.7f, 9.5f, 5, 1.5f, 0, -0.7f, 0.2f, 0.4f}, {1.8f, 8.5f, 6.5f, 1.6f, 0, 0.7f, 0.3f, 0.6f}},           // backstep: a cleave back in
     {},  // drink
+    {},  // shot: a bow's own pose (ADR-050)
 });
 static const Swings& swings(WeaponClass c) {
     switch (c) {
@@ -515,7 +546,7 @@ constexpr glm::vec3 kShieldBack{0, 1, -1.5f};
 // The swing pose now and how far it has taken over from the idle grip (0 .. 1): it winds up until
 // the hold point, strikes through the hit to the follow-through, then settles back.
 static std::pair<Grip, float> swingPose(WeaponClass c, Move move, float u) {
-    if (move == Move::None || move == Move::Drink) return {{}, 0};
+    if (move == Move::None || move == Move::Drink || move == Move::Shot) return {{}, 0};
     const MoveSpec& m = spec(c, move);
     const Swing& sw = swings(c)[size_t(move)];
     float through = std::min(m.impact + 0.6f * (m.impact - m.holdAt), m.chain);
@@ -544,6 +575,38 @@ static Sip sip(const Player& p) {
     return {smooth(u / hold) * down, smooth((u - hold * 0.5f) / (at - hold * 0.5f)) * down};
 }
 constexpr glm::vec3 kSipHand{1.2f, 12.5f, 9};  // the left hand out in front of the face, the neck at the lips
+
+// A bow (ADR-050): how far it's raised in front (aiming, or a shot: up by the hold point, lowered over
+// the last of the recovery), how far the string is drawn (most of the way by the hold point, the rest
+// with the draw, let go at the release) and whether an arrow is on the string (until the release; aiming).
+struct Nock { float raise = 0, draw = 0; bool arrow = false; };
+static Nock nock(const Player& p) {
+    Nock n{p.aimBlend, 0, p.aiming && p.arrows > 0 && !p.punching()};
+    if (p.move != Move::Shot) return n;
+    const MoveSpec& m = spec(p);
+    float u = moveProgress(p);
+    n.raise = std::max(n.raise, u < m.impact ? smooth(u / m.holdAt) : smooth(2 * (1 - u) / (1 - m.impact)));
+    n.draw = u < m.holdAt ? 0.6f * smooth(u / m.holdAt) : u < m.impact ? 0.6f + 0.4f * drawOf(p) : 0;
+    n.arrow = p.hitPending;
+    return n;
+}
+// Where the hands go for it (body voxels): the bow out in front of the face, the string hand on the
+// string at rest and back by the cheek at full draw; at rest the bow hangs from the left hand, tip forward.
+constexpr glm::vec3 kBowHand{-4, 11, 11}, kStringRest{-4, 11, 8}, kStringDrawn{-4, 11.2f, 5};
+constexpr float kBowDown = 2.0f;  // radians the bow is pitched forward at rest (raised: upright)
+
+Model heldModel(const Player& p) {
+    Model m = heldModel(p.weapon());
+    return m == ModelBow && nock(p).draw >= 0.5f ? ModelBowDrawn : m;
+}
+
+glm::mat4 arrowPose(glm::vec3 tip, glm::vec3 dir) {
+    glm::vec3 y = glm::normalize(dir), x = glm::cross(y, std::abs(y.y) < 0.99f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0));
+    x = glm::normalize(x);
+    glm::vec3 z = glm::cross(x, y);
+    glm::mat4 m(glm::vec4(x, 0), glm::vec4(y, 0), glm::vec4(z, 0), glm::vec4(tip, 1));
+    return glm::translate(glm::scale(m, glm::vec3(kVoxel)), -kArrowTip);
+}
 
 // How hard the body reels now (0 .. 1): in fast, held, out over the last of it.
 static float reel(const Combatant& c) {
@@ -654,11 +717,18 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
             rot[Torso].x -= 0.25f * jolt;
         }
     }
-    if (float k = armed ? p.gripBlend * (1 - w) * (1 - p.guardBlend) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {  // two-handed at rest: the weapon in front
+    bool bow = armed && ranged(p);
+    if (float k = armed && !bow ? p.gripBlend * (1 - w) * (1 - p.guardBlend) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {  // two-handed at rest: the weapon in front
         const Grip& gg = kTwoHandIdle;
         glm::vec3 r(-1.5f + gg.reach * std::sin(gg.arc), gg.height, 1.5f + gg.reach * std::cos(gg.arc));
         off[HandR] += (r - kHumanoid[HandR].center) * k;
         posture(gg.twist * k, gg.lean * k, gg.dip * k);
+    }
+    if (float k = bow ? nock(p).raise * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {  // a bow raised (ADR-050): side on, drawing
+        posture(0.45f * k, 0.05f * k, 0);
+        off[HandL] = glm::mix(off[HandL], kBowHand - kHumanoid[HandL].center, k);
+        off[HandR] = glm::mix(off[HandR], glm::mix(kStringRest, kStringDrawn, nock(p).draw) - kHumanoid[HandR].center, k);
+        if (p.holding && p.charged) off[HandR] += glm::vec3(0.15f * std::sin(p.charge * 60), 0.1f * std::cos(p.charge * 47), 0) * k;  // straining
     }
     if (Sip d = sip(p); d.raise > 0) {  // drinking: the flask to the lips, the head tipped back with it
         off[HandL] = glm::mix(off[HandL], kSipHand - kHumanoid[HandL].center, d.raise);
@@ -716,8 +786,9 @@ static void animateBoar(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 
 }
 
 std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held, float alpha, glm::mat4* shieldPose,
-                                           glm::mat4* flask) {
+                                           glm::mat4* flask, glm::mat4* arrow) {
     bool armed = model != ModelDummy && !quadruped(model) && p.weapon() != NoItem;
+    bool bow = armed && ranged(p);
     const PartSpec* parts = specs(model);
     glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
     glm::mat4 tilt(1);  // the dummy above its base: wobbles back when hit, topples when out of health
@@ -761,7 +832,7 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
     float sw = p.move == Move::Parry && shield ? 0 : w;  // a knife's parry sweeps the blade across
     float yaw = (g.arc + g.yaw) * sw + (gg.arc + gg.yaw) * guard + (kTwoHandIdle.arc + kTwoHandIdle.yaw) * rest;
     float pitch = 1.0f + (g.pitch - 1.0f) * sw + (gg.pitch - 1.0f) * guard + (kTwoHandIdle.pitch - 1.0f) * rest;
-    if (float k = armed ? p.gripBlend * (1 - sip(p).raise) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {
+    if (float k = armed && !bow ? p.gripBlend * (1 - sip(p).raise) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {
         // Two-handing (ADR-048): the left hand below the right on the hilt, down the weapon's length.
         glm::vec3 along(std::sin(pitch) * std::sin(yaw), std::cos(pitch), std::sin(pitch) * std::cos(yaw));
         glm::vec3 at = parts[HandR].center + off[HandR] - pommel(heldModel(p.weapon())) * along;
@@ -792,7 +863,18 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         for (glm::mat4& m : out) m = lift * m;
         base = lift * base;
     }
-    if (held && armed) {  // blade tilted forward from the fist
+    if (held && bow) {  // in the left hand: upright when raised, pitched forward at the side
+        Nock n = nock(p);
+        glm::mat4 m = glm::translate(base * tilt, parts[HandL].center + off[HandL]);
+        m = glm::rotate(m, kBowDown * (1 - n.raise), {1, 0, 0});
+        *held = glm::translate(m, -bowGrip(heldModel(p) == ModelBowDrawn));
+        if (arrow && n.arrow) {  // nocked at the string hand, through the bow hand
+            glm::vec3 nockAt = parts[HandR].center + off[HandR], through = parts[HandL].center + off[HandL];
+            glm::mat4 world = base * tilt;
+            glm::vec3 a = world * glm::vec4(nockAt, 1), b = world * glm::vec4(through, 1);
+            if (glm::length(b - a) > 1e-4f) *arrow = arrowPose(a + glm::normalize(b - a) * (10 * kVoxel), glm::normalize(b - a));
+        }
+    } else if (held && armed) {  // blade tilted forward from the fist
         glm::mat4 m = glm::translate(base * tilt, parts[HandR].center + off[HandR]);
         m = glm::rotate(m, yaw, {0, 1, 0});
         m = glm::rotate(m, pitch, {1, 0, 0});

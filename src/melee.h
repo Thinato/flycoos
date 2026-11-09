@@ -35,6 +35,9 @@
 // off hand does nothing: no shield guard, no parry. The shield goes on the back.
 // Great weapons (ADR-049): greatswords and greataxes are always in both hands (their class's
 // two_handed), slow, heavy on stance, and sweep wider and farther (the class's reach and arc).
+// Bows (ADR-050): a `ranged` class has one move, the shot. The attack button draws at once (no tap or
+// hold), holds at full draw while down and looses on release; a longer draw shoots farther and harder.
+// It takes an arrow from the quiver. The guard button aims instead of guarding (no guard, no parry).
 
 // A move's timing and what it does. Every weapon class has its own (ADR-044): data/weapon_classes.json
 // gives each class every attack move; None, Parry and Drink are code's (kParrySpec: the parry is the off
@@ -51,9 +54,9 @@ struct MoveSpec {
 };
 // Ids in data files (none, parry and drink aren't: code has them) and names in the UI, by Move.
 inline constexpr const char* kMoveIds[] = {"none", "light_1", "light_2", "light_3", "light_4", "heavy_1", "heavy_2", "running", "rolling",
-                                           "jump_light", "jump_heavy", "guard_counter", "riposte", "parry", "backstep", "drink"};
+                                           "jump_light", "jump_heavy", "guard_counter", "riposte", "parry", "backstep", "drink", "shot"};
 inline constexpr const char* kMoveNames[] = {"none", "light 1", "light 2", "light 3", "light 4", "heavy 1", "heavy 2", "running",
-                                             "rolling", "jump light", "jump heavy", "guard counter", "riposte", "parry", "backstep", "drink"};
+                                             "rolling", "jump light", "jump heavy", "guard counter", "riposte", "parry", "backstep", "drink", "shot"};
 static_assert(std::size(kMoveIds) == size_t(Move::Count) && std::size(kMoveNames) == size_t(Move::Count));
 constexpr bool codeMove(Move m) { return m == Move::None || m == Move::Parry || m == Move::Drink; }  // not in data files
 inline constexpr MoveSpec kParrySpec{0.75f, 0.14f, 0.44f, 1.00f, 1.00f, 0, 0, 10, 0};  // a swipe (no hit; scaled by its parry length)
@@ -70,6 +73,7 @@ struct WeaponClassDef {
     float reach = 2;    // blocks between feet its swings hit within (a sword's, kPunchReach)...
     float arc = 60;     // ...and degrees off the facing, either side (ADR-049: great weapons sweep wider)
     float arcCos = 0.5f;  // cos(arc), worked out once in double precision (60 degrees: exactly 0.5)
+    bool ranged = false;  // shoots (ADR-050: bows): its only move is the shot, in data; the others are empty
     std::array<MoveSpec, size_t(Move::Count)> moves{};  // by Move
 };
 const WeaponClassDef& weaponClass(WeaponClass c);  // from the loaded defs
@@ -131,7 +135,7 @@ inline MeleeTuning gMelee;
 struct MeleeInput {
     bool attack = false, attackHeld = false;  // LMB / R1: pressed since the last tick; down now
     bool heavy = false, heavyHeld = false;    // R2
-    bool guard = false;                       // RMB / L1, held
+    bool guard = false;                       // RMB / L1, held (with a bow: aims, ADR-050)
     bool parry = false;                       // Q / L2: pressed since the last tick
     bool drink = false;                       // R / D-pad down: pressed since the last tick (ADR-047)
     bool grip = false;                        // F / Triangle+R1: two-hand or let go, pressed since the last tick (ADR-048)
@@ -168,6 +172,8 @@ float playerPoise(const Combatant& b);
 // Whether `b`'s guard takes a hit from feet position `from` (in front of it).
 bool guards(const Player& b, glm::vec3 from);
 
+// Whether `b`'s weapon in hand shoots (ADR-050: a bow).
+inline bool ranged(const Combatant& b) { return weaponClass(classOf(b.weapon())).ranged; }
 // Whether `b` holds its main-hand weapon in both hands (ADR-048): two-handed with a weapon to hold, or
 // a weapon of a two-handed class (ADR-049). (Mid-swing it's the swing's weapon: put away then, the
 // swing keeps its grip to the end.)

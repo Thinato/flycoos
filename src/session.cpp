@@ -15,6 +15,7 @@ void startSession(Session& s) {
     s.regionId = 0;
     s.regionSince = 0;
     s.restPoint.reset();
+    s.projectiles.clear();
     s.player.teleport(playerSpawn(s.world, s.markers));
     giveItem(s.player.inv, Shortsword);
     giveItem(s.player.inv, Satchel);
@@ -30,6 +31,7 @@ void respawnPlayer(Session& s) {
     p.vel = {};
     p.health = float(maxHealth(sheet(p)));
     p.flasks = maxFlasks(sheet(p));
+    p.arrows = std::max(p.arrows, kQuiver);
     p.deadTime = 0;
     p.combatTimer = 0;
 }
@@ -111,7 +113,7 @@ StepResult step(Session& s, const SimInput& in, float dt) {
         MeleeInput melee{in.attack, in.attackHeld, in.heavy, in.heavyHeld, in.guard, in.parry, in.drink, in.grip, in.aim};
         // At an NPC open to a critical (ADR-045) an attack is the riposte move, aimed at it; once under way,
         // still aimed at the one it caught.
-        if (const Entity* e = criticalTarget(s.entities, p, p.move == Move::Riposte && p.hitPending))
+        if (const Entity* e = ranged(p) ? nullptr : criticalTarget(s.entities, p, p.move == Move::Riposte && p.hitPending))
             melee.riposte = true, melee.aim = {e->body.pos.x - p.pos.x, e->body.pos.z - p.pos.z};
         if (updateMelee(p, melee, move, dt) || (in.attack && !p.alive())) r.attacked = true;
         holdCritical(s.entities, p);  // before the NPCs think: the one it backstabs can't turn away
@@ -123,6 +125,8 @@ StepResult step(Session& s, const SimInput& in, float dt) {
         int level = p.level;
         auto skills = p.progress.skills;
         updateCombat(p, s.entities, dt, s.rng, s.armorK, &s.events);
+        if (p.loosed) p.loosed = false, loose(s, in.aimAt);  // a bow's release (ADR-050)
+        updateProjectiles(s, dt);
         for (size_t k = 0; k < skills.size(); ++k)  // progression news (ADR-027) for the HUD, like quest news
             if (int now = p.progress.skills[k].level; now > skills[k].level && s.toasts.size() < 8)
                 s.toasts.emplace_back(-1, std::format("{} {}", skillDef(Skill(k)).name, now));

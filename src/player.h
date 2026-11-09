@@ -75,9 +75,10 @@ struct Body {
 
 // A melee move (ADR-035; melee.h has their timings): the four-swing light chain, the two heavies,
 // and the attacks that depend on what the body was doing; the parry, and a drink from the healing
-// flask (ADR-047), which commit like attacks but strike nothing.
+// flask (ADR-047), which commit like attacks but strike nothing. A bow's shot (ADR-050) draws to its
+// hold point, holds while the button is down and looses an arrow at its impact frame.
 enum class Move : uint8_t { None, Light1, Light2, Light3, Light4, Heavy1, Heavy2, Running, Rolling, JumpLight, JumpHeavy,
-                            GuardCounter, Riposte, Parry, Backstep, Drink, Count };
+                            GuardCounter, Riposte, Parry, Backstep, Drink, Shot, Count };
 // What a body did this tick that can be heard (ADR-037): bits of Combatant::noises, set where it
 // happens and gathered by step() into Session::sounds. Steps and swim strokes come from the gait.
 enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup, Charged, GuardUp, Hurt, Crit, Death,
@@ -85,7 +86,9 @@ enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup
                              Bleed, Poison, Frost,  // a status took effect on it (ADR-046)
                              Drink, Empty, Rest,    // a flask healed it, an empty one didn't; it rested by a fire (ADR-047)
                              Grip,                  // it took its weapon in both hands or let go with one (ADR-048)
+                             Loose, Thunk,          // a bow loosed an arrow; an arrow struck terrain (ADR-050)
                              Count };
+static_assert(size_t(Noise::Count) <= 32, "Combatant::noises is 32 bits");
 // What the player's attack buttons asked for and is still waiting to happen (melee.cpp).
 enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry, Drink, Grip };
 
@@ -109,6 +112,8 @@ struct DamageNumber {
     bool crit = false;
     Status kind = Status::Count;
 };
+
+constexpr int kQuiver = 30;  // arrows a quiver holds (ADR-050): a rest fills it, picking arrows up tops it up
 
 // What fights: attributes, health, the swing and damage timers, and the gear it wears and carries.
 struct Combatant {
@@ -167,6 +172,10 @@ struct Combatant {
     int flasks = kBaseFlasks;              // healing flask charges left (ADR-047); a rest fills them to the Flasks stat
     bool twoHanded = false;                // the player's main-hand weapon in both hands (ADR-048; twoHanding)
     float gripBlend = 0;                   // 0 .. 1: how far the left hand has gone to the hilt (the pose)
+    int arrows = kQuiver;                  // in the quiver (ADR-050); a rest fills it, arrows stuck in terrain can be picked up
+    bool aiming = false;                   // a bow's aim mode (ADR-050): the guard button with a bow
+    float aimBlend = 0;                    // 0 .. 1: how far the bow is raised to aim (the pose, the camera)
+    bool loosed = false;                   // the shot under way reached its release this tick: step() looses the arrow
     float deadTime = 0;                    // seconds spent at 0 health
     Inventory inv;                         // equipment and bags
     Progress progress;                     // skills, XP and talents: the player's (NPCs' stay at the start)

@@ -6,6 +6,7 @@
 
 #include "defs.h"
 #include "item.h"
+#include "projectile.h"
 
 namespace {
 
@@ -33,9 +34,10 @@ bool airborne(const Player& p) { return !p.onGround && !p.inWater && !p.tuning.f
 bool wantsAttack(Want w) { return w == Want::Light || w == Want::Heavy || w == Want::Counter; }
 
 // The attack `want` makes now, from what the body is doing (the first that holds): a guard counter
-// just after a block, a riposte at a stance-broken enemy, a jump attack in the air, a rolling attack
+// just after a block (a bow: always its shot), a riposte at a stance-broken enemy, a jump attack in the air, a rolling attack
 // late in a roll or just after, a running attack, else the next light of the chain (or heavy).
 Move pick(const Player& p, Want want, bool riposte, bool running) {
+    if (weaponClass(classOf(p.inv.equipped[SlotMainHand])).ranged) return Move::Shot;  // a bow only shoots (ADR-050)
     if (want == Want::Counter && p.blockTime < gMelee.counterWindow) return Move::GuardCounter;
     bool heavy = want == Want::Heavy;  // a counter press that waited too long is a light
     if (riposte) return Move::Riposte;
@@ -111,8 +113,8 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     const MeleeTuning& t = gMelee;
     if (!p.alive()) {
         p.want = Want::None;
-        p.pressing = p.guarding = p.holding = false;
-        p.guardBlend = 0;
+        p.pressing = p.guarding = p.holding = p.aiming = false;
+        p.guardBlend = p.aimBlend = 0;
         return false;
     }
     if (p.rolling() && !p.rollPaid) {  // updatePlayer started the roll last tick
@@ -127,9 +129,11 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     // either a guard counter right after a block. A newer press replaces an older one.
     auto wish = [&](Want w) { p.want = w, p.wantAge = 0; };
     bool counter = p.blockTime < t.counterWindow && !p.punching();
+    bool bow = ranged(p);
     if (in.attack) p.pressing = true, p.pressTime = 0;
     if (p.pressing) {
-        if (counter) p.pressing = false, wish(Want::Counter);
+        if (bow) p.pressing = false, p.chargeByHeavy = false, wish(Want::Light);  // a bow draws at once (ADR-050)
+        else if (counter) p.pressing = false, wish(Want::Counter);
         else if (!in.attackHeld) p.pressing = false, wish(Want::Light);
         else if ((p.pressTime += dt) >= t.tapSeconds) p.pressing = false, p.chargeByHeavy = false, wish(Want::Heavy);
     }
@@ -143,6 +147,8 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     } else if (weaponClass(classOf(p.weapon())).twoHanded && p.want == Want::Grip) {
         p.want = Want::None;  // a great weapon (ADR-049) stays in both hands: the press does nothing
     }
+    bool quiver = !weaponClass(classOf(p.inv.equipped[SlotMainHand])).ranged || p.arrows > 0;  // a bow needs an arrow (ADR-050)
+    if (!quiver && wantsAttack(p.want)) p.want = Want::None;  // an empty quiver: the press does nothing (it doesn't wait for one)
     bool over = p.load == Load::Over && !p.tuning.fly && !p.tuning.noclip;  // overloaded: no roll, no run (ADR-039)
     if (move.roll && !over) wish(Want::Roll);
     if (over) move.run = false;
@@ -162,9 +168,17 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
                 p.holding = held && p.moveTime <= holdTime(p);
                 if (p.holding && p.moveTime >= holdTime(p) && (p.charge += dt) >= t.chargeSeconds) p.charged = true, p.holding = false, p.noise(Noise::Charged);
             }
+            if (p.move == Move::Shot && p.hitPending) {  // draws while held; at full draw it holds on until let go (ADR-050)
+                bool held = p.chargeByHeavy ? in.heavyHeld : in.attackHeld;
+                p.holding = held && p.moveTime <= holdTime(p);
+                if (p.holding && p.moveTime >= holdTime(p) && !p.charged && (p.charge += dt) >= gRanged.drawSeconds)
+                    p.charged = true, p.noise(Noise::Charged);
+            }
             if (jumpAttack(p.move)) p.holding = airborne(p);  // strikes on landing
-            bool cut = p.want == Want::Roll || p.want == Want::Parry || p.want == Want::Drink || p.want == Want::Grip || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
-            if (u >= m.cancel && cut && !wantsAttack(p.want)) endMove(p, p.move);
+            bool wants = p.want == Want::Roll || p.want == Want::Parry || p.want == Want::Drink || p.want == Want::Grip;
+            bool cut = wants || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
+            bool letDown = p.move == Move::Shot && p.hitPending && wants;  // a draw can be let down any time (the arrow kept)
+            if (((u >= m.cancel && cut) || letDown) && !wantsAttack(p.want)) endMove(p, p.move);
         }
         // A wanted attack starts once the body is free, or from the current one's chain point.
         bool free = !p.punching() || moveProgress(p) >= spec(p).chain;
@@ -179,7 +193,8 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
             if (p.rolling()) p.rollLength = p.rollTime;  // the attack takes over from the roll
             startMove(p, next, next == Move::Riposte || glm::length(in.aim) > 1e-3f ? in.aim : aim);
             p.fromMove = from, p.fromU = fromU, p.fromClass = fromClass;  // chained: it winds up from where that one was
-            if (charges(next)) p.holding = p.chargeByHeavy ? in.heavyHeld : in.attackHeld;
+            if (charges(next) || next == Move::Shot) p.holding = p.chargeByHeavy ? in.heavyHeld : in.attackHeld;
+            if (next == Move::Shot) p.noise(Noise::Windup);  // the draw's creak (ADR-050)
             spend(p, spec(p).stamina);
             p.want = Want::None;
             started = true;
@@ -212,7 +227,9 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
         if (!p.punching() && p.want == Want::Roll && p.stamina > 0) move.roll = true;  // until updatePlayer can roll
     }
     bool wasGuarding = p.guarding;
-    p.guarding = in.guard && p.stagger <= 0 && !p.punching() && !p.rolling() && !move.roll && p.offGround < 0.1f && !p.inWater;
+    p.guarding = in.guard && !bow && p.stagger <= 0 && !p.punching() && !p.rolling() && !move.roll && p.offGround < 0.1f && !p.inWater;
+    // With a bow the guard button aims instead (ADR-050): walking slowly, drawing and loosing while it's down.
+    p.aiming = in.guard && ranged(p) && p.stagger <= 0 && !p.rolling() && !move.roll && !p.inWater;
     if (p.guarding != wasGuarding) {  // a guard raised after a rest starts with a perfect guard's moment
         if (p.guarding) p.noise(Noise::GuardUp), p.perfectReady = p.guardTime >= t.perfectRearm;
         p.guardTime = 0;
@@ -221,6 +238,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     }
     p.guardBlend += ((p.guarding ? 1.0f : 0.0f) - p.guardBlend) * (1 - std::exp(-25 * dt));
     p.gripBlend += ((twoHanding(p) ? 1.0f : 0.0f) - p.gripBlend) * (1 - std::exp(-15 * dt));
+    p.aimBlend += ((p.aiming ? 1.0f : 0.0f) - p.aimBlend) * (1 - std::exp(-15 * dt));
 
     // What the body does: nothing while reeling; an attack steps forward into its hit (in the air it
     // keeps the jump's way) and turns toward the aim through its windup; the guard walks.
@@ -229,6 +247,11 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     } else if (p.move == Move::Drink) {  // walks slowly, may turn (a lock-on still faces its target)
         move.speed = t.drinkSpeed;
         move.run = move.jump = false;
+    } else if (p.move == Move::Shot || p.aiming) {  // drawing or aiming a bow: walks slowly, facing the aim (ADR-050)
+        move.speed = gRanged.aimWalk;
+        move.run = false;
+        move.jump &= p.move != Move::Shot;
+        move.face = aim;
     } else if (p.punching()) {
         const MoveSpec& m = spec(p);
         if (!jumpAttack(p.move) || !airborne(p)) {  // in the air a jump attack keeps the jump's way; landed, it commits

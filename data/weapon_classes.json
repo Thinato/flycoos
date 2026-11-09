@@ -83,5 +83,7 @@
      "jump_heavy": {"seconds": 1.0, "hold": 0.36, "hit": 0.48, "chain": 0.66, "cancel": 0.74, "damage": 1.75, "stance": 43, "stamina": 30, "lunge": 0.0, "heavy": true},
      "guard_counter": {"seconds": 0.88, "hold": 0.18, "hit": 0.32, "chain": 0.58, "cancel": 0.66, "damage": 1.6, "stance": 48, "stamina": 24, "lunge": 3.0, "heavy": true},
      "riposte": {"seconds": 1.4, "hold": 0.3, "hit": 0.45, "chain": 0.8, "cancel": 0.8, "damage": 2.9, "stance": 0, "stamina": 0, "lunge": 1.0},
-     "backstep": {"seconds": 0.78, "hold": 0.24, "hit": 0.4, "chain": 0.58, "cancel": 0.66, "damage": 1.1, "stance": 21, "stamina": 20, "lunge": 5.5}}}
+     "backstep": {"seconds": 0.78, "hold": 0.24, "hit": 0.4, "chain": 0.58, "cancel": 0.66, "damage": 1.1, "stance": 21, "stamina": 20, "lunge": 5.5}}},
+  {"id": "bow", "name": "Bow", "hit_stop": 0.6, "two_handed": true, "ranged": true, "moves": {
+     "shot": {"seconds": 1.0, "hold": 0.42, "hit": 0.5, "chain": 0.6, "cancel": 0.62, "damage": 1.0, "stance": 9, "stamina": 8, "lunge": 0.0, "thrust": true}}}
 ]

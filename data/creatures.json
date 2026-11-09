@@ -18,7 +18,7 @@
    "mods": [{"stat": "bleed", "flat": 22}]},
   {"id": "guard", "save_id": 5, "name": "Guard", "level": 4, "stats": {"stamina": 16, "strength": 5, "agility": 3, "intellect": 2, "spirit": 4},
    "attackable": true, "wanders": true, "talks": true, "model": "guard", "temper": "passive", "wander_radius": 6, "chase_speed": 6,
-   "weapon": "iron_shortsword", "respawn_seconds": 60, "stance": 90, "poise": 12, "hit_stance": 20, "voice": "human", "voice_pitch": 0.92,
+   "weapon": "iron_shortsword", "loot": "short_bow", "loot_chance": 0.5, "respawn_seconds": 60, "stance": 90, "poise": 12, "hit_stance": 20, "voice": "human", "voice_pitch": 0.92,
    "shield": "heater_shield", "combo": 3, "delay": 0.25, "guard": 0.6, "parry": 0.1},
   {"id": "bandit_chief", "save_id": 6, "name": "Bandit Chief", "level": 3, "stats": {"stamina": 11, "strength": 3, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "chief", "temper": "aggressive", "aggro_range": 10, "wander_radius": 6, "chase_speed": 5.5,

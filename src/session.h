@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "entity.h"
+#include "projectile.h"
 
 constexpr float kDayLength = 4320;  // seconds per full day/night cycle (72 minutes)
 constexpr float kTick = 1 / 60.0f;  // seconds per step(); see docs/DECISIONS.md, ADR-017
@@ -53,6 +54,7 @@ struct Session {
     std::vector<std::pair<int, std::string>> toasts;  // quest news since main last took them: quest handle (-1: none), text
     std::vector<Sound> sounds;  // noises since main last took them, oldest first
     std::optional<glm::vec3> restPoint;  // where the player last rested (ADR-047): it gets back up there
+    std::vector<Projectile> projectiles;  // arrows in flight or stuck in terrain (ADR-050), oldest first; not saved
 };
 
 // What the player wants this step; main.cpp maps keys and mouse to it.
@@ -66,6 +68,9 @@ struct SimInput {
     bool parry = false;     // the parry button went down (ADR-036)
     bool drink = false;     // the flask button went down (ADR-047)
     bool grip = false;      // the two-hand button went down (ADR-048)
+    // What a bow's shot goes at (ADR-050): in aim mode the point under the crosshair (straight at it),
+    // locked on the target's middle (lobbed onto it); none: along the facing.
+    std::optional<glm::vec3> aimAt;
     bool interact = false;  // loot the nearest corpse, else talk to the nearest NPC, else rest by a fire (canRest)
     bool editing = false;   // the editor is open: NPCs and combat pause, no attacks
     float timeRate = 1;     // time-of-day speed-up this step (1 normal, 0 frozen)
@@ -81,7 +86,7 @@ constexpr float kRestReach = 3;  // blocks from the player's feet to an Ember it
 // A fresh player with the starting gear at the player spawn, fresh NPCs from the markers, the clock
 // and region at 0, every quest not started and no flags, and the sim RNG seeded from `seed`. Call after the world and markers are in place.
 void startSession(Session& s);
-// Back where it last rested (else at the player spawn) with full health and flasks, out of combat.
+// Back where it last rested (else at the player spawn) with full health, flasks and quiver, out of combat.
 void respawnPlayer(Session& s);
 // Whether the player can rest now (ADR-047): alive, not hit for kCombatSeconds (poison's ticks don't
 // count) with nothing angry near, not mid-move,
@@ -89,7 +94,7 @@ void respawnPlayer(Session& s);
 bool canRest(const Session& s);
 // Advances the simulation by `dt` seconds (the game always passes kTick): the NPCs' quest lines,
 // interaction, the player's swing and movement, NPCs and combat (paused while editing), the time of
-// day, which region the player is in, item count changes, then the quests drain the tick's events,
+// day, which region the player is in, a bow's arrow loosed and every projectile's tick (ADR-050), item count changes, then the quests drain the tick's events,
 // and what everyone did that can be heard joins `sounds`.
 // A player knocked out for kPlayerRespawnSeconds gets back up first.
 StepResult step(Session& s, const SimInput& in, float dt);

@@ -10,6 +10,7 @@
 
 #include "lockon.h"
 #include "melee.h"
+#include "projectile.h"
 
 // The swapchain is linear (sRGB format), so sRGB colors are linearized like the debug UI style.
 unsigned uiColor(float r, float g, float b, float a) {
@@ -201,7 +202,17 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     ImVec2 hs = ImGui::CalcTextSize(hp);
     shadowText(dl, ImVec2(center.x - hs.x / 2, center.y - hs.y / 2), uiColor(1, 1, 1), 1, hp);
     flaskIcon(dl, ImVec2(center.x - 140 - 34, center.y + 4), player.flasks);  // left of the bars
-    if (twoHanding(player)) {  // right of them, a tag: the weapon in both hands (ADR-048)
+    if (ranged(player)) {  // a bow (ADR-050): right of the bars, an arrow and the quiver's count
+        ImVec2 c(center.x + 140 + 16, center.y + 4);
+        ImU32 shaft = uiColor(0.75f, 0.6f, 0.4f), ink = uiColor(0, 0, 0, 0.9f), head = uiColor(0.8f, 0.82f, 0.85f);
+        dl->AddLine(ImVec2(c.x - 9, c.y + 9), ImVec2(c.x + 7, c.y - 7), ink, 4);
+        dl->AddLine(ImVec2(c.x - 9, c.y + 9), ImVec2(c.x + 7, c.y - 7), shaft, 2);
+        dl->AddTriangleFilled(ImVec2(c.x + 10, c.y - 10), ImVec2(c.x + 3, c.y - 7), ImVec2(c.x + 7, c.y - 3), head);
+        dl->AddLine(ImVec2(c.x - 10, c.y + 5), ImVec2(c.x - 7, c.y + 8), uiColor(0.8f, 0.2f, 0.2f), 3);  // fletching
+        char n[8];
+        std::snprintf(n, sizeof n, "%d", player.arrows);
+        shadowText(dl, ImVec2(c.x + 14, c.y - ImGui::GetFontSize() / 2), player.arrows > 0 ? uiColor(1, 1, 1) : uiColor(0.6f, 0.6f, 0.6f), 1, n);
+    } else if (twoHanding(player)) {  // right of them, a tag: the weapon in both hands (ADR-048)
         const char* tag = "2H";
         ImVec2 ts = ImGui::CalcTextSize(tag), at(center.x + 140 + 12, center.y + 4 - ts.y / 2);
         dl->AddRectFilled(ImVec2(at.x - 4, at.y - 2), ImVec2(at.x + ts.x + 4, at.y + ts.y + 2), uiColor(0, 0, 0, 0.6f), 3);
@@ -212,6 +223,19 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         const char* text = "[E] Rest by the fire";
         ImVec2 ts = ImGui::CalcTextSize(text);
         shadowText(dl, ImVec2(screen.x / 2 - ts.x / 2, center.y - 80 - ts.y), uiColor(1, 0.85f, 0.5f), 1, text);  // over the status bars
+    }
+    // Aiming a bow (ADR-050): a crosshair at the middle of the screen, where the camera looks; it
+    // closes in as the string comes back.
+    if (float a = std::clamp(player.aimBlend * 2 - 1, 0.0f, 1.0f); a > 0 && player.alive()) {
+        float gap = 9 - 5 * (player.move == Move::Shot ? drawOf(player) : 0), len = 6;
+        ImVec2 m(screen.x / 2, screen.y / 2);
+        for (int k = 0; k < 2; ++k) {  // a dark outline under a light cross
+            ImU32 col = k ? uiColor(1, 1, 1, 0.9f * a) : uiColor(0, 0, 0, 0.6f * a);
+            float w = k ? 1.5f : 3.5f;
+            for (ImVec2 d : {ImVec2(1, 0), ImVec2(-1, 0), ImVec2(0, 1), ImVec2(0, -1)})
+                dl->AddLine(ImVec2(m.x + d.x * gap, m.y + d.y * gap), ImVec2(m.x + d.x * (gap + len), m.y + d.y * (gap + len)), col, w);
+            dl->AddCircleFilled(m, k ? 1.5f : 2.5f, col);
+        }
     }
     // Stamina under it (ADR-035): what attacks, rolls and blocks spend.
     bar(dl, ImVec2(center.x, center.y + 15), ImVec2(280, 7), player.stamina / gMelee.staminaMax, uiColor(0.3f, 0.75f, 0.25f), 1);

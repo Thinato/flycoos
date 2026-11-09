@@ -39,6 +39,7 @@
 // "REST" (ADR-047): u8 flask charges left | u8 1 if the player has rested, then f32 x, y, z where.
 //   Missing (older saves): full flasks, never rested.
 // "GRIP" (ADR-048): u8 1 if the player two-hands its weapon. Missing (older saves): one-handed.
+// "ARRW" (ADR-050): u8 arrows in the quiver (at most kQuiver). Missing (older saves): a full quiver.
 constexpr uint32_t kSaveFileVersion = 1;
 constexpr size_t kMaxSaveBytes = size_t(1) << 20;  // the biggest valid one is a few KB
 constexpr size_t kNpcBytes = 31;
@@ -117,6 +118,7 @@ struct SaveData {
     std::optional<int> flasks;
     std::optional<glm::vec3> restPoint;
     bool twoHanded = false;
+    std::optional<int> arrows;
     std::vector<std::string> notes;  // what parsing dropped (ids this build's data doesn't know)
 };
 
@@ -321,6 +323,13 @@ std::string readGrip(Reader r, SaveData& d) {
     return r.done("grip");
 }
 
+std::string readArrows(Reader r, SaveData& d) {
+    uint64_t n = r.take(1);
+    if (n > uint64_t(kQuiver)) return "bad arrow count";
+    d.arrows = int(n);
+    return r.done("arrows");
+}
+
 std::string parse(const char* path, SaveData& d) {
     std::error_code ec;
     uintmax_t fileBytes = std::filesystem::file_size(path, ec);
@@ -355,6 +364,7 @@ std::string parse(const char* path, SaveData& d) {
         else if (tag == "WEAR") error = readWear(r, d);
         else if (tag == "REST") error = readRest(r, d);
         else if (tag == "GRIP") error = readGrip(r, d);
+        else if (tag == "ARRW") error = readArrows(r, d);
         else continue;  // a later build's section
         if (!seen.insert(tag).second) return std::format("duplicate {} section", tag);
         if (!error.empty()) return error;
@@ -435,6 +445,7 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
     p.gripBlend = twoHanding(p) ? 1 : 0;  // already in both hands, not taking hold
     if (d.player) p.health = std::min(d.player->health, float(maxHealth(sheet(p))));  // after the gear and talents: they add health
     p.flasks = d.flasks ? std::min(*d.flasks, maxFlasks(sheet(p))) : maxFlasks(sheet(p));  // as health: what gear and talents allow
+    p.arrows = d.arrows.value_or(kQuiver);
     if (d.restPoint) s.restPoint = inWorld(*d.restPoint);
     if (d.flags) s.flags = *d.flags;
     for (const SavedQuest& q : d.quests ? *d.quests : std::span<const SavedQuest>{}) {
@@ -584,6 +595,7 @@ std::string savePlayer(const char* path, const Session& s, const std::string& wo
             for (float f : {s.restPoint->x, s.restPoint->y, s.restPoint->z}) putF(out, f);
     });
     section("GRIP", [&] { put(out, p.twoHanded ? 1 : 0, 1); });
+    section("ARRW", [&] { put(out, uint32_t(std::clamp(p.arrows, 0, kQuiver)), 1); });
     section("PROG", [&] {
         const Progress& g = p.progress;
         put(out, uint32_t(g.xp), 4);

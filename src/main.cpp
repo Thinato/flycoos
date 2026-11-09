@@ -23,6 +23,7 @@
 #include "hud.h"
 #include "inventory_ui.h"
 #include "lockon.h"
+#include "melee.h"
 #include "notes.h"
 #include "renderer.h"
 #include "save.h"
@@ -353,6 +354,8 @@ static int run(SDL_Window* window, const Options& opt) {
     float stickWas = 0;            // the right stick's tilt last frame: a flick pushes it past 0.7 from under 0.3
     glm::vec2 switchDir{};         // a switch asked for this frame (D-pad, arrows, flicks), else zero
     glm::vec3 camLook{};           // where the camera looks, past the orbit's centre (toward a lock-on target)
+    glm::vec3 viewEye{}, viewDir{0, 0, -1};  // last frame's camera and the line through the crosshair (ADR-050)
+    constexpr float kAimRange = 200;         // blocks a bow's aim looks along for a point to shoot at
     bool characterOpen = false, bagsOpen = false, journalOpen = false, progressOpen = false;
     bool windowWas = false;  // the interface's sounds (ADR-037): a game window was open, the lock-on, the gear, last frame
     uint32_t lockWas = 0;
@@ -521,8 +524,9 @@ static int run(SDL_Window* window, const Options& opt) {
                 flick += glm::vec2(e.motion.xrel, -e.motion.yrel);  // locked: the mouse switches targets
             } else if (e.type == SDL_EVENT_MOUSE_MOTION && !benchmark && !menus()) {
                 camReset = false;
-                camYaw -= e.motion.xrel * game.mouseSensitivity;
-                camPitch = std::clamp(camPitch + e.motion.yrel * game.mouseSensitivity, -0.5f, 1.45f);
+                float turn = game.mouseSensitivity * (1 - 0.4f * player.aimBlend);  // finer while aiming a bow (ADR-050)
+                camYaw -= e.motion.xrel * turn;
+                camPitch = std::clamp(camPitch + e.motion.yrel * turn, -0.5f, 1.45f);
             }
             if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT && !benchmark)
                 punchQueued = pressInGame = !menus();
@@ -663,6 +667,23 @@ static int run(SDL_Window* window, const Options& opt) {
             glm::vec2 to(t->body.pos.x - player.pos.x, t->body.pos.z - player.pos.z);
             if (glm::length(to) > 1e-3f) in.face = sim.aim = glm::normalize(to);
         }
+        // A bow (ADR-050): the guard button aims where the camera looks (the crosshair, the middle of last
+        // frame's view: the first terrain or body on that line); locked on, the shot is lobbed at the target.
+        if (sim.guard && ranged(player) && !editor.active) {
+            in.face = sim.aim = glm::normalize(glm::vec2(viewDir.x, viewDir.z) + glm::vec2(1e-6f, 0));
+            sim.aimAt = viewEye + viewDir * kAimRange;
+            float best = kAimRange;
+            if (std::optional<RayHit> hit = raycast(world, viewEye, viewDir, kAimRange)) best = hit->distance;
+            for (const Entity& e : entities) {
+                Box3 box = hitBox(e);
+                if (std::optional<float> t = segmentBox(viewEye, viewEye + viewDir * kAimRange, box.lo, box.hi);
+                    t && e.body.alive() && *t * kAimRange < best && *t * kAimRange > glm::distance(viewEye, player.pos))
+                    best = *t * kAimRange;
+            }
+            sim.aimAt = viewEye + viewDir * best;
+        } else if (const Entity* t = lockedEntity(lock, entities)) {
+            sim.aimAt = lockPoint(*t);
+        }
         sim.editing = editor.active;
         sim.timeRate = benchmark ? 0 : key(SDL_SCANCODE_T) ? 60.0f : 1.0f;
         // Fixed 60 Hz simulation (ADR-017): as many ticks as the frame time covers, at most 0.25 s
@@ -742,20 +763,23 @@ static int run(SDL_Window* window, const Options& opt) {
             camPitch += (0.35f - camPitch) * (1 - std::exp(-14 * dt));
             if (std::abs(turn) < 0.01f) camReset = false;
         }
-        camTarget += (drawnAt + glm::vec3(0, 1.4f, 0) - camTarget) * (1 - std::exp(-15 * dt));
+        // Aiming a bow (ADR-050), the camera comes in over the right shoulder.
+        glm::vec3 shoulder = glm::vec3(1.1f * std::cos(camYaw), 0.3f, -1.1f * std::sin(camYaw)) * player.aimBlend;
+        camTarget += (drawnAt + glm::vec3(0, 1.4f, 0) + shoulder - camTarget) * (1 - std::exp(-15 * dt));
         glm::vec3 lookWant{};  // locked on, the camera looks a quarter of the way to the target
         if (const Entity* t = lockedEntity(lock, entities))
             lookWant = (drawPos(t->body, alpha) + (lockPoint(*t) - t->body.pos) - camTarget) * 0.25f;
         camLook += (lookWant - camLook) * (1 - std::exp(-6 * dt));
         glm::vec3 offset{std::sin(camYaw) * std::cos(camPitch), std::sin(camPitch), std::cos(camYaw) * std::cos(camPitch)};
         bool collide = game.cameraCollision && !player.tuning.noclip;
-        float clear = collide ? cameraClearance(world, camTarget, offset, game.cameraDistance, kCameraRadius)
-                              : game.cameraDistance;
+        float distance = glm::mix(game.cameraDistance, std::min(game.cameraDistance, 3.0f), player.aimBlend);
+        float clear = collide ? cameraClearance(world, camTarget, offset, distance, kCameraRadius) : distance;
         camDist = clear < camDist ? clear : camDist + (clear - camDist) * (1 - std::exp(-4 * dt));
 
         FrameParams fp;
         fp.eye = camTarget + offset * camDist;
         fp.view = glm::lookAtRH(fp.eye, camTarget + camLook, glm::vec3(0, 1, 0));
+        viewEye = fp.eye, viewDir = glm::normalize(camTarget + camLook - fp.eye);  // the crosshair's line, for next frame's aim
         // Only while the sim runs: trauma wears off with its ticks (not in the editor, not under the F2 note).
         if (float shake = player.trauma * player.trauma * game.cameraShake; shake > 0 && !editor.active && !noteOpen) {  // big hits (ADR-045): trauma squared, smooth noise
             float t = wallSeconds * 30;
@@ -837,8 +861,8 @@ static int run(SDL_Window* window, const Options& opt) {
             punchQueued = false;
         }
         auto pushModel = [&](const Player& body, Model model) {  // with whatever it holds
-            glm::mat4 held(0), shield(0), flask(0);
-            fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held, alpha, &shield, &flask)});
+            glm::mat4 held(0), shield(0), flask(0), arrow(0);
+            fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held, alpha, &shield, &flask, &arrow)});
             auto push = [&](Model m, const glm::mat4& pose) {
                 if (pose == glm::mat4(0)) return;
                 ModelInstance item;
@@ -846,12 +870,20 @@ static int run(SDL_Window* window, const Options& opt) {
                 item.pose.fill(pose);
                 fp.models.push_back(item);
             };
-            push(heldModel(body.weapon()), held);
+            push(heldModel(body), held);
             push(shieldModel(body.inv.equipped[SlotOffHand]), shield);
             push(body.flasks > 0 ? ModelFlask : ModelFlaskEmpty, flask);
+            push(ModelArrow, arrow);
         };
         pushModel(player, ModelPlayer);
         for (const Entity& npc : entities) pushModel(npc.body, npc.type().model);
+        for (const Projectile& a : session.projectiles) {  // arrows in flight, and stuck a little way into what they hit (ADR-050)
+            glm::vec3 dir = glm::normalize(a.vel + glm::vec3(0, 1e-6f, 0));
+            ModelInstance item;
+            item.parts.fill(ModelArrow);
+            item.pose.fill(arrowPose(a.stuck ? a.pos + dir * 0.2f : glm::mix(a.prevPos, a.pos, alpha), dir));
+            fp.models.push_back(item);
+        }
 
         GameView view{editor.path, worldSeed, editor.unsaved, editor.active, editor.follow, player.pos, fp.eye,
                       glm::degrees(camYaw), glm::degrees(camPitch), game.fovDegrees, session.timeOfDay};

@@ -1029,6 +1029,8 @@ static std::string codeItemCreatures() {
     std::string text = all.str();
     for (size_t at; (at = text.find(R"( "rare_loot": ")")) != std::string::npos;)
         text.erase(at, text.find(',', text.find("rare_loot_chance", at)) + 1 - at);
+    const std::string bow = R"( "loot": "short_bow", "loot_chance": 0.5,)";  // the guard's bow (ADR-050)
+    if (size_t at = text.find(bow); at != std::string::npos) text.erase(at, bow.size());
     for (size_t at; (at = text.find(R"("shield": ")")) != std::string::npos;) {
         size_t from = text.rfind(',', at);
         text.erase(from, text.find('}', at) - from);
@@ -2578,7 +2580,7 @@ static void storyNpcs() {
     struct Row { EntityKind kind; int level; Temper temper; bool talks; Model model; ItemId weapon, loot; };
     constexpr Row kRows[] = {
         {EntityKind::Wolf, 1, Temper::Aggressive, false, ModelWolf, NoItem, WolfPelt},
-        {EntityKind::Guard, 4, Temper::Passive, true, ModelGuard, Shortsword, NoItem},
+        {EntityKind::Guard, 4, Temper::Passive, true, ModelGuard, Shortsword, ItemId(19)},  // the short bow (ADR-050)
         {EntityKind::BanditChief, 3, Temper::Aggressive, false, ModelChief, Shortsword, IronHelm},
         {EntityKind::Ghoul, 3, Temper::Aggressive, false, ModelGhoul, NoItem, BoneCharm},
     };
@@ -3082,7 +3084,7 @@ static void tables() {
         {"Wolf",           1, {8, 6, 70, 2, 2},   true,  true,  false, ModelWolf,
                            Temper::Aggressive, 12,   10,    7.5f, NoItem,     WolfPelt,  0.6f,  30},
         {"Guard",          4, {16, 5, 3, 2, 4},  true,  true,  true,  ModelGuard,
-                           Temper::Passive,    0,    6,     6,    Shortsword, NoItem,    0,     60},
+                           Temper::Passive,    0,    6,     6,    Shortsword, ItemId(19), 0.5f, 60},  // loot: the short bow (save id 19, ADR-050)
         {"Bandit Chief",   3, {11, 3, 2, 2, 2},  true,  true,  false, ModelChief,
                            Temper::Aggressive, 10,   6,     5.5f, Shortsword, IronHelm,  1,     120},
         {"Barrow Ghoul",   3, {7, 4, 2, 2, 2},   true,  true,  false, ModelGhoul,
@@ -3655,6 +3657,7 @@ static void playerSaves() {
     p.flasks = 1;
     a.restPoint = glm::vec3(22.5f, 4, 14.5f);  // ADR-047
     p.twoHanded = true;  // ADR-048
+    p.arrows = 7;        // ADR-050
     Entity *b0 = npc(a, 3, 0), *b1 = npc(a, 3, 1);
     CHECK(b0 && b1 && npc(a, 4, 0));
     b0->body.teleport({10.5f, 4, 50.5f});
@@ -3674,6 +3677,7 @@ static void playerSaves() {
     CHECK(b.player.pos == glm::vec3(20.25f, 4, 12.75f) && b.player.prevPos == b.player.pos && b.player.yaw == 1.25f);
     CHECK(b.player.health == 37 && b.player.level == 3 && b.player.stats.strength == 7 && b.player.stats.stamina == p.stats.stamina);
     CHECK(b.player.flasks == 1 && b.restPoint == glm::vec3(22.5f, 4, 14.5f));
+    CHECK(b.player.arrows == 7);  // the quiver (ADR-050)
     CHECK(b.player.twoHanded && twoHanding(b.player) && b.player.gripBlend == 1);  // already in both hands, not taking hold
     CHECK(b.player.inv.equipped == p.inv.equipped && b.player.inv.bags == p.inv.bags && b.player.inv.containers == p.inv.containers);
     Entity *c0 = npc(b, 3, 0), *c1 = npc(b, 3, 1);
@@ -3726,6 +3730,9 @@ static void playerSaves() {
         craft({{"HEAD", head}, {"GRIP", {2}}}),  // two-handed must be 0 or 1 (ADR-048)
         craft({{"HEAD", head}, {"GRIP", {}}}),   // cut short
         craft({{"HEAD", head}, {"GRIP", {1, 0}}}),  // a byte too many
+        craft({{"HEAD", head}, {"ARRW", {uint8_t(kQuiver + 1)}}}),  // more than a quiver holds (ADR-050)
+        craft({{"HEAD", head}, {"ARRW", {}}}),      // cut short
+        craft({{"HEAD", head}, {"ARRW", {3, 0}}}),  // a byte too many
         [&] {  // a rest point far past any world
             std::vector<uint8_t> rest{2, 1};
             for (float f : {1e30f, 40.0f, 0.0f}) le(rest, std::bit_cast<uint32_t>(f), 4);
@@ -3764,7 +3771,7 @@ static void playerSaves() {
         CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty());
         CHECK(t.elapsed == 10 && t.timeOfDay == 0.5f && t.player.pos == glm::vec3(24.5f, 4, 8.5f) && t.player.health == float(maxHealth(sheet(t.player))));
         CHECK(t.player.inv.containers[0][0] == Shortsword && t.player.inv.equipped[SlotTrinket] == NoItem && npc(t, 3, 1)->body.alive());
-        CHECK(t.player.flasks == kBaseFlasks && !t.restPoint);  // an older save: full flasks, never rested
+        CHECK(t.player.flasks == kBaseFlasks && !t.restPoint && t.player.arrows == kQuiver);  // an older save: full flasks and quiver, never rested
         CHECK(!t.player.twoHanded && t.player.gripBlend == 0);  // and one-handed (t was a: two-handed)
         write(bad, craft({{"HEAD", head}, {"GRIP", {1}}}));  // two-handed with nothing in hand: not holding anything
         CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty() && t.player.twoHanded && !twoHanding(t.player) && t.player.gripBlend == 0);
@@ -4267,6 +4274,22 @@ static void dataFiles() {
                   "record 1 'fists': field 'two_handed': bare hands have nothing to hold"},
                  {edited(R"("reach": 2.6)", R"("reach": 5)"), "record 5 'greatsword': field 'reach': 5 is out of range"},
                  {edited(R"("arc": 70)", R"("arc": 200)"), "record 6 'greataxe': field 'arc': 200 is out of range"},
+                 // Bows (ADR-050): ranged classes take both hands and have only the shot; only they shoot.
+                 {edited(R"("id": "sword", "name": "Straight Sword",)", R"("id": "sword", "name": "Straight Sword", "ranged": true,)"),
+                  "record 0 'sword': field 'ranged': a ranged class takes both hands"},
+                 {edited(R"("two_handed": true, "ranged": true)", R"("two_handed": true, "ranged": 1)"), "record 7 'bow': field 'ranged': must be true or false"},
+                 {edited(R"("light_1": {"seconds": 0.7, "hold": 0.3,)", R"("shot": {"seconds": 1}, "light_1": {"seconds": 0.7, "hold": 0.3,)"),
+                  "record 0 'sword': field 'moves.shot': only a ranged class shoots"},
+                 {edited(R"("shot": {"seconds": 1.0,)", R"("light_1": {"seconds": 1}, "shot": {"seconds": 1.0,)"),
+                  "record 7 'bow': field 'moves.light_1': a ranged class has only the shot"},
+                 {edited(R"("shot": {"seconds": 1.0,)", R"("shoot": {"seconds": 1.0,)"), "record 7 'bow': field 'moves.shoot': not an attack move"},
+                 {[&] {
+                      std::string t = wc;
+                      size_t at = t.find(R"("shot": {)");
+                      t.erase(at, t.find('}', at) + 1 - at);
+                      return t;
+                  }(),
+                  "record 7 'bow': field 'moves.shot': missing (a ranged class has the shot)"},
              }) {
             std::ofstream(dir / "weapon_classes.json", std::ios::trunc) << text;
             Defs d;
@@ -7444,10 +7467,10 @@ static void greatWeapons() {
     ItemId gs = d.itemById.at("iron_greatsword"), ga = d.itemById.at("barrow_greataxe"), mace = d.itemById.at("iron_mace");
     CHECK(classOf(gs) == WeaponClass::Greatsword && classOf(ga) == WeaponClass::Greataxe);
     CHECK(heldModel(gs) == ModelGreatsword && heldModel(ga) == ModelGreataxe);
-    for (size_t c = 0; c < size_t(WeaponClass::Count); ++c) {  // only the great classes are two-handed, and reach farther and wider
+    for (size_t c = 0; c < size_t(WeaponClass::Count); ++c) {  // only the great classes (and the bow, ADR-050) are two-handed; they reach farther and wider
         const WeaponClassDef& w = weaponClass(WeaponClass(c));
         bool great = WeaponClass(c) == WeaponClass::Greatsword || WeaponClass(c) == WeaponClass::Greataxe;
-        CHECK(w.twoHanded == great && (w.reach > 2.4f) == great && (w.arc > 65) == great);
+        CHECK(w.twoHanded == (great || WeaponClass(c) == WeaponClass::Bow) && (w.reach > 2.4f) == great && (w.arc > 65) == great);
         CHECK(great || (w.reach == 2 && w.arc == 60 && w.arcCos == 0.5f));  // the one-handed reach is the old kPunchReach's, 60 degrees (exactly the old 0.5)
         CHECK(std::abs(w.arcCos - std::cos(glm::radians(w.arc))) < 1e-6f);
     }
@@ -8052,7 +8075,7 @@ static void sounds() {
         for (const Layer& l : layersOf(h)) n.push_back(l.name);
         return n;
     };
-    const ItemId buckler = defs().itemById.at("oak_buckler"), tower = defs().itemById.at("tower_shield");
+    const ItemId buckler = defs().itemById.at("oak_buckler"), tower = defs().itemById.at("tower_shield"), bow = defs().itemById.at("short_bow");
     const int bandit = int(EntityKind::Bandit), boar = int(EntityKind::Boar), chief = int(EntityKind::BanditChief);
     CHECK(names({.what = Noise::Step, .ground = Sand}) == Names{"step_sand"} && names({.what = Noise::Step, .ground = Cobble}) == Names{"step_stone"});
     CHECK(names({.what = Noise::Step, .ground = Planks}) == Names{"step_wood"} && names({.what = Noise::Step, .ground = Dirt}) == Names{"step_dirt"});
@@ -8130,11 +8153,11 @@ static void sounds() {
     for (int n = 0; n < int(Noise::Count); ++n)
         for (int kind = -1; kind < int(defs().creatures.size()); ++kind)
             for (Block ground : grounds)
-                for (Move move : {Move::Light1, Move::Heavy1, Move::Parry, Move::Drink})
-                    for (ItemId with : {NoItem, Shortsword, Knife, buckler, tower})
+                for (Move move : {Move::Light1, Move::Heavy1, Move::Parry, Move::Drink, Move::Shot})
+                    for (ItemId with : {NoItem, Shortsword, Knife, buckler, tower, bow})
                         for (float amount : {0.0f, 30.0f})
                             for (const Layer& l : layersOf({Noise(n), {}, kind, ground, move, with, amount}))
-                                if (!(kind < 0 && Noise(n) == Noise::Windup))  // only NPCs telegraph
+                                if (!(kind < 0 && Noise(n) == Noise::Windup && move != Move::Shot))  // only NPCs telegraph (the player draws a bow)
                                 if (kind < 0 || typeOf(EntityKind(kind)).attackable || l.name.find("_hurt") == std::string::npos) wanted.insert(l.name);
     Audio shipped;
     std::string error;
@@ -8218,6 +8241,407 @@ static void lockOn() {
     }
 }
 
+// ADR-050: bows and projectiles. The bow class (ranged: only the shot), its data checks, the draw (at
+// once, held, let go), the arrow's flight (gravity, range by draw, swept through thin walls), what it
+// hits (a body through strike(), a guard, a dodge's i-frames let it through), sticking and picking up,
+// the cap, aiming (straight at the crosshair, lobbed at a lock-on), determinism, the pose, the sounds.
+static void bows() {
+    namespace fs = std::filesystem;
+    const Defs& d = defs();
+    const ItemId bow = d.itemById.at("short_bow");
+    const MoveSpec& shot = spec(WeaponClass::Bow, Move::Shot);
+    CHECK(classOf(bow) == WeaponClass::Bow && itemType(bow).damage == DamageType::Pierce && itemType(bow).slot == SlotMainHand);
+    CHECK(heldModel(bow) == ModelBow && weaponClass(WeaponClass::Bow).ranged && weaponClass(WeaponClass::Bow).twoHanded);
+    for (size_t c = 0; c < size_t(WeaponClass::Count); ++c) {  // a ranged class has only the shot, the rest every move but it
+        const WeaponClassDef& w = weaponClass(WeaponClass(c));
+        CHECK(w.ranged == (WeaponClass(c) == WeaponClass::Bow));
+        for (size_t m = 1; m < size_t(Move::Count); ++m)
+            if (!codeMove(Move(m))) CHECK((w.moves[m].seconds > 0) == (w.ranged == (Move(m) == Move::Shot)));
+    }
+    CHECK(shot.holdAt < shot.impact && shot.lunge == 0 && shot.thrust);
+    CHECK(typeOf(EntityKind::Guard).loot == bow && typeOf(EntityKind::Guard).lootChance == 0.5f && Player{}.arrows == kQuiver);
+    for (Model m : {ModelBow, ModelBowDrawn, ModelArrow}) {  // voxels in the Head slot only
+        int n = 0;
+        Grid g = buildPart(m, Head);
+        for (int z = 0; z < g.size.z; ++z)
+            for (int y = 0; y < g.size.y; ++y)
+                for (int x = 0; x < g.size.x; ++x) n += g.get({x, y, z}) != Air;
+        CHECK(n > 8 && buildPart(m, Torso).get({0, 0, 0}) == Air);
+    }
+    {  // creatures can't hold one yet (their AI only swings)
+        fs::path dir = fs::temp_directory_path() / "flycoos_bows_test";
+        fs::create_directories(dir);
+        copyWeaponClasses(dir);
+        fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json", dir / "items.json", fs::copy_options::overwrite_existing);
+        std::ostringstream text;
+        text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
+        std::string creatures = text.str();
+        creatures.erase(creatures.rfind(']'));
+        std::ofstream(dir / "creatures.json") << creatures << R"(,{"id": "archer", "save_id": 8, "copy_from": "bandit", "weapon": "short_bow"}])";
+        Defs t;
+        std::string error;
+        CHECK(!loadDefs(dir, t, error) && error.contains("record 8 'archer': field 'weapon': 'short_bow' shoots: creatures can't use ranged weapons yet"));
+        // An NPC that always parries guards a drawn bow instead: an arrow can't be parried (a sword's swing it parries).
+        std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,{"id": "fencer", "save_id": 8, "copy_from": "bandit", "parry": 1, "dodge": null, "back_off": null}])";
+        Defs test, shipped;
+        CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
+        fs::remove_all(dir);
+        setDefs(std::move(test));
+        for (bool shooting : {false, true}) {
+            Session s{.world = Grid({32, 16, 32}), .seed = 5};
+            for (int z = 0; z < 32; ++z)
+                for (int x = 0; x < 32; ++x)
+                    for (int y = 0; y < 4; ++y) s.world.set({x, y, z}, Stone);
+            startSession(s);
+            s.player.teleport({8.5f, 4, 16.5f});
+            s.player.yaw = std::numbers::pi_v<float> / 2;
+            s.player.inv.equipped[SlotMainHand] = shooting ? defs().itemById.at("short_bow") : Shortsword;
+            Entity& fencer = spawnAhead(s.entities, s.world, s.player, EntityKind(8), 3, 2.5f);
+            setState(fencer, AiState::Chase, "test");
+            fencer.body.swingTimer = 5;  // not about to swing itself
+            step(s, {.attack = true, .attackHeld = shooting}, kTick);  // a sword's tap is a light at once
+            CHECK(s.player.punching() && fencer.picked && fencer.answer == (shooting ? Answer::Guard : Answer::Parry));
+        }
+        setDefs(std::move(shipped));
+    }
+
+    // A field to shoot across: ground top at y 4, the player at x 8.5 facing +x with the bow.
+    auto field = [&](bool wall = false) {
+        Session s{.world = Grid({128, 32, 32}), .seed = 5};
+        for (int z = 0; z < 32; ++z)
+            for (int x = 0; x < 128; ++x) {
+                for (int y = 0; y < 4; ++y) s.world.set({x, y, z}, Stone);
+                if (wall && x == 20)
+                    for (int y = 4; y < 24; ++y) s.world.set({x, y, z}, Stone);
+            }
+        startSession(s);
+        s.player.teleport({8.5f, 4, 16.5f});
+        s.player.yaw = std::numbers::pi_v<float> / 2;
+        s.player.inv.equipped[SlotMainHand] = bow;
+        for (int i = 0; i < 10; ++i) step(s, {}, kTick);
+        s.sounds.clear();
+        return s;
+    };
+    auto heard = [](const Session& s, Noise n) { return std::ranges::any_of(s.sounds, [&](const Sound& h) { return h.what == n; }); };
+    // Shoots until an arrow is loosed (drawing `hold` seconds first), then lets it fly until it stops or `ticks` pass.
+    auto shoot = [&](Session& s, float hold, SimInput in = {}, int ticks = 0) {
+        SimInput press = in;
+        press.attack = press.attackHeld = true;
+        step(s, press, kTick);
+        press.attack = false;
+        for (float t = kTick; t < hold; t += kTick) step(s, press, kTick);
+        size_t before = s.projectiles.size();
+        for (int i = 0; i < 60 && s.projectiles.size() == before; ++i) step(s, in, kTick);
+        for (int i = 0; i < ticks; ++i) step(s, in, kTick);
+    };
+
+    {  // The draw: at once, held at full draw as long as the button is down, loosed on letting go.
+        Session s = field();
+        Player& p = s.player;
+        step(s, {.attack = true, .attackHeld = true}, kTick);
+        CHECK(p.move == Move::Shot && p.holding && p.hitPending);  // no tap-or-hold wait
+        CHECK(std::ranges::any_of(s.sounds, [](const Sound& h) { return h.what == Noise::Windup && h.kind < 0 && h.move == Move::Shot; }));
+        for (int i = 0; i < 180; ++i) step(s, {.attackHeld = true}, kTick);
+        CHECK(p.move == Move::Shot && p.charged && p.hitPending && drawOf(p) == 1 && s.projectiles.empty() && p.arrows == kQuiver);
+        CHECK(heard(s, Noise::Charged) && p.moveTime == holdTime(p));
+        s.sounds.clear();
+        for (int i = 0; i < 30 && s.projectiles.empty(); ++i) step(s, {}, kTick);
+        CHECK(s.projectiles.size() == 1 && p.arrows == kQuiver - 1 && heard(s, Noise::Loose) && !p.hitPending);
+        const Projectile& a = s.projectiles[0];
+        CHECK(a.weapon == bow && a.power == shot.damage && a.stance == shot.stance && !a.stuck);
+        CHECK(std::abs(glm::length(a.vel) - gRanged.maxSpeed) < 0.3f && a.vel.x > 0.99f * glm::length(a.vel));  // along the facing
+        CHECK(p.stamina < gMelee.staminaMax);  // it cost stamina
+        // A tap: no draw, the slowest and weakest shot.
+        Session t = field();
+        step(t, {.attack = true}, kTick);
+        for (int i = 0; i < 60 && t.projectiles.empty(); ++i) step(t, {}, kTick);
+        CHECK(t.projectiles.size() == 1 && std::abs(t.projectiles[0].power - gRanged.minPower * shot.damage) < 1e-5f);
+        CHECK(std::abs(glm::length(t.projectiles[0].vel) - gRanged.minSpeed) < 0.3f);
+        // Range by draw: the full draw lands far past the tap, about where the arc says (from 1.35 up, hipPitch).
+        for (int i = 0; i < 300; ++i) step(s, {}, kTick), step(t, {}, kTick);
+        CHECK(s.projectiles.size() == 1 && s.projectiles[0].stuck && t.projectiles.size() == 1 && t.projectiles[0].stuck);
+        float v = gRanged.maxSpeed, vy = v * std::sin(gRanged.hipPitch), g = gRanged.gravity;
+        float far = 9 + v * std::cos(gRanged.hipPitch) * (vy + std::sqrt(vy * vy + 2 * g * 1.35f)) / g;
+        CHECK(std::abs(s.projectiles[0].pos.x - far) < 1.5f && t.projectiles[0].pos.x < far - 25 && std::abs(s.projectiles[0].pos.y - 4) < 0.01f);
+        // No arrows, no shot; a roll lets a draw down (the arrow kept).
+        p.arrows = 0;
+        step(s, {.attack = true, .attackHeld = true}, kTick);
+        CHECK(p.move == Move::None && p.want == Want::None);  // dropped, not waiting for an arrow
+        p.arrows = 5;
+        for (int i = 0; i < 60; ++i) step(s, {}, kTick);
+        step(s, {.attack = true, .attackHeld = true}, kTick);
+        CHECK(p.move == Move::Shot);
+        SimInput roll{.attackHeld = true};
+        roll.move.roll = true, roll.move.move = {0, 1};
+        step(s, roll, kTick);
+        for (int i = 0; i < 60; ++i) step(s, {.attackHeld = true}, kTick);
+        CHECK(p.move == Move::None && p.arrows == 5 && s.projectiles.size() == 1);
+        // Flinched on the very tick it looses: the arrow still flies with the shot's damage.
+        step(s, {.attack = true, .attackHeld = true}, kTick);
+        for (int i = 0; i < 60; ++i) step(s, {.attackHeld = true}, kTick);
+        interrupt(p, gMelee.flinchSeconds, false);
+        loose(s, std::nullopt);
+        CHECK(p.move == Move::None && s.projectiles.back().power == shot.damage && s.projectiles.back().stance == shot.stance);
+        // Swapping weapons mid-draw: the shot finishes with the bow; knocked out mid-draw, nothing is loosed and the aim lets go.
+        for (int i = 0; i < 60; ++i) step(s, {}, kTick);
+        int left = p.arrows;
+        step(s, {.attack = true, .attackHeld = true}, kTick);
+        p.inv.equipped[SlotMainHand] = Shortsword;
+        for (int i = 0; i < 60; ++i) step(s, {}, kTick);
+        CHECK(p.arrows == left - 1 && s.projectiles.back().weapon == bow && s.projectiles.back().age < 1 && p.move == Move::None);
+        p.inv.equipped[SlotMainHand] = bow;
+        step(s, {.attack = true, .attackHeld = true, .guard = true}, kTick);
+        CHECK(p.move == Move::Shot && p.aiming);
+        p.health = 0;
+        for (int i = 0; i < 60; ++i) step(s, {.guard = true}, kTick);
+        CHECK(p.arrows == left - 1 && s.projectiles.back().age > 0.9f && !p.aiming && p.aimBlend == 0);  // the latest is still the swap's
+    }
+
+    {  // Aim mode: the guard button aims (no guard, no parry), walking slowly; the shot goes straight at the point.
+        Session s = field(true);
+        Player& p = s.player;
+        SimInput aim{.guard = true, .aim = {1, 0}};
+        step(s, aim, kTick);
+        CHECK(p.aiming && !p.guarding && parryOf(p) == 0);
+        SimInput walk = aim;
+        walk.move.move = {0, 1};
+        for (int i = 0; i < 40; ++i) step(s, walk, kTick);
+        CHECK(std::abs(glm::length(glm::vec2(p.vel.x, p.vel.z)) - gRanged.aimWalk) < 0.2f && p.aimBlend > 0.99f);
+        glm::vec3 target(20, 9, p.pos.z);  // on the wall, above the line of the facing
+        aim.aimAt = target;
+        shoot(s, 1, aim, 60);
+        CHECK(s.projectiles.size() == 1 && s.projectiles[0].stuck && glm::distance(s.projectiles[0].pos, target) < 0.6f);
+        CHECK(std::ranges::any_of(s.sounds, [](const Sound& h) { return h.what == Noise::Thunk && h.ground == Stone; }));
+        step(s, {}, kTick);
+        CHECK(!p.aiming);
+    }
+
+    {  // Flight: gravity on a semi-implicit step; swept, so even 10 blocks a tick doesn't pass a 1-block wall.
+        Session s = field(true);
+        s.projectiles.push_back({{2.5f, 20, 16.5f}, {}, {15, 0, 0}, bow, 1, 0});
+        for (int i = 0; i < 30; ++i) updateProjectiles(s, kTick);
+        const Projectile& a = s.projectiles[0];
+        CHECK(std::abs(a.pos.x - 10) < 1e-3f && std::abs(a.pos.y - (20 - gRanged.gravity * kTick * kTick * 465)) < 1e-3f && !a.stuck);
+        for (float speed : {55.0f, 200.0f, 600.0f}) {
+            s.projectiles = {{{10.5f, 6, 16.5f}, {}, {speed, 0, 0}, bow, 1, 0}};
+            for (int i = 0; i < 12; ++i) updateProjectiles(s, kTick);
+            CHECK(s.projectiles.size() == 1 && s.projectiles[0].stuck && std::abs(s.projectiles[0].pos.x - 20) < 0.01f);
+        }
+        // Stuck: picked up walking past (a quiver not yet full), else gone after stuckSeconds.
+        Player& p = s.player;
+        p.arrows = 10;
+        s.projectiles = {{p.pos + glm::vec3(0.6f, 0.4f, 0), {}, {1, 0, 0}, bow, 1, 0, 0, true}, {p.pos + glm::vec3(3, 0.4f, 0), {}, {1, 0, 0}, bow, 1, 0, 0, true}};
+        updateProjectiles(s, kTick);
+        CHECK(p.arrows == 11 && s.projectiles.size() == 1 && p.made(Noise::Loot));
+        p.arrows = kQuiver;
+        s.projectiles[0].pos = p.pos + glm::vec3(0.6f, 0.4f, 0);
+        updateProjectiles(s, kTick);
+        CHECK(p.arrows == kQuiver && s.projectiles.size() == 1);  // full: left there
+        s.projectiles[0].pos.x += 5;
+        for (float t = 0; t < gRanged.stuckSeconds - 0.1f; t += kTick) updateProjectiles(s, kTick);
+        CHECK(s.projectiles.size() == 1);
+        for (int i = 0; i < 12; ++i) updateProjectiles(s, kTick);
+        CHECK(s.projectiles.empty());
+        p.arrows = 2;
+        respawnPlayer(s);
+        CHECK(p.arrows == kQuiver);  // getting back up fills the quiver
+        // A flying arrow lasts flightSeconds.
+        s.projectiles = {{{2.5f, 25, 16.5f}, {}, {0, 40, 0}, bow, 1, 0}};
+        for (float t = 0; t < gRanged.flightSeconds - 0.1f; t += kTick) updateProjectiles(s, kTick);
+        CHECK(s.projectiles.size() == 1);
+        for (int i = 0; i < 12; ++i) updateProjectiles(s, kTick);
+        CHECK(s.projectiles.empty());
+        // The cap: the oldest stuck arrow goes, else the oldest.
+        Projectile flying{{50, 30, 2}, {}, {0, 0, 0}, bow, 1, 0};
+        s.projectiles.assign(kMaxProjectiles, flying);
+        s.projectiles[0].age = 7, s.projectiles[10].stuck = true;
+        loose(s, std::nullopt);
+        CHECK(s.projectiles.size() == kMaxProjectiles && std::ranges::none_of(s.projectiles, &Projectile::stuck) && s.projectiles[0].age == 7);
+        loose(s, std::nullopt);
+        CHECK(s.projectiles.size() == kMaxProjectiles && s.projectiles[0].age == 0);
+        p.arrows = 0;
+        loose(s, std::nullopt);
+        CHECK(s.projectiles.size() == kMaxProjectiles && p.arrows == 0);  // none to loose
+    }
+
+    {  // Hits: through strike() with the bow's roll; a guard in front blocks it; a dodge's i-frames let it through.
+        Session s = field();
+        Player& p = s.player;
+        Entity& dummy = spawnAhead(s.entities, s.world, p, EntityKind::TrainingDummy, 4, 12);
+        float full = dummy.body.health;
+        p.swingWeapon = Shortsword;
+        shoot(s, 1, {}, 20);
+        CHECK(dummy.body.health < full && dummy.body.hitWith == bow && s.projectiles.empty() && p.swingWeapon == bow);
+        CHECK(p.progress.skills[size_t(Skill::OneHanded)].xp > 0);  // XP as a hit (one-handed: no new use skills)
+        // Determinism: the same shots again give the same everything.
+        Session again = field();
+        Entity& twin = spawnAhead(again.entities, again.world, again.player, EntityKind::TrainingDummy, 4, 12);
+        again.player.swingWeapon = Shortsword;
+        shoot(again, 1, {}, 20);
+        CHECK(twin.body.health == dummy.body.health && again.player.arrows == p.arrows);
+        // A kill: Killed, as a swing's.
+        dummy.body.health = 1;
+        s.events.clear();
+        s.projectiles = {{dummy.body.pos + glm::vec3(-3, 1, 0), {}, {40, 0, 0}, bow, 1, 0}};
+        for (int i = 0; i < 10; ++i) updateProjectiles(s, kTick);
+        CHECK(!dummy.body.alive() && std::ranges::any_of(s.events, [](const GameEvent& e) { return std::holds_alternative<Killed>(e); }));
+        // Two in line: the nearer takes it (whichever comes first in the list). The player's own swing weapon
+        // is its own again after; an arrow may be a random critical.
+        s.entities.clear();
+        spawnAhead(s.entities, s.world, p, EntityKind::TrainingDummy, 4, 8);
+        spawnAhead(s.entities, s.world, p, EntityKind::TrainingDummy, 4, 12);
+        Entity &nearer = s.entities[0], &farther = s.entities[1];  // (after both: a spawn may move the vector)
+        p.swingWeapon = Shortsword;
+        p.innate.push_back({Stat::CritChance, ModKind::Flat, 1, "test"});
+        s.projectiles = {{p.pos + glm::vec3(1, 1, 0), {}, {900, 0, 0}, bow, 1, 0}};  // both on its first tick's way
+        updateProjectiles(s, kTick);
+        CHECK(nearer.body.hitTime < 1 && farther.body.hitTime > 1 && p.swingWeapon == Shortsword && nearer.body.hitWith == bow);
+        CHECK(nearer.body.lastCrit && nearer.body.made(Noise::Crit));
+        p.innate.clear();
+
+        s.entities.clear();
+        Entity& guard = spawnAhead(s.entities, s.world, p, EntityKind::Guard, 4, 10);
+        guard.body.guarding = true;
+        float health = guard.body.health;
+        s.projectiles = {{guard.body.pos + glm::vec3(-4, 1.2f, 0), {}, {40, 0, 0}, bow, 1, 5}};
+        for (int i = 0; i < 10; ++i) updateProjectiles(s, kTick);
+        CHECK(guard.body.health == health && guard.body.made(Noise::Block) && guard.body.stamina < gMelee.staminaMax && s.projectiles.empty());
+        CHECK(guard.body.freeze == 0 && p.freeze == 0 && p.stagger == 0);  // an arrow: no hit-stop, no recoil
+        guard.body.inv.equipped[SlotOffHand] = d.itemById.at("tower_shield");  // a greatshield: a swing this weak would bounce off
+        s.projectiles = {{guard.body.pos + glm::vec3(-4, 1.2f, 0), {}, {40, 0, 0}, bow, 1, 5}};
+        for (int i = 0; i < 10; ++i) updateProjectiles(s, kTick);
+        CHECK(guard.body.health == health && p.stagger == 0 && !guard.body.made(Noise::Bounce));  // an arrow doesn't
+        s.projectiles = {{guard.body.pos + glm::vec3(4, 1.2f, 0), {}, {-40, 0, 0}, bow, 1, 5}};  // from behind
+        for (int i = 0; i < 10; ++i) updateProjectiles(s, kTick);
+        CHECK(guard.body.health < health);
+
+        guard.body.guarding = false;
+        guard.body.rollTime = 0.1f, guard.body.rollLength = 0.45f, guard.body.backstep = false;  // rolling, in its i-frames
+        health = guard.body.health;
+        s.projectiles = {{guard.body.pos + glm::vec3(-2, 1.2f, 0), {}, {30, 0, 0}, bow, 1, 5}};
+        for (int i = 0; i < 10; ++i) updateProjectiles(s, kTick);
+        CHECK(guard.body.health == health && s.projectiles.size() == 1 && s.projectiles[0].pos.x > guard.body.pos.x + 1);
+    }
+
+    {  // Level band: full draws to kill a level 1 boar and a level 2 bandit with the starting player, and how long that takes.
+        float cycle = holdTime(Player{}) + gRanged.drawSeconds;  // (at the bow's speed 1) the windup, the draw...
+        cycle += (shot.chain - shot.holdAt) * shot.seconds;      // ...the release and the recovery to the next draw
+        for (auto [kind, lo, hi] : {std::tuple{EntityKind::Boar, 8, 12}, std::tuple{EntityKind::Bandit, 10, 16}}) {
+            Session z = field();
+            spawnAhead(z.entities, z.world, z.player, kind, 4, 20);
+            const Entity& e = z.entities[0];
+            z.player.swingWeapon = bow;
+            std::mt19937 rng(11);
+            double sum = 0;
+            for (int i = 0; i < 400; ++i)
+                sum += resolveHit(z.player, e.body, weaponAttack(bow), {rng, z.armorK, shot.damage * (1 - e.type().resist[size_t(DamageType::Pierce)])});
+            int shots = int(std::ceil(e.body.health / (sum / 400)));
+            std::println("level band: bow full draws: level {} {}: {} ({:.1f} s)", e.type().level, kEntityKindNames[int(kind)], shots, shots * cycle);
+            CHECK(shots >= lo && shots <= hi);
+        }
+    }
+
+    {  // No riposte or backstab with a bow: a broken foe in reach doesn't pull the shot toward it.
+        Session s = field();
+        Entity& bandit = spawnAhead(s.entities, s.world, s.player, EntityKind::Bandit, 4, 1.5f);
+        bandit.body.teleport(s.player.pos + glm::vec3(1.2f, 0, 0.6f));
+        bandit.body.broken = true, bandit.body.stagger = bandit.body.staggerLength = 3;
+        step(s, {.attack = true, .aim = {1, 0}}, kTick);
+        CHECK(s.player.move == Move::Shot && std::abs(s.player.yaw - std::numbers::pi_v<float> / 2) < 0.01f);
+    }
+
+    {  // Locked on: lobbed onto the target, from a tap as from a full draw.
+        for (float hold : {0.0f, 1.0f}) {
+            Session s = field();
+            Entity& dummy = spawnAhead(s.entities, s.world, s.player, EntityKind::TrainingDummy, 4, 30);
+            float full = dummy.body.health;
+            SimInput in{.aim = {1, 0}, .aimAt = dummy.body.pos + glm::vec3(0, 1, 0)};
+            shoot(s, hold, in, 120);
+            CHECK(dummy.body.health < full && s.projectiles.empty());
+        }
+    }
+
+    {  // The aim's maths: straight, lobbed (it passes through the point), out of reach (45 degrees), none (the facing).
+        glm::vec3 from(0, 5, 0), at(30, 8, 4);
+        glm::vec3 v = shotVelocity(from, 0, at, false, 40);
+        CHECK(glm::length(glm::normalize(v) - glm::normalize(at - from)) < 1e-5f && std::abs(glm::length(v) - 40) < 1e-3f);
+        v = shotVelocity(from, 0, at, true, 40);
+        CHECK(std::abs(glm::length(v) - 40) < 1e-3f && v.y > 0);
+        glm::vec3 x = from;
+        float closest = 99;
+        for (int i = 0; i < 200; ++i) v.y -= gRanged.gravity * kTick, x += v * kTick, closest = std::min(closest, glm::distance(x, at));
+        CHECK(closest < 0.4f);
+        float gravity = std::exchange(gRanged.gravity, 0.0f);  // no gravity (a debug knob): nothing to lob over, straight at it
+        v = shotVelocity(from, 0, at, true, 40);
+        CHECK(glm::length(glm::normalize(v) - glm::normalize(at - from)) < 1e-5f);
+        gRanged.gravity = gravity;
+        v = shotVelocity(from, 0, glm::vec3(100, 5, 0), true, 5);
+        CHECK(std::abs(v.y - 5 * std::sin(std::numbers::pi_v<float> / 4)) < 1e-4f);
+        v = shotVelocity(from, std::numbers::pi_v<float> / 2, std::nullopt, true, 20);
+        CHECK(std::abs(v.x - 20 * std::cos(gRanged.hipPitch)) < 1e-4f && std::abs(v.y - 20 * std::sin(gRanged.hipPitch)) < 1e-4f && std::abs(v.z) < 1e-4f);
+        CHECK(segmentBox({0, 0.5f, 0}, {10, 0.5f, 0}, {4, 0, -0.5f}, {5, 1, 0.5f}) == 0.4f);
+        CHECK(!segmentBox({0, 1.5f, 0}, {10, 1.5f, 0}, {4, 0, -0.5f}, {5, 1, 0.5f}) && !segmentBox({0, 0.5f, 0}, {3, 0.5f, 0}, {4, 0, -0.5f}, {5, 1, 0.5f}));
+        CHECK(segmentBox({4.5f, 0.5f, 0}, {10, 0.5f, 0}, {4, 0, -0.5f}, {5, 1, 0.5f}) == 0.0f);
+        CHECK(!segmentBox({0, 0, 0}, {10, 10, 0}, {4, 0, -0.5f}, {5, 1, 0.5f}));  // past its corner: in x's slab only after leaving y's
+        {
+            Session z = field();
+            spawnAhead(z.entities, z.world, z.player, EntityKind::Boar, 4, 6);
+            spawnAhead(z.entities, z.world, z.player, EntityKind::Bandit, 4, 9);
+            Box3 b = hitBox(z.entities[0]), h = hitBox(z.entities[1]);
+            CHECK(b.hi.y - b.lo.y < 1.2f && std::abs(h.hi.y - h.lo.y - kHeight) < 1e-4f && std::abs(h.hi.x - h.lo.x - 2 * gRanged.hitRadius) < 1e-4f);
+        }
+        glm::mat4 m = arrowPose({3, 4, 5}, {0, 0, 1});  // the tip there, the nock a block back
+        CHECK(glm::distance(glm::vec3(m * glm::vec4(1.5f, 10, 0.5f, 1)), glm::vec3(3, 4, 5)) < 1e-4f);
+        CHECK(glm::distance(glm::vec3(m * glm::vec4(1.5f, 0, 0.5f, 1)), glm::vec3(3, 4, 4)) < 1e-4f);
+    }
+
+    {  // The pose: the bow hangs at the side; raised to aim, an arrow on the string; drawn back to the cheek.
+        Player p;
+        p.inv.equipped[SlotMainHand] = bow;
+        p.gripBlend = 1;
+        glm::mat4 held(0), arrow(0);
+        auto rest = poseModel(p, ModelPlayer, &held, 1, nullptr, nullptr, &arrow);
+        CHECK(held != glm::mat4(0) && arrow == glm::mat4(0) && heldModel(p) == ModelBow);
+        float low = 99;
+        for (int c = 0; c < 8; ++c) low = std::min(low, (held * glm::vec4(c & 1 ? 1 : 0, c & 2 ? 15 : 0, c & 4 ? 4 : 0, 1)).y);
+        CHECK(low > 0.05f);  // out of the ground
+        p.aiming = true, p.aimBlend = 1;
+        auto aimed = poseModel(p, ModelPlayer, &held, 1, nullptr, nullptr, &arrow);
+        CHECK(arrow != glm::mat4(0) && aimed[HandL][3].z > rest[HandL][3].z + 0.5f && aimed[HandL][3].y > rest[HandL][3].y + 0.3f);
+        p.aiming = false;  // raised (the draw's hold point is), aimBlend still 1: only the string hand differs
+        startMove(p, Move::Shot, {});
+        p.moveTime = 0.2f * holdTime(p);
+        arrow = glm::mat4(0);
+        auto early = poseModel(p, ModelPlayer, &held, 1, nullptr, nullptr, &arrow);
+        CHECK(arrow != glm::mat4(0) && heldModel(p) == ModelBow);
+        p.moveTime = holdTime(p), p.charge = gRanged.drawSeconds, p.charged = true;
+        auto drawn = poseModel(p, ModelPlayer, &held, 1, nullptr, nullptr, &arrow);
+        CHECK(heldModel(p) == ModelBowDrawn && drawn[HandR][3].z < early[HandR][3].z - 0.2f);  // the string hand back
+        p.moveTime = 0.9f * moveLength(p), p.hitPending = false;
+        arrow = glm::mat4(0);
+        poseModel(p, ModelPlayer, &held, 1, nullptr, nullptr, &arrow);
+        CHECK(arrow == glm::mat4(0) && heldModel(p) == ModelBow);  // loosed
+    }
+
+    {  // A rest and getting back up fill the quiver; the sounds.
+        Player p;
+        p.arrows = 3;
+        rest(p);
+        CHECK(p.arrows == kQuiver);
+        auto names = [](const Sound& h) {
+            std::set<std::string> out;
+            for (const Layer& l : layersOf(h)) out.insert(l.name);
+            return out;
+        };
+        CHECK(names({Noise::Loose, {}, -1}).contains("bow_loose") && names({Noise::Windup, {}, -1, Air, Move::Shot}).contains("bow_draw"));
+        CHECK(names({Noise::Swing, {}, -1, Air, Move::Shot, bow}).empty());  // the string's let go is Loose's
+        CHECK(names({Noise::Thunk, {}, -1, Stone}).contains("arrow_hit") && names({Noise::Hurt, {}, int(EntityKind::Bandit), Air, Move::None, bow}).contains("arrow_flesh"));
+        CHECK(names({Noise::Hurt, {}, int(EntityKind::TrainingDummy), Air, Move::None, bow}).contains("arrow_hit"));
+        float stone = layersOf({Noise::Thunk, {}, -1, Stone})[0].pitch, dirt = layersOf({Noise::Thunk, {}, -1, Dirt})[0].pitch;
+        CHECK(stone > dirt);
+    }
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -8255,6 +8679,7 @@ int main() {
     flasks();
     scaling();
     greatWeapons();
+    bows();
     sounds();
     combat();
     fighters();

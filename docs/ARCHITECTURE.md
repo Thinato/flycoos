@@ -39,6 +39,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |
 | `src/melee.h/.cpp` | Melee (ADR-035): `MoveSpec` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), the weapon classes' movesets (`WeaponClassDef`, `weaponClass`, `spec`; loaded from data/weapon_classes.json, ADR-044), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces`; `parryOf` (a knife or fists parry too) and `perfectGuard` (ADR-041); `damageOf` (ADR-040) |
+| `src/projectile.h/.cpp` | Projectiles (ADR-050): `Projectile` (an arrow: tip, velocity, the bow, power, stance, stuck), `RangedTuning gRanged` (gravity, speeds by draw, the draw time, expiry, pickup, the aim walk; the debug Player tab edits it), `drawOf`, `shotOrigin`, `shotVelocity` (straight at a point, lobbed onto it, or along the facing), `segmentBox`, `hitBox`, `loose` (the release: an arrow from the quiver) and `updateProjectiles` (gravity, a swept voxel ray and body boxes, hits through `strike()`, sticking, pickup, expiry) |
 | `src/audio.h/.cpp` | Sound (ADR-037): `Audio` (loads `data/sounds/*.ogg` with stb_vorbis into groups of takes; `play` picks a take never twice running with a little random pitch and volume; `mix` is the device thread's stereo mix: up to 48 resampled voices, three buses, a soft limiter), `place` (falloff and pan from the listener), `layersOf`/`hear` (what a `Sound` from the sim plays), `updateAmbience` (looping beds faded by what's around). No device here: main.cpp's `Speaker` feeds `mix` to SDL3's audio stream |
 | `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
@@ -226,6 +227,8 @@ u32 FNV-1a checksum of every byte before it
   `f32 x, y, z` of the rest point (`Session::restPoint`). Missing (older saves): full flasks, never rested.
 - `GRIP` (ADR-048): `u8 1 if two-handed` (`Combatant::twoHanded`; anything else is rejected). Missing
   (older saves): one-handed.
+- `ARRW` (ADR-050): `u8 arrows in the quiver` (`Combatant::arrows`, at most `kQuiver`; more is
+  rejected). Missing (older saves): a full quiver. Projectiles in flight or stuck aren't saved.
 - Every new runtime state gets a section here and a round-trip test.
 
 ## Editing (`applyEdit`)
@@ -815,6 +818,18 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   `punchTarget` and `criticalTarget` reach as far, and `answer` sees a swing coming as far. model.cpp: `ModelGreatsword` / `ModelGreataxe` with long grips
   (`heldGrip`, the left hand `pommel()` voxels below), `kGreatswordSwings` / `kGreataxeSwings`
   (long blades end their downswings above the ground; a test checks every move).
+- **Bows and projectiles** (ADR-050): a `ranged` class (the bow) has one move, `Move::Shot`;
+  `pick` returns it for a ranged main hand, updateMelee draws at once on a press, holds at the hold
+  point while the button is down (`charge` toward `gRanged.drawSeconds`, no auto-release), lets the
+  draw down for a roll or the flask, drops presses with an empty quiver, and with the guard button
+  sets `aiming` (no guard, no parry) and walks slowly facing the aim. `updateCombat` sets `loosed` at
+  the shot's impact frame; `step()` then calls `loose` with `SimInput::aimAt` (main.cpp: the point
+  under the crosshair in aim mode, else the lock-on target's middle) and ticks every projectile. The
+  player's hits on NPCs go through `strike()` (entity.h), swings and arrows alike; `Strike::melee`
+  adds hit-stop, the greatshield bounce and camera shake. model.cpp: `ModelBow`, `ModelBowDrawn`,
+  `ModelArrow`, the bow pose (`nock`: raise, draw, the nocked arrow), `heldModel(const Player&)` and
+  `arrowPose`; main.cpp draws every projectile as a model instance, moves the camera over the right
+  shoulder by `aimBlend`, and hud.cpp draws the crosshair and the quiver's count.
 - **Shields and the parry** (ADR-036, melee.h): an off-hand item with a `shield` guards by its own
   numbers instead of the sword's (`guardOf`): the Oak Buckler stops 80% and saves 46% of the stamina,
   the Heater Shield 100% / 56%, the Tower Shield 100% / 72%. A guard of at least 65% boost makes an
@@ -890,13 +905,16 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Oak Buckler / Heater Shield / Tower Shield | Off Hand | shields (ADR-036): stop 80 / 100 / 100% of a blocked hit (the buckler 85 / 70 / 80% of slash / strike / pierce, the heater 90% of strikes: ADR-040), guard boost 46 / 56 / 72%; the first two parry, the tower bounces weak attacks; weigh 2 / 4.5 / 13; no drop yet (the debug Items tab gives them) |
   | Iron Hand Axe / Iron Mace | Main Hand | axe 7–11 (speed 1.1, weight 3.5) / mace 6–10 strike (speed 1.15, weight 4), ADR-044; no drop yet (the debug Items tab gives them) |
   | Iron Greatsword / Barrow Greataxe | Main Hand (both hands) | greatsword 9–13 (speed 1.45, strength A, agility D, weight 9) / greataxe 10–14 (speed 1.55, strength S, weight 10), ADR-049; rare drops of bandits (10% when the knife doesn't drop) / barrow ghouls (12% when the charm doesn't) |
+  | Short Bow | Main Hand (both hands) | 5–8 pierce (speed 1.0, agility B 1.1, strength E 0.3, weight 2), shoots arrows from the quiver (ADR-050); dropped by guards 50% |
 
   Weapon classes (ADR-044, `data/weapon_classes.json`): one record per class (fists, dagger, sword,
   axe, mace, greatsword, greataxe), each with every attack move (`seconds`, `hold`, `hit`, `chain`, `cancel` in order,
   `damage`, `stance`, `stamina`, `lunge`, optional `heavy` and `thrust`) and optional `speed` and
   `hit_stop` multipliers; `copy_from` works as in items (fists copy the sword at speed 0.75).
   ADR-049 adds optional `two_handed` (always held in both hands; not fists), `reach` (blocks, 1–4,
-  default 2) and `arc` (degrees either side of the facing, 15–120, default 60).
+  default 2) and `arc` (degrees either side of the facing, 15–120, default 60). ADR-050 adds
+  `ranged` (shoots; needs `two_handed`): a ranged class has only the `shot` move, the others every
+  move but it. Creatures can't wield a ranged weapon yet.
 
   | Class | Lights: stance / stamina | Thrusts | Hit-stop | Feel |
   |---|---|---|---|---|
@@ -986,7 +1004,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Boar | "Boar" | 1 | 10/2/2/2/2 (the player's) | 100 | passive | tusks (= punch, 3–6) | Boar Skin 75% | no |
   | Bandit | "Bandit" | 2 | 12/3/2/2/2 | 120 | aggressive, aggro 10 | Rusty Knife (5–8) | Rusty Knife 40% | no |
   | Wolf | "Wolf" | 1 | 8/6/70/2/2 | 80 | aggressive, aggro 12 | bite (= punch, 7–10, quick) | Wolf Pelt 60% | no |
-  | Guard | "Guard" | 4 | 16/5/3/2/4 | 160 | passive | Iron Shortsword (11–15) | – | yes (E) |
+  | Guard | "Guard" | 4 | 16/5/3/2/4 | 160 | passive | Iron Shortsword (11–15) | Short Bow 50% | yes (E) |
   | Bandit Chief | "Bandit Chief" | 3 | 11/3/2/2/2 | 110 | aggressive, aggro 10 | Iron Shortsword (9–13) | Iron Helm 100% | no |
   | Barrow Ghoul | "Barrow Ghoul" | 3 | 7/4/2/2/2 | 70 | aggressive, aggro 8 | claws (= punch, 5–8) | Bone Charm 30% | no |
 

@@ -326,14 +326,16 @@ static void playerTab(Session& session, float& armorK, DebugActions& actions, co
         const WeaponClassDef& c = weaponClass(classOf(w));
         ImGui::Text("%s: %s, speed x %.2f (weapon) x %.2f (class), hit-stop x %.2f", w ? itemType(w).name : "Bare hands", c.name.c_str(),
                     double(weaponAttack(w).speed), double(c.speed), double(c.hitStop));
-        ImGui::Text("Reach %.2f blocks, %.0f degrees either side%s", double(c.reach), double(c.arc),
-                    c.twoHanded ? ", always two-handed (ADR-049)" : "");
+        if (c.ranged) ImGui::TextUnformatted("Ranged: shoots arrows, always two-handed (ADR-050; Bows and projectiles below)");
+        else ImGui::Text("Reach %.2f blocks, %.0f degrees either side%s", double(c.reach), double(c.arc),
+                         c.twoHanded ? ", always two-handed (ADR-049)" : "");
         ImGui::TextDisabled("Edit data/weapon_classes.json, then Data > Reload defs.");
         if (ImGui::BeginTable("moves", 11, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
             for (const char* h : {"move", "s", "hold", "hit", "chain", "cancel", "dmg", "stance", "stam", "lunge", "kind"}) ImGui::TableSetupColumn(h);
             ImGui::TableHeadersRow();
             for (size_t i = 1; i < size_t(Move::Count); ++i) {
                 const MoveSpec& ms = c.moves[i];
+                if (ms.seconds <= 0) continue;  // not this class's (a bow has only the shot; melee classes no shot)
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn(), ImGui::TextUnformatted(kMoveNames[i]);
                 for (float v : {ms.seconds, ms.holdAt, ms.impact, ms.chain, ms.cancel, ms.damage, ms.stance, ms.stamina, ms.lunge})
@@ -485,6 +487,38 @@ static void playerTab(Session& session, float& armorK, DebugActions& actions, co
         if (ImGui::Button("Rest now")) rest(p), session.restPoint = p.pos;
         ImGui::SameLine();
         if (ImGui::Button("Forget rest point")) session.restPoint.reset();
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Bows and projectiles (ADR-050)")) {
+        RangedTuning& r = gRanged;
+        ImGui::SliderInt("Arrows", &p.arrows, 0, kQuiver, std::format("%d of {}", kQuiver).c_str());
+        ImGui::Text("%s, aiming %s (%.2f)", ranged(p) ? "A bow in hand" : "No bow in hand (Items: give a Short Bow)", p.aiming ? "yes" : "no", double(p.aimBlend));
+        if (p.move == Move::Shot)
+            ImGui::ProgressBar(drawOf(p), {-FLT_MIN, 0}, std::format("{} {:.0f}%", p.hitPending ? "drawn" : "loosed", drawOf(p) * 100).c_str());
+        int flying = int(std::ranges::count(session.projectiles, false, &Projectile::stuck));
+        ImGui::Text("Projectiles: %d flying, %d stuck (at most %zu)", flying, int(session.projectiles.size()) - flying, kMaxProjectiles);
+        for (size_t i = 0; i < std::min<size_t>(session.projectiles.size(), 8); ++i) {
+            const Projectile& a = session.projectiles[i];
+            ImGui::Text("  %s at %.1f %.1f %.1f, %.1f b/s, %.1f s, power %.2f, stance %.1f", a.stuck ? "stuck " : "flying", double(a.pos.x),
+                        double(a.pos.y), double(a.pos.z), double(a.stuck ? 0 : glm::length(a.vel)), double(a.age), double(a.power), double(a.stance));
+        }
+        ImGui::SliderFloat("Gravity", &r.gravity, 0, 40, "%.1f b/s^2");
+        ImGui::SliderFloat("Speed, no draw", &r.minSpeed, 1, 100, "%.0f b/s");
+        ImGui::SliderFloat("Speed, full draw", &r.maxSpeed, 1, 150, "%.0f b/s");
+        ImGui::Text("Farthest at full draw: %.0f blocks (45 degrees, level ground)", double(r.maxSpeed * r.maxSpeed / std::max(r.gravity, 0.01f)));
+        ImGui::SliderFloat("Draw to full", &r.drawSeconds, 0.05f, 3, "%.2f s at the hold pose");
+        ImGui::SliderFloat("Power, no draw", &r.minPower, 0, 1, "x %.2f damage and stance");
+        ImGui::SliderFloat("Hip shot pitch", &r.hipPitch, -0.3f, 0.5f, "%.2f rad");
+        ImGui::SliderFloat("Walk while aiming", &r.aimWalk, 0.1f, 6, "%.1f b/s");
+        ImGui::SliderFloat("Flight time", &r.flightSeconds, 0.5f, 20, "%.1f s");
+        ImGui::SliderFloat("Stuck for", &r.stuckSeconds, 0, 300, "%.0f s");
+        ImGui::SliderFloat("Pick up within", &r.pickupReach, 0, 4, "%.1f blocks");
+        ImGui::SliderFloat("Body box half-width", &r.hitRadius, 0.1f, 1, "%.2f blocks");
+        if (ImGui::Button("Fill the quiver")) p.arrows = kQuiver;
+        ImGui::SameLine();
+        if (ImGui::Button("Clear projectiles")) session.projectiles.clear();
+        ImGui::SameLine();
+        if (ImGui::Button("Reset bows")) r = RangedTuning{};
         ImGui::TreePop();
     }
 

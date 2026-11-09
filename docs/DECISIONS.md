@@ -2144,3 +2144,103 @@
     itself at a sword's length.
   - **Later:** colossal weapons and great hammers can be more two-handed classes with data alone
     (plus poses and a model).
+
+## ADR-050: Bows, arrows and projectiles
+
+- **Status:** accepted (2026-11-09)
+- **Context:**
+  - The roadmap's ranged section: "Bows: draw and hold, aim mode (over the shoulder), arrows as items,
+    arc and drop", "Projectiles in the sim: travel, hit detection, sticking into terrain, blocked by
+    guards" and "Lock-on aiming for ranged weapons". Crossbows, throwables, ranged enemies and staff
+    spells all need the same projectiles.
+  - Every hit was a melee swing landing at its impact frame on whatever `inReach` found, resolved in
+    one block of `updateCombat`.
+  - The inventory has no stacks: containers hold one item per slot.
+  - Foundations (TALENTS.md): no new use-based skills; pressed actions share one path.
+- **Decision:**
+  - **Projectiles in the sim** (`projectile.h/.cpp`, `Session::projectiles`): an arrow is a tip
+    position, a velocity, the bow that loosed it, its power and stance damage. Each tick it falls
+    under gravity (10 blocks/s², flatter than bodies' 28) and is swept from where it was to where it
+    goes: a voxel ray (`raycast`, Amanatides-Woo) against the terrain and a segment-box test against
+    every living, attackable body (`hitBox`: 0.4 blocks either side, as tall as its model), the
+    nearest first. Nothing tunnels: a test fires 600 blocks/s at a one-block wall. No randomness in
+    flight; at most 64 (the oldest stuck one goes first, else the oldest); gone after 5 s in flight
+    or on leaving the world that's in.
+  - **One hit path:** the player's hit on an NPC moved out of `updateCombat` into `strike()`; swings
+    and arrows both call it (crit roll, resistance, `resolveHit`, the NPC's guard from the direction
+    it came from, statuses, noises, XP, Killed, stance). A swing (`melee`) also freezes both bodies,
+    bounces off a greatshield and shakes the camera; an arrow does none of those. The arrow's roll
+    and skill are its bow's (the player's swing weapon, set for the moment of the hit). A dodge's
+    i-frames let an arrow through, and it flies on. The rng draws and story bands are unchanged.
+  - **Terrain:** an arrow stops where it went in and stays 30 s; walking within 1.3 blocks of it
+    picks it back up (a quiver not yet full). It makes a thunk by the block it hit.
+  - **The bow** (an appended `bow` class, `ranged` and `two_handed`): its one move is the shot
+    (`Move::Shot`, appended; a ranged class has only it, melee classes don't have it, and the data
+    check says so). The attack button draws at once (no tap-or-hold wait): the windup to the hold
+    point is most of the draw, then it holds there while the button is down, the draw building over
+    `drawSeconds` (0.6 s) to full (a creak; it holds on at full draw, no auto-release). Letting go
+    looses at the impact frame: speed 20 to 55 blocks/s and x0.4 to x1 the damage and stance by the
+    draw. A shot costs 8 stamina and an arrow; with the quiver empty the press does nothing. A roll
+    or the flask lets a draw down (the arrow kept). No guard and no parry with a bow; no riposte or
+    backstab either (an arrow can't be one). Short Bow: 5–8 pierce, agility B 1.1, strength E 0.3,
+    weight 2, save id 19.
+  - **Aim mode:** the guard button with a bow aims instead: the camera comes in over the right
+    shoulder (3 blocks back, 1.1 to the right; a finer mouse), a crosshair shows (closing in with the draw), the body walks
+    at 2.5 blocks/s facing the camera, and the shot goes straight at the first terrain or body under
+    the crosshair (the arrow still drops: far shots need holding over). Outside aim mode a shot goes
+    the way the body faces (3 degrees up), or locked on, the low arc that comes down on the target
+    (45 degrees when it's out of reach). NPCs see a drawn bow as a threat as a swing: one that would
+    parry guards instead.
+  - **Arrows as a count** (`Combatant::arrows`, at most `kQuiver` 30): resting by a fire or getting
+    back up fills it, picking arrows up tops it up. Saved in a new `ARRW` section (missing: full).
+  - **Pose and models:** `ModelBow` (a bowed stave and a straight string), `ModelBowDrawn` (the string
+    pulled back to a point) and `ModelArrow`, drawn per projectile like a held item. The bow hangs from
+    the left hand at the side; raised (aiming, or through a shot) the body turns side on, the bow out in
+    front of the face and the right hand drawing the string to the cheek, a nocked arrow between
+    the hands until the release.
+  - **Found:** guards drop the bow half the time (they're passive: you have to start it).
+  - **Sounds:** a draw creak (and a last one at full draw), the loose's twang, a thunk into terrain
+    (pitched by stone, wood or earth), an arrow into flesh; CC0 (CREDITS.md).
+  - **HUD and UI:** an arrow and the quiver's count right of the health bar with a bow in hand (in
+    place of the 2H tag), the crosshair, a bow icon, a tooltip line. Debug window, Player tab: a
+    "Bows and projectiles" node (arrows, the draw, every knob, the live projectiles, clear, reset).
+  - **Skill:** a bow earns One-Handed XP, as every weapon does until talents (foundation 5).
+- **Alternatives considered:**
+  - Item stacks for arrows: real items you loot and carry, but a save format change, stack UI in the
+    bags and splitting rules, for one item kind. A count like the flasks is a few lines; arrow items
+    can come with crafting.
+  - Hitscan shots (a ray at release): no flight, no drop, nothing to dodge, and the same code would
+    not serve spells or thrown pots.
+  - Spawning arrows from `updateCombat`: it has no session (no projectile list, no aim point); a
+    `loosed` flag hands the release to `step()`.
+  - Auto-releasing at full draw (as a charged heavy does): a bow is held drawn to aim.
+  - A charge on the heavy button only, light shots on a tap: Elden Ring's bows have no draw; Skyrim's
+    draw by hold time reads better with one button, and the aim mode needs the guard button free.
+  - Bows for NPCs now: their AI only swings and spaces itself at a sword's length; archers that keep
+    their distance are the next ranged step, and the data check refuses a ranged NPC weapon until then.
+- **Consequences:**
+  - **Balance:** melee is unchanged (`strike()` draws the rng as the old block did; the story
+    fights and level bands measure the same). A new level band for the bow: the starting player kills
+    a level 1 boar in 9 full draws (about 7 s) and a level 2 bandit in 13 (about 10 s), against the
+    sword's 11 swings (10.8 s) and 12 (11.8 s): a little quicker, from range, for an arrow a shot.
+  - **Tests:** `bows` checks the class (only the shot) and its data checks, the draw (at once, held at
+    full draw, loosed on letting go, the noises), a tap's slow weak shot, range by draw against the
+    arc's formula, an empty quiver, letting a draw down with a roll, aim mode (no guard or parry, the
+    slow walk, straight at the crosshair's point), gravity on the step, no tunnelling up to 600 blocks/s,
+    pickup (not into a full quiver), expiry stuck and in flight, the cap, hits through `strike()` with
+    the bow's roll and XP, the same shots giving the same result, a kill's Killed, a guard blocking from
+    the front (no hit-stop, no recoil) and not from behind, a dodge letting it through, lobbed shots
+    hitting a locked-on dummy 30 blocks off from a tap and a full draw, the aim maths, the pose (hanging
+    out of the ground, raised, drawn, an arrow until the release), rest filling the quiver, and the
+    sounds. The save test round-trips the count and rejects bad ones; an NPC that always parries guards
+    a drawn bow. Mutation-checked: each of 58 rules broken alone fails a test (a 56th, aiming not cutting
+    a shot's recovery, changed nothing and was dropped).
+  - **Performance:** arrows are model instances like held items. A/B on the story world, 4 alternating
+    runs each against e6e6a90: the display holds every run at 120 fps (8.33 ms, p99 9.4–9.6 ms) for the
+    old build, this one and this one with 64 arrows on screen; even 16,000 arrows (250 times the cap)
+    hold 120 fps with an unchanged p99, so their cost is below what the frame cap lets us measure.
+  - **Limits:** an arrow's hit reads the player as it is when it lands (gear swapped mid-flight
+    counts); an arrow that sticks within reach (shot into a wall at point-blank) is picked straight back up.
+  - **Later:** crossbows (load and fire), throwables and archer enemies on the same projectiles;
+    staff spells as projectiles with their own model; arrows as items with crafting; arrows stuck in
+    bodies.

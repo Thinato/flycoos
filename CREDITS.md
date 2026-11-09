@@ -21,6 +21,7 @@ Changes: trimmed to single calls, levelled, faded.
 |---|---|---|
 | [Swishes Sound Pack](https://opengameart.org/content/swishes-sound-pack) | artisticdude | swing_fast, swing_shield |
 | [Zombies Sound Pack](https://opengameart.org/content/zombies-sound-pack) | artisticdude | ghoul_hurt, ghoul_windup |
+| [Medieval sound effects - Weapon Textures](https://opengameart.org/content/medieval-sound-effects-weapon-textures) | Ben Jaszczak & Brian Nelson (Still North Media) | bow_draw, bow_loose |
 | [Metal Impact Sounds](https://opengameart.org/content/metal-impact-sounds) | BMacZero | block_perfect |
 | [Wolf Monster Sound](https://opengameart.org/content/wolf-monster-sound) | CaveboyTup | wolf_attack |
 | [Fantozzi's Footsteps (Grass/Sand & Stone)](https://opengameart.org/content/fantozzis-footsteps-grasssand-stone) | Fantozzi | step_sand, step_stone |
@@ -32,7 +33,10 @@ Changes: trimmed to single calls, levelled, faded.
 | [Music Jingles: jingles_PIZZI07.ogg](https://kenney.nl/assets/music-jingles) | Kenney (kenney.nl) | level_up, quest |
 | [Dog Snarl Grunt Grumble](https://opengameart.org/content/dog-snarl-grunt-grumble) | qubodup | wolf_windup |
 | [Liquid Bottle Drink Set](https://opengameart.org/content/liquid-bottle-drink-set) | qubodup | flask_drink, flask_empty, flask_open |
+| [Impact](https://opengameart.org/content/impact) | qubodup | arrow_flesh, arrow_hit |
+| [Wood Wobbling & Rattling](https://opengameart.org/content/wood-wobbling-rattling) | qubodup | arrow_hit |
 | [40 CC0 water / splash / slime SFX](https://opengameart.org/content/40-cc0-water-splash-slime-sfx) | rubberduck | swim, status_bleed, status_poison |
+| [75 CC0 breaking / falling / hit sfx](https://opengameart.org/content/75-cc0-breaking-falling-hit-sfx) | rubberduck | arrow_hit |
 | [80 CC0 creature SFX](https://opengameart.org/content/80-cc0-creature-sfx) | rubberduck | wolf_attack |
 | [80 CC0 RPG SFX](https://opengameart.org/content/80-cc0-rpg-sfx) | rubberduck | charge, hit_blade, rest, status_frost |
 | [10 Impact/Shield Blocks](https://opengameart.org/content/10-impactshield-blocks) | StarNinjas | block_shield |

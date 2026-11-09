@@ -245,7 +245,8 @@ std::array<int, size_t(Status::Count)> buildUp(const Combatant& attacker, Player
 // A flask's drink frame (ADR-047): a charge heals `b` its Flask healing share of max health; with none
 // left, nothing (the gesture's Noise::Empty). updateCombat calls it when a Drink move reaches its impact.
 void drink(Player& b);
-// Rests `b` (ADR-047): its flasks filled to the Flasks stat, full health and stamina, statuses gone.
+// Rests `b` (ADR-047): its flasks filled to the Flasks stat, its quiver to kQuiver (ADR-050), full health and
+// stamina, statuses gone.
 void rest(Player& b);
 
 // An NPC's attack (main-hand weapon, or a punch): the next light of its chain toward `aim` (XZ
@@ -296,10 +297,28 @@ constexpr float kXpWearHalving = 20, kXpWearSeconds = 10, kTrainingRate = 0.25f;
 // count; the XP scales with the attack's average base damage (never the final hit), the NPC's wear
 // and, for harmless ones, kTrainingRate. A kill gives the creature's `xp` times its wear, once per kill.
 void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed);
+// A hit by the player that reached `target` (not parried, not rolled through): a swing's at its impact
+// frame, or an arrow's (ADR-050). How it goes is the same for both: a random critical (the attacker's
+// CritChance, for CritDamage more; a riposte is always one), the target's resistance, resolveHit with
+// the attacker's swingWeapon, its guard from `from` (part of the damage and its stamina; empty, it
+// breaks), status build-up, the noises, XP (awardHitXp), Killed into `events`, staggerHit. A swing's
+// (`melee`) also freezes both bodies (hit-stop), bounces off a greatshield's guard and shakes the camera.
+struct Strike {
+    float power = 1;        // x the hit before armor: the move's damage (a heavy, a charge, a riposte, a draw)
+    float stance = 0;       // its stance damage
+    glm::vec3 from{};       // where it comes from: a guard facing this way takes it
+    DamageType type = DamageType::Slash;
+    bool riposte = false;   // a riposte or backstab: always critical, past any guard, knocks it down
+    bool canCrit = true;    // may be a random critical
+    bool melee = true;      // a swing (an arrow: false)
+};
+void strike(Player& player, Entity& target, const Strike& s, std::mt19937& rng, float armorK = kArmorK,
+            std::vector<GameEvent>* events = nullptr);
 // Combat timers, the moves' clocks, stance recovery, status build-up and timed effects (poison's ticks,
 // a kill by them the player's) and out-of-combat regeneration for everyone; lands
 // every swing at its impact frame (the player's on entities, entities' on the player) through
-// resolveHit (`armorK` is the K of armorReduction) and awardHitXp; brings the dead back home. Any hit
+// resolveHit (`armorK` is the K of armorReduction) and awardHitXp (the player's through strike()); brings the dead back home.
+// A bow's shot reaching its release sets the player's `loosed` instead (step() looses the arrow). Any hit
 // but the riposte move's may be a random critical (the attacker's CritChance, for CritDamage more). A kill
 // by the player raises Killed into `events`. The player's moves hit with their damage and stance
 // (staggerHit) and freeze both bodies a moment (hit-stop). An NPC's hit passes through a rolling

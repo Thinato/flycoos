@@ -197,7 +197,7 @@ void loadWeaponClasses(const File& f, Defs& d) {
     std::array<bool, size_t(WeaponClass::Count)> seen{};
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
-        r.allow({"id", "copy_from", "name", "speed", "hit_stop", "two_handed", "reach", "arc", "moves"});
+        r.allow({"id", "copy_from", "name", "speed", "hit_stop", "two_handed", "reach", "arc", "ranged", "moves"});
         auto at = std::ranges::find(kWeaponClassIds, r.id());
         if (at == std::end(kWeaponClassIds)) throw r.fail("id", oneOf(kWeaponClassIds));
         size_t c = size_t(at - std::begin(kWeaponClassIds));
@@ -212,6 +212,12 @@ void loadWeaponClasses(const File& f, Defs& d) {
             w.twoHanded = r.fields["two_handed"].get<bool>();
             if (w.twoHanded && c == size_t(WeaponClass::Fists)) throw r.fail("two_handed", "bare hands have nothing to hold");
         }
+        // Bows (ADR-050): a ranged class shoots; it takes both hands, and its one move is the shot.
+        if (r.fields.contains("ranged")) {
+            if (!r.fields["ranged"].is_boolean()) throw r.fail("ranged", "must be true or false");
+            w.ranged = r.fields["ranged"].get<bool>();
+            if (w.ranged && !w.twoHanded) throw r.fail("ranged", "a ranged class takes both hands: needs \"two_handed\": true");
+        }
         w.reach = float(r.number(r.fields, "reach", 1, 4, 2, false));
         w.arc = float(r.number(r.fields, "arc", 15, 120, 60, false));
         w.arcCos = float(std::cos(double(w.arc) * std::numbers::pi / 180));  // in double: 60 gives exactly 0.5f, the old test
@@ -220,13 +226,16 @@ void loadWeaponClasses(const File& f, Defs& d) {
         for (const auto& [k, v] : ms.items())
             if (auto m = std::ranges::find(kMoveIds, k); m == std::end(kMoveIds) || codeMove(Move(m - std::begin(kMoveIds))))
                 throw r.fail("moves." + k, "not an attack move (none, parry and drink are code's)");
+            else if ((Move(m - std::begin(kMoveIds)) == Move::Shot) != w.ranged)
+                throw r.fail("moves." + k, w.ranged ? "a ranged class has only the shot" : "only a ranged class shoots (\"ranged\": true)");
         for (size_t m = 0; m < size_t(Move::Count); ++m) {
             if (codeMove(Move(m))) {
                 w.moves[m] = Move(m) == Move::Parry ? kParrySpec : Move(m) == Move::Drink ? kDrinkSpec : MoveSpec{};
                 continue;
             }
+            if ((Move(m) == Move::Shot) != w.ranged) continue;  // a bow has only the shot, the rest only melee classes (empty)
             std::string field = std::string("moves.") + kMoveIds[m];
-            if (!ms.contains(kMoveIds[m])) throw r.fail(field, "missing (every class has every attack move)");
+            if (!ms.contains(kMoveIds[m])) throw r.fail(field, w.ranged ? "missing (a ranged class has the shot)" : "missing (every class has every attack move)");
             const json& v = ms[kMoveIds[m]];
             if (!v.is_object()) throw r.fail(field, "must be an object {seconds, hold, hit, chain, cancel, damage, stance, stamina, lunge}");
             for (const auto& [k, x] : v.items())
@@ -443,6 +452,8 @@ void loadCreatures(const File& f, Defs& d) {
         if (t.chaseSpeed <= 0 && t.temper != Temper::Harmless) throw r.fail("chase_speed", "missing (a creature that fights chases)");
         t.weapon = item("weapon");
         if (t.weapon && d.items[t.weapon].slot != SlotMainHand) throw r.fail("weapon", std::format("'{}' is not a main_hand item", d.itemIds[t.weapon]));
+        if (t.weapon && d.weaponClasses[size_t(d.items[t.weapon].weaponClass)].ranged)  // its AI only swings (archers: later)
+            throw r.fail("weapon", std::format("'{}' shoots: creatures can't use ranged weapons yet", d.itemIds[t.weapon]));
         t.loot = item("loot");
         t.lootChance = float(r.number(r.fields, "loot_chance", 0, 1, 0, false));
         if (t.lootChance > 0 && !t.loot) throw r.fail("loot_chance", "no 'loot' to drop");

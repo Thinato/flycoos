@@ -51,8 +51,8 @@ GPU debug layer.
 | Mouse | Orbit the camera |
 | Wheel | Zoom |
 | T (hold) | Fast-forward time (60×) |
-| Left mouse | Attack (Elden Ring style, ADR-035): tap for the next of four light swings (a chain), hold for a heavy that charges while held. Running, late in a roll, in the air (it strikes on landing), right after a block (a guard counter) or at an enemy on its knee (a riposte) it's a different attack. Presses wait a moment for the current swing |
-| Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks. A shield in the off hand guards better; a tower shield makes weak attacks bounce off. Raised just as a hit lands it's a perfect guard (ADR-041): no damage, half the stamina, a bright clink |
+| Left mouse | Attack (Elden Ring style, ADR-035): tap for the next of four light swings (a chain), hold for a heavy that charges while held. Running, late in a roll, in the air (it strikes on landing), right after a block (a guard counter) or at an enemy on its knee (a riposte) it's a different attack. Presses wait a moment for the current swing. With a bow (ADR-050): hold to draw (longer, farther and harder), let go to loose an arrow |
+| Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks. A shield in the off hand guards better; a tower shield makes weak attacks bounce off. Raised just as a hit lands it's a perfect guard (ADR-041): no damage, half the stamina, a bright clink. With a bow it aims instead (ADR-050): over the shoulder, a crosshair, walking slowly |
 | Q | Parry (ADR-036) with a buckler or heater shield, or with the off hand empty a knife or bare fists (ADR-041): timed just before a hit lands, it deflects the attack and leaves the attacker open to a riposte (left mouse); mistimed, it's a weak guard |
 | R | Drink from the healing flask (ADR-047): a slow walk for a second, then 40% of your health back; a hit that staggers you first cancels it, the charge kept. The red flask by the health bar counts the charges (3); empty, you just shake it |
 | F | Two-hand the weapon, or let go (ADR-048): strength counts 1.5x and the weapon guards better, but the shield goes on your back and nothing parries. A 2H tag shows right of the health bar. Great weapons are always two-handed (ADR-049) |
@@ -300,6 +300,14 @@ Greataxe** chops and cleaves. Both are always held in both hands (strength 1.5x,
 the shield on your back, no parry; F does nothing), swing slowly for heavy stamina, break stances
 fastest, can't be interrupted in their heavies' windups, and reach farther (2.6 and 2.5 blocks)
 and wider. Bandits rarely drop the greatsword, barrow ghouls the greataxe.
+
+**Bows** (ADR-050): the **Short Bow** shoots arrows. Hold the attack button to draw (the longer, up
+to about a second, the faster, farther and harder the arrow flies) and let go to loose. Hold the
+guard button to aim over the shoulder with a crosshair; otherwise arrows fly the way you face, or
+arc onto your lock-on target. Arrows fall as they fly, stick where they land (walk over them to
+pick them up), and a shield in front blocks them; a roll lets them through. The quiver (30, shown
+right of the health bar) fills when you rest by a fire. No guard or parry with a bow in hand.
+Guards drop it half the time.
 
 **Criticals** (ADR-045): attack an enemy from behind while it isn't attacking or reeling to
 **backstab** it: it's caught, hit for the riposte's damage and knocked down. Enemies that have

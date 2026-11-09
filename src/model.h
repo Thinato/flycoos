@@ -19,9 +19,14 @@ enum Part { Head, Torso, HandL, HandR, FootL, FootR, PartCount };
 enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelBoar, ModelBandit, ModelSword, ModelDagger, ModelIronArmor,
              ModelWolf, ModelGuard, ModelChief, ModelGhoul, ModelBuckler, ModelHeater, ModelTower, ModelAxe, ModelMace,
              ModelFlask, ModelFlaskEmpty,  // the healing flask (ADR-047), held while drinking
-             ModelGreatsword, ModelGreataxe, ModelCount };  // great weapons (ADR-049), held in both hands
+             ModelGreatsword, ModelGreataxe,  // great weapons (ADR-049), held in both hands
+             ModelBow, ModelBowDrawn, ModelArrow, ModelCount };  // a bow (its string drawn back) and its arrow (ADR-050)
 Grid buildPart(Model model, Part part);
 Model heldModel(ItemId weapon);
+// What `p` has in hand drawn as: heldModel, but a bow with its string well back is ModelBowDrawn (ADR-050).
+Model heldModel(const Player& p);
+// An arrow's pose (ADR-050) with its tip at `tip`, pointing along `dir`.
+glm::mat4 arrowPose(glm::vec3 tip, glm::vec3 dir);
 Model shieldModel(ItemId shield);  // an off-hand shield's, by its size (ADR-036)
 // Which model each part of `model` is drawn from: its own, or the armor worn over it. Greaves have
 // no part (the rig has no legs), so they don't show.
@@ -33,5 +38,7 @@ std::array<Model, PartCount> partModels(Model model, const Inventory& inv);
 // `alpha`: where between its last two ticks the body is drawn (see drawPos). With a shield in the off
 // hand, `shield` gets its pose (strapped to the left forearm: at the side, raised by the guard, swept
 // out by a parry). Drinking (ADR-047), `flask` gets the flask's pose (in the left hand, tipped to the lips).
+// A bow (ADR-050) is held in the left hand: down at the side, raised to aim or shoot with the right hand
+// drawing the string back; `arrow` gets the nocked arrow's pose while there is one (a draw, aiming).
 std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model, glm::mat4* held = nullptr, float alpha = 1,
-                                           glm::mat4* shield = nullptr, glm::mat4* flask = nullptr);
+                                           glm::mat4* shield = nullptr, glm::mat4* flask = nullptr, glm::mat4* arrow = nullptr);

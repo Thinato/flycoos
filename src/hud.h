@@ -14,7 +14,8 @@ unsigned uiColor(float r, float g, float b, float a = 1);
 
 // In-game overlay on ImGui's background draw list: NPC nameplates (level, name, health bar),
 // speech balloons, damage numbers, the "[E] Talk"/"[E] Loot" hint over `target`, the player's
-// health bar with its flask charges beside it (ADR-047), the knocked-out message, the lock-on dot on
+// health bar with its flask charges beside it (ADR-047) and, with a bow, the quiver's arrows and the
+// aim mode's crosshair (ADR-050), the knocked-out message, the lock-on dot on
 // `locked`'s chest, and "[E] Rest" when `rest` (canRest) and there's no `target`.
 // Bodies are where poseModel draws them `tickAlpha` into the tick. Call between DebugUI::begin and DebugUI::end.
 void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world, const Player& player,
