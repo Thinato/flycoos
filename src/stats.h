@@ -20,6 +20,8 @@ constexpr int kHealthPerStamina = 10;
 constexpr float kHastePerAgility = 0.01f;  // +1% attack speed per point
 constexpr float kRegenPerSpirit = 0.5f;    // health per second, out of combat only
 constexpr float kCombatSeconds = 5;        // dealing or taking damage keeps you in combat this long
+constexpr float kBaseCritChance = 0.05f;   // every hit's chance to be a critical one (ADR-045)...
+constexpr float kBaseCritDamage = 0.5f;    // ...which deals this much more
 
 // A physical attack: damage range, and base swing time in seconds (WoW's "weapon speed").
 struct Attack { int minDamage, maxDamage; float speed; };
@@ -29,12 +31,17 @@ constexpr Attack kPunch{1, 4, 1.0f};  // unarmed
 // its gear (and later talents and buffs), per stat: (base + sum of flat) x (1 + sum of increased) x
 // product of (1 + more). The derived stats start from the final attributes, then take their own modifiers.
 enum class Stat : uint8_t { Stamina, Strength, Agility, Intellect, Spirit,              // the five attributes
-                            MaxHealth, Damage, Haste, Regen, Armor, DamageTaken, Count };  // derived from them
+                            MaxHealth, Damage, Haste, Regen, Armor, DamageTaken,       // derived from them
+                            CritChance, CritDamage, Count };                           // critical hits (ADR-045)
 inline constexpr const char* kStatIds[] = {"stamina", "strength", "agility", "intellect", "spirit", "max_health",
-                                           "damage", "haste", "regen", "armor", "damage_taken"};  // in data files
+                                           "damage", "haste", "regen", "armor", "damage_taken",
+                                           "crit_chance", "crit_damage"};  // in data files
 inline constexpr const char* kStatNames[] = {"Vitality", "Strength", "Agility", "Intellect", "Spirit", "Max health",
-                                             "Damage", "Attack speed", "Regen", "Armor", "Damage taken"};
+                                             "Damage", "Attack speed", "Regen", "Armor", "Damage taken",
+                                             "Crit chance", "Crit damage"};
 static_assert(std::size(kStatIds) == size_t(Stat::Count) && std::size(kStatNames) == size_t(Stat::Count));
+// Stats whose values are fractions the UIs show as percents (a flat +0.05 crit chance is +5%).
+constexpr bool percentStat(Stat s) { return s == Stat::Haste || s == Stat::CritChance || s == Stat::CritDamage; }
 enum class ModKind : uint8_t { Flat, Increased, More };  // increased and more are fractions: 0.1 = 10%
 // The use-based skills (ADR-027). Code awards their XP, so the set is closed; data/skills.json has
 // their numbers. Saves name them by id.
@@ -50,7 +57,8 @@ struct Modifier {
 };
 
 // Final stat values; consumers round (maxHealth, strengthBonus). Damage and DamageTaken multiply hits
-// (1 = none), Haste adds attack speed (0.1 = 10% faster, -0.5 = half as fast).
+// (1 = none), Haste adds attack speed (0.1 = 10% faster, -0.5 = half as fast), CritChance is a hit's
+// chance to be critical (0.05 = 5%, 1 and over: every hit) and CritDamage what a critical hit adds (0.5 = x1.5).
 struct StatSheet {
     std::array<float, size_t(Stat::Count)> v{};
     constexpr float operator[](Stat s) const { return v[size_t(s)]; }
@@ -88,6 +96,8 @@ constexpr StatSheet compute(const Stats& base, std::span<const Modifier> mods = 
     apply(Stat::Regen, spirit * kRegenPerSpirit);
     apply(Stat::Armor, 0);  // gear adds it as flat modifiers
     apply(Stat::DamageTaken, 1);
+    apply(Stat::CritChance, kBaseCritChance);
+    apply(Stat::CritDamage, kBaseCritDamage);
     return out;
 }
 

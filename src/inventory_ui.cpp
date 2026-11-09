@@ -169,7 +169,8 @@ void tooltip(ItemId id, SlotRef where) {
     ImGui::PushStyleColor(ImGuiCol_Text, uiColor(0.4f, 0.9f, 0.4f));
     for (const Modifier& m : t.mods) {
         const char* stat = kStatNames[size_t(m.stat)];
-        if (m.kind == ModKind::Flat) ImGui::Text("%+g %s", double(m.value), stat);
+        if (m.kind == ModKind::Flat && percentStat(m.stat)) ImGui::Text("%+g%% %s", double(m.value) * 100, stat);
+        else if (m.kind == ModKind::Flat) ImGui::Text("%+g %s", double(m.value), stat);
         else ImGui::Text("%+.0f%% %s%s", double(m.value) * 100, m.kind == ModKind::More ? "more " : "", stat);
     }
     ImGui::PopStyleColor();
@@ -273,6 +274,8 @@ void attributes(const Player& p, float armorK) {
     statRow("Damage/sec", nullptr, "%.1f", float(lo + hi) / 2 / swing);
     gearRow("Regen", "Health per second, out of combat", "%.1f /s", s, base, Stat::Regen);
     statRow("Armor", "From gear, skills and talents", "%.0f", double(s[Stat::Armor]));
+    statRow("Crit chance", "A hit's chance to be critical, with this weapon (ADR-045)", "%.1f%%", double(w[Stat::CritChance]) * 100);
+    statRow("Crit damage", "What a critical hit deals more. Backstabs and ripostes are their own moves", "+%.0f%%", double(w[Stat::CritDamage]) * 100);
     float load = equipWeight(p.inv), most = maxEquipLoad(p, p.tuning);  // ADR-039
     std::string loadTip = std::format("What the worn gear weighs, of {:.1f} (from vitality). Under {:.0f}% it rolls light and far, "
                                       "over {:.0f}% heavy and slow, over 100% it can't roll or run.", most, p.tuning.lightLoad * 100, p.tuning.heavyLoad * 100);
@@ -384,8 +387,8 @@ namespace {
 std::string describe(const Modifier& m, int times) {
     float v = m.value * float(times);
     const char* how = m.kind == ModKind::More ? (v < 0 ? "less" : "more") : (v < 0 ? "reduced" : "increased");
-    std::string out = m.kind == ModKind::Flat ? std::format("{:+g} {}", double(m.stat == Stat::Haste ? v * 100 : v),
-                                                           m.stat == Stat::Haste ? "% attack speed" : kStatNames[size_t(m.stat)])
+    std::string out = m.kind == ModKind::Flat ? std::format("{:+g}{} {}", double(percentStat(m.stat) ? v * 100 : v),
+                                                           percentStat(m.stat) ? "%" : "", m.stat == Stat::Haste ? "attack speed" : kStatNames[size_t(m.stat)])
                                               : std::format("{:g}% {} {}", double(std::abs(v) * 100), how, kStatNames[size_t(m.stat)]);
     if (m.with != Skill::Count) out += std::format(" ({} hits)", skillDef(m.with).name);
     return out;

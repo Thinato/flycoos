@@ -1811,3 +1811,61 @@
     - The `weaponClasses` test pins the sword's numbers and each class's character, damage types and
       hit-stop, and checks every class's chain lands.
     - The review page shows each class's chain and heavies.
+
+## ADR-045: Criticals: backstabs, random critical hits, camera shake
+
+- **Status:** accepted (2026-11-09)
+- **Context:**
+  - The roadmap's "Backstabs and criticals" and, from Feel, "Camera shake on heavy hits" and "a crit marker".
+  - The talent plan (docs/TALENTS.md) wants crit chance and crit damage as stats that items, buffs
+    and later talents raise.
+  - Ripostes were the only critical: an attack at a stance-broken NPC.
+- **Decision:**
+  - **Backstabs:** an attack from behind an NPC (within 60 degrees of its back, in reach and facing
+    it) is a critical. The NPC must not be attacking, rolling or reeling, and must not have been hurt
+    in the last 2 seconds, since it turns to face its attacker.
+    - It is the riposte move, with the class's riposte numbers (sword x3, dagger x3.5). Elden Ring
+      also gives both the same multiplier.
+    - The move holds its NPC until the hit lands: it can't turn or act. The hit knocks it down
+      (1.2 s), like a riposte.
+    - Each tick the hold and the hit find the target again: an NPC still behind the player, held or
+      broken. A downed, just-hurt or rolling NPC is never caught, so a second NPC in reach can't take
+      the backstab meant for the first.
+    - A blocked crit is shown and heard as a block. The camera doesn't shake while the sim is paused
+      (the editor, the F2 note).
+    - NPCs have no awareness yet, so an aggressive one that has seen the player turns and swings first.
+      Backstabs land on passive or unaware NPCs, and on ones turned away (recovering from a swing,
+      circling in a pack). Stealth comes later.
+  - **Random crits:** two new stats, `crit_chance` (base 5%) and `crit_damage` (base +50%), in the
+    stat pipeline (ADR-022) like any other.
+    - Every hit but the riposte move's rolls once, the player's and the NPCs' alike, and does
+      `1 + crit_damage` more.
+    - Items raise them with `mods`: the Rusty Knife has +5% crit chance (10% in all), so daggers and
+      bandits crit more often.
+  - **The marker:** a critical hit's damage number is 1.5x bigger, orange and ends in "!". It makes
+    the crit sound (`hit_crit`), which ripostes already used.
+  - **Camera shake:** a trauma value on the player, 0..1, that wears off in a second. The camera
+    turns by trauma squared, up to 3 degrees, along smooth noise.
+    - Adds to it: a riposte or backstab (`hitShake`, 0.5), a random crit (0.3), the player's heavy
+      hits by stance damage over 20, a hit taken (1.5x the share of max health it took, at most 0.6)
+      and a guard break (0.3).
+    - The Camera tab scales it (`cameraShake`, 0 turns it off).
+- **Alternatives considered:**
+  - A separate backstab move with its own numbers: Elden Ring uses the same multiplier for both. One
+    move keeps one set of numbers per class.
+  - No random crits, as in Elden Ring: the talent trees (and Cube World and WoW, whose stats this
+    game follows) want crit chance and damage to raise.
+  - Player-only crits: NPCs use the same stat sheet and formula. A 5% enemy crit keeps fights
+    symmetric, and the damage number marks it.
+  - Shaking the camera's position: rotating the view about the eye can't push it into terrain.
+- **Consequences:**
+  - **Replays and balance:** every hit draws one more random number, so `fightReplay` and
+    `boarReplay` were re-pinned (same hits on the same frames, other rolls).
+    - The story fights' means move with the draws by about 4 over 12 seeds. Over 48 seeds the
+      chief's is 31 (30 without crits), so its band is now 20 to 35.
+    - Backstabs don't change the scripted fights, which face their foe.
+  - **Talents:** crit chance and crit damage are stats, ready for the Ranger's tree.
+  - **Tests and review:** the `criticals` test checks the stats, the backstab's geometry and its
+    conditions, and a backstab that holds and knocks down a boar and a recovering bandit. It also
+    measures random crit rates (the knife's 10%, an NPC's on the player) and their x1.5, and the
+    camera trauma. The debug Player tab's Criticals node tunes the angle, the wait and the shake.

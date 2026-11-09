@@ -740,6 +740,13 @@ static int run(SDL_Window* window, const Options& opt) {
         FrameParams fp;
         fp.eye = camTarget + offset * camDist;
         fp.view = glm::lookAtRH(fp.eye, camTarget + camLook, glm::vec3(0, 1, 0));
+        // Only while the sim runs: trauma wears off with its ticks (not in the editor, not under the F2 note).
+        if (float shake = player.trauma * player.trauma * game.cameraShake; shake > 0 && !editor.active && !noteOpen) {  // big hits (ADR-045): trauma squared, smooth noise
+            float t = wallSeconds * 30;
+            float pitch = 0.05f * shake * (std::sin(t * 1.1f) + 0.5f * std::sin(t * 2.3f + 1.7f)) / 1.5f;
+            float yaw = 0.05f * shake * (std::sin(t * 0.9f + 4.1f) + 0.5f * std::sin(t * 2.7f + 0.3f)) / 1.5f;
+            fp.view = glm::rotate(glm::rotate(glm::mat4(1), pitch, {1, 0, 0}), yaw, {0, 1, 0}) * fp.view;
+        }
         fp.fovY = glm::radians(game.fovDegrees);
         fp.timeOfDay = session.timeOfDay;
         fp.seconds = wallSeconds += dt;

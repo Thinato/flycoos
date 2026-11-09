@@ -291,6 +291,13 @@ foe's stance; the **sword** is the all-rounder; **axes** chop hard; **maces** sm
 stance the fastest and strike (ghouls are weak to it). The Iron Hand Axe and Iron Mace have no
 drop yet: the debug window's Items tab gives them.
 
+**Criticals** (ADR-045): attack an enemy from behind while it isn't attacking or reeling to
+**backstab** it: it's caught, hit for the riposte's damage and knocked down. Enemies that have
+seen you turn to face you, so backstabs land on unaware or passive ones and on ones turned away.
+Any other hit has a 5% chance to be a **critical hit** for 50% more (a knife: 10%); enemies crit you
+too. Critical damage numbers are big, orange and end in "!". Big hits shake the camera (the debug
+window's Camera tab turns it down or off).
+
 A spawn marker can carry up to 8 **lines** of dialogue (1–160 bytes each). Villagers and guards say
 the next one each time you press E, round and round; anyone who fights (guards too) shouts the
 next one when they turn on you.

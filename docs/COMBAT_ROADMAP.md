@@ -65,7 +65,7 @@ system is summarized in ADR-035.
 - [ ] Two-handing (a toggle: more strength, its own moveset, no shield)
 - [ ] Dual wielding / power stance
 - [ ] Weapon skills (a special move per weapon or per skill gem, costing mana)
-- [ ] Backstabs and criticals (from behind an unaware or turned enemy)
+- [x] Backstabs and criticals (from behind an unaware or turned enemy; random crits as stats, ADR-045)
 - [ ] Status effects: bleed, poison, frost, stun build-up bars
 - [ ] Weapon scaling with attributes (strength, agility, intellect, spirit)
 - [x] Equip load: light, medium and heavy rolls; overloaded can't roll (ADR-039)
@@ -88,7 +88,7 @@ system is summarized in ADR-035.
 - [ ] Hit sparks, blood, a slash trail on the blade
 - [x] Sounds: swings, hits, blocks, parries, footsteps, voices, ambience (ADR-037)
 - [x] Hit-stop tuned per weapon class (ADR-044)
-- [ ] Camera shake on heavy hits
+- [x] Camera shake on heavy hits (and criticals, big hits taken; ADR-045)
 - [ ] Knockback and launch on big hits; ragdoll-ish falls
 - [ ] Charge glow; a riposte and parry flash
-- [ ] Damage numbers by type; a crit marker
+- [ ] Damage numbers by type; a crit marker (the marker done, ADR-045)

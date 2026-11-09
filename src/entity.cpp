@@ -661,18 +661,19 @@ bool takeLoot(Entity& e, Inventory& inv) {
     return true;
 }
 
-bool hurt(Player& b, int amount) {
+bool hurt(Player& b, int amount, bool crit) {
     if (amount <= 0 || !b.alive()) return false;
     b.health = std::max(0.0f, b.health - float(amount));
     b.lastDamage = amount;
+    b.lastCrit = crit;
     b.hitTime = 0;
     b.combatTimer = kCombatSeconds;
     return true;
 }
 
-bool damage(Entity& e, int amount) {
+bool damage(Entity& e, int amount, bool crit) {
     const EntityType& t = e.type();
-    if (!t.attackable || !hurt(e.body, amount)) return false;
+    if (!t.attackable || !hurt(e.body, amount, crit)) return false;
     if (t.temper != Temper::Harmless) e.events |= EventDamaged;
     if (!e.body.alive() && (t.lootChance >= 1 || rand01(e.rng) < t.lootChance)) e.loot = t.loot;  // rand01 may return 1
     return true;
@@ -709,20 +710,38 @@ Entity* punchTarget(std::vector<Entity>& entities, const Player& a) {
     return best;
 }
 
-Entity* riposteTarget(std::vector<Entity>& entities, const Player& a) {
+bool behind(const Entity& e, const Player& a) {
+    glm::vec2 back{-std::sin(e.body.yaw), -std::cos(e.body.yaw)}, d = xz(a.pos - e.body.pos);
+    float dist = glm::length(d);
+    return dist > 1e-3f && glm::dot(d / dist, back) > gMelee.backstabAngle;
+}
+
+bool opensToCritical(const Entity& e, const Player& a) {
+    const Player& b = e.body;
+    return b.broken || (behind(e, a) && !b.punching() && !b.rolling() && b.stagger == 0 && b.hitTime >= gMelee.backstabWait);
+}
+
+Entity* criticalTarget(std::vector<Entity>& entities, const Player& a, bool caught) {
     Entity* best = nullptr;
     float bestDist = kPunchReach;
     for (Entity& e : entities) {
         float dist = glm::distance(xz(e.body.pos), xz(a.pos));
-        if (e.type().attackable && e.body.alive() && e.body.broken && inReach(a, e.body.pos) && dist < bestDist) best = &e, bestDist = dist;
+        const Player& b = e.body;
+        bool open = caught ? b.broken || (behind(e, a) && !b.rolling() && b.hitTime >= gMelee.backstabWait) : opensToCritical(e, a);
+        if (e.type().attackable && e.body.alive() && open && inReach(a, e.body.pos) && dist < bestDist) best = &e, bestDist = dist;
     }
     return best;
 }
 
-void staggerHit(Entity& e, float stance, bool riposte) {
+void holdCritical(std::vector<Entity>& entities, const Player& a) {
+    if (a.move == Move::Riposte && a.hitPending)
+        if (Entity* e = criticalTarget(entities, a, true); e && !e->body.broken) interrupt(e->body, 0.1f, false);
+}
+
+void staggerHit(Entity& e, float stance, bool critical) {
     const EntityType& t = e.type();
     Player& b = e.body;
-    if (riposte && b.broken) {  // knocked down, its stance back
+    if (critical) {  // knocked down, its stance back
         interrupt(b, 0, false);
         b.stagger = b.staggerLength = gMelee.downSeconds;
         b.broken = false;
@@ -751,6 +770,7 @@ static void tick(Player& b, float dt) {
     if (b.stagger == 0) b.broken = false;
     b.hitTime += dt;
     b.combatTimer = std::max(0.0f, b.combatTimer - dt);
+    b.trauma = std::max(0.0f, b.trauma - dt);  // a full shake wears off in a second
     StatSheet s = sheet(b);
     if (!b.alive()) b.deadTime += dt;
     else if (b.combatTimer == 0) b.health += healthRegen(s) * dt;
@@ -770,6 +790,14 @@ int resolveHit(const Combatant& attacker, const Combatant& defender, const Attac
     float hit = float(rollDamage(a, attack, ctx.rng)) * a[Stat::Damage] * ctx.power;
     return mitigate(hit, d[Stat::Armor], attacker.level, ctx.armorK, d[Stat::DamageTaken]);
 }
+
+// Whether the swing `attacker` lands now is a random critical (ADR-045), by its crit chance with the swing's weapon skill.
+static bool rollCrit(const Combatant& attacker, std::mt19937& rng) {
+    float chance = sheet(attacker, skillOf(attacker.swingWeapon))[Stat::CritChance];
+    return chance > 0 && (rand01(rng) < chance || chance >= 1);  // rand01 may return 1; draws either way
+}
+static float critDamage(const Combatant& attacker) { return 1 + sheet(attacker, skillOf(attacker.swingWeapon))[Stat::CritDamage]; }
+static void shake(Player& p, float trauma) { p.trauma = std::min(1.0f, p.trauma + trauma); }
 
 void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed) {
     const EntityType& t = npc.type();
@@ -791,15 +819,14 @@ void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed) {
 
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK,
                   std::vector<GameEvent>* events) {
-    HitContext ctx{rng, armorK};
     tick(player, dt);
     if (lands(player)) {
         const MoveSpec& m = spec(player);
-        // A riposte lands on the broken stance it was for; if that's gone it's a plain hit.
+        // A riposte lands on the broken stance it was for, a backstab on the back it caught; if that's gone it's a plain hit.
         bool riposte = player.move == Move::Riposte;
-        Entity* target = riposte ? riposteTarget(entities, player) : nullptr;
+        Entity* target = riposte ? criticalTarget(entities, player, true) : nullptr;
         if (!target) target = punchTarget(entities, player);
-        riposte &= target && target->body.broken;
+        riposte &= target && (target->body.broken || behind(*target, player));
         if (target && invulnerable(target->body)) target = nullptr;  // it rolled through the hit (ADR-043)
         const MeleeTuning& t = gMelee;
         if (target && !m.heavy && player.move != Move::Riposte && parries(target->body, player.pos)) {
@@ -813,7 +840,10 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             target->events |= EventDamaged;  // a passive one fights back
             target = nullptr;
         }
+        // Any other hit may be a random critical (ADR-045); the riposte move's never is (it is one, or a plain hit).
+        bool crit = riposte || (target && player.move != Move::Riposte && rollCrit(player, rng));
         float power = player.move == Move::Riposte && !riposte ? 1 : m.damage * (player.charged ? t.chargeDamage : 1);
+        if (crit && !riposte) power *= critDamage(player);
         if (target) power *= 1 - target->type().resist[size_t(damageOf(player))];  // its weakness or resistance (ADR-040)
         HitContext hit{rng, armorK, power};
         float stance = player.move == Move::Riposte && !riposte ? spec(player, Move::Light1).stance : m.stance * (player.charged ? t.chargeStance : 1);
@@ -838,18 +868,21 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             full = int(std::lround(float(full) * (1 - guard->negation)));
             stance = 0;  // a guard takes the stance damage on its stamina
         }
-        if (target && damage(*target, full)) {
+        if (target && damage(*target, full, crit && !guard)) {  // a blocked crit is marked as the block
             player.combatTimer = kCombatSeconds;
             bool killed = !target->body.alive();
             awardHitXp(player, *target, true, killed);
             if (killed || !guard) target->body.noise(killed ? Noise::Death : Noise::Hurt);  // a blocked hit sounds as the block
-            if (riposte) target->body.noise(Noise::Crit);
+            if (crit && !guard) target->body.noise(Noise::Crit);
             target->body.hitWith = player.swingWeapon;
             if (killed && events) events->push_back(Killed{target->kind, target->spawn.id});
             target->body.hitStance = riposte ? 100 : stance;
             if (!killed) staggerHit(*target, stance, riposte);
-            if (!guard)  // hit-stop: heavier hits, longer, and longer or shorter by the weapon class (ADR-044)
+            if (!guard) {  // hit-stop: heavier hits, longer, and longer or shorter by the weapon class (ADR-044)
                 player.freeze = target->body.freeze = std::min(0.04f + 0.003f * stance, 0.12f) * weaponClass(classOf(player.swingWeapon)).hitStop;
+                // Camera shake (ADR-045): a riposte or backstab's full, a random crit's more than its stance's, heavy hits a little.
+                shake(player, t.hitShake * (riposte ? 1 : std::max(crit ? 0.6f : 0.0f, std::clamp((stance - 20) / 60, 0.0f, 1.0f))));
+            }
         }
     }
     for (Entity& e : entities) {
@@ -862,7 +895,8 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
         else e.body.stamina = std::min(e.body.stamina + gMelee.staminaRegen * (e.body.guarding ? gMelee.guardRegen : 1) * dt, gMelee.staminaMax);
         if (lands(e.body) && inReach(e.body, player.pos) && player.alive() && !invulnerable(player)) {
             e.body.combatTimer = kCombatSeconds;
-            int full = resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), ctx);
+            bool crit = rollCrit(e.body, rng);  // a random critical (ADR-045)
+            int full = resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), {rng, armorK, crit ? critDamage(e.body) : 1});
             const MeleeTuning& t = gMelee;
             bool guarded = false;
             if (e.type().parryable && parries(player, e.body.pos)) {  // deflected (ADR-036): the last of its parries opens it
@@ -879,7 +913,8 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
                 player.staminaWait = t.staminaDelay;
                 player.combatTimer = kCombatSeconds;
                 player.noise(Noise::Block), guarded = true;
-                if (player.stamina < 0) player.stamina = 0, interrupt(player, t.guardBreakSeconds, true), player.noise(Noise::GuardBreak);  // guard broken
+                if (player.stamina < 0)  // guard broken
+                    player.stamina = 0, interrupt(player, t.guardBreakSeconds, true), player.noise(Noise::GuardBreak), shake(player, 0.3f);
                 else if (player.guarding) player.blockTime = 0;  // a guard counter only off a real guard, not a parry's weak one
                 e.body.freeze = 0.08f;
                 if (player.stamina > 0 && bounces(*guard, e.type().hitStance)) interrupt(e.body, t.recoilSeconds, false), player.noise(Noise::Bounce);  // off a greatshield
@@ -889,10 +924,12 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             } else if (full > 0 && !hyperarmor(player) && e.type().hitStance >= playerPoise(player)) {
                 interrupt(player, gMelee.flinchSeconds, false);
             }
-            if (hurt(player, full)) {
+            if (hurt(player, full, crit && !guarded)) {
                 awardHitXp(player, e, false, false);
                 if (!player.alive()) player.noise(Noise::Death);
                 else if (!guarded) player.noise(Noise::Hurt);  // a blocked hit sounds as the block
+                if (crit && !guarded) player.noise(Noise::Crit);
+                shake(player, std::min(0.6f, 1.5f * float(full) / float(maxHealth(sheet(player)))));  // by the share of its health it took
                 player.hitWith = e.body.swingWeapon, player.hitStance = e.type().hitStance;
             }
         }

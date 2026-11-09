@@ -130,6 +130,8 @@ struct Combatant {
     uint32_t noises = 0;                   // bits of Noise made this tick
     Move swung = Move::None;               // the move the latest Noise::Swing came from (it may be cut short the same tick)
     int lastDamage = 0;
+    bool lastCrit = false;                 // that hit was a critical one (ADR-045): a random crit, a riposte or a backstab
+    float trauma = 0;                      // camera shake, 0..1 (the player's): big hits add it, it wears off (ADR-045)
     float deadTime = 0;                    // seconds spent at 0 health
     Inventory inv;                         // equipment and bags
     Progress progress;                     // skills, XP and talents: the player's (NPCs' stay at the start)

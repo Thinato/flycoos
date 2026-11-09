@@ -55,15 +55,17 @@ void hint(ImDrawList* dl, ImVec2 p, float alpha, const Entity& e) {
     shadowText(dl, ImVec2(p.x - size.x / 2, p.y + 8), uiColor(1, 1, 1, alpha), alpha, text);
 }
 
-// Damage number over `head`: pops big, rises and fades over a second.
+// Damage number over `head`: pops big, rises and fades over a second. A critical hit's (ADR-045) is
+// bigger, orange and marked "!".
 void damageNumber(ImDrawList* dl, const glm::mat4& viewProj, ImVec2 screen, glm::vec3 head, const Player& b, glm::vec3 rgb) {
     float t = b.hitTime;
     if (t >= 1) return;
     glm::vec4 c = viewProj * glm::vec4(head + glm::vec3(0, 0.4f + 1.2f * t, 0), 1);
     if (c.w < 0.1f) return;  // behind the camera
     char num[16];
-    std::snprintf(num, sizeof num, "%d", b.lastDamage);
-    float size = ImGui::GetFontSize() * (2.2f - 0.8f * std::min(t * 4, 1.0f)), alpha = 1 - t * t;
+    std::snprintf(num, sizeof num, b.lastCrit ? "%d!" : "%d", b.lastDamage);
+    if (b.lastCrit) rgb = {1, 0.5f, 0.1f};
+    float size = ImGui::GetFontSize() * (2.2f - 0.8f * std::min(t * 4, 1.0f)) * (b.lastCrit ? 1.5f : 1), alpha = 1 - t * t;
     ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, num);
     ImVec2 q((c.x / c.w * 0.5f + 0.5f) * screen.x - ts.x / 2, (0.5f - c.y / c.w * 0.5f) * screen.y - ts.y / 2);
     dl->AddText(ImGui::GetFont(), size, ImVec2(q.x + 2, q.y + 2), uiColor(0, 0, 0, 0.8f * alpha), num);

@@ -771,6 +771,12 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   (`stance`): hits wear it down (it comes back after stance/13 s, at 13 a second), at 0 it breaks
   (2.5 s on a knee, open to a riposte, which knocks it down 1.2 s), and a hit of at least its `poise`
   makes it flinch, cancelling its swing. NPC swings land the same way on the player.
+- **Criticals** (ADR-045, entity.h): an attack from behind an NPC (within 60° of its back) that
+  isn't attacking, rolling or reeling and wasn't hurt for 2 s is a backstab: the riposte move
+  (`criticalTarget`, `opensToCritical`, `behind`), which holds the NPC until it lands
+  (`holdCritical`, called by `step` before the NPCs think) and knocks it down. Every other hit, both ways, rolls `crit_chance` (base 5%) for `crit_damage` more (base
+  +50%); the damage number marks it (bigger, orange, "!"). `Player::trauma` shakes the camera
+  (main.cpp, `GameSettings::cameraShake`).
 - **Shields and the parry** (ADR-036, melee.h): an off-hand item with a `shield` guards by its own
   numbers instead of the sword's (`guardOf`): the Oak Buckler stops 80% and saves 46% of the stamina,
   the Heater Shield 100% / 56%, the Tower Shield 100% / 72%. A guard of at least 65% boost makes an
@@ -838,7 +844,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   |---|---|---|
   | Iron Shortsword | Main Hand | sword, 6–10 damage, speed 1.0 |
   | Canvas Satchel | Bag | +6 item slots |
-  | Rusty Knife | Main Hand | dagger, 3–6 damage, speed 0.75; dropped by bandits |
+  | Rusty Knife | Main Hand | dagger, 3–6 damage, speed 0.75, +5% crit chance (ADR-045); dropped by bandits |
   | Boar Skin | – | crafting material later; dropped by boars |
   | Iron Helm / Cuirass / Gauntlets / Greaves / Sabatons | Head / Chest / Hands / Legs / Feet | 6 / 12 / 4 / 10 / 5 armor (37 for the set) |
   | Wolf Pelt | – | crafting material later; dropped by wolves |

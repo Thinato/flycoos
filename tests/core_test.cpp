@@ -972,8 +972,8 @@ static void protection() {
         for (int i = 0; i < 20 * 60; ++i) {
             updateEntities(es, g, player, 1 / 60.0f);
             updateCombat(player, es, 1 / 60.0f, rng, k);
-            if (player.hitTime == 0) {
-                lo = std::min(lo, player.lastDamage), hi = std::max(hi, player.lastDamage), ++n;
+            if (player.hitTime == 0) {  // a random crit (ADR-045) does more: not counted
+                if (!player.lastCrit) lo = std::min(lo, player.lastDamage), hi = std::max(hi, player.lastDamage), ++n;
                 player.health = 100;
             }
         }
@@ -2647,7 +2647,7 @@ static void storyNpcs() {
             });
             bool safe = std::ranges::none_of(alive, [&](const Entity& e) { return due(e) < 0.35f; });  // a light lands first
             melee.attack = safe && glm::length(flat(*foe)) < kPunchReach - 0.1f && player.stamina > 15;
-            if (Entity* broken = riposteTarget(es, player)) melee.riposte = true, melee.aim = flat(*broken);
+            if (Entity* broken = criticalTarget(es, player)) melee.riposte = true, melee.aim = flat(*broken);
             Input still;
             updateMelee(player, melee, still, 1 / 60.0f);
             updateCombat(player, es, 1 / 60.0f, rng);
@@ -2675,7 +2675,9 @@ static void storyNpcs() {
     CHECK(chiefAsTuned >= 10 && wolvesAsTuned >= 10 && ghoulsAsTuned >= 10);
     float chiefMean = chiefSum / kSeeds, wolvesMean = wolvesSum / kSeeds, ghoulsMean = ghoulsSum / kSeeds;
     std::println("story fights, health left on average: chief {:.0f}, wolves {:.0f}, ghouls {:.0f}", chiefMean, wolvesMean, ghoulsMean);
-    CHECK(chiefMean >= 20 && chiefMean <= 30);                           // about a quarter
+    // About a quarter to a third. Over 48 seeds the chief's mean is 31 (30 without random crits, ADR-045):
+    // 12 seeds swing it by about 4 either way.
+    CHECK(chiefMean >= 20 && chiefMean <= 35);
     CHECK(wolvesMean >= 25 && wolvesMean <= 45 && ghoulsMean >= 20 && ghoulsMean <= 40);  // a quarter to two fifths
     CHECK(fight(EntityKind::Wolf, 3, true, 1) < 0);  // a pack of three is too much alone
     // Their hits on that player: punch or sword + strength x speed, less armor / (armor + 40 x level).
@@ -3090,7 +3092,7 @@ static void tables() {
         same(row, "name", str(t.name), str(w.name));
         SAME(slot), SAME(attack.minDamage), SAME(attack.maxDamage), SAME(attack.speed), SAME(bagSlots), SAME(armor);
 #undef SAME
-        same(row, "mods.size()", t.mods.size(), size_t(i == BoneCharm));  // only the Bone Charm has stat modifiers: +2 spirit
+        same(row, "mods.size()", t.mods.size(), size_t(i == BoneCharm || i == Knife));  // only the Bone Charm (+2 spirit) and the knife (+5% crit chance, ADR-045)
     }
     const std::vector<Modifier>& charm = itemType(BoneCharm).mods;
     CHECK(charm.size() == 1 && charm[0].stat == Stat::Spirit && charm[0].kind == ModKind::Flat && charm[0].value == 2);
@@ -3152,15 +3154,17 @@ static void fightReplay() {
     // Re-pinned for ADR-044: the knife swings the dagger's moveset, whose hits come a little earlier in
     // the swing (a frame sooner), so two more of them land before the player's (6, was 4) and the
     // damage rolls shift by those draws; it still dies at frame 712.
+    // Re-pinned for ADR-045: every hit first rolls for a random critical, so the damage rolls shift
+    // (the 13 at frame 359 is a crit: x1.5); the same hits land on the same frames.
     const std::vector<std::tuple<int, char, int>> want{
-        {65, 'b', 11},  {121, 'b', 12}, {170, 'p', 3},  {182, 'b', 9},  {241, 'b', 11}, {297, 'p', 4},  {298, 'b', 8},  {346, 'p', 3},  {359, 'b', 9},
-        {417, 'b', 12}, {474, 'b', 12}, {535, 'b', 9},  {587, 'p', 5},  {594, 'b', 12}, {651, 'b', 10}, {711, 'p', 3},  {712, 'b', 12},
+        {65, 'b', 11},  {121, 'b', 8},  {170, 'p', 6},  {182, 'b', 8},  {241, 'b', 9},  {297, 'p', 5},  {298, 'b', 12}, {346, 'p', 4},  {359, 'b', 13},
+        {417, 'b', 10}, {474, 'b', 11}, {535, 'b', 11}, {587, 'p', 4},  {594, 'b', 10}, {651, 'b', 9},  {711, 'p', 5},  {712, 'b', 8},
     };
     CHECK(hits == want);
     if (hits != want)
         for (auto [frame, who, amount] : hits) std::println(stderr, "  got {{{}, '{}', {}}}", frame, who, amount);
     same("fightReplay", "deathFrame", deathFrame, 712);
-    if (std::abs(player.health - 82) >= 0.01f) same("fightReplay", "player.health", player.health, 82.0f);
+    if (std::abs(player.health - 76) >= 0.01f) same("fightReplay", "player.health", player.health, 76.0f);  // 82 before ADR-045's crit rolls
     same("fightReplay", "bandit.loot", bandit.loot, NoItem);  // the 40% knife roll fails for this seed
     CHECK(!takeLoot(bandit, player.inv) && freeSlots(player.inv) == kBackpackSlots);
 
@@ -3209,8 +3213,9 @@ static void boarReplay() {
     CHECK(boar.angry());
     run(5 * 60, false);  // it fights back
     CHECK(boar.angry());
-    same("boarReplay", "boar health", boar.body.health, 97.0f);  // one punch, no regen in combat
-    same("boarReplay", "player health", player.health, 76.0f);  // was 71: its windup telegraphs now (ADR-035)
+    // One punch, no regen in combat. ADR-045's crit rolls shifted the damage rolls: 97 and 76 before.
+    same("boarReplay", "boar health", boar.body.health, 95.0f);
+    same("boarReplay", "player health", player.health, 73.0f);  // was 71, then 76: its windup telegraphs now (ADR-035)
     player.pos = boar.home + glm::vec3(0, 0, 15);  // backs off, still in its territory
     run(3 * 60, false);  // it runs after them and keeps biting
     CHECK(boar.angry());
@@ -3227,9 +3232,9 @@ static void boarReplay() {
     if (!near(glm::distance(boar.body.pos, boar.home), 0.067f))
         same("boarReplay", "distance from home", glm::distance(boar.body.pos, boar.home), 0.067f);
     same("boarReplay", "boar health", boar.body.health, 100.0f);
-    if (!near(player.health, 84.84f)) same("boarReplay", "player health", player.health, 84.84f);
-    const std::vector<std::tuple<int, char, int>> want{  // fewer, later gores since ADR-035's telegraphed windup
-        {132, 'b', 3}, {180, 'p', 6}, {241, 'p', 4}, {299, 'p', 3}, {370, 'p', 5}, {431, 'p', 6},
+    if (!near(player.health, 81.84f)) same("boarReplay", "player health", player.health, 81.84f);  // 84.84 before ADR-045
+    const std::vector<std::tuple<int, char, int>> want{  // fewer, later gores since ADR-035's telegraphed windup; rolls shifted by ADR-045
+        {132, 'b', 5}, {180, 'p', 5}, {241, 'p', 6}, {299, 'p', 6}, {370, 'p', 6}, {431, 'p', 4},
     };
     CHECK(hits == want);
     if (hits != want)
@@ -6339,10 +6344,10 @@ static void melee() {
         CHECK(!bandit.body.hitPending && bandit.body.stance < stance && bandit.body.stagger > 0 && !bandit.body.broken);
         updateEntities(es, g, p, dt);
         CHECK(bandit.state == AiState::Stagger && bandit.history[(bandit.transitions - 1) % 8].reason == std::string_view("flinched"));
-        CHECK(riposteTarget(es, p) == nullptr);
+        CHECK(criticalTarget(es, p) == nullptr);
         staggerHit(bandit, bandit.body.stance, false);  // the rest of it
         CHECK(bandit.body.broken && bandit.body.stagger == gMelee.breakSeconds && bandit.body.stance == bandit.type().stance);
-        CHECK(riposteTarget(es, p) == &bandit);
+        CHECK(criticalTarget(es, p) == &bandit);
         // An attack on it now is a riposte: it can't be hit meanwhile, and the riposte hits three times as
         // hard, on the broken one (not a nearer one beside it).
         while (p.punching()) tick(p, {}, es);
@@ -6490,7 +6495,7 @@ static void melee() {
         for (int i = 0; i < 60 && !parries(p, bandit.body.pos); ++i) tick(p, {}, es);
         CHECK(strikeNow(p, es, {}) == 0 && bandit.body.broken && bandit.body.stagger > 1 && p.stagger == 0);
         updateEntities(es, g, p, dt);
-        CHECK(bandit.state == AiState::Stagger && riposteTarget(es, p) == &bandit);
+        CHECK(bandit.state == AiState::Stagger && criticalTarget(es, p) == &bandit);
         while (p.punching()) tick(p, {}, es);
         CHECK(tick(p, {.attack = true, .aim = {0, 1}, .riposte = true}, es) == Move::Riposte);
         while (p.punching()) tick(p, {}, es);
@@ -6807,6 +6812,186 @@ static void melee() {
 
 // Sound (ADR-037): what a session hears (footsteps from the gait, a jump and its landing, a roll, a
 // splash, loot), what each noise sounds like, the mixer and placing, and takes for every sound played.
+// Criticals (ADR-045): crit chance and damage in the stat pipeline, the backstab's geometry and when
+// it's open, a backstab that holds its NPC until it lands, random crits both ways, the camera trauma.
+static void criticals() {
+    Grid g = flatWorld(0);
+    constexpr float dt = 1 / 60.0f;
+    constexpr float kPi = std::numbers::pi_v<float>;
+    std::mt19937 rng(7);
+    StatSheet base = compute(Stats{});
+    CHECK(base[Stat::CritChance] == kBaseCritChance && base[Stat::CritDamage] == kBaseCritDamage);
+    CHECK(percentStat(Stat::CritChance) && percentStat(Stat::CritDamage) && percentStat(Stat::Haste) && !percentStat(Stat::Armor));
+    Modifier sharp{Stat::CritChance, ModKind::Flat, 0.1f}, brutal{Stat::CritDamage, ModKind::Increased, 1};
+    StatSheet modded = compute(Stats{}, std::array{sharp, brutal});
+    CHECK(std::abs(modded[Stat::CritChance] - 0.15f) < 1e-6f && std::abs(modded[Stat::CritDamage] - 1.0f) < 1e-6f);
+    Player armed;
+    armed.inv.equipped[SlotMainHand] = Knife;
+    CHECK(std::abs(sheet(armed)[Stat::CritChance] - 0.10f) < 1e-6f);  // the knife's +5%: daggers are for crits
+
+    auto fighter = [] {
+        Player p;
+        p.pos = {7.5f, 4, 7.5f};
+        p.onGround = true, p.offGround = 0;
+        p.inv.equipped[SlotMainHand] = Shortsword;
+        return p;
+    };
+    // One tick in step()'s order: the player's buttons (an attack at an NPC open to a critical is the
+    // riposte move, aimed at it), the hold, the NPCs think, then combat.
+    auto tick = [&](Player& p, MeleeInput in, std::vector<Entity>& es) {
+        if (const Entity* e = criticalTarget(es, p, p.move == Move::Riposte && p.hitPending))
+            in.riposte = true, in.aim = {e->body.pos.x - p.pos.x, e->body.pos.z - p.pos.z};
+        Input move;
+        updateMelee(p, in, move, dt);
+        holdCritical(es, p);
+        updateEntities(es, g, p, dt);
+        updateCombat(p, es, dt, rng);
+        return p.move;
+    };
+
+    {  // Behind: within 60 degrees of its back; open: and not attacking, rolling, reeling or just hurt.
+        Player p = fighter();
+        p.yaw = 0;  // facing +Z
+        std::vector<Entity> es;
+        Entity& b = spawnAhead(es, g, p, EntityKind::Bandit, 1, 1.5f);
+        b.body.yaw = 0;  // facing away from p
+        CHECK(behind(b, p) && opensToCritical(b, p) && criticalTarget(es, p) == &b);
+        b.body.yaw = kPi;  // facing p
+        CHECK(!behind(b, p) && !opensToCritical(b, p) && criticalTarget(es, p) == nullptr);
+        b.body.yaw = kPi / 2;  // side on
+        CHECK(!behind(b, p));
+        b.body.yaw = glm::radians(50.0f);
+        CHECK(behind(b, p));
+        b.body.yaw = glm::radians(70.0f);
+        CHECK(!behind(b, p));
+        b.body.yaw = 0;
+        Entity e = b;
+        e.body.hitTime = gMelee.backstabWait - 0.1f;  // just hurt: it's turning
+        CHECK(behind(e, p) && !opensToCritical(e, p));
+        e = b, e.body.stagger = 0.3f;
+        CHECK(!opensToCritical(e, p));
+        e = b, e.body.swingTimer = 0;
+        CHECK(startPunch(e.body, {0, 1}) && !opensToCritical(e, p));  // attacking
+        e = b, e.body.broken = true, e.body.yaw = kPi;
+        CHECK(opensToCritical(e, p));  // a broken stance from the front: a riposte
+        p.yaw = kPi;  // the player turned away: out of reach
+        CHECK(criticalTarget(es, p) == nullptr);
+    }
+    // The backstab: the riposte move; its NPC can't turn or act until it lands, then it's down. On a
+    // boar that hasn't noticed (passive), and on a bandit turned away while it recovers from a swing.
+    auto backstab = [&](EntityKind kind, bool recovering) {
+        Player p = fighter();
+        p.yaw = 0;
+        std::vector<Entity> es;
+        Entity& b = spawnAhead(es, g, p, kind, 1, 1.5f);
+        b.body.yaw = 0, b.body.onGround = true;
+        if (recovering) setState(b, AiState::Recover, "test"), b.body.swingTimer = 1;
+        float health = b.body.health, yaw = b.body.yaw;
+        CHECK(tick(p, {.attack = true}, es) == Move::Riposte);
+        bool held = true;
+        for (int i = 0; i < 120 && p.hitPending; ++i) {
+            tick(p, {}, es);
+            held &= !p.hitPending || (b.body.stagger > 0 && std::abs(b.body.yaw - yaw) < 1e-4f && !b.body.punching());
+        }
+        CHECK(held && !p.hitPending);
+        CHECK(health - b.body.health > 12 && b.body.lastCrit && b.body.made(Noise::Crit));  // more than any plain sword hit
+        CHECK(!b.body.broken && b.body.stagger > gMelee.downSeconds - 0.1f && b.body.hitStance == 100);  // knocked down
+        CHECK(p.trauma > gMelee.hitShake - 0.1f);  // a full critical's shake
+        CHECK(!opensToCritical(b, p));  // down...
+        Entity up = b;
+        up.body.stagger = 0, up.body.yaw = yaw;
+        CHECK(behind(up, p) && !opensToCritical(up, p));  // ...and, up again with its back turned, just hurt
+        for (int i = 0; i < 60; ++i) tick(p, {}, es);
+        CHECK(p.trauma == 0);  // a second wears it off
+    };
+    backstab(EntityKind::Boar, false);
+    backstab(EntityKind::Bandit, true);
+    {  // An aggressive bandit that has seen the player turns and swings first: no backstab.
+        Player p = fighter();
+        p.yaw = 0;
+        std::vector<Entity> es;
+        Entity& b = spawnAhead(es, g, p, EntityKind::Bandit, 1, 1.5f);
+        b.body.yaw = 0, b.body.onGround = true;
+        updateEntities(es, g, p, dt);  // it notices
+        CHECK(tick(p, {.attack = true}, es) != Move::Riposte && b.body.punching());
+    }
+    {  // Two boars: the downed one nearer, back still turned, isn't caught again; the open one further off is.
+        Player p = fighter();
+        p.yaw = 0;
+        std::vector<Entity> es;
+        es.reserve(2);  // `down` must outlive the second spawn
+        Entity& down = spawnAhead(es, g, p, EntityKind::Boar, 1, 1.0f);
+        down.body.yaw = 0;
+        staggerHit(down, 0, true);
+        down.body.hitTime = 0.2f;  // just backstabbed
+        p.pos.x += 0.4f;
+        Entity& open = spawnAhead(es, g, p, EntityKind::Boar, 2, 1.4f);
+        p.pos.x -= 0.4f;
+        open.body.yaw = 0;
+        CHECK(behind(down, p) && behind(open, p) && criticalTarget(es, p) == &open && criticalTarget(es, p, true) == &open);
+        float downHealth = down.body.health, openHealth = open.body.health;
+        CHECK(tick(p, {.attack = true}, es) == Move::Riposte);
+        for (int i = 0; i < 120 && p.hitPending; ++i) tick(p, {}, es);
+        CHECK(down.body.health == downHealth && open.body.health < openHealth && open.body.lastCrit);
+    }
+    {  // Facing it: an attack is a plain light, no critical.
+        Player p = fighter();
+        p.yaw = 0;
+        std::vector<Entity> es;
+        Entity& b = spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 1.5f);
+        b.body.yaw = kPi;
+        CHECK(tick(p, {.attack = true}, es) == Move::Light1);
+    }
+    {  // Random crits: the player's on the dummy at the knife's 10%, for +50%; a plain light doesn't shake the camera.
+        Player p = fighter();
+        p.inv.equipped[SlotMainHand] = Knife;
+        p.yaw = 0;
+        std::vector<Entity> es;
+        Entity& d = spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 1.5f);
+        d.body.yaw = kPi;  // facing p: no backstabs
+        int hits = 0, crits = 0;
+        float plain = 0, critical = 0, most = 0;
+        for (int i = 0; i < 60 * 60 * 15 && hits < 600; ++i) {
+            float before = d.body.health;
+            d.body.stance = d.type().stance;  // never broken: no ripostes
+            tick(p, {.attack = !p.punching()}, es);
+            if (d.body.health < before) {
+                ++hits;
+                (d.body.lastCrit ? critical : plain) += before - d.body.health;
+                crits += d.body.lastCrit;
+                if (!d.body.lastCrit) most = std::max(most, p.trauma);
+            }
+            d.body.health = float(maxHealth(sheet(d.body)));
+        }
+        float rate = float(crits) / float(hits), ratio = (critical / float(crits)) / (plain / float(hits - crits));
+        std::println("criticals: {} of {} knife hits critical ({:.1f}%), x{:.2f} damage", crits, hits, double(rate * 100), double(ratio));
+        CHECK(hits == 600 && rate > 0.06f && rate < 0.14f && ratio > 1.35f && ratio < 1.65f);
+        CHECK(most == 0);  // a light's stance (under 20) doesn't shake
+    }
+    {  // ...and an NPC's on the player, at its 10% (a bandit's knife): it shakes the camera by the share of health taken.
+        Player p = fighter();
+        p.yaw = 0;
+        std::vector<Entity> es;
+        Entity& b = spawnAhead(es, g, p, EntityKind::Bandit, 1, 1.5f);
+        b.body.onGround = true;
+        int hits = 0, crits = 0;
+        bool shook = true;
+        for (int i = 0; i < 60 * 60 * 20 && hits < 400; ++i) {
+            if (!b.body.punching() && b.body.swingTimer <= 0) startPunch(b.body, {0, -1});
+            float before = p.health;
+            Input still;
+            updateMelee(p, {}, still, dt);
+            updateCombat(p, es, dt, rng);
+            if (p.health < before) ++hits, crits += p.lastCrit, shook &= p.trauma > 0;
+            p.health = float(maxHealth(sheet(p)));
+            p.trauma = 0, p.stagger = 0;
+        }
+        float rate = float(crits) / float(hits);
+        std::println("criticals: {} of {} bandit hits on the player critical ({:.1f}%)", crits, hits, double(rate * 100));
+        CHECK(hits == 400 && rate > 0.05f && rate < 0.16f && shook);
+    }
+}
+
 static void sounds() {
     Session s{.world = meadow(), .seed = 2};
     s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}}};
@@ -7077,6 +7262,7 @@ int main() {
     enemies();
     melee();
     weaponClasses();
+    criticals();
     sounds();
     combat();
     fighters();

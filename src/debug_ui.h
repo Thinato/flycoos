@@ -19,6 +19,7 @@ struct GameSettings {
     LockSettings lock;            // R3 / Tab lock-on
     float lockFlickPixels = 60;   // mouse travel (quickly) that switches the lock-on target  // a controller's right stick: radians a second at full tilt
     bool cameraCollision = true;
+    float cameraShake = 1;  // x the shake big hits give the camera (ADR-045); 0: none
     bool hud = true;  // nameplates, speech balloons, health bar
     uint32_t seed = 1337;
     float streamLightMs = 2;  // the endless world: time a frame spends lighting chunk columns (then they're meshed)

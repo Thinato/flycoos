@@ -383,6 +383,21 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
         ImGui::SetItemTooltip("The guard must have been down this long before (tapping it doesn't keep the window open).");
         ImGui::TreePop();
     }
+    if (ImGui::TreeNode("Criticals (ADR-045)")) {
+        StatSheet w = sheet(p, skillOf(p.inv.equipped[SlotMainHand]));
+        ImGui::Text("Crit chance %.1f%%, crit damage +%.0f%% (base %.0f%%, +%.0f%%)", double(w[Stat::CritChance] * 100),
+                    double(w[Stat::CritDamage] * 100), double(kBaseCritChance * 100), double(kBaseCritDamage * 100));
+        ImGui::Text("Last hit taken: %d%s", p.lastDamage, p.lastCrit ? " (critical)" : "");
+        float angle = glm::degrees(std::acos(std::clamp(m.backstabAngle, -1.0f, 1.0f)));
+        if (ImGui::SliderFloat("Backstab angle", &angle, 5, 90, "%.0f deg off its back")) m.backstabAngle = std::cos(glm::radians(angle));
+        ImGui::SliderFloat("Backstab wait", &m.backstabWait, 0, 6, "%.1f s after it was hurt");
+        ImGui::SetItemTooltip("An NPC hurt this recently can't be backstabbed: it's turning to face its attacker.");
+        ImGui::SliderFloat("Hit shake", &m.hitShake, 0, 1, "%.2f trauma");
+        ImGui::SetItemTooltip("Camera trauma from a riposte or backstab; random crits add 60%%, heavy hits by their stance damage.");
+        ImGui::ProgressBar(p.trauma, {-FLT_MIN, 0}, std::format("trauma {:.2f}", p.trauma).c_str());
+        if (ImGui::Button("Test shake")) p.trauma = 1;
+        ImGui::TreePop();
+    }
 
     ImGui::SeparatorText("Flight");
     ImGui::Checkbox("Fly", &t.fly);
@@ -704,6 +719,8 @@ static void cameraTab(GameSettings& g, SDL_Gamepad* pad, const LockOn* lock, con
     ImGui::SliderFloat("Distance", &g.cameraDistance, 2, 80, "%.1f blocks");
     ImGui::SetItemTooltip("Also the mouse wheel. Pull far back for an overview.");
     ImGui::Checkbox("Terrain collision", &g.cameraCollision);
+    ImGui::SliderFloat("Camera shake", &g.cameraShake, 0, 2, "x %.2f");
+    ImGui::SetItemTooltip("Big hits shake the camera (ADR-045); 0 turns it off.");
     ImGui::Checkbox("HUD", &g.hud);
     ImGui::SetItemTooltip("Nameplates, speech balloons and the health bar.");
     ImGui::SliderFloat("Mouse sensitivity", &g.mouseSensitivity, 0.001f, 0.02f, "%.4f");

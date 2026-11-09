@@ -210,9 +210,10 @@ Entity* lootTarget(std::vector<Entity>& entities, const Player& player);
 bool takeLoot(Entity& e, Inventory& inv);
 
 // Takes damage if alive; health stops at 0. Puts the body in combat. Returns whether it applied.
-bool hurt(Player& body, int amount);
+// `crit`: a critical hit (ADR-045), for its damage number.
+bool hurt(Player& body, int amount, bool crit = false);
 // hurt() for attackable entities only. Tells fighters (EventDamaged); a kill rolls the loot.
-bool damage(Entity& e, int amount);
+bool damage(Entity& e, int amount, bool crit = false);
 
 // An NPC's attack (main-hand weapon, or a punch): the next light of its chain toward `aim` (XZ
 // direction), if the body is alive, not reeling or rolling, and its swing is ready (the weapon's
@@ -223,12 +224,23 @@ bool startPunch(Player& attacker, glm::vec2 aim, float windup = 0);
 bool inReach(const Player& attacker, glm::vec3 target);
 // What a punch from `attacker` hits: the nearest living, attackable entity in reach.
 Entity* punchTarget(std::vector<Entity>& entities, const Player& attacker);
-// The nearest living, attackable entity in reach with its stance broken: an attack on it is a riposte.
-Entity* riposteTarget(std::vector<Entity>& entities, const Player& attacker);
+// Whether `attacker` stands behind `e`: within backstabAngle of its back (ADR-045).
+bool behind(const Entity& e, const Player& attacker);
+// Whether an attack from `attacker` on `e` is a critical (ADR-045): its stance is broken (a riposte),
+// or `attacker` is behind it while it isn't attacking, rolling or reeling and wasn't hurt for
+// backstabWait seconds (a backstab).
+bool opensToCritical(const Entity& e, const Player& attacker);
+// The nearest living, attackable entity in reach open to a critical: an attack on it is the riposte
+// move. `caught`: the move is already on its way, and the backstab it caught (reeling now, held) still
+// counts; one that's rolling, down or was just hurt still doesn't.
+Entity* criticalTarget(std::vector<Entity>& entities, const Player& attacker, bool caught = false);
+// While the attacker's riposte move is on its way to a backstab, holds that NPC (it reels a moment, so
+// it can't turn or act); call it every tick after updateMelee, before the NPCs think.
+void holdCritical(std::vector<Entity>& entities, const Player& attacker);
 // A landed hit's `stance` damage on `e` (ADR-035): at 0 its stance breaks (it reels breakSeconds, open
-// to a riposte, and its stance is back); else a hit of at least its poise makes it flinch. A riposte
-// on a broken stance knocks it down instead.
-void staggerHit(Entity& e, float stance, bool riposte);
+// to a riposte, and its stance is back); else a hit of at least its poise makes it flinch. A critical
+// (a riposte or backstab) knocks it down instead.
+void staggerHit(Entity& e, float stance, bool critical);
 // What a hit is resolved in: the damage roll's RNG and the armor balance (the K of armorReduction).
 struct HitContext {
     std::mt19937& rng;
@@ -253,10 +265,12 @@ constexpr float kXpWearHalving = 20, kXpWearSeconds = 10, kTrainingRate = 0.25f;
 void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed);
 // Combat timers, the moves' clocks, stance recovery and out-of-combat regeneration for everyone; lands
 // every swing at its impact frame (the player's on entities, entities' on the player) through
-// resolveHit (`armorK` is the K of armorReduction) and awardHitXp; brings the dead back home. A kill
+// resolveHit (`armorK` is the K of armorReduction) and awardHitXp; brings the dead back home. Any hit
+// but the riposte move's may be a random critical (the attacker's CritChance, for CritDamage more). A kill
 // by the player raises Killed into `events`. The player's moves hit with their damage and stance
 // (staggerHit) and freeze both bodies a moment (hit-stop). An NPC's hit passes through a rolling
 // player's i-frames, is blocked by its guard from the front (part of the damage, stamina; a guard
 // with too little stamina breaks), and else makes it flinch unless it has hyperarmor (ADR-035).
+// Big hits either way add camera trauma.
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK = kArmorK,
                   std::vector<GameEvent>* events = nullptr);

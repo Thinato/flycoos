@@ -1,7 +1,7 @@
 [
   {"id": "iron_shortsword", "save_id": 1, "name": "Iron Shortsword", "slot": "main_hand", "class": "sword", "attack": {"min": 6, "max": 10, "speed": 1.0}, "weight": 3},
   {"id": "canvas_satchel", "save_id": 2, "name": "Canvas Satchel", "slot": "bag", "bag_slots": 6},
-  {"id": "rusty_knife", "save_id": 3, "name": "Rusty Knife", "slot": "main_hand", "class": "dagger", "attack": {"min": 3, "max": 6, "speed": 0.75}, "weight": 1.5, "parry": 0.9},
+  {"id": "rusty_knife", "save_id": 3, "name": "Rusty Knife", "slot": "main_hand", "class": "dagger", "attack": {"min": 3, "max": 6, "speed": 0.75}, "weight": 1.5, "parry": 0.9, "mods": [{"stat": "crit_chance", "flat": 0.05}]},
   {"id": "boar_skin", "save_id": 4, "name": "Boar Skin"},
   {"id": "iron_helm", "save_id": 5, "name": "Iron Helm", "slot": "head", "armor": 6, "weight": 4},
   {"id": "iron_cuirass", "save_id": 6, "name": "Iron Cuirass", "slot": "chest", "armor": 12, "weight": 9},

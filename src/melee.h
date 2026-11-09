@@ -24,6 +24,9 @@
 // guard raised just before a hit is a perfect guard: no damage and half the stamina. The roll button
 // standing still is a backstep (ADR-038), with its own attack after it; the worn gear's weight makes
 // rolls light, medium or heavy (ADR-039). Hits slash, strike or pierce (ADR-040).
+// Criticals (ADR-045): an attack from behind an NPC that isn't attacking, reeling or just hurt is a
+// backstab, the riposte's move: the NPC is caught, knocked down by the hit. Any other hit may be a
+// random critical by the attacker's crit chance, for its crit damage more.
 
 // A move's timing and what it does. Every weapon class has its own (ADR-044): data/weapon_classes.json
 // gives each class every attack move; None and Parry are code's (kParrySpec: the parry is the off
@@ -99,6 +102,9 @@ struct MeleeTuning {
     float perfectStamina = 0.5f; // ...this much of the stamina damage...
     float perfectRearm = 0.3f;   // ...if the guard was down this long before (no tapping it)
     float fistParry = 1;         // the parry's length with bare fists (a knife's: its item's `parry`)
+    float backstabAngle = 0.5f;  // cos of the widest angle off an NPC's back a backstab works from (60 degrees, ADR-045)
+    float backstabWait = 2;      // seconds after it was last hurt before an NPC can be backstabbed (it turns to face its attacker)
+    float hitShake = 0.5f;       // camera shake (trauma, 0..1) from the player's critical hits; heavier hits, a share by stance damage
 };
 inline MeleeTuning gMelee;
 
@@ -109,7 +115,7 @@ struct MeleeInput {
     bool guard = false;                       // RMB / L1, held
     bool parry = false;                       // Q / L2: pressed since the last tick
     glm::vec2 aim{};                          // nonzero: attack this way (a lock-on); else the way it moves, else faces
-    bool riposte = false;                     // a stance-broken enemy is in reach in front (riposteTarget)
+    bool riposte = false;                     // an enemy open to a critical is in reach in front (criticalTarget): a riposte or backstab
 };
 
 // The move's length, its impact frame and its hold point, in seconds.
