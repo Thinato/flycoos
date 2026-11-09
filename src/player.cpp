@@ -201,7 +201,7 @@ void updatePlayer(Player& p, const Grid& g, const Input& in, float dt) {
                                                                                       : glm::vec2(0);
     // A backstep keeps facing ahead, also while it slides to a stop after it (unless steered).
     bool settling = p.backstep && p.rollTime < p.rollLength + 0.4f && glm::length(in.move) < 0.1f;
-    if (!p.punching() && !backstepping && !settling && want != glm::vec2(0)) {
+    if ((!p.punching() || p.move == Move::Drink) && !backstepping && !settling && want != glm::vec2(0)) {  // a drink walks (ADR-047)
         float diff = std::remainder(std::atan2(want.x, want.y) - p.yaw, kTau);
         p.yaw = std::remainder(p.yaw + diff * (1 - std::exp(-12 * dt)), kTau);
     }

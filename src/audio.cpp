@@ -173,6 +173,10 @@ std::vector<Layer> layersOf(const Sound& s) {
     case Noise::Backstep: add(step, 0.6f * others), add(step, 0.55f * others, 1.05f, 0.14f), add("jump", 0.3f * others); break;  // a hop: off, and down
     case Noise::Splash: add("splash", 0.9f); break;
     case Noise::Swing: {
+        if (s.move == Move::Drink) {  // the flask at the lips (ADR-047): the cork comes out
+            add("flask_open", 0.6f);
+            break;
+        }
         if (s.move == Move::Parry && s.with && defs().items[s.with].shield.size != ShieldSize::None) {
             add("swing_shield", 0.8f);
             break;
@@ -214,6 +218,9 @@ std::vector<Layer> layersOf(const Sound& s) {
     case Noise::Bounce: add("bounce"); break;
     case Noise::Loot: add("pickup", 0.8f, 1, 0, BusInterface); break;
     case Noise::Talk: add("talk", 0.6f, 1, 0, BusInterface); break;
+    case Noise::Drink: add("flask_drink"), add("flask_drink", 0.8f, 0.95f, 0.3f); break;  // two gulps (ADR-047)
+    case Noise::Empty: add("flask_empty", 0.8f), add("flask_empty", 0.7f, 1.05f, 0.18f); break;  // shaken: nothing in it
+    case Noise::Rest: add("rest", 0.9f); break;  // the fire flares up
     case Noise::Count: break;
     }
     return out;

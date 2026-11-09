@@ -240,6 +240,11 @@ int afflict(Player& b, Status s, std::string_view source);
 // effect (afflict); poison and frost don't build while their effect is on. Returns each status's burst
 // damage due now, for the caller to deal.
 std::array<int, size_t(Status::Count)> buildUp(const Combatant& attacker, Player& b, float share, std::string_view source);
+// A flask's drink frame (ADR-047): a charge heals `b` its Flask healing share of max health; with none
+// left, nothing (the gesture's Noise::Empty). updateCombat calls it when a Drink move reaches its impact.
+void drink(Player& b);
+// Rests `b` (ADR-047): its flasks filled to the Flasks stat, full health and stamina, statuses gone.
+void rest(Player& b);
 
 // An NPC's attack (main-hand weapon, or a punch): the next light of its chain toward `aim` (XZ
 // direction), if the body is alive, not reeling or rolling, and its swing is ready (the weapon's

@@ -283,7 +283,7 @@ bool quadruped(const EntityType& t) { return t.model == ModelBoar || t.model == 
 void answer(Entity& e, const Grid& g, const Player& target, glm::vec2 dir, float dist, float dt, Input& in) {
     const EntityType& t = e.type();
     glm::vec2 fwd{std::sin(target.yaw), std::cos(target.yaw)};
-    bool threat = target.alive() && target.punching() && target.hitPending && target.move != Move::Parry &&
+    bool threat = target.alive() && target.punching() && target.hitPending && !codeMove(target.move) &&
                   dist < kPunchReach + 1.5f && glm::dot(-dir, fwd) > 0.3f && std::abs(target.pos.y - e.body.pos.y) < kHeight;
     if (!threat) e.picked = false;
     if (threat && !e.picked && e.state == AiState::Chase && t.guard + t.parry + t.dodge > 0) {
@@ -798,6 +798,23 @@ std::array<int, size_t(Status::Count)> buildUp(const Combatant& attacker, Player
     return burst;
 }
 
+void drink(Player& b) {
+    if (b.flasks <= 0) return b.noise(Noise::Empty);
+    StatSheet s = sheet(b);
+    --b.flasks;
+    b.health = std::min(b.health + s[Stat::FlaskHealing] * float(maxHealth(s)), float(maxHealth(s)));
+    b.noise(Noise::Drink);
+}
+
+void rest(Player& b) {
+    StatSheet s = sheet(b);
+    b.flasks = maxFlasks(s);
+    b.health = float(maxHealth(s));
+    b.stamina = gMelee.staminaMax;
+    b.effects.clear(), b.buildup = {};
+    b.noise(Noise::Rest);
+}
+
 // The clocks of `b`'s body: its swing, move, reeling and combat timers, its status build-up and timed
 // effects, its regeneration. Returns the poison damage due this tick, for the caller to deal.
 static int tick(Player& b, float dt) {
@@ -873,7 +890,9 @@ void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed) {
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK,
                   std::vector<GameEvent>* events) {
     if (hurt(player, tick(player, dt), false, Status::Poison) && !player.alive()) player.noise(Noise::Death);
-    if (lands(player)) {
+    bool strikes = lands(player);
+    if (strikes && player.move == Move::Drink) strikes = false, drink(player);  // the flask's drink frame (ADR-047)
+    if (strikes) {
         const MoveSpec& m = spec(player);
         // A riposte lands on the broken stance it was for, a backstab on the back it caught; if that's gone it's a plain hit.
         bool riposte = player.move == Move::Riposte;

@@ -27,10 +27,13 @@
 // Criticals (ADR-045): an attack from behind an NPC that isn't attacking, reeling or just hurt is a
 // backstab, the riposte's move: the NPC is caught, knocked down by the hit. Any other hit may be a
 // random critical by the attacker's crit chance, for its crit damage more.
+// The healing flask (ADR-047): R / D-pad down drinks, a move like the parry: it commits, walks slowly,
+// and heals at its drink frame (a charge, its Flask healing share of max health); a hit that makes the
+// player flinch before then cancels it, the charge kept. With none left it's only the gesture.
 
 // A move's timing and what it does. Every weapon class has its own (ADR-044): data/weapon_classes.json
-// gives each class every attack move; None and Parry are code's (kParrySpec: the parry is the off
-// hand's, or a knife's or the fists', and the same for every class).
+// gives each class every attack move; None, Parry and Drink are code's (kParrySpec: the parry is the off
+// hand's, or a knife's or the fists', and the same for every class; kDrinkSpec, the flask's).
 struct MoveSpec {
     float seconds = 0;          // its length at the weapon's speed 1
     float holdAt = 0, impact = 0;  // fractions of it: the windup pose (a charge or a telegraph holds there), the hit
@@ -41,13 +44,17 @@ struct MoveSpec {
     bool heavy = false;         // can't be made to flinch before its hit (hyperarmor; heavy 1 and 2 also charge)
     bool thrust = false;        // a blade's thrust pierces (its swings slash; ADR-040)
 };
-// Ids in data files (none and parry aren't: code has them) and names in the UI, by Move.
+// Ids in data files (none, parry and drink aren't: code has them) and names in the UI, by Move.
 inline constexpr const char* kMoveIds[] = {"none", "light_1", "light_2", "light_3", "light_4", "heavy_1", "heavy_2", "running", "rolling",
-                                           "jump_light", "jump_heavy", "guard_counter", "riposte", "parry", "backstep"};
+                                           "jump_light", "jump_heavy", "guard_counter", "riposte", "parry", "backstep", "drink"};
 inline constexpr const char* kMoveNames[] = {"none", "light 1", "light 2", "light 3", "light 4", "heavy 1", "heavy 2", "running",
-                                             "rolling", "jump light", "jump heavy", "guard counter", "riposte", "parry", "backstep"};
+                                             "rolling", "jump light", "jump heavy", "guard counter", "riposte", "parry", "backstep", "drink"};
 static_assert(std::size(kMoveIds) == size_t(Move::Count) && std::size(kMoveNames) == size_t(Move::Count));
+constexpr bool codeMove(Move m) { return m == Move::None || m == Move::Parry || m == Move::Drink; }  // not in data files
 inline constexpr MoveSpec kParrySpec{0.75f, 0.14f, 0.44f, 1.00f, 1.00f, 0, 0, 10, 0};  // a swipe (no hit; scaled by its parry length)
+// The flask to the lips by its hold point, the drink frame (impact: the heal), lowered after; a roll or
+// the guard can cut its last quarter. Weapon speed doesn't change it.
+inline constexpr MoveSpec kDrinkSpec{1.3f, 0.3f, 0.5f, 1.00f, 0.78f, 0, 0, 0, 0};
 
 // A weapon class (ADR-044): its moveset, and how its hits feel.
 struct WeaponClassDef {
@@ -105,6 +112,7 @@ struct MeleeTuning {
     float backstabAngle = 0.5f;  // cos of the widest angle off an NPC's back a backstab works from (60 degrees, ADR-045)
     float backstabWait = 2;      // seconds after it was last hurt before an NPC can be backstabbed (it turns to face its attacker)
     float hitShake = 0.5f;       // camera shake (trauma, 0..1) from the player's critical hits; heavier hits, a share by stance damage
+    float drinkSpeed = 1.5f;     // blocks/s it walks while drinking from the flask (ADR-047)
 };
 inline MeleeTuning gMelee;
 
@@ -114,6 +122,7 @@ struct MeleeInput {
     bool heavy = false, heavyHeld = false;    // R2
     bool guard = false;                       // RMB / L1, held
     bool parry = false;                       // Q / L2: pressed since the last tick
+    bool drink = false;                       // R / D-pad down: pressed since the last tick (ADR-047)
     glm::vec2 aim{};                          // nonzero: attack this way (a lock-on); else the way it moves, else faces
     bool riposte = false;                     // an enemy open to a critical is in reach in front (criticalTarget): a riposte or backstab
 };

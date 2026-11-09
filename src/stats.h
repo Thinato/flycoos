@@ -23,6 +23,8 @@ constexpr float kCombatSeconds = 5;        // dealing or taking damage keeps you
 constexpr float kBaseCritChance = 0.05f;   // every hit's chance to be a critical one (ADR-045)...
 constexpr float kBaseCritDamage = 0.5f;    // ...which deals this much more
 constexpr float kBaseStatusResist = 100;   // the build-up a status takes to fill (ADR-046), before gear and creature mods
+constexpr int kBaseFlasks = 3;             // healing flask charges (ADR-047)...
+constexpr float kBaseFlaskHealing = 0.4f;  // ...each healing this share of max health
 
 // A physical attack: damage range, and base swing time in seconds (WoW's "weapon speed").
 struct Attack { int minDamage, maxDamage; float speed; };
@@ -35,19 +37,24 @@ enum class Stat : uint8_t { Stamina, Strength, Agility, Intellect, Spirit,      
                             MaxHealth, Damage, Haste, Regen, Armor, DamageTaken,       // derived from them
                             CritChance, CritDamage,                                    // critical hits (ADR-045)
                             Bleed, Poison, Frost, BleedResist, PoisonResist, FrostResist,  // status effects (ADR-046)
+                            Flasks, FlaskHealing,                                      // healing flasks (ADR-047)
                             Count };
 inline constexpr const char* kStatIds[] = {"stamina", "strength", "agility", "intellect", "spirit", "max_health",
                                            "damage", "haste", "regen", "armor", "damage_taken",
                                            "crit_chance", "crit_damage",
-                                           "bleed", "poison", "frost", "bleed_resist", "poison_resist", "frost_resist"};  // in data files
+                                           "bleed", "poison", "frost", "bleed_resist", "poison_resist", "frost_resist",
+                                           "flasks", "flask_healing"};  // in data files
 inline constexpr const char* kStatNames[] = {"Vitality", "Strength", "Agility", "Intellect", "Spirit", "Max health",
                                              "Damage", "Attack speed", "Regen", "Armor", "Damage taken",
                                              "Crit chance", "Crit damage",
                                              "Bleed build-up", "Poison build-up", "Frost build-up",
-                                             "Bleed resist", "Poison resist", "Frost resist"};
+                                             "Bleed resist", "Poison resist", "Frost resist",
+                                             "Flask charges", "Flask healing"};
 static_assert(std::size(kStatIds) == size_t(Stat::Count) && std::size(kStatNames) == size_t(Stat::Count));
 // Stats whose values are fractions the UIs show as percents (a flat +0.05 crit chance is +5%).
-constexpr bool percentStat(Stat s) { return s == Stat::Haste || s == Stat::CritChance || s == Stat::CritDamage; }
+constexpr bool percentStat(Stat s) {
+    return s == Stat::Haste || s == Stat::CritChance || s == Stat::CritDamage || s == Stat::FlaskHealing;
+}
 // The status effects (ADR-046): hits build them up (the attacker's Bleed, Poison, Frost) toward the
 // defender's resistance (BleedResist...); full, they take effect, and the build-up starts over.
 enum class Status : uint8_t { Bleed, Poison, Frost, Count };
@@ -73,6 +80,7 @@ struct Modifier {
 // (1 = none), Haste adds attack speed (0.1 = 10% faster, -0.5 = half as fast), CritChance is a hit's
 // chance to be critical (0.05 = 5%, 1 and over: every hit) and CritDamage what a critical hit adds (0.5 = x1.5).
 // Bleed, Poison and Frost are the status build-up a hit adds, the resists the build-up that fills it.
+// Flasks is how many healing flask charges a rest fills, FlaskHealing the share of max health each heals.
 struct StatSheet {
     std::array<float, size_t(Stat::Count)> v{};
     constexpr float operator[](Stat s) const { return v[size_t(s)]; }
@@ -113,11 +121,14 @@ constexpr StatSheet compute(const Stats& base, std::span<const Modifier> mods = 
     apply(Stat::CritChance, kBaseCritChance);
     apply(Stat::CritDamage, kBaseCritDamage);
     for (int s = 0; s < int(Status::Count); ++s) apply(buildupStat(Status(s)), 0), apply(resistStat(Status(s)), kBaseStatusResist);
+    apply(Stat::Flasks, float(kBaseFlasks));
+    apply(Stat::FlaskHealing, kBaseFlaskHealing);
     return out;
 }
 
 constexpr int maxHealth(const StatSheet& s) { return std::max(1, int(s[Stat::MaxHealth] + 0.5f)); }
 inline float healthRegen(const StatSheet& s) { return s[Stat::Regen]; }
+constexpr int maxFlasks(const StatSheet& s) { return std::min(int(s[Stat::Flasks] + 0.5f), 99); }  // the HUD shows two digits (compute keeps it >= 0)
 // Seconds between swings: haste (from agility) is attack speed.
 inline float swingTime(const StatSheet& s, const Attack& a) { return a.speed / (1 + s[Stat::Haste]); }
 // damage = baseDamage + strength * speed. Speed is the attack's base speed, not the hasted swing

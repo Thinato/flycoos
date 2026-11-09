@@ -1939,3 +1939,69 @@
     Mutation-checked: each of 18 rules broken alone fails it.
   - **Talents:** build-up and resists are stats; the effects list is ready for buffs, enchants and
     spells. The proc numbers are global knobs (`gStatus`) for now, as the foundations allow.
+
+## ADR-047: Healing flasks and rest points
+
+- **Status:** accepted (2026-11-09)
+- **Context:**
+  - The roadmap's "Healing flasks (limited charges, refilled at rest points)". Since ADR-046 bleed
+    and poison wear the player down mid-fight, and health only came back out of combat.
+  - Foundation 1: what a talent could raise is a stat.
+- **Decision:**
+  - **The drink:** R (D-pad down on a pad) drinks from the flask. It's `Move::Drink`, a code move like
+    the parry (`kDrinkSpec`: 1.3 s, the drink frame at 0.65 s), so it commits, buffers and is
+    cancelled the way attacks are. Its last 0.3 s (from 78%) can be cut by a roll, the guard, another
+    press or walking on at full speed.
+    - It walks at 1.5 blocks/s (`gMelee.drinkSpeed`) and may turn; until that last part it can't
+      attack, guard or roll, and stamina doesn't refill. It doesn't start in the air or in water.
+    - At the drink frame a charge heals 40% of max health. A hit that makes the player flinch before
+      then cancels it, the charge kept; a hit under the player's poise doesn't. No hyperarmor.
+    - With no charges the gesture still plays (the bottle shaken, nothing heals): pressing it in
+      a panic costs the time, as in Elden Ring.
+  - **Two stats:** `flasks` (charges a rest fills, base 3) and `flask_healing` (each drink's share of
+    max health, base 40%). `Combatant::flasks` counts what's left.
+  - **Rest points are fires:** E within 3 blocks of an Ember block, not hit for 5 s and nothing angry
+    within 24 blocks. Loot and talk come first. Being hit lately is the test, not the combat timer:
+    poison's ticks keep that running for its whole 10 s, and a rest is the cure.
+    - Every fire counts: campfires, cottage and longhouse hearths, the forge, a shrine's brazier. The
+      story world has them already and the editor places them, with no new marker kind.
+    - The endless world gets a campfire per 96x96 cell where the ground is dry, nearly level and clear
+      of trees and rocks: about one per 115 blocks.
+  - **A rest** refills the flasks, heals fully, refills stamina, clears status build-up and effects,
+    and sets `Session::restPoint`. Knocked out, the player gets back up there with full flasks
+    (before any rest, at the player spawn). Enemies keep their own respawn timers: resting doesn't
+    bring them back.
+  - **Saves:** a `REST` section (charges, capped by the Flasks stat on load; the rest point, bounded).
+    Older saves load with full flasks, never rested. The debug window's "Regenerate world" forgets
+    the rest point.
+  - **What shows:** a red flask with the charge count left of the health bar (grey glass when
+    empty); "[E] Rest by the fire" by a fire; a notice on resting. The left hand lifts a small voxel
+    flask to the lips and the head tips back; it's red with charges left, glass when empty. The
+    character sheet lists both stats; the debug window's Player tab has a "Flasks and rest" node
+    (charges, the drink's progress, walk speed, whether it can rest here, the rest point, rest now).
+  - **Sounds:** the cork, two gulps at the drink frame, an empty bottle shaken, and a fire flaring up
+    on resting. qubodup's CC0 bottle and drink set and rubberduck's CC0 fire spells, trimmed and levelled.
+- **Alternatives considered:**
+  - A "rest" marker kind (a site of grace): any fire is a rule the player reads from the world, works
+    in both worlds and needs no editor or file-format change.
+  - Respawning enemies on rest (Elden Ring's sites of grace): the enemies here respawn on their own
+    timers (ADR-023), and a reset would undo the story world's quest state. Left out.
+  - Spending the charge when the drink starts: Elden Ring spends it at the heal, so a cancelled
+    drink costs only the time.
+  - A heal over time: the burst at a frame is the soulslike read, and the timed-effects list can
+    carry a regen flask later.
+- **Consequences:**
+  - **Balance:** the story fights' bands (ADR-046) are measured without drinking, as before; the flask
+    is the player's margin on top.
+  - **Generated terrain:** the campfires change every pinned terrain hash and mesh count (re-pinned:
+    `generation`, `chunkMeshes`, `lighting`, `regions`, which also checks there are 4–40 fires in 512x512).
+  - **Tests:** the `flasks` test checks the stats, the drink frame's timing and heal (capped at max
+    health), walking and turning while drinking, no attack, guard or early roll, a flinch cancelling
+    it, an NPC not reading it as an attack, the empty gesture, no drink in the air or water, a drink
+    press waiting out an attack, the rest gate (fire, reach, combat, an angry wolf), what a rest
+    restores (a poison that's really ticking included), and getting back up at the rest point. The
+    save test round-trips `REST`, loads an older save with full flasks (by the gear's Flasks stat),
+    caps saved charges by it, and rejects a cut section, a bad "rested" byte and a far-off rest point.
+    Mutation-checked: each of 30 rules broken alone fails a test.
+  - **Talents:** charges and healing are stats; a talent like Elden Ring's "more flasks" is a flat
+    modifier.

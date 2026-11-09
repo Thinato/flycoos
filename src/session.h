@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -51,6 +52,7 @@ struct Session {
     std::deque<std::string> eventLog;  // the latest kEventLogSize drained events, newest last (debug window)
     std::vector<std::pair<int, std::string>> toasts;  // quest news since main last took them: quest handle (-1: none), text
     std::vector<Sound> sounds;  // noises since main last took them, oldest first
+    std::optional<glm::vec3> restPoint;  // where the player last rested (ADR-047): it gets back up there
 };
 
 // What the player wants this step; main.cpp maps keys and mouse to it.
@@ -62,21 +64,28 @@ struct SimInput {
     bool heavy = false, heavyHeld = false;  // the heavy button: went down, is down
     bool guard = false;     // the guard button is down
     bool parry = false;     // the parry button went down (ADR-036)
-    bool interact = false;  // loot the nearest corpse, else talk to the nearest NPC
+    bool drink = false;     // the flask button went down (ADR-047)
+    bool interact = false;  // loot the nearest corpse, else talk to the nearest NPC, else rest by a fire (canRest)
     bool editing = false;   // the editor is open: NPCs and combat pause, no attacks
     float timeRate = 1;     // time-of-day speed-up this step (1 normal, 0 frozen)
 };
 
 struct StepResult {
-    bool attacked = false;   // an attack move started, or `attack` came while the player is knocked out
+    bool attacked = false;   // a move started (an attack, a parry, a drink), or `attack` came while the player is knocked out
     bool respawned = false;  // the knocked-out player got back up at the player spawn
+    bool rested = false;     // the player rested by a fire (ADR-047)
 };
+constexpr float kRestReach = 3;  // blocks from the player's feet to an Ember it can rest by (ADR-047)
 
 // A fresh player with the starting gear at the player spawn, fresh NPCs from the markers, the clock
 // and region at 0, every quest not started and no flags, and the sim RNG seeded from `seed`. Call after the world and markers are in place.
 void startSession(Session& s);
-// Back at the player spawn with full health, out of combat.
+// Back where it last rested (else at the player spawn) with full health and flasks, out of combat.
 void respawnPlayer(Session& s);
+// Whether the player can rest now (ADR-047): alive, not hit for kCombatSeconds (poison's ticks don't
+// count) with nothing angry near, not mid-move,
+// and by a fire (an Ember block within kRestReach: a campfire, a hearth, a shrine's brazier).
+bool canRest(const Session& s);
 // Advances the simulation by `dt` seconds (the game always passes kTick): the NPCs' quest lines,
 // interaction, the player's swing and movement, NPCs and combat (paused while editing), the time of
 // day, which region the player is in, item count changes, then the quests drain the tick's events,

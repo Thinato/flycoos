@@ -21,11 +21,12 @@ json vec(glm::vec3 v) { return {round2(v.x), round2(v.y), round2(v.z)}; }
 json itemId(ItemId id) { return id ? json(defs().itemIds[id]) : json(nullptr); }
 
 // What the body is doing, in one word: the first that holds of knocked_out, flying, swimming,
-// reeling, parrying, attacking, guarding, rolling, on_ground, falling, jumping.
+// reeling, parrying, drinking, attacking, guarding, rolling, on_ground, falling, jumping.
 const char* motion(const Player& p) {
     if (!p.alive()) return "knocked_out";
     if (p.stagger > 0) return p.broken ? "broken" : "flinching";
     if (p.move == Move::Parry) return "parrying";
+    if (p.move == Move::Drink) return "drinking";
     if (p.punching()) return "attacking";
     if (p.guarding) return "guarding";
     if (p.tuning.fly || p.tuning.noclip) return "flying";
@@ -64,7 +65,7 @@ json noteContext(const Session& s, const GameView& view) {
 
     json player = combat(p);
     player.update({{"pos", vec(p.pos)}, {"vel", vec(p.vel)}, {"yaw_degrees", std::round(glm::degrees(p.yaw))},
-                   {"motion", motion(p)}, {"stamina", round2(p.stamina)}, {"guarding", p.guarding}, {"on_ground", p.onGround}, {"in_water", p.inWater}, {"fly", p.tuning.fly},
+                   {"motion", motion(p)}, {"flasks", p.flasks}, {"rest_point", s.restPoint ? vec(*s.restPoint) : json(nullptr)}, {"stamina", round2(p.stamina)}, {"guarding", p.guarding}, {"on_ground", p.onGround}, {"in_water", p.inWater}, {"fly", p.tuning.fly},
                    {"noclip", p.tuning.noclip}, {"seconds_knocked_out", round2(p.deadTime)}, {"xp", p.progress.xp},
                    {"block_at_feet", kBlockNames[s.world.get(glm::ivec3(glm::floor(p.pos)))]},
                    {"block_below", kBlockNames[s.world.get(glm::ivec3(glm::floor(p.pos - glm::vec3(0, 0.05f, 0))))]}});

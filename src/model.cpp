@@ -137,6 +137,20 @@ static Grid buildMace() {  // a haft and a flanged iron head, the flanges out on
     g.set({2, 13, 2}, Iron);
     return g;
 }
+// The healing flask (ADR-047): a round-bellied bottle up along +y, its liquid red (empty: glass), a
+// neck and a cork; held at kFlaskGrip, the belly's middle.
+static Grid buildFlask(bool full) {
+    Grid g({5, 8, 5});
+    for (int y = 0; y < 5; ++y)
+        for (int z = 0; z < 5; ++z)
+            for (int x = 0; x < 5; ++x)
+                if (glm::length(glm::vec3(x, y, z) - 2.0f) < 2.3f) g.set({x, y, z}, full && y < 4 ? PetalRed : Steel);
+    g.set({2, 5, 2}, Steel), g.set({2, 6, 2}, Steel);  // the neck
+    g.set({2, 7, 2}, Wood);                          // the cork
+    return g;
+}
+constexpr glm::vec3 kFlaskGrip{2.5f, 2.5f, 2.5f};
+
 static glm::vec3 heldGrip(Model m) { return m == ModelMace ? glm::vec3(2.5f, 2.5f, 2.5f) : glm::vec3(2.5f, 2.5f, 0.5f); }
 
 Model heldModel(ItemId weapon) {
@@ -264,6 +278,7 @@ Grid buildPart(Model model, Part part) {
         return part != Head ? Grid({1, 1, 1})
              : model == ModelSword ? buildSword() : model == ModelDagger ? buildDagger() : model == ModelAxe ? buildAxe() : buildMace();
     if (model == ModelBuckler || model == ModelHeater || model == ModelTower) return part != Head ? Grid({1, 1, 1}) : buildShield(model);
+    if (model == ModelFlask || model == ModelFlaskEmpty) return part != Head ? Grid({1, 1, 1}) : buildFlask(model == ModelFlask);
     glm::ivec3 s = specs(model)[part].size;
     Grid g(s);
     Block tunic = model == ModelVillager ? Robe : model == ModelBandit ? Leather : Tunic;
@@ -346,6 +361,7 @@ static const Swings kSwordSwings = rows({
     {{-0.4f, 10, 0, 1.57f, 0, -0.6f, -0.2f, 0.5f}, {0, 9, 10, 1.57f, 0, 0.3f, 0.4f, 1}},     // riposte: deep thrust
     kParrySwing,
     {{-1.5f, 9.5f, 5, 1.5f, 0, -0.6f, 0.2f, 0.4f}, {1.6f, 8.5f, 6.5f, 1.55f, 0, 0.6f, 0.3f, 0.5f}},  // backstep: a lunging sweep back in
+    {},  // drink: its own pose (sip)
 });
 // Daggers: tight slashes close in, and stabs (thrusts) for most of the rest; ice-pick stabs from above.
 static const Swings kDaggerSwings = rows({
@@ -364,6 +380,7 @@ static const Swings kDaggerSwings = rows({
     {{-0.4f, 10, 0, 1.57f, 0, -0.6f, -0.2f, 0.5f}, {0, 9, 10, 1.57f, 0, 0.3f, 0.4f, 1}},         // riposte: deep stab
     kParrySwing,
     {{-1.3f, 9.5f, 4.5f, 1.5f, 0, -0.5f, 0.2f, 0.4f}, {1.4f, 8.5f, 6, 1.55f, 0, 0.5f, 0.3f, 0.5f}},  // backstep: a slash back in
+    {},  // drink
 });
 // Axes: chops from high, the head turned to lead (roll), a sweeping cleave, no thrusts.
 constexpr float kChop = -1.57f;  // the head ahead of a downward chop
@@ -383,6 +400,7 @@ static const Swings kAxeSwings = rows({
     {{-0.2f, 17, 2, -0.6f, 0, -0.2f, -0.2f, 0.5f, kChop}, {0.1f, 5, 7, 2.5f, 0, 0.1f, 0.5f, 2, kChop}},   // riposte: a hack from above
     kParrySwing,
     {{-1.5f, 9.5f, 5, 1.5f, 0, -0.6f, 0.2f, 0.4f}, {1.6f, 8.5f, 6.5f, 1.55f, 0, 0.6f, 0.3f, 0.5f}},      // backstep: a sweep back in
+    {},  // drink
 });
 // Maces: the axe's chops as smashes, the chain's last one a big overhead smash.
 static const Swings kMaceSwings = [] {
@@ -407,7 +425,7 @@ constexpr float kShieldIdleYaw = 1.2f;  // at the side, its face turned out
 // The swing pose now and how far it has taken over from the idle grip (0 .. 1): it winds up until
 // the hold point, strikes through the hit to the follow-through, then settles back.
 static std::pair<Grip, float> swingPose(WeaponClass c, Move move, float u) {
-    if (move == Move::None) return {{}, 0};
+    if (move == Move::None || move == Move::Drink) return {{}, 0};
     const MoveSpec& m = spec(c, move);
     const Swing& sw = swings(c)[size_t(move)];
     float through = std::min(m.impact + 0.6f * (m.impact - m.holdAt), m.chain);
@@ -426,6 +444,16 @@ static std::pair<Grip, float> swingPose(const Player& p, bool armed) {
     float k = smooth(moveProgress(p) / m.holdAt);
     return {mix(fromW > 0 ? from : g, g, k), fromW + (1 - fromW) * k};
 }
+
+// A drink from the flask (ADR-047): how far the left hand has raised it (in by the hold point, down
+// after the drink frame) and how far it's tipped to the lips (from halfway up to the drink frame).
+struct Sip { float raise = 0, tip = 0; };
+static Sip sip(const Player& p) {
+    if (p.move != Move::Drink) return {};
+    float u = moveProgress(p), hold = kDrinkSpec.holdAt, at = kDrinkSpec.impact, down = smooth((1 - u) / (1 - at - 0.1f));
+    return {smooth(u / hold) * down, smooth((u - hold * 0.5f) / (at - hold * 0.5f)) * down};
+}
+constexpr glm::vec3 kSipHand{1.2f, 12.5f, 9};  // the left hand out in front of the face, the neck at the lips
 
 // How hard the body reels now (0 .. 1): in fast, held, out over the last of it.
 static float reel(const Combatant& c) {
@@ -536,6 +564,12 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
             rot[Torso].x -= 0.25f * jolt;
         }
     }
+    if (Sip d = sip(p); d.raise > 0) {  // drinking: the flask to the lips, the head tipped back with it
+        off[HandL] = glm::mix(off[HandL], kSipHand - kHumanoid[HandL].center, d.raise);
+        rot[Head].x -= 0.4f * d.tip;
+        off[Head].z -= 0.5f * d.tip;
+        rot[Torso].x -= 0.08f * d.tip;
+    }
     if (float r = reel(p); r > 0) {
         if (p.broken) {  // stance broken: sunk to a knee, hunched, arms hanging
             posture(0, 0.6f * r, 4 * r);
@@ -585,7 +619,8 @@ static void animateBoar(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 
     }
 }
 
-std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held, float alpha, glm::mat4* shieldPose) {
+std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held, float alpha, glm::mat4* shieldPose,
+                                           glm::mat4* flask) {
     bool armed = model != ModelDummy && !quadruped(model) && p.weapon() != NoItem;
     const PartSpec* parts = specs(model);
     glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
@@ -664,9 +699,16 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
     if (shieldPose && shield) {  // its face out at the side, turned forward by the guard, swept along a parry's arc
         float yaw = kShieldIdleYaw * (1 - guard);
         if (p.move == Move::Parry) yaw += (-g.arc - yaw) * w;
-        glm::mat4 m = glm::translate(base * tilt, parts[HandL].center + off[HandL]);
+        glm::vec3 hand = parts[HandL].center + off[HandL];
+        if (Sip d = sip(p); d.raise > 0) hand = glm::mix(hand, parts[HandL].center + glm::vec3(0.5f, 1, 1), d.raise);  // let down at the side to drink
+        glm::mat4 m = glm::translate(base * tilt, hand);
         m = glm::rotate(m, yaw, {0, 1, 0});
         *shieldPose = glm::translate(m, -shieldGrid(shieldModel(p.inv.equipped[SlotOffHand])).grip);
+    }
+    if (Sip d = sip(p); flask && d.raise > 0 && model != ModelDummy && !quadruped(model)) {  // upright in the hand, its neck tipped to the lips
+        glm::mat4 m = glm::translate(base * tilt, parts[HandL].center + off[HandL] + glm::vec3(0, 1, 0));
+        m = glm::rotate(m, -2.0f * d.tip, {1, 0, 0});
+        *flask = glm::translate(m, -kFlaskGrip);
     }
     return out;
 }

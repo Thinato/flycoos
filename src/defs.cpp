@@ -208,13 +208,11 @@ void loadWeaponClasses(const File& f, Defs& d) {
         const json& ms = r.fields.contains("moves") ? r.fields["moves"] : json();
         if (!ms.is_object()) throw r.fail("moves", "must be an object of every attack move: {light_1: {...}, ...}");
         for (const auto& [k, v] : ms.items())
-            if (auto m = std::ranges::find(kMoveIds, k); m == std::end(kMoveIds) || Move(m - std::begin(kMoveIds)) == Move::None ||
-                                                          Move(m - std::begin(kMoveIds)) == Move::Parry)
-                throw r.fail("moves." + k, "not an attack move (none and parry are code's)");
+            if (auto m = std::ranges::find(kMoveIds, k); m == std::end(kMoveIds) || codeMove(Move(m - std::begin(kMoveIds))))
+                throw r.fail("moves." + k, "not an attack move (none, parry and drink are code's)");
         for (size_t m = 0; m < size_t(Move::Count); ++m) {
-            if (Move(m) == Move::None) continue;
-            if (Move(m) == Move::Parry) {
-                w.moves[m] = kParrySpec;
+            if (codeMove(Move(m))) {
+                w.moves[m] = Move(m) == Move::Parry ? kParrySpec : Move(m) == Move::Drink ? kDrinkSpec : MoveSpec{};
                 continue;
             }
             std::string field = std::string("moves.") + kMoveIds[m];

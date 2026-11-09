@@ -105,13 +105,27 @@ void statusBars(ImDrawList* dl, ImVec2 at, ImVec2 size, float step, const Player
     }
 }
 
+// The healing flask (ADR-047) at `c`: a round-bellied bottle, red with charges left, else empty glass,
+// and how many.
+void flaskIcon(ImDrawList* dl, ImVec2 c, int charges) {
+    ImU32 glass = uiColor(0.85f, 0.9f, 0.95f, 0.9f), ink = uiColor(0, 0, 0, 0.9f);
+    dl->AddRectFilled(ImVec2(c.x - 3, c.y - 15), ImVec2(c.x + 3, c.y - 5), glass, 1);  // the neck
+    dl->AddRectFilled(ImVec2(c.x - 4, c.y - 19), ImVec2(c.x + 4, c.y - 15), uiColor(0.55f, 0.35f, 0.2f));  // the cork
+    dl->AddCircleFilled(ImVec2(c.x, c.y + 3), 10, ink);
+    dl->AddCircleFilled(ImVec2(c.x, c.y + 3), 8.5f, charges > 0 ? uiColor(0.85f, 0.12f, 0.15f) : uiColor(0.3f, 0.32f, 0.35f, 0.9f));
+    dl->AddCircleFilled(ImVec2(c.x - 3, c.y), 2, uiColor(1, 1, 1, 0.6f));  // a glint
+    char n[8];
+    std::snprintf(n, sizeof n, "%d", charges);
+    shadowText(dl, ImVec2(c.x + 13, c.y - ImGui::GetFontSize() / 2 + 3), charges > 0 ? uiColor(1, 1, 1) : uiColor(0.6f, 0.6f, 0.6f), 1, n);
+}
+
 // Health's color: red, green while poisoned (ADR-046).
 glm::vec3 healthRgb(const Player& b) { return b.effect(Effect::Poisoned) ? glm::vec3(0.35f, 0.6f, 0.12f) : glm::vec3(0.8f, 0.15f, 0.12f); }
 
 }  // namespace
 
 void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world, const Player& player,
-             const std::vector<Entity>& entities, const Entity* target, float tickAlpha, const Entity* locked) {
+             const std::vector<Entity>& entities, const Entity* target, float tickAlpha, const Entity* locked, bool rest) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ImVec2 screen = ImGui::GetIO().DisplaySize;
     if (screen.x <= 0 || screen.y <= 0) return;
@@ -186,6 +200,12 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     std::snprintf(hp, sizeof hp, "%d / %d", int(std::ceil(player.health)), most);
     ImVec2 hs = ImGui::CalcTextSize(hp);
     shadowText(dl, ImVec2(center.x - hs.x / 2, center.y - hs.y / 2), uiColor(1, 1, 1), 1, hp);
+    flaskIcon(dl, ImVec2(center.x - 140 - 34, center.y + 4), player.flasks);  // left of the bars
+    if (rest && !target && player.alive()) {
+        const char* text = "[E] Rest by the fire";
+        ImVec2 ts = ImGui::CalcTextSize(text);
+        shadowText(dl, ImVec2(screen.x / 2 - ts.x / 2, center.y - 80 - ts.y), uiColor(1, 0.85f, 0.5f), 1, text);  // over the status bars
+    }
     // Stamina under it (ADR-035): what attacks, rolls and blocks spend.
     bar(dl, ImVec2(center.x, center.y + 15), ImVec2(280, 7), player.stamina / gMelee.staminaMax, uiColor(0.3f, 0.75f, 0.25f), 1);
 }

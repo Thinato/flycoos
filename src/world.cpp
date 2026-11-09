@@ -409,6 +409,28 @@ void generateChunkColumn(Grid& g, glm::ivec2 chunk, uint32_t seed) {
             if (chance < 0.4f * rocky + 0.006f && c.water < c.h)
                 placeRock(pad, x, c.h, z, rnd, rocky > 0.5f && (rnd >> 4) % 4 != 0, seed);
         }
+    // Campfires (ADR-047), rest points: one candidate per 96x96 cell, on dry level ground clear of
+    // trees and rocks: a ring of cobble around embers, as the campfire prefab.
+    for (int cz = floorDiv(lo.y, 96); cz <= floorDiv(hi.y, 96); ++cz)
+        for (int cx = floorDiv(lo.x, 96); cx <= floorDiv(hi.x, 96); ++cx) {
+            uint32_t rnd = hash(cx, cz, seed ^ 0x2c1b3c6du);
+            int x = cx * 96 + 8 + int(rnd % 80), z = cz * 96 + 8 + int((rnd >> 8) % 80);
+            if ((rnd >> 16) % 4 == 0 || x - 1 < lo.x || z - 1 < lo.y || x + 1 > hi.x || z + 1 > hi.y) continue;
+            Terrain::Column c = terrain(x, z);
+            bool clear = c.water < c.h && c.h + 5 < g.size.y;
+            for (int dz = -1; dz <= 1 && clear; ++dz)
+                for (int dx = -1; dx <= 1 && clear; ++dx) {
+                    clear = std::abs(terrain(x + dx, z + dz).h - c.h) <= 1;  // a step is levelled
+                    for (int y = c.h + 2; y <= c.h + 4 && clear; ++y) clear = isClear(pad.get({x + dx, y, z + dz}));
+                }
+            if (!clear) continue;
+            for (int dz = -1; dz <= 1; ++dz)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    pad.set({x + dx, c.h, z + dz}, Cobble);
+                    pad.set({x + dx, c.h + 1, z + dz}, dx && dz ? Air : dx == 0 && dz == 0 ? Ember : Cobble);
+                }
+            pad.set({x, c.h + 2, z}, Ember);
+        }
     // Grass and flowers last, on the open grass the trees and rocks left.
     for (int z = o.z; z < o.z + kChunk; ++z)
         for (int x = o.x; x < o.x + kChunk; ++x) plantColumn(pad, x, z, ShortGrass, 1);

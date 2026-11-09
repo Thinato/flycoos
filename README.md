@@ -54,7 +54,8 @@ GPU debug layer.
 | Left mouse | Attack (Elden Ring style, ADR-035): tap for the next of four light swings (a chain), hold for a heavy that charges while held. Running, late in a roll, in the air (it strikes on landing), right after a block (a guard counter) or at an enemy on its knee (a riposte) it's a different attack. Presses wait a moment for the current swing |
 | Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks. A shield in the off hand guards better; a tower shield makes weak attacks bounce off. Raised just as a hit lands it's a perfect guard (ADR-041): no damage, half the stamina, a bright clink |
 | Q | Parry (ADR-036) with a buckler or heater shield, or with the off hand empty a knife or bare fists (ADR-041): timed just before a hit lands, it deflects the attack and leaves the attacker open to a riposte (left mouse); mistimed, it's a weak guard |
-| E | Loot a nearby corpse, otherwise talk to a nearby villager or guard |
+| R | Drink from the healing flask (ADR-047): a slow walk for a second, then 40% of your health back; a hit that staggers you first cancels it, the charge kept. The red flask by the health bar counts the charges (3); empty, you just shake it |
+| E | Loot a nearby corpse, otherwise talk to a nearby villager or guard, otherwise rest by a fire (ADR-047) |
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
 | J | Journal: active and finished quests, the current entry and objectives |
@@ -83,7 +84,8 @@ A controller works too (SDL's gamepad layout; PlayStation names here, an Xbox pa
 | L1 | Guard (like right mouse) |
 | L2 | Parry (like Q) |
 | Triangle | Bags |
-| D-pad left / up / right | Character / Journal / Progress; locked on, the D-pad (down too) switches to the next enemy that way |
+| D-pad down | Drink from the healing flask (like R) |
+| D-pad left / up / right | Character / Journal / Progress; locked on, they switch to the next enemy that way |
 | Options | Close the windows |
 | Create | Open/close the debug window (its Camera tab: stick look speed and deadzone, live stick values) |
 
@@ -304,6 +306,12 @@ health. When the bar fills, the status takes effect. **Bleed** (the Rusty Knife,
 **frost** (no source yet) takes a burst and then makes the body take 20% more damage for a while.
 The bars drain over time; armor resists statuses (the iron set a lot), and a shield's guard stops
 the build-up along with the damage. Status damage numbers come in the status's color.
+
+**Healing flasks and rest points** (ADR-047): R drinks from the healing flask, 40% of max health a
+charge. Resting by a fire (E within 3 blocks of embers: a campfire, a cottage hearth, a shrine's
+brazier, the campfires scattered through the endless world) refills the flasks, heals fully, clears
+statuses, and makes it the place you get back up after being knocked out. You can't rest right
+after being hit or with an enemy after you. Charges and the rest point are saved.
 
 A spawn marker can carry up to 8 **lines** of dialogue (1–160 bytes each). Villagers and guards say
 the next one each time you press E, round and round; anyone who fights (guards too) shouts the

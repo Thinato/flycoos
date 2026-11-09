@@ -69,7 +69,7 @@ system is summarized in ADR-035.
 - [x] Status effects: bleed, poison, frost build-up bars, timed effects (ADR-046); stun is the stance bar (ADR-035)
 - [ ] Weapon scaling with attributes (strength, agility, intellect, spirit)
 - [x] Equip load: light, medium and heavy rolls; overloaded can't roll (ADR-039)
-- [ ] Healing flasks (limited charges, refilled at rest points)
+- [x] Healing flasks (limited charges, refilled at rest points by any fire; ADR-047)
 - [x] Per-weapon timings and stance values in the data: a moveset per weapon class (ADR-044)
 - [ ] Talent trees (Warrior, Ranger, Mage; planned in docs/TALENTS.md): last, once every other item on this roadmap is done. Until then, follow the foundations rules in that file
 

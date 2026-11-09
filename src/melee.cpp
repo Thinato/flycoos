@@ -135,6 +135,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     }
     if (in.heavy) p.chargeByHeavy = true, wish(counter ? Want::Counter : Want::Heavy);
     if (in.parry && parryOf(p) > 0) wish(Want::Parry);  // with nothing that parries (a greatshield, a sword), Q does nothing
+    if (in.drink) wish(Want::Drink);
     bool over = p.load == Load::Over && !p.tuning.fly && !p.tuning.noclip;  // overloaded: no roll, no run (ADR-039)
     if (move.roll && !over) wish(Want::Roll);
     if (over) move.run = false;
@@ -155,7 +156,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
                 if (p.holding && p.moveTime >= holdTime(p) && (p.charge += dt) >= t.chargeSeconds) p.charged = true, p.holding = false, p.noise(Noise::Charged);
             }
             if (jumpAttack(p.move)) p.holding = airborne(p);  // strikes on landing
-            bool cut = p.want == Want::Roll || p.want == Want::Parry || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
+            bool cut = p.want == Want::Roll || p.want == Want::Parry || p.want == Want::Drink || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
             if (u >= m.cancel && cut && !wantsAttack(p.want)) endMove(p, p.move);
         }
         // A wanted attack starts once the body is free, or from the current one's chain point.
@@ -188,6 +189,13 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
             }
             p.want = Want::None;
         }
+        // A drink from the flask (ADR-047) starts once the body is free, on the ground; it commits too.
+        if (p.want == Want::Drink && !p.punching() && !p.rolling() && !airborne(p) && !p.inWater) {
+            startMove(p, Move::Drink, {});
+            p.moveScale = 1;  // the heal is pending until its drink frame (hitPending)
+            p.want = Want::None;
+            started = true;
+        }
         if (!p.punching() && p.want == Want::Roll && p.stamina > 0) move.roll = true;  // until updatePlayer can roll
     }
     bool wasGuarding = p.guarding;
@@ -204,6 +212,9 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     // keeps the jump's way) and turns toward the aim through its windup; the guard walks.
     if (p.stagger > 0) {
         move = {};
+    } else if (p.move == Move::Drink) {  // walks slowly, may turn (a lock-on still faces its target)
+        move.speed = t.drinkSpeed;
+        move.run = move.jump = false;
     } else if (p.punching()) {
         const MoveSpec& m = spec(p);
         if (!jumpAttack(p.move) || !airborne(p)) {  // in the air a jump attack keeps the jump's way; landed, it commits

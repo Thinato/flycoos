@@ -258,7 +258,8 @@ static void statusPanel(const Player& b, const std::function<void(Status)>& appl
     if (b.effects.empty()) ImGui::TextDisabled("No timed effects");
 }
 
-static void playerTab(Player& p, float& armorK, DebugActions& actions, const char* region) {
+static void playerTab(Session& session, float& armorK, DebugActions& actions, const char* region) {
+    Player& p = session.player;
     attributes(p, true);
     ImGui::SeparatorText("Stat sheet");
     statSheet(p);
@@ -433,6 +434,22 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
         ImGui::SliderFloat("Frost damage taken", &st.frostTaken, 0, 1, "+%.2f");
         ImGui::SetItemTooltip("Frostbite's increased damage taken (a modifier in the stat pipeline while it lasts).");
         if (ImGui::Button("Reset statuses")) st = StatusTuning{};
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Flasks and rest (ADR-047)")) {
+        StatSheet s = sheet(p);
+        int most = maxFlasks(s);
+        ImGui::SliderInt("Flask charges", &p.flasks, 0, std::max(most, 1), std::format("%d of {}", most).c_str());
+        ImGui::Text("Each heals %.0f%% of max health (%.0f)", double(s[Stat::FlaskHealing] * 100), double(s[Stat::FlaskHealing]) * maxHealth(s));
+        if (p.move == Move::Drink)
+            ImGui::ProgressBar(moveProgress(p), {-FLT_MIN, 0}, p.hitPending ? "drinking: before the drink frame" : "drinking: drunk");
+        ImGui::SliderFloat("Walk while drinking", &m.drinkSpeed, 0.1f, 5, "%.1f b/s");
+        ImGui::Text("Can rest here: %s", canRest(session) ? "yes" : "no (alive, not hit for 5 s, nothing angry near, by an Ember)");
+        if (session.restPoint) ImGui::Text("Rest point: %.1f %.1f %.1f", double(session.restPoint->x), double(session.restPoint->y), double(session.restPoint->z));
+        else ImGui::TextDisabled("Rest point: none yet (the player spawn)");
+        if (ImGui::Button("Rest now")) rest(p), session.restPoint = p.pos;
+        ImGui::SameLine();
+        if (ImGui::Button("Forget rest point")) session.restPoint.reset();
         ImGui::TreePop();
     }
 
@@ -886,7 +903,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
     ImGui::SetNextWindowSize({440, 470}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Debug   ( . to toggle )", &open) && ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Render")) { renderTab(render, stats); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Player")) { playerTab(player, session.armorK, actions, region); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Player")) { playerTab(session, session.armorK, actions, region); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Progression")) { progressionTab(player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Items")) { itemsTab(player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Entities")) { entitiesTab(session, actions, spawnKind); ImGui::EndTabItem(); }

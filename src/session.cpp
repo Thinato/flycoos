@@ -14,9 +14,11 @@ void startSession(Session& s) {
     s.elapsed = 0;
     s.regionId = 0;
     s.regionSince = 0;
+    s.restPoint.reset();
     s.player.teleport(playerSpawn(s.world, s.markers));
     giveItem(s.player.inv, Shortsword);
     giveItem(s.player.inv, Satchel);
+    s.player.flasks = maxFlasks(sheet(s.player));
     syncSpawns(s.entities, s.world, s.markers, s.seed, s.player.pos, s.timeOfDay);
     s.rng.seed(s.seed);
     resetQuests(s);
@@ -24,11 +26,27 @@ void startSession(Session& s) {
 
 void respawnPlayer(Session& s) {
     Player& p = s.player;
-    p.teleport(playerSpawn(s.world, s.markers));
+    p.teleport(s.restPoint ? clearOfTerrain(s.world, *s.restPoint) : playerSpawn(s.world, s.markers));
     p.vel = {};
     p.health = float(maxHealth(sheet(p)));
+    p.flasks = maxFlasks(sheet(p));
     p.deadTime = 0;
     p.combatTimer = 0;
+}
+
+bool canRest(const Session& s) {
+    const Player& p = s.player;
+    // Hit lately is what counts, not the combat timer: poison's ticks keep that running, and a rest cures them.
+    if (!p.alive() || p.hitTime < kCombatSeconds || p.punching() || p.rolling() || p.stagger > 0) return false;
+    for (const Entity& e : s.entities)
+        if (e.angry() && e.body.alive() && glm::distance(e.body.pos, p.pos) < 24) return false;
+    glm::ivec3 at(glm::floor(p.pos));
+    int r = int(kRestReach);
+    for (int dy = -2; dy <= 1; ++dy)
+        for (int dz = -r; dz <= r; ++dz)
+            for (int dx = -r; dx <= r; ++dx)
+                if (s.world.get(at + glm::ivec3(dx, dy, dz)) == Ember) return true;
+    return false;
 }
 
 // The noises `b` made this tick into s.sounds, then clears them. A foot comes down where the gait
@@ -81,12 +99,16 @@ StepResult step(Session& s, const SimInput& in, float dt) {
             p.noise(Noise::Talk);
             talk(*npc, pickLine(s, *npc));  // answered from the state the player walked up in; the quests react below
             if (npc->spawn.id) s.events.push_back(TalkedTo{npc->spawn.id});
+        } else if (canRest(s)) {  // a rest (ADR-047): where it gets back up from now on
+            rest(p);
+            s.restPoint = p.pos;
+            r.rested = true;
         }
     }
     Input move = !p.alive() && !in.editing ? Input{} : in.move;
     if (in.editing) p.pressing = false, p.want = Want::None;  // nothing half-pressed swings on leaving the editor
     else {  // attacks, the guard and stamina (ADR-035); they shape this tick's movement
-        MeleeInput melee{in.attack, in.attackHeld, in.heavy, in.heavyHeld, in.guard, in.parry, in.aim};
+        MeleeInput melee{in.attack, in.attackHeld, in.heavy, in.heavyHeld, in.guard, in.parry, in.drink, in.aim};
         // At an NPC open to a critical (ADR-045) an attack is the riposte move, aimed at it; once under way,
         // still aimed at the one it caught.
         if (const Entity* e = criticalTarget(s.entities, p, p.move == Move::Riposte && p.hitPending))

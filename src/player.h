@@ -74,16 +74,19 @@ struct Body {
 };
 
 // A melee move (ADR-035; melee.h has their timings): the four-swing light chain, the two heavies,
-// and the attacks that depend on what the body was doing.
+// and the attacks that depend on what the body was doing; the parry, and a drink from the healing
+// flask (ADR-047), which commit like attacks but strike nothing.
 enum class Move : uint8_t { None, Light1, Light2, Light3, Light4, Heavy1, Heavy2, Running, Rolling, JumpLight, JumpHeavy,
-                            GuardCounter, Riposte, Parry, Backstep, Count };
+                            GuardCounter, Riposte, Parry, Backstep, Drink, Count };
 // What a body did this tick that can be heard (ADR-037): bits of Combatant::noises, set where it
 // happens and gathered by step() into Session::sounds. Steps and swim strokes come from the gait.
 enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup, Charged, GuardUp, Hurt, Crit, Death,
                              StanceBreak, Parry, Block, GuardBreak, Bounce, Loot, Talk, Backstep, PerfectGuard,
-                             Bleed, Poison, Frost, Count };  // a status took effect on it (ADR-046)
+                             Bleed, Poison, Frost,  // a status took effect on it (ADR-046)
+                             Drink, Empty, Rest,    // a flask healed it, an empty one didn't; it rested by a fire (ADR-047)
+                             Count };
 // What the player's attack buttons asked for and is still waiting to happen (melee.cpp).
-enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry };
+enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry, Drink };
 
 // A timed effect (ADR-046; TALENTS.md foundation 4): poison, frostbite, and later buffs, enchants and
 // the like. Its modifiers count in the stat pipeline (collect) while it lasts; the clock runs in updateCombat.
@@ -160,6 +163,7 @@ struct Combatant {
     std::vector<TimedEffect> effects;      // what's on it now (ADR-046)
     std::vector<Modifier> innate;          // its kind's own modifiers (creature "mods": a wolf's bleeding bite)
     float trauma = 0;                      // camera shake, 0..1 (the player's): big hits add it, it wears off (ADR-045)
+    int flasks = kBaseFlasks;              // healing flask charges left (ADR-047); a rest fills them to the Flasks stat
     float deadTime = 0;                    // seconds spent at 0 health
     Inventory inv;                         // equipment and bags
     Progress progress;                     // skills, XP and talents: the player's (NPCs' stay at the start)

@@ -49,7 +49,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel` by weapon class, `partModels`), procedural animation (`poseModel`; swing poses per weapon class, ADR-044). Core (no GPU), since NPC traits name their `Model` |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the quest drain, the knocked-out player's respawn, skill and level-up toasts) |
-| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
+| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`, `WEAR`, `REST`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
 | `src/quest.h/.cpp` | Quests (ADR-026): `GameEvent` (`Killed`, `ItemCountChanged`, `TalkedTo`, `RegionEntered`), the quest data types the loader fills (`QuestDef`, `Stage`, `Trigger`, `Action`, `Condition`, `QuestLine`), `QuestState`; `updateQuests` (the once-per-tick drain), `setQuestStage`/`resetQuest(s)`, the condition evaluator (`passes`, `passesAll`, `pickLine`), `countItem`, `checkQuestMarkers` |
 | `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` and `data/quests/*.json` (records by string id, `copy_from`, field and range checks, quest references resolved to handles, warnings), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
@@ -222,6 +222,8 @@ u32 FNV-1a checksum of every byte before it
 - `WEAR` (ADR-027): `u32 count`, then per NPC with wear `u32 spawn marker id | u8 slot | f32 the
   player's hits on it | f32 its hits on the player` (`Entity::xpWear`, `armorWear`; 0–10⁶). Keyed
   like `NPCS` but apart from it, so `NPCS` keeps its layout; entries without their NPC are dropped.
+- `REST` (ADR-047): `u8 flask charges left` (capped by the Flasks stat on load) | `u8 1 if rested`, then
+  `f32 x, y, z` of the rest point (`Session::restPoint`). Missing (older saves): full flasks, never rested.
 - Every new runtime state gets a section here and a round-trip test.
 
 ## Editing (`applyEdit`)
@@ -786,6 +788,15 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   updateCombat runs their clocks; a death clears them. Status damage skips armor. `hurt()` keeps the
   last four `DamageNumber`s (a hit's, or a status's by kind) for the HUD. Creatures' `mods` (data)
   are copied into `Combatant::innate`.
+- **Healing flasks and rest points** (ADR-047): `Move::Drink` is a code move like the parry
+  (`kDrinkSpec`, `codeMove`): updateMelee starts it from a buffered `Want::Drink` on the ground, it
+  walks at `gMelee.drinkSpeed`, and its impact frame calls `drink()` from updateCombat instead of a
+  hit (a charge heals its `flask_healing` share; `Combatant::flasks`, filled to the `flasks` stat). A
+  flinch (`interrupt`) before then cancels it. `canRest` (session.h): alive, not hit for
+  `kCombatSeconds` (poison's ticks don't count), nothing angry within 24 blocks, an Ember within `kRestReach`; `step`'s interact rests (`rest()`) after loot
+  and talk and sets `Session::restPoint`, where `respawnPlayer` puts the player back, flasks full.
+  The endless world generates a campfire per 96x96 cell where the ground allows
+  (`generateChunkColumn`). model.cpp draws the left hand raising `ModelFlask` (`sip`).
 - **Shields and the parry** (ADR-036, melee.h): an off-hand item with a `shield` guards by its own
   numbers instead of the sword's (`guardOf`): the Oak Buckler stops 80% and saves 46% of the stamina,
   the Heater Shield 100% / 56%, the Tower Shield 100% / 72%. A guard of at least 65% boost makes an

@@ -31,9 +31,10 @@ Changes: trimmed to single calls, levelled, faded.
 | [Interface Sounds: drop_002.ogg](https://kenney.nl/assets/interface-sounds) | Kenney (kenney.nl) | lock_on, talk |
 | [Music Jingles: jingles_PIZZI07.ogg](https://kenney.nl/assets/music-jingles) | Kenney (kenney.nl) | level_up, quest |
 | [Dog Snarl Grunt Grumble](https://opengameart.org/content/dog-snarl-grunt-grumble) | qubodup | wolf_windup |
+| [Liquid Bottle Drink Set](https://opengameart.org/content/liquid-bottle-drink-set) | qubodup | flask_drink, flask_empty, flask_open |
 | [40 CC0 water / splash / slime SFX](https://opengameart.org/content/40-cc0-water-splash-slime-sfx) | rubberduck | swim, status_bleed, status_poison |
 | [80 CC0 creature SFX](https://opengameart.org/content/80-cc0-creature-sfx) | rubberduck | wolf_attack |
-| [80 CC0 RPG SFX](https://opengameart.org/content/80-cc0-rpg-sfx) | rubberduck | charge, hit_blade, status_frost |
+| [80 CC0 RPG SFX](https://opengameart.org/content/80-cc0-rpg-sfx) | rubberduck | charge, hit_blade, rest, status_frost |
 | [10 Impact/Shield Blocks](https://opengameart.org/content/10-impactshield-blocks) | StarNinjas | block_shield |
 | [20 Sword Sound Effects (Attacks and Clashes)](https://opengameart.org/content/20-sword-sound-effects-attacks-and-clashes) | StarNinjas | swing_light |
 | [20 Sword Sound Effects (Attacks and Clashes)](https://opengameart.org/content/20-sword-sound-effects-attacks-and-clashes) | StarNinjas | block_metal, parry |

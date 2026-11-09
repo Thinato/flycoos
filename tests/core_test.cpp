@@ -144,7 +144,7 @@ static void chunkMeshes() {
         CHECK(meshes[i].opaque == one.opaque && meshes[i].water == one.water);
         opaque += meshes[i].opaque.size(), water += meshes[i].water.size();
     }
-    CHECK(opaque == 7673 && water == 27);  // coasts, rivers and lakes (8201 before them)
+    CHECK(opaque == 7703 && water == 27);  // a campfire (ADR-047; 7673 before it, 8201 before coasts, rivers and lakes)
 
     // A voxel edited on a chunk corner remeshes the 8 chunks its faces and AO reach, and they match a
     // full remesh.
@@ -407,7 +407,7 @@ static void generation() {
     generateTerrain(b, 7);
     generateTerrain(c, 8);
     CHECK(a.cells == b.cells);
-    CHECK(fnv(a) == 0x22c3a6e7u);  // coasts, rivers and lakes; 0x209bcf65 before them
+    CHECK(fnv(a) == 0x0f26d3b4u);  // a campfire (ADR-047); 0x22c3a6e7 before it, 0x209bcf65 before coasts, rivers and lakes
     CHECK(a.cells != c.cells);
     glm::vec3 spawn = findSpawn(a);
     CHECK(a.get(glm::ivec3(glm::floor(spawn)) - glm::ivec3(0, 1, 0)) == Grass);
@@ -436,7 +436,7 @@ static void generation() {
 static void regions() {
     Grid g({512, 192, 512});
     generateTerrain(g, 42);
-    int n = g.size.x, forest = 0, rocky = 0;
+    int n = g.size.x, forest = 0, rocky = 0, fires = 0;
     std::vector<int> sum(size_t(n + 1) * (n + 1), 0);  // 2D prefix sum of decorated columns
     for (int z = 0; z < n; ++z)
         for (int x = 0; x < n; ++x) {
@@ -445,13 +445,16 @@ static void regions() {
                 Block b = g.get({x, y, z});
                 tree |= isTreeBlock(b);
                 rock |= b == Rock;
+                fires += b == Ember && g.get({x, y - 1, z}) == Ember;  // a campfire's top ember (ADR-047)
             }
             forest += tree;
             rocky += rock;
             sum[size_t(z + 1) * (n + 1) + x + 1] = (tree || rock) + sum[size_t(z) * (n + 1) + x + 1] +
                                                    sum[size_t(z + 1) * (n + 1) + x] - sum[size_t(z) * (n + 1) + x];
         }
-    CHECK(fnv(g) == 0x73170551u);  // coasts, rivers and lakes; 0xd779f799 before them
+    CHECK(fnv(g) == 0xc5b81750u);  // campfires (ADR-047); 0x73170551 before them, 0xd779f799 before coasts, rivers and lakes
+    std::println("regions: {} campfires in 512x512", fires);
+    CHECK(fires >= 4 && fires <= 40);  // rest points every hundred blocks or so
     // Lakes lie above the sea at their own levels, and no water is left open to the air at its
     // sides or under it (a lake's rim holds it in).
     int lake = 0, exposed = 0;
@@ -3623,6 +3626,8 @@ static void playerSaves() {
     CHECK(moveItem(p.inv, {SlotRef::Item, 5}, {SlotRef::Item, 2, 1}));  // the pelt into the satchel
     CHECK(p.inv.equipped[SlotTrinket] == BoneCharm && p.inv.equipped[SlotHead] == IronHelm && p.inv.bags[0] == Satchel);
     p.health = 37;
+    p.flasks = 1;
+    a.restPoint = glm::vec3(22.5f, 4, 14.5f);  // ADR-047
     Entity *b0 = npc(a, 3, 0), *b1 = npc(a, 3, 1);
     CHECK(b0 && b1 && npc(a, 4, 0));
     b0->body.teleport({10.5f, 4, 50.5f});
@@ -3641,6 +3646,7 @@ static void playerSaves() {
     CHECK(b.elapsed == 123.5 && b.timeOfDay == 0.625f);
     CHECK(b.player.pos == glm::vec3(20.25f, 4, 12.75f) && b.player.prevPos == b.player.pos && b.player.yaw == 1.25f);
     CHECK(b.player.health == 37 && b.player.level == 3 && b.player.stats.strength == 7 && b.player.stats.stamina == p.stats.stamina);
+    CHECK(b.player.flasks == 1 && b.restPoint == glm::vec3(22.5f, 4, 14.5f));
     CHECK(b.player.inv.equipped == p.inv.equipped && b.player.inv.bags == p.inv.bags && b.player.inv.containers == p.inv.containers);
     Entity *c0 = npc(b, 3, 0), *c1 = npc(b, 3, 1);
     CHECK(c0 && c0->body.pos == glm::vec3(10.5f, 4, 50.5f) && c0->body.yaw == -2 && c0->body.health == 5 && c0->body.alive());
@@ -3687,6 +3693,13 @@ static void playerSaves() {
         craft({{"HEAD", head}, {"INVT", hugeEquip}}),
         craft({{"HEAD", head}, {"HEAD", head}}),
         craft({{"PLYR", {}}}),  // no header
+        craft({{"HEAD", head}, {"REST", {2, 1, 0, 0}}}),  // a rest point cut short
+        craft({{"HEAD", head}, {"REST", {2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}}),  // "rested" must be 0 or 1
+        [&] {  // a rest point far past any world
+            std::vector<uint8_t> rest{2, 1};
+            for (float f : {1e30f, 40.0f, 0.0f}) le(rest, std::bit_cast<uint32_t>(f), 4);
+            return craft({{"HEAD", head}, {"REST", rest}});
+        }(),
         [&] {  // a later version
             auto v = craft({{"HEAD", head}});
             v[4] = 2;
@@ -3720,6 +3733,18 @@ static void playerSaves() {
         CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty());
         CHECK(t.elapsed == 10 && t.timeOfDay == 0.5f && t.player.pos == glm::vec3(24.5f, 4, 8.5f) && t.player.health == float(maxHealth(sheet(t.player))));
         CHECK(t.player.inv.containers[0][0] == Shortsword && t.player.inv.equipped[SlotTrinket] == NoItem && npc(t, 3, 1)->body.alive());
+        CHECK(t.player.flasks == kBaseFlasks && !t.restPoint);  // an older save: full flasks, never rested
+        auto& charm = const_cast<ItemType&>(itemType(BoneCharm));  // full by the gear's Flasks stat
+        std::vector<Modifier> keep = charm.mods;
+        charm.mods.push_back({Stat::Flasks, ModKind::Flat, 2, "test"});
+        std::vector<uint8_t> inv{uint8_t(EquipCount)};
+        for (int i = 0; i < EquipCount; ++i) inv.push_back(i == SlotTrinket ? uint8_t(BoneCharm) : 0);
+        inv.push_back(0), inv.push_back(0);  // no bags, no containers
+        write(bad, craft({{"HEAD", head}, {"INVT", inv}}));
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty() && t.player.inv.equipped[SlotTrinket] == BoneCharm && t.player.flasks == kBaseFlasks + 2);
+        write(bad, craft({{"HEAD", head}, {"INVT", inv}, {"REST", {9, 0}}}));  // saved with more than the gear allows now
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty() && t.player.flasks == kBaseFlasks + 2);
+        charm.mods = keep;
     }
 
     // The world changed: a marker added before the bandits (other vector indices), the boar's gone,
@@ -4192,7 +4217,7 @@ static void dataFiles() {
                          R"("light_1": {"seconds": 0.7, "hold": 0.3, "hit": 0.4, "chain": 0.5, "cancel": 0.45,)"),
                   "record 0 'sword': field 'moves.light_1.cancel': 0.45 is out of range"},
                  {edited(R"("light_2": {"seconds": 0.65,)", R"("parry": {"seconds": 0.65,)"),
-                  "record 0 'sword': field 'moves.parry': not an attack move (none and parry are code's)"},
+                  "record 0 'sword': field 'moves.parry': not an attack move (none, parry and drink are code's)"},
                  {edited(R"("riposte": {"seconds": 1.4,)", R"("ripost": {"seconds": 1.4,)"),
                   "record 0 'sword': field 'moves.ripost': not an attack move"},
                  {edited(R"("light_1": {"seconds": 0.7, "hold": 0.3,)", R"("light_1": {"seconds": 0.7, "heavy": 1, "hold": 0.3,)"),
@@ -4729,9 +4754,9 @@ static void lighting() {
     int shaded = 0;
     for (const Mesh& m : meshes)
         for (Quad q : m.opaque) shaded += unpack(q).sky < kMaxLight;
-    // Light splits 1 more face than unlit (7673). (The story world, with houses and the barrow, went
+    // Light splits 78 more faces than unlit (7703): the campfire's embers glow (1 before it). (The story world, with houses and the barrow, went
     // from 1772666 to 1863601 opaque quads with light, +5.1%.)
-    CHECK(opaque == 7674 && water == 27 && shaded == 628);
+    CHECK(opaque == 7781 && water == 27 && shaded == 628);
     std::mt19937 rng(11);
     for (int i = 0; i < 8; ++i) {
         glm::ivec3 lo(int(rng() % 8) + 26, int(rng() % 40) + 30, int(rng() % 8) + 26);  // around the x = z = 32 borders
@@ -6998,6 +7023,170 @@ static void criticals() {
     }
 }
 
+// Healing flasks and rest points (ADR-047): the drink is a move that heals at its drink frame, a hit
+// before it cancels it, an empty flask only gestures; resting by a fire fills the flasks, heals, clears
+// statuses and is where the player gets back up.
+static void flasks() {
+    Grid g = flatWorld(0);
+    constexpr float dt = 1 / 60.0f;
+    constexpr float kHalfPi = std::numbers::pi_v<float> / 2;
+    auto xzOf = [](glm::vec3 v) { return glm::vec2(v.x, v.z); };
+    std::mt19937 rng(5);
+    StatSheet base = compute(Stats{});
+    CHECK(maxFlasks(base) == kBaseFlasks && base[Stat::FlaskHealing] == kBaseFlaskHealing);
+    CHECK(percentStat(Stat::FlaskHealing) && !percentStat(Stat::Flasks) && std::string_view(kStatIds[size_t(Stat::Flasks)]) == "flasks");
+    CHECK(maxFlasks(compute(Stats{}, std::array{Modifier{Stat::Flasks, ModKind::Flat, 2}})) == kBaseFlasks + 2);  // a talent's
+    CHECK(maxFlasks(compute(Stats{}, std::array{Modifier{Stat::Flasks, ModKind::Flat, -10}})) == 0);  // never below none
+    for (int c = 0; c < int(WeaponClass::Count); ++c) CHECK(spec(WeaponClass(c), Move::Drink).seconds == kDrinkSpec.seconds);
+    CHECK(Player{}.flasks == kBaseFlasks && codeMove(Move::Drink) && !codeMove(Move::Light1));
+
+    auto drinker = [] {
+        Player p;
+        p.pos = {7.5f, 4, 7.5f};
+        p.onGround = true, p.offGround = 0;
+        p.inv.equipped[SlotMainHand] = Shortsword;
+        p.health = 20;
+        p.combatTimer = 60;  // no regeneration muddling the numbers
+        return p;
+    };
+    std::vector<Entity> none;
+    auto tick = [&](Player& p, MeleeInput in = {}, Input move = {}) {
+        updateMelee(p, in, move, dt);
+        updatePlayer(p, g, move, dt);
+        updateCombat(p, none, dt, rng);
+        return move;
+    };
+    const int most = maxHealth(sheet(drinker()));
+
+    {  // The drink: it commits; the heal (40% of max health) comes at the drink frame, a charge spent.
+        Player p = drinker();
+        tick(p, {.drink = true});
+        CHECK(p.move == Move::Drink && p.hitPending && p.moveScale == 1 && !hyperarmor(p));
+        int frames = 1;
+        while (p.health == 20 && frames < 200) {
+            p.noises = 0;
+            tick(p), ++frames;
+        }
+        CHECK(std::abs(float(frames) * dt - impactTime(p)) <= dt + 1e-4f);  // at the drink frame, not before
+        CHECK(p.health == 20 + kBaseFlaskHealing * float(most) && p.flasks == kBaseFlasks - 1 && p.made(Noise::Drink) && !p.made(Noise::Empty));
+        CHECK(p.move == Move::Drink && !p.hitPending);  // lowering the flask
+        while (p.move == Move::Drink && frames < 400) tick(p), ++frames;
+        CHECK(std::abs(float(frames) * dt - kDrinkSpec.seconds) <= dt + 1e-4f && p.health == 20 + kBaseFlaskHealing * float(most));
+        p.health = float(most) - 5;  // never past max health, not even on the drink frame
+        tick(p, {.drink = true});
+        for (int i = 0; i < 120 && p.flasks == kBaseFlasks - 1; ++i) tick(p);
+        CHECK(p.health == float(most) && p.flasks == kBaseFlasks - 2);
+    }
+    {  // It walks slowly and turns; it can't attack, guard or roll until its last quarter.
+        Player p = drinker();
+        tick(p, {.drink = true});
+        Input walk{.move = {1, 0}, .run = true};
+        Input m = tick(p, {}, walk);
+        CHECK(m.speed == gMelee.drinkSpeed && !m.run && m.move == walk.move);
+        for (int i = 0; i < 30; ++i) m = tick(p, {.guard = true}, walk);
+        CHECK(std::abs(glm::length(glm::vec2(p.vel.x, p.vel.z)) - gMelee.drinkSpeed) < 0.05f && !p.guarding && std::abs(p.yaw - kHalfPi) < 0.2f);
+        CHECK(tick(p, {.attack = true}).roll == false && p.move == Move::Drink);
+        CHECK(tick(p, {}, {.roll = true}).roll == false && p.move == Move::Drink);
+        while (moveProgress(p) < kDrinkSpec.cancel && p.move == Move::Drink) tick(p);
+        CHECK(p.move == Move::Drink);
+        Player q = p;
+        CHECK(tick(p, {}, {.roll = true}).roll && p.move == Move::None);  // cut short by a roll at the end...
+        CHECK(tick(q, {}, walk).speed == 0 && q.move == Move::None);       // ...or walking on at full speed
+    }
+    {  // A hit that makes it flinch before the drink frame cancels it: no heal, the charge kept.
+        Player p = drinker();
+        tick(p, {.drink = true});
+        for (int i = 0; i < 20; ++i) tick(p);
+        interrupt(p, gMelee.flinchSeconds, false);  // what updateCombat does to a flinch (the drink has no hyperarmor)
+        for (int i = 0; i < 120; ++i) tick(p);
+        CHECK(p.health == 20 && p.flasks == kBaseFlasks && p.move == Move::None);
+    }
+    {  // An NPC in front doesn't take a drink for an attack: it guards, parries or dodges only those (ADR-043).
+        Player p = drinker();
+        std::vector<Entity> es;
+        Entity& b = spawnAhead(es, g, p, EntityKind::Guard, 4, 2);
+        setState(b, AiState::Chase, "test");
+        Input m;
+        updateMelee(p, {.drink = true}, m, dt);
+        updateEntities(es, g, p, dt);
+        CHECK(p.move == Move::Drink && p.hitPending && !b.threatened);
+        p = drinker();
+        updateMelee(p, {.attack = true}, m, dt), updateMelee(p, {}, m, dt);
+        updateEntities(es, g, p, dt);
+        CHECK(p.move == Move::Light1 && b.threatened);  // as an attack is
+    }
+    {  // Empty: the gesture plays, nothing heals.
+        Player p = drinker();
+        p.flasks = 0;
+        tick(p, {.drink = true});
+        CHECK(p.move == Move::Drink);
+        bool empty = false;
+        for (int i = 0; i < 120; ++i) p.noises = 0, tick(p), empty |= p.made(Noise::Empty);
+        CHECK(empty && p.health == 20 && p.flasks == 0);
+    }
+    {  // Not in the air or in the water: the press waits (buffered) for the ground.
+        Player p = drinker();
+        p.onGround = false, p.offGround = 1;
+        Input m;
+        updateMelee(p, {.drink = true}, m, dt);
+        CHECK(p.move == Move::None && p.want == Want::Drink);
+        p.onGround = true, p.offGround = 0;
+        updateMelee(p, {}, m, dt);
+        CHECK(p.move == Move::Drink);
+        Player w = drinker();
+        w.inWater = true;
+        updateMelee(w, {.drink = true}, m, dt);
+        CHECK(w.move == Move::None);
+    }
+    {  // Mid-attack, a drink press waits for the attack's cancel point.
+        Player p = drinker();
+        tick(p, {.attack = true}), tick(p);
+        CHECK(p.move == Move::Light1);
+        tick(p, {.drink = true});
+        CHECK(p.move == Move::Light1);
+        for (int i = 0; i < 60 && p.move != Move::Drink; ++i) tick(p);
+        CHECK(p.move == Move::Drink);
+    }
+
+    // Rest points: an Ember within kRestReach, out of combat, nothing angry near.
+    Session s{.world = flatWorld(0), .seed = 3};
+    startSession(s);
+    s.player.teleport({7.5f, 4, 7.5f});
+    CHECK(!canRest(s));  // no fire
+    s.world.set({10, 4, 7}, Ember);
+    CHECK(canRest(s));
+    s.world.set({10, 4, 7}, Air), s.world.set({11, 4, 7}, Ember);
+    CHECK(!canRest(s));  // 3.5 blocks off
+    s.world.set({11, 4, 7}, Air), s.world.set({10, 4, 7}, Ember);
+    s.player.hitTime = 1;  // hit a second ago
+    CHECK(!canRest(s));
+    s.player.hitTime = 99;
+    Entity& wolf = spawnAhead(s.entities, s.world, s.player, EntityKind::Wolf, 9);
+    setState(wolf, AiState::Chase, "test");
+    CHECK(!canRest(s));  // something angry near
+    s.entities.clear();
+    Player& p = s.player;
+    p.health = 30, p.flasks = 0, p.stamina = 10;
+    p.buildup[0] = 50;
+    afflict(p, Status::Poison, "Venom");
+    for (int i = 0; i < 150; ++i) step(s, {}, kTick);  // its ticks keep the combat timer up, but don't stop a rest
+    CHECK(p.effect(Effect::Poisoned) && p.combatTimer > 0 && canRest(s));
+    StepResult r = step(s, {.interact = true}, kTick);
+    CHECK(r.rested && p.health == float(maxHealth(sheet(p))) && p.flasks == kBaseFlasks && p.stamina == gMelee.staminaMax);
+    CHECK(p.effects.empty() && p.buildup[0] == 0 && s.restPoint && glm::distance(*s.restPoint, p.pos) < 0.1f);
+    CHECK(std::ranges::any_of(s.sounds, [](const Sound& h) { return h.what == Noise::Rest && h.kind < 0; }));
+    // Knocked out, it gets back up there, flasks full; never rested, at the player spawn.
+    glm::vec3 restAt = *s.restPoint;
+    p.teleport({3.5f, 4, 3.5f});
+    p.flasks = 0, p.health = 0, p.deadTime = kPlayerRespawnSeconds;
+    step(s, {}, kTick);
+    CHECK(p.alive() && glm::distance(p.pos, restAt) < 0.2f && p.flasks == kBaseFlasks);
+    s.restPoint.reset();
+    p.health = 0, p.deadTime = kPlayerRespawnSeconds;
+    step(s, {}, kTick);
+    CHECK(glm::distance(xzOf(p.pos), xzOf(playerSpawn(s.world, s.markers))) < 0.2f);
+}
+
 // Status effects (ADR-046): build-up and resists in the stat pipeline, from items and creatures;
 // build-up that fills and wears off; bleed's burst, poison's ticks, frostbite's damage taken; a guard's
 // share; the lockout while poison or frost is on; the timed effects' list; kills by poison; the shipped
@@ -7397,7 +7586,7 @@ static void sounds() {
     for (int n = 0; n < int(Noise::Count); ++n)
         for (int kind = -1; kind < int(defs().creatures.size()); ++kind)
             for (Block ground : grounds)
-                for (Move move : {Move::Light1, Move::Heavy1, Move::Parry})
+                for (Move move : {Move::Light1, Move::Heavy1, Move::Parry, Move::Drink})
                     for (ItemId with : {NoItem, Shortsword, Knife, buckler, tower})
                         for (float amount : {0.0f, 30.0f})
                             for (const Layer& l : layersOf({Noise(n), {}, kind, ground, move, with, amount}))
@@ -7519,6 +7708,7 @@ int main() {
     weaponClasses();
     criticals();
     statusEffects();
+    flasks();
     sounds();
     combat();
     fighters();

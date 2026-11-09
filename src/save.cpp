@@ -35,6 +35,8 @@
 // "WEAR" (ADR-027): u32 count, then per NPC whose XP wear isn't 0: u32 spawn marker id | u8 slot |
 //   f32 the player's hits on it | f32 its hits on the player (Entity::xpWear, armorWear). Apart from
 //   NPCS, so that layout stays; an entry without its NPC is dropped silently.
+// "REST" (ADR-047): u8 flask charges left | u8 1 if the player has rested, then f32 x, y, z where.
+//   Missing (older saves): full flasks, never rested.
 constexpr uint32_t kSaveFileVersion = 1;
 constexpr size_t kMaxSaveBytes = size_t(1) << 20;  // the biggest valid one is a few KB
 constexpr size_t kNpcBytes = 31;
@@ -110,6 +112,8 @@ struct SaveData {
     std::optional<std::map<std::string, int32_t, std::less<>>> flags;
     std::optional<Progress> progress;  // unknown skills and talents already dropped
     std::map<std::pair<uint32_t, int>, std::pair<float, float>> wear;  // (marker id, slot) -> xpWear, armorWear
+    std::optional<int> flasks;
+    std::optional<glm::vec3> restPoint;
     std::vector<std::string> notes;  // what parsing dropped (ids this build's data doesn't know)
 };
 
@@ -295,6 +299,18 @@ std::string readWear(Reader r, SaveData& d) {
     return r.done("wear");
 }
 
+std::string readRest(Reader r, SaveData& d) {
+    d.flasks = int(r.take(1));
+    uint64_t rested = r.take(1);
+    if (rested > 1) return "bad rest point";
+    if (rested) {
+        glm::vec3 at{r.f32(), r.f32(), r.f32()};
+        if (!finite({at.x, at.y, at.z}) || std::abs(at.x) > 1e7f || std::abs(at.y) > 1e7f || std::abs(at.z) > 1e7f) return "bad rest point";
+        d.restPoint = at;
+    }
+    return r.done("rest");
+}
+
 std::string parse(const char* path, SaveData& d) {
     std::error_code ec;
     uintmax_t fileBytes = std::filesystem::file_size(path, ec);
@@ -327,6 +343,7 @@ std::string parse(const char* path, SaveData& d) {
         else if (tag == "FLAG") error = readFlags(r, d);
         else if (tag == "PROG") error = readProgress(r, d);
         else if (tag == "WEAR") error = readWear(r, d);
+        else if (tag == "REST") error = readRest(r, d);
         else continue;  // a later build's section
         if (!seen.insert(tag).second) return std::format("duplicate {} section", tag);
         if (!error.empty()) return error;
@@ -404,6 +421,8 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
             r.notes.push_back(std::format("{} talent points no longer fit the talents' rules at level {}: talents reset", spent, p.level));
     }
     if (d.player) p.health = std::min(d.player->health, float(maxHealth(sheet(p))));  // after the gear and talents: they add health
+    p.flasks = d.flasks ? std::min(*d.flasks, maxFlasks(sheet(p))) : maxFlasks(sheet(p));  // as health: what gear and talents allow
+    if (d.restPoint) s.restPoint = inWorld(*d.restPoint);
     if (d.flags) s.flags = *d.flags;
     for (const SavedQuest& q : d.quests ? *d.quests : std::span<const SavedQuest>{}) {
         const Defs& defined = defs();
@@ -544,6 +563,12 @@ std::string savePlayer(const char* path, const Session& s, const std::string& wo
                 putF(out, e.xpWear);
                 putF(out, e.armorWear);
             }
+    });
+    section("REST", [&] {
+        put(out, uint32_t(std::clamp(p.flasks, 0, 255)), 1);
+        put(out, s.restPoint ? 1 : 0, 1);
+        if (s.restPoint)
+            for (float f : {s.restPoint->x, s.restPoint->y, s.restPoint->z}) putF(out, f);
     });
     section("PROG", [&] {
         const Progress& g = p.progress;

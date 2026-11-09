@@ -333,6 +333,7 @@ static int run(SDL_Window* window, const Options& opt) {
     bool punchQueued = false;  // the attack button (LMB / R1) went down, not yet seen by a step (or the editor)
     bool heavyQueued = false;  // R2 likewise
     bool parryQueued = false;  // Q / L2 likewise (ADR-036)
+    bool drinkQueued = false;  // R / D-pad down: the healing flask (ADR-047)
     bool pressInGame = false;  // the left button went down while no window was open
     float camYaw = std::numbers::pi_v<float>, camPitch = 0.45f;  // behind the player
     if (opt.fixedLook) {  // degrees on the CLI; yaw 0 looks toward -Z, 90 toward -X
@@ -389,7 +390,7 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.active = on;
         lock = {};
         editor.cursor = false;
-        punchQueued = heavyQueued = parryQueued = false;  // a press queued mid-swing must not become an editor action, nor the reverse
+        punchQueued = heavyQueued = parryQueued = drinkQueued = false;  // a press queued mid-swing must not become an editor action, nor the reverse
         editor.corner.reset();
         if (on) {
             usedEditor = true;
@@ -457,7 +458,7 @@ static int run(SDL_Window* window, const Options& opt) {
                 else if (e.key.key == SDLK_J) toggle(journalOpen);
                 else if (e.key.key == SDLK_K) toggle(progressOpen);
                 else if (e.key.key == SDLK_LALT && !benchmark && !menus()) rollQueued = true;
-                else if (e.key.key == SDLK_E) {  // loot a corpse, else talk
+                else if (e.key.key == SDLK_E) {  // loot a corpse, else talk, else rest by a fire
                     interactQueued = true;
                 } else if (e.key.key == SDLK_TAB && !editor.active && !menus() && player.alive()) {
                     toggleLock();
@@ -487,6 +488,8 @@ static int run(SDL_Window* window, const Options& opt) {
                     updateMouseMode();
                 } else if (e.key.key == SDLK_Q && !benchmark && !menus()) {
                     parryQueued = true;
+                } else if (e.key.key == SDLK_R && !editor.active && !benchmark && !menus()) {
+                    drinkQueued = true;
                 } else if (editor.active && e.key.key >= SDLK_1 && e.key.key <= SDLK_1 + int(Tool::Count) + 1) {
                     int tool = int(e.key.key - SDLK_1);  // the brushes, then Prefab, then Marker
                     editor.prefabTool = tool == int(Tool::Count);
@@ -547,20 +550,20 @@ static int run(SDL_Window* window, const Options& opt) {
                     SDL_PushEvent(&m);
                 } else if (e.gbutton.down) {
                     switch (b) {
-                        case SDL_GAMEPAD_BUTTON_WEST: interactQueued = true; break;  // Square: loot, else talk
+                        case SDL_GAMEPAD_BUTTON_WEST: interactQueued = true; break;  // Square: loot, else talk, else rest
                         case SDL_GAMEPAD_BUTTON_LEFT_STICK: sprint = !sprint; break;
                         case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: punchQueued = !menus(); break;
                         case SDL_GAMEPAD_BUTTON_NORTH: toggle(bagsOpen); break;
                         case SDL_GAMEPAD_BUTTON_RIGHT_STICK:  // R3: lock on / let go
                             if (!editor.active && !menus() && player.alive()) toggleLock();
                             break;
+                        case SDL_GAMEPAD_BUTTON_DPAD_DOWN: drinkQueued = !menus() && !editor.active; break;  // the flask (ADR-047)
                         case SDL_GAMEPAD_BUTTON_DPAD_LEFT:  // locked on, the D-pad switches targets; otherwise it opens windows
                         case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
                         case SDL_GAMEPAD_BUTTON_DPAD_UP:
-                        case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
                             if (lock.target && !menus())
                                 switchDir = {b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT ? 1 : b == SDL_GAMEPAD_BUTTON_DPAD_LEFT ? -1 : 0,
-                                             b == SDL_GAMEPAD_BUTTON_DPAD_UP ? 1 : b == SDL_GAMEPAD_BUTTON_DPAD_DOWN ? -1 : 0};
+                                             b == SDL_GAMEPAD_BUTTON_DPAD_UP ? 1 : 0};
                             else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) toggle(characterOpen);
                             else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) toggle(journalOpen);
                             else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) toggle(progressOpen);
@@ -636,7 +639,7 @@ static int run(SDL_Window* window, const Options& opt) {
         // Left mouse / R1 attacks (a tap: a light, held: a heavy), R2 is a heavy, right mouse / L1 guards
         // (ADR-035), Q / L2 parries with a shield (ADR-036); they go the way you move, else face, or at
         // the lock-on target. A press that began in a window (e.g. a drag) doesn't attack once the window closes.
-        if (menus()) punchQueued = heavyQueued = parryQueued = pressInGame = false;
+        if (menus()) punchQueued = heavyQueued = parryQueued = drinkQueued = pressInGame = false;
         if (noteOpen) interactQueued = rollQueued = false;
         uint32_t mouse = SDL_GetMouseState(nullptr, nullptr);
         bool punchHeld = (pressInGame && (mouse & SDL_BUTTON_LMASK)) || button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
@@ -667,12 +670,14 @@ static int run(SDL_Window* window, const Options& opt) {
             sim.attackHeld = punchHeld;
             sim.heavy = heavyQueued;
             sim.parry = parryQueued;
+            sim.drink = drinkQueued;
             sim.interact = interactQueued;
             in.roll = rollQueued;
             StepResult stepped = step(session, sim, kTick);
-            if (!editor.active) punchQueued = heavyQueued = parryQueued = false;  // the step buffers them (the editor takes its clicks below)
+            if (!editor.active) punchQueued = heavyQueued = parryQueued = drinkQueued = false;  // the step buffers them (the editor takes its clicks below)
             interactQueued = rollQueued = in.roll = false;
             respawned |= stepped.respawned;
+            if (stepped.rested) notice = "Rested: health and flasks restored, you'll get back up here", noticeAt = SDL_GetTicksNS();
         }
         if (!session.toasts.empty()) {  // quest news: started, updated, complete
             bool quest = std::ranges::any_of(session.toasts, [](auto& t) { return t.first >= 0; });
@@ -821,8 +826,8 @@ static int run(SDL_Window* window, const Options& opt) {
             punchQueued = false;
         }
         auto pushModel = [&](const Player& body, Model model) {  // with whatever it holds
-            glm::mat4 held(0), shield(0);
-            fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held, alpha, &shield)});
+            glm::mat4 held(0), shield(0), flask(0);
+            fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held, alpha, &shield, &flask)});
             auto push = [&](Model m, const glm::mat4& pose) {
                 if (pose == glm::mat4(0)) return;
                 ModelInstance item;
@@ -832,6 +837,7 @@ static int run(SDL_Window* window, const Options& opt) {
             };
             push(heldModel(body.weapon()), held);
             push(shieldModel(body.inv.equipped[SlotOffHand]), shield);
+            push(body.flasks > 0 ? ModelFlask : ModelFlaskEmpty, flask);
         };
         pushModel(player, ModelPlayer);
         for (const Entity& npc : entities) pushModel(npc.body, npc.type().model);
@@ -902,8 +908,8 @@ static int run(SDL_Window* window, const Options& opt) {
         ui.begin(realDt, wasOpen);
         if (game.hud) {
             const Entity* target = lootTarget(entities, player);
-            drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target ? target : talkTarget(entities, player), alpha,
-                    lockedEntity(lock, entities));
+            if (!target) target = talkTarget(entities, player);
+            drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target, alpha, lockedEntity(lock, entities), canRest(session));
             drawPlaces(fp.view, fp.fovY, player, markers, region, float(session.elapsed - session.regionSince));
             drawNotice(notice.c_str(), float(double(SDL_GetTicksNS() - noticeAt) * 1e-9));
         }
@@ -982,6 +988,7 @@ static int run(SDL_Window* window, const Options& opt) {
             editor.unsaved = true;
         }
         if (actions.regenerate || actions.respawn) {
+            if (actions.regenerate) session.restPoint.reset();  // that fire is gone
             respawnPlayer(session);
             camTarget = player.pos + glm::vec3(0, 1.4f, 0);
         }
