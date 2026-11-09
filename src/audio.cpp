@@ -221,6 +221,7 @@ std::vector<Layer> layersOf(const Sound& s) {
     case Noise::Drink: add("flask_drink"), add("flask_drink", 0.8f, 0.95f, 0.3f); break;  // two gulps (ADR-047)
     case Noise::Empty: add("flask_empty", 0.8f), add("flask_empty", 0.7f, 1.05f, 0.18f); break;  // shaken: nothing in it
     case Noise::Rest: add("rest", 0.9f); break;  // the fire flares up
+    case Noise::Grip: add("equip", 0.6f, 1.1f); break;  // the hilt taken in both hands, or let go (ADR-048)
     case Noise::Count: break;
     }
     return out;

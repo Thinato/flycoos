@@ -10,10 +10,10 @@
 // no attack power or other in-between step).
 struct Stats {
     int stamina = 10;   // max health
-    int strength = 2;   // physical damage
-    int agility = 2;    // physical attack speed
-    int intellect = 2;  // unused until magic
-    int spirit = 2;     // health regeneration out of combat
+    int strength = 2;   // physical damage, by each weapon's scaling (ADR-048)
+    int agility = 2;    // physical attack speed, and damage by each weapon's scaling
+    int intellect = 2;  // damage by a weapon's scaling (none scale with it yet; magic later)
+    int spirit = 2;     // health regeneration out of combat, and damage by a weapon's scaling
 };
 
 constexpr int kHealthPerStamina = 10;
@@ -26,8 +26,12 @@ constexpr float kBaseStatusResist = 100;   // the build-up a status takes to fil
 constexpr int kBaseFlasks = 3;             // healing flask charges (ADR-047)...
 constexpr float kBaseFlaskHealing = 0.4f;  // ...each healing this share of max health
 
-// A physical attack: damage range, and base swing time in seconds (WoW's "weapon speed").
-struct Attack { int minDamage, maxDamage; float speed; };
+// How much of each attribute a weapon's hits add (ADR-048, Elden Ring's scaling): by kScalingStats,
+// x the attribute per point (1 = a point adds a point of damage at speed 1).
+using Scaling = std::array<float, 4>;
+// A physical attack: damage range, base swing time in seconds (WoW's "weapon speed"), and scaling
+// (by default strength only, a point a point: creatures' and fists').
+struct Attack { int minDamage, maxDamage; float speed; Scaling scaling{1, 0, 0, 0}; };
 constexpr Attack kPunch{1, 4, 1.0f};  // unarmed
 
 // The stat pipeline (ADR-022): a body's final stats are its base attributes plus modifiers from
@@ -38,18 +42,19 @@ enum class Stat : uint8_t { Stamina, Strength, Agility, Intellect, Spirit,      
                             CritChance, CritDamage,                                    // critical hits (ADR-045)
                             Bleed, Poison, Frost, BleedResist, PoisonResist, FrostResist,  // status effects (ADR-046)
                             Flasks, FlaskHealing,                                      // healing flasks (ADR-047)
+                            Scaling,                                                   // x every weapon's scaling (ADR-048)
                             Count };
 inline constexpr const char* kStatIds[] = {"stamina", "strength", "agility", "intellect", "spirit", "max_health",
                                            "damage", "haste", "regen", "armor", "damage_taken",
                                            "crit_chance", "crit_damage",
                                            "bleed", "poison", "frost", "bleed_resist", "poison_resist", "frost_resist",
-                                           "flasks", "flask_healing"};  // in data files
+                                           "flasks", "flask_healing", "scaling"};  // in data files
 inline constexpr const char* kStatNames[] = {"Vitality", "Strength", "Agility", "Intellect", "Spirit", "Max health",
                                              "Damage", "Attack speed", "Regen", "Armor", "Damage taken",
                                              "Crit chance", "Crit damage",
                                              "Bleed build-up", "Poison build-up", "Frost build-up",
                                              "Bleed resist", "Poison resist", "Frost resist",
-                                             "Flask charges", "Flask healing"};
+                                             "Flask charges", "Flask healing", "Attribute scaling"};
 static_assert(std::size(kStatIds) == size_t(Stat::Count) && std::size(kStatNames) == size_t(Stat::Count));
 // Stats whose values are fractions the UIs show as percents (a flat +0.05 crit chance is +5%).
 constexpr bool percentStat(Stat s) {
@@ -76,11 +81,12 @@ struct Modifier {
     Skill with = Skill::Count;   // a weapon skill: only on hits (and swings) made with it, never in the plain sheet
 };
 
-// Final stat values; consumers round (maxHealth, strengthBonus). Damage and DamageTaken multiply hits
+// Final stat values; consumers round (maxHealth, attributeBonus). Damage and DamageTaken multiply hits
 // (1 = none), Haste adds attack speed (0.1 = 10% faster, -0.5 = half as fast), CritChance is a hit's
 // chance to be critical (0.05 = 5%, 1 and over: every hit) and CritDamage what a critical hit adds (0.5 = x1.5).
 // Bleed, Poison and Frost are the status build-up a hit adds, the resists the build-up that fills it.
 // Flasks is how many healing flask charges a rest fills, FlaskHealing the share of max health each heals.
+// Scaling multiplies what the attributes add to hits by the weapon's scaling (1 = as the weapon says).
 struct StatSheet {
     std::array<float, size_t(Stat::Count)> v{};
     constexpr float operator[](Stat s) const { return v[size_t(s)]; }
@@ -123,6 +129,7 @@ constexpr StatSheet compute(const Stats& base, std::span<const Modifier> mods = 
     for (int s = 0; s < int(Status::Count); ++s) apply(buildupStat(Status(s)), 0), apply(resistStat(Status(s)), kBaseStatusResist);
     apply(Stat::Flasks, float(kBaseFlasks));
     apply(Stat::FlaskHealing, kBaseFlaskHealing);
+    apply(Stat::Scaling, 1);
     return out;
 }
 
@@ -131,21 +138,37 @@ inline float healthRegen(const StatSheet& s) { return s[Stat::Regen]; }
 constexpr int maxFlasks(const StatSheet& s) { return std::min(int(s[Stat::Flasks] + 0.5f), 99); }  // the HUD shows two digits (compute keeps it >= 0)
 // Seconds between swings: haste (from agility) is attack speed.
 inline float swingTime(const StatSheet& s, const Attack& a) { return a.speed / (1 + s[Stat::Haste]); }
-// damage = baseDamage + strength * speed. Speed is the attack's base speed, not the hasted swing
-// time (as in WoW): slower attacks hit harder per swing, and agility adds damage per second only.
-inline int strengthBonus(const StatSheet& s, const Attack& a) { return int(std::lround(s[Stat::Strength] * a.speed)); }
-inline int rollDamage(const StatSheet& s, const Attack& a, std::mt19937& rng) {
-    return std::uniform_int_distribution<int>(a.minDamage, a.maxDamage)(rng) + strengthBonus(s, a);
+// The attributes Attack::scaling is by (ADR-048).
+inline constexpr Stat kScalingStats[] = {Stat::Strength, Stat::Agility, Stat::Intellect, Stat::Spirit};
+static_assert(std::size(kScalingStats) == std::tuple_size_v<Scaling>);
+// What attribute `i` (of kScalingStats) adds to a hit, unrounded: the attribute x the weapon's scaling
+// with it x Scaling x speed. Speed is the attack's base speed, not the hasted swing time (as in WoW):
+// slower attacks hit harder per swing, and haste adds damage per second only.
+inline float attributeShare(const StatSheet& s, const Attack& a, size_t i) {
+    return s[kScalingStats[i]] * a.scaling[i] * s[Stat::Scaling] * a.speed;
 }
-// A roll's damage before the defender (strength bonus and damage multiplier), rounded: what the UIs
+// damage = baseDamage + the attributes' shares, rounded.
+inline int attributeBonus(const StatSheet& s, const Attack& a) {
+    float sum = 0;
+    for (size_t i = 0; i < std::size(kScalingStats); ++i) sum += attributeShare(s, a, i);
+    return int(std::lround(sum));
+}
+// A scaling's letter in the UIs, Elden Ring's E (a little) to S (the most); '-': none.
+constexpr char scalingGrade(float k) {
+    return k <= 0 ? '-' : k < 0.25f ? 'E' : k < 0.5f ? 'D' : k < 0.8f ? 'C' : k < 1.1f ? 'B' : k < 1.4f ? 'A' : 'S';
+}
+inline int rollDamage(const StatSheet& s, const Attack& a, std::mt19937& rng) {
+    return std::uniform_int_distribution<int>(a.minDamage, a.maxDamage)(rng) + attributeBonus(s, a);
+}
+// A roll's damage before the defender (attribute bonus and damage multiplier), rounded: what the UIs
 // show. resolveHit keeps the fraction until after armor.
 inline int hitBeforeArmor(const StatSheet& s, const Attack& a, int roll) {
-    return int(std::lround(float(roll + strengthBonus(s, a)) * s[Stat::Damage]));
+    return int(std::lround(float(roll + attributeBonus(s, a)) * s[Stat::Damage]));
 }
 // The same of base attributes alone (creature types, tests).
 constexpr int maxHealth(const Stats& s) { return maxHealth(compute(s)); }
 inline float swingTime(const Stats& s, const Attack& a) { return swingTime(compute(s), a); }
-inline int strengthBonus(const Stats& s, const Attack& a) { return strengthBonus(compute(s), a); }
+inline int attributeBonus(const Stats& s, const Attack& a) { return attributeBonus(compute(s), a); }
 inline int rollDamage(const Stats& s, const Attack& a, std::mt19937& rng) { return rollDamage(compute(s), a, rng); }
 
 // Armor (from worn gear) absorbs a share of each hit: armor / (armor + K x attacker level), at most

@@ -30,6 +30,9 @@
 // The healing flask (ADR-047): R / D-pad down drinks, a move like the parry: it commits, walks slowly,
 // and heals at its drink frame (a charge, its Flask healing share of max health); a hit that makes the
 // player flinch before then cancels it, the charge kept. With none left it's only the gesture.
+// Two-handing (ADR-048): F / Triangle+R1 takes the main-hand weapon in both hands (and back). Its hits
+// count strength x1.5 (a modifier in collect), it guards better (twoHandNegation, twoHandBoost), and the
+// off hand does nothing: no shield guard, no parry. The shield goes on the back.
 
 // A move's timing and what it does. Every weapon class has its own (ADR-044): data/weapon_classes.json
 // gives each class every attack move; None, Parry and Drink are code's (kParrySpec: the parry is the off
@@ -113,6 +116,8 @@ struct MeleeTuning {
     float backstabWait = 2;      // seconds after it was last hurt before an NPC can be backstabbed (it turns to face its attacker)
     float hitShake = 0.5f;       // camera shake (trauma, 0..1) from the player's critical hits; heavier hits, a share by stance damage
     float drinkSpeed = 1.5f;     // blocks/s it walks while drinking from the flask (ADR-047)
+    float twoHandStrength = 1.5f;  // x strength while two-handing (ADR-048)...
+    float twoHandNegation = 0.85f, twoHandBoost = 0.45f;  // ...and the weapon's guard (one-handed: guardNegation, guardBoost)
 };
 inline MeleeTuning gMelee;
 
@@ -123,6 +128,7 @@ struct MeleeInput {
     bool guard = false;                       // RMB / L1, held
     bool parry = false;                       // Q / L2: pressed since the last tick
     bool drink = false;                       // R / D-pad down: pressed since the last tick (ADR-047)
+    bool grip = false;                        // F / Triangle+R1: two-hand or let go, pressed since the last tick (ADR-048)
     glm::vec2 aim{};                          // nonzero: attack this way (a lock-on); else the way it moves, else faces
     bool riposte = false;                     // an enemy open to a critical is in reach in front (criticalTarget): a riposte or backstab
 };
@@ -156,14 +162,17 @@ float playerPoise(const Combatant& b);
 // Whether `b`'s guard takes a hit from feet position `from` (in front of it).
 bool guards(const Player& b, glm::vec3 from);
 
-// The shield in `b`'s off hand, or null.
+// Whether `b` holds its main-hand weapon in both hands (ADR-048): two-handed with a weapon to hold.
+// (Mid-swing it's the swing's weapon: put away then, the swing keeps its grip to the end.)
+inline bool twoHanding(const Combatant& b) { return b.twoHanded && b.weapon() != NoItem; }
+// The shield in `b`'s off hand, or null; null too while two-handing (it's on the back).
 const Shield* shieldOf(const Player& b);
 // What `b` parries with: the parry's length (x its base timing) of its shield, else (the off hand empty)
-// of its main-hand weapon or its fists; 0: it can't parry (a greatshield, a sword).
+// of its main-hand weapon or its fists; 0: it can't parry (a greatshield, a sword, two-handing).
 float parryOf(const Player& b);
 // What a guard stops: the share of a blocked hit's damage and of its stamina damage.
 struct Guard { float negation = 0, boost = 0; };
-// `b`'s guard against `type`: its shield's, else its sword's, else its bare arms'.
+// `b`'s guard against `type`: its shield's, else its weapon's (two-handed: better), else its bare arms'.
 Guard guardOf(const Player& b, DamageType type = DamageType::Slash);
 // The guard a hit of `type` from `from` meets now: the full one while guarding, a weak one (parryGuard)
 // in a parry outside its window; none from behind or not guarding.

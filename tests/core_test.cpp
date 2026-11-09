@@ -561,7 +561,7 @@ static void entities() {
 }
 
 static void combat() {
-    // Attributes: 10 health per stamina; a punch does 1-4 + strength x speed, the sword 6-10 + it.
+    // Attributes: 10 health per stamina; a punch does 1-4 + strength x speed, the sword 6-10 + its scaling's share (ADR-048).
     Stats base;  // the player's
     CHECK(maxHealth(base) == 100 && Player{}.health == 100);
     std::mt19937 rng(7);
@@ -579,11 +579,11 @@ static void combat() {
         hi = std::max(hi, d);
     }
     CHECK(lo == 8 && hi == 12);
-    CHECK(strengthBonus(base, Attack{6, 10, 2.5f}) == 5);  // slow attacks get more per hit
+    CHECK(attributeBonus(base, Attack{6, 10, 2.5f}) == 5);  // slow attacks get more per hit
     Stats quick = base;
     quick.agility = 50;
     CHECK(swingTime(quick, kPunch) < swingTime(base, kPunch));  // agility is attack speed...
-    CHECK(strengthBonus(quick, kPunch) == strengthBonus(base, kPunch));  // ...not damage per hit
+    CHECK(attributeBonus(quick, kPunch) == attributeBonus(base, kPunch));  // ...and fists don't scale with it (ADR-048)
     CHECK(swingTime(Stats{10, 0, 0, 0, 0}, kPunch) == kPunch.speed);
 
     Grid g = meadow();
@@ -698,7 +698,7 @@ static void fighters() {
     // above, tougher, and fights with a knife: quicker than the sword but weaker per hit.
     CHECK(boar.kind == EntityKind::Boar && boar.body.level == 1 && boar.type().temper == Temper::Passive);
     CHECK(boar.body.health == player.health && maxHealth(boar.body.stats) == maxHealth(player.stats));
-    CHECK(strengthBonus(boar.body.stats, kPunch) == strengthBonus(player.stats, kPunch));
+    CHECK(attributeBonus(boar.body.stats, kPunch) == attributeBonus(player.stats, kPunch));
     CHECK(mainAttack(boar.body.inv).minDamage == kPunch.minDamage && mainAttack(boar.body.inv).maxDamage == kPunch.maxDamage);
     CHECK(bandit.kind == EntityKind::Bandit && bandit.body.level == 2 && bandit.type().temper == Temper::Aggressive);
     CHECK(maxHealth(bandit.body.stats) > maxHealth(player.stats) && bandit.body.stats.strength > player.stats.strength);
@@ -733,7 +733,7 @@ static void fighters() {
     sim(0.1f);
     CHECK(bandit.angry());
     sim(6);
-    CHECK(player.health < 100 && player.lastDamage >= 5 && player.lastDamage <= 8);  // 3-6 + strength 3 x speed 0.75
+    CHECK(player.health < 100 && player.lastDamage >= 5 && player.lastDamage <= 8);  // 3-6 + (strength 3 x 0.3 + agility 2 x 1.2) x speed 0.75
     CHECK(glm::distance(flat(bandit.body.pos), flat(player.pos)) < kPunchReach);
 
     // Leash: once the player is out of its territory it gives up (after the swing under way) and walks home.
@@ -2688,7 +2688,7 @@ static void storyNpcs() {
     CHECK(chiefMean >= 20 && chiefMean <= 35);
     CHECK(wolvesMean >= 25 && wolvesMean <= 45 && ghoulsMean >= 20 && ghoulsMean <= 40);  // a quarter to two fifths
     CHECK(fight(EntityKind::Wolf, 3, true, 1) < 0);  // a pack of three is too much alone
-    // Their hits on that player: punch or sword + strength x speed, less armor / (armor + 40 x level).
+    // Their hits on that player: punch or sword + the attributes by its scaling x speed, less armor / (armor + 40 x level).
     std::mt19937 rng(3);
     Player armored;
     for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons}) armored.inv.equipped[itemType(id).slot] = id;
@@ -3628,6 +3628,7 @@ static void playerSaves() {
     p.health = 37;
     p.flasks = 1;
     a.restPoint = glm::vec3(22.5f, 4, 14.5f);  // ADR-047
+    p.twoHanded = true;  // ADR-048
     Entity *b0 = npc(a, 3, 0), *b1 = npc(a, 3, 1);
     CHECK(b0 && b1 && npc(a, 4, 0));
     b0->body.teleport({10.5f, 4, 50.5f});
@@ -3647,6 +3648,7 @@ static void playerSaves() {
     CHECK(b.player.pos == glm::vec3(20.25f, 4, 12.75f) && b.player.prevPos == b.player.pos && b.player.yaw == 1.25f);
     CHECK(b.player.health == 37 && b.player.level == 3 && b.player.stats.strength == 7 && b.player.stats.stamina == p.stats.stamina);
     CHECK(b.player.flasks == 1 && b.restPoint == glm::vec3(22.5f, 4, 14.5f));
+    CHECK(b.player.twoHanded && twoHanding(b.player) && b.player.gripBlend == 1);  // already in both hands, not taking hold
     CHECK(b.player.inv.equipped == p.inv.equipped && b.player.inv.bags == p.inv.bags && b.player.inv.containers == p.inv.containers);
     Entity *c0 = npc(b, 3, 0), *c1 = npc(b, 3, 1);
     CHECK(c0 && c0->body.pos == glm::vec3(10.5f, 4, 50.5f) && c0->body.yaw == -2 && c0->body.health == 5 && c0->body.alive());
@@ -3695,6 +3697,9 @@ static void playerSaves() {
         craft({{"PLYR", {}}}),  // no header
         craft({{"HEAD", head}, {"REST", {2, 1, 0, 0}}}),  // a rest point cut short
         craft({{"HEAD", head}, {"REST", {2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}}),  // "rested" must be 0 or 1
+        craft({{"HEAD", head}, {"GRIP", {2}}}),  // two-handed must be 0 or 1 (ADR-048)
+        craft({{"HEAD", head}, {"GRIP", {}}}),   // cut short
+        craft({{"HEAD", head}, {"GRIP", {1, 0}}}),  // a byte too many
         [&] {  // a rest point far past any world
             std::vector<uint8_t> rest{2, 1};
             for (float f : {1e30f, 40.0f, 0.0f}) le(rest, std::bit_cast<uint32_t>(f), 4);
@@ -3734,6 +3739,9 @@ static void playerSaves() {
         CHECK(t.elapsed == 10 && t.timeOfDay == 0.5f && t.player.pos == glm::vec3(24.5f, 4, 8.5f) && t.player.health == float(maxHealth(sheet(t.player))));
         CHECK(t.player.inv.containers[0][0] == Shortsword && t.player.inv.equipped[SlotTrinket] == NoItem && npc(t, 3, 1)->body.alive());
         CHECK(t.player.flasks == kBaseFlasks && !t.restPoint);  // an older save: full flasks, never rested
+        CHECK(!t.player.twoHanded && t.player.gripBlend == 0);  // and one-handed (t was a: two-handed)
+        write(bad, craft({{"HEAD", head}, {"GRIP", {1}}}));  // two-handed with nothing in hand: not holding anything
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty() && t.player.twoHanded && !twoHanding(t.player) && t.player.gripBlend == 0);
         auto& charm = const_cast<ItemType&>(itemType(BoneCharm));  // full by the gear's Flasks stat
         std::vector<Modifier> keep = charm.mods;
         charm.mods.push_back({Stat::Flasks, ModKind::Flat, 2, "test"});
@@ -4183,12 +4191,13 @@ static void dataFiles() {
     CHECK(load(base + R"(,{"id": "dented_helm", "save_id": 12, "copy_from": "iron_helm", "name": "Dented Helm", "armor": 4},
                          {"id": "quick_sword", "save_id": 13, "copy_from": "iron_shortsword", "name": "Quick Sword", "attack": {"speed": 0.5}},
                          {"id": "sword_pommel", "save_id": 14, "copy_from": "iron_shortsword", "name": "Pommel", "slot": null, "attack": null, "class": null,
-                          "weight": null}])", grown));
+                          "weight": null, "scaling": null}])", grown));
     if (!error.empty()) std::println(stderr, "FAIL grown data: {}", error);
     CHECK(grown.items.size() == 15 && grown.items[12].slot == SlotHead && grown.items[12].armor == 4 &&
           std::string_view(grown.items[12].name) == "Dented Helm" && grown.itemIds[12] == "dented_helm");
     const Attack& quick = grown.items[13].attack;
     CHECK(quick.minDamage == 6 && quick.maxDamage == 10 && quick.speed == 0.5f && grown.items[13].slot == SlotMainHand);
+    CHECK(quick.scaling == grown.items[Shortsword].attack.scaling && quick.scaling[0] > 0);  // inherited (ADR-048)
     CHECK(grown.items[14].slot == SlotNone && grown.items[14].attack.speed == 0);
     std::string chain = base;  // 16 copies deep is fine, 17 isn't
     for (int i = 0; i <= 16; ++i)
@@ -4329,6 +4338,17 @@ static void dataFiles() {
               "field 'class': must be one of dagger, sword, axe, mace"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "head", "class": "axe"}])",
               "field 'class': only main_hand weapons have a weapon class"},
+             // Scaling (ADR-048): weapons only, by the four attributes, 0..5 each.
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "head", "scaling": {"strength": 1}}])",
+              "field 'scaling': only weapons (with an 'attack') scale"},
+             {base + R"(,{"id": "a", "save_id": 12, "copy_from": "iron_shortsword", "name": "A", "scaling": {"stamina": 1}}])",
+              "field 'scaling.stamina': unknown attribute (strength, agility, intellect or spirit)"},
+             {base + R"(,{"id": "a", "save_id": 12, "copy_from": "iron_shortsword", "name": "A", "scaling": {"agility": 6}}])",
+              "field 'scaling.agility': 6 is out of range 0..5"},
+             {base + R"(,{"id": "a", "save_id": 12, "copy_from": "iron_shortsword", "name": "A", "scaling": {"spirit": -0.5}}])",
+              "field 'scaling.spirit': -0.5 is out of range 0..5"},
+             {base + R"(,{"id": "a", "save_id": 12, "copy_from": "iron_shortsword", "name": "A", "scaling": 1}])",
+              "field 'scaling': must be an object {strength, agility, intellect, spirit}"},
              {base + R"(,{"id": "a", "save_id": 14, "name": "A"}])", "no record has save_id 12"},
              {R"([{"id": "a", "save_id": 1, "name": "A"}])", "save_id 1 must be 'iron_shortsword' (code names it), not 'a'"},
              {base, "not valid JSON"},
@@ -6512,6 +6532,14 @@ static void melee() {
         CHECK(!bounces(guardOf(p), typeOf(EntityKind::BanditChief).hitStance));  // the chief's hits are too heavy
         auto [bucklerHurt, bucklerStamina] = blocked(buckler);
         CHECK(bucklerHurt > 0 && bucklerHurt <= swordHurt && bucklerStamina > heaterStamina);  // small: not all of it
+        // Two-handing (ADR-048): the shield goes on the back and guards nothing; the weapon in both hands
+        // guards better than in one, short of a shield.
+        p.twoHanded = true;
+        auto [twoHurt, twoStamina] = blocked(heater);
+        CHECK(!shieldOf(p) && guardOf(p).negation == gMelee.twoHandNegation && guardOf(p).boost == gMelee.twoHandBoost);
+        CHECK(twoHurt > 0 && twoHurt <= swordHurt && twoStamina < swordStamina && twoStamina > heaterStamina);
+        CHECK(gMelee.twoHandNegation > gMelee.guardNegation && gMelee.twoHandBoost > gMelee.guardBoost);
+        p.twoHanded = false;
     }
     {  // The parry: a small or medium shield's, for stamina. A hit in its window deflects, the attacker
        // reels open to a riposte; caught before or after it, the parry is a weak guard; from behind, nothing.
@@ -7187,6 +7215,184 @@ static void flasks() {
     CHECK(glm::distance(xzOf(p.pos), xzOf(playerSpawn(s.world, s.markers))) < 0.2f);
 }
 
+// Weapon scaling (ADR-048): each weapon's hits add its share of each attribute, graded E..S; the
+// Scaling stat multiplies it. Two-handing: a toggle that waits for a free body, strength x1.5 through
+// the stat pipeline, no shield guard or parry, the left hand on the hilt and the shield on the back.
+static void scaling() {
+    constexpr float dt = 1 / 60.0f;
+    std::mt19937 rng(5);
+    // Grades: none, then E (a little) up to S.
+    for (auto [k, grade] : {std::pair{0.0f, '-'}, {0.1f, 'E'}, {0.25f, 'D'}, {0.5f, 'C'}, {0.8f, 'B'}, {1.1f, 'A'}, {1.4f, 'S'}, {3.0f, 'S'}})
+        if (scalingGrade(k) != grade) std::println(stderr, "FAIL scalingGrade({}) = {}, want {}", k, scalingGrade(k), grade), ++failures;
+    CHECK(scalingGrade(0.24f) == 'E' && scalingGrade(0.49f) == 'D' && scalingGrade(0.79f) == 'C' && scalingGrade(1.09f) == 'B' && scalingGrade(1.39f) == 'A');
+    // The bonus: each attribute x its scaling x the Scaling stat x speed, summed, then rounded.
+    Stats st{10, 4, 6, 8, 10};
+    StatSheet sh = compute(st);
+    CHECK(sh[Stat::Scaling] == 1 && std::string_view(kStatIds[size_t(Stat::Scaling)]) == "scaling");
+    for (size_t i = 0; i < 4; ++i) {
+        Attack a{1, 2, 2.0f, {}};
+        a.scaling[i] = 0.5f;
+        CHECK(attributeShare(sh, a, i) == sh[kScalingStats[i]] * 0.5f * 2 && attributeBonus(sh, a) == int(sh[kScalingStats[i]]));
+        for (size_t j = 0; j < 4; ++j) CHECK(j == i || attributeShare(sh, a, j) == 0);
+    }
+    Attack mixed{1, 2, 1.0f, {0.25f, 0.25f, 0, 0}};  // 1 + 1.5 = 2.5: rounded once, at the end (not 1 + 2)
+    CHECK(attributeBonus(sh, mixed) == 3);
+    CHECK(attributeBonus(compute(st, std::array{Modifier{Stat::Scaling, ModKind::Increased, 0.5f}}), mixed) == 4);  // a talent's: x1.5 = 3.75
+    CHECK(kPunch.scaling == (Scaling{1, 0, 0, 0}) && (Attack{1, 2, 1}).scaling == kPunch.scaling);  // fists and creatures: strength
+    CHECK(hitBeforeArmor(sh, mixed, 5) == 5 + 3);
+    // The shipped weapons: the knife leans on agility, the mace and axe on strength, the sword on both.
+    const Attack &sword = itemType(Shortsword).attack, &knife = itemType(Knife).attack,
+                 &axe = defs().items[defs().itemById.at("iron_hand_axe")].attack, &mace = defs().items[defs().itemById.at("iron_mace")].attack;
+    CHECK(knife.scaling[1] > knife.scaling[0] && scalingGrade(knife.scaling[1]) == 'A');
+    CHECK(mace.scaling[0] > 0 && mace.scaling[1] == 0 && scalingGrade(mace.scaling[0]) == 'S' && axe.scaling[0] > axe.scaling[1]);
+    CHECK(sword.scaling[0] > 0 && sword.scaling[1] > 0);
+    for (const Attack* a : {&sword, &knife, &axe, &mace}) CHECK(a->scaling[2] == 0 && a->scaling[3] == 0);  // nothing scales with magic yet
+    // So the build picks the weapon: agility adds to the knife and not the mace, strength the other way round.
+    StatSheet quick = compute({10, 2, 40, 2, 2}), strong = compute({10, 40, 2, 2, 2});
+    CHECK(attributeBonus(quick, knife) > attributeBonus(quick, mace) && attributeBonus(strong, mace) > attributeBonus(strong, knife));
+    // At the starting attributes the sword and knife hit as before scaling (the story's balance holds).
+    CHECK(attributeBonus(Stats{}, sword) == 2 && attributeBonus(Stats{}, knife) == 2);
+
+    // Two-handing: the toggle.
+    auto holder = [] {
+        Player p;
+        p.pos = {7.5f, 4, 7.5f};
+        p.onGround = true, p.offGround = 0;
+        p.inv.equipped[SlotMainHand] = defs().itemById.at("iron_mace");
+        return p;
+    };
+    auto tick = [&](Player& p, MeleeInput in = {}) {
+        Input move;
+        updateMelee(p, in, move, dt);
+        std::vector<Entity> none;
+        updateCombat(p, none, dt, rng);
+    };
+    {
+        Player p = holder();
+        CHECK(!twoHanding(p) && p.gripBlend == 0);
+        float one = sheet(p)[Stat::Strength];
+        tick(p, {.grip = true});
+        CHECK(p.twoHanded && twoHanding(p) && p.made(Noise::Grip) && p.want == Want::None);
+        CHECK(sheet(p)[Stat::Strength] == one * gMelee.twoHandStrength);  // x1.5, in the sheet (and the UIs)
+        std::vector<Modifier> mods = collect(p);
+        CHECK(std::ranges::count_if(mods, [](const Modifier& m) { return std::string_view(m.source) == "Two-handed" && m.stat == Stat::Strength; }) == 1);
+        CHECK(attributeBonus(sheet(p), mace) > attributeBonus(sheet(holder()), mace));
+        for (int i = 0; i < 30; ++i) tick(p);
+        CHECK(p.gripBlend > 0.99f);  // the left hand went to the hilt
+        p.noises = 0;
+        tick(p, {.grip = true});
+        CHECK(!p.twoHanded && p.made(Noise::Grip) && sheet(p)[Stat::Strength] == one);
+        // Damage: the same roll hits harder two-handed.
+        Player dummy;
+        p.twoHanded = true;
+        std::mt19937 keep = rng;
+        int two = resolveHit(p, dummy, mace, {rng});
+        rng = keep, p.twoHanded = false;
+        int oneHit = resolveHit(p, dummy, mace, {rng});
+        CHECK(two > oneHit);
+    }
+    {  // Bare hands have nothing to hold in two: the press does nothing. Putting the weapon away lets go.
+        Player p = holder();
+        p.inv.equipped[SlotMainHand] = NoItem;
+        tick(p, {.grip = true});
+        CHECK(!p.twoHanded && p.want == Want::None && !p.made(Noise::Grip));
+        p.twoHanded = true;  // (a stale flag): no weapon, not two-handing, and the next tick clears it
+        CHECK(!twoHanding(p) && sheet(p)[Stat::Strength] == compute(Stats{})[Stat::Strength]);
+        tick(p);
+        CHECK(!p.twoHanded);
+        p.inv.equipped[SlotMainHand] = Shortsword;
+        CHECK(!twoHanding(p));  // the next weapon starts one-handed
+        p.twoHanded = true;
+        p.inv.equipped[SlotMainHand] = Knife;  // swapped straight for another: still in both hands
+        tick(p);
+        CHECK(twoHanding(p));
+    }
+    {  // Put away mid-swing: the swing keeps its grip (and strength) to the end, a press queued meanwhile is dropped.
+        Player p = holder();
+        p.twoHanded = true;
+        float two = sheet(p)[Stat::Strength];
+        tick(p, {.attack = true});
+        tick(p);
+        CHECK(p.punching());
+        p.inv.equipped[SlotMainHand] = NoItem;
+        tick(p, {.grip = true});
+        CHECK(twoHanding(p) && sheet(p)[Stat::Strength] == two && p.want == Want::Grip);
+        p.noises = 0;
+        while (p.punching()) tick(p);
+        tick(p);
+        CHECK(!p.twoHanded && p.want == Want::None && !p.made(Noise::Grip));
+    }
+    {  // It waits for a free body: mid-swing (until its cancel point) and mid-roll.
+        Player p = holder();
+        tick(p, {.attack = true});
+        tick(p);
+        while (p.punching() && moveProgress(p) < spec(p).cancel - 0.2f) tick(p);  // pressed a while before the swing can be cut
+        CHECK(p.punching());
+        float left = (1 - moveProgress(p)) * moveLength(p);  // until the swing would end by itself
+        tick(p, {.grip = true});
+        CHECK(!p.twoHanded && p.want == Want::Grip);
+        int frames = 0;
+        while (!p.twoHanded && frames < 120) tick(p), ++frames;
+        CHECK(p.twoHanded && !p.punching() && float(frames) * dt < left - 0.1f);  // at the cancel point: the press cut the recovery
+        Player r = holder();
+        r.rollTime = 0.1f, r.rollLength = 0.6f;
+        CHECK(r.rolling());
+        tick(r, {.grip = true});
+        CHECK(!r.twoHanded && r.want == Want::Grip);
+    }
+    {  // No parry two-handed, not even a knife's (or a shield's: it's on the back).
+        Player p = holder();
+        p.inv.equipped[SlotMainHand] = Knife;
+        CHECK(parryOf(p) > 0);
+        p.twoHanded = true;
+        CHECK(parryOf(p) == 0);
+        tick(p, {.parry = true});
+        CHECK(p.move == Move::None && p.want == Want::None);
+        p.inv.equipped[SlotOffHand] = defs().itemById.at("oak_buckler");
+        CHECK(parryOf(p) == 0 && !shieldOf(p));
+        p.twoHanded = false;
+        CHECK(parryOf(p) > 0 && shieldOf(p));
+    }
+    {  // The pose: two-handed, the left hand on the hilt just below the right, in every pose; the shield on the back.
+        auto center = [](const glm::mat4& m) { return glm::vec3(m * glm::vec4(1.5f, 1.5f, 1.5f, 1)); };  // a hand's middle
+        Player p = holder();
+        p.yaw = 0;
+        p.inv.equipped[SlotOffHand] = defs().itemById.at("heater_shield");
+        glm::mat4 held(0), shield(0);
+        auto one = poseModel(p, ModelPlayer, &held, 1, &shield);
+        CHECK(glm::distance(center(one[HandL]), center(one[HandR])) > 0.8f);
+        glm::vec3 shieldAt(shield[3]);
+        p.twoHanded = true, p.gripBlend = 1;
+        for (int pose = 0; pose < 3; ++pose) {  // at rest, guarding, mid-swing
+            if (pose == 1) p.guardBlend = 1;
+            if (pose == 2) p.guardBlend = 0, startMove(p, Move::Light1, {}), p.moveTime = impactTime(p);
+            glm::mat4 h(0), sh(0);
+            auto two = poseModel(p, ModelPlayer, &h, 1, &sh);
+            float apart = glm::distance(center(two[HandL]), center(two[HandR]));
+            if (std::abs(apart - 0.27f) > 0.03f) std::println(stderr, "FAIL two-handed pose {}: hands {} apart", pose, apart), ++failures;
+            // The left hand is down the weapon's length from the grip (toward the pommel), not off to a side.
+            glm::vec3 up = glm::normalize(glm::vec3(h * glm::vec4(0, 1, 0, 0)));
+            CHECK(glm::dot(glm::normalize(center(two[HandL]) - center(two[HandR])), -up) > 0.95f);
+            glm::vec3 torso(two[Torso] * glm::vec4(4, 3.5f, 3, 1));
+            CHECK(sh != glm::mat4(0) && glm::vec3(sh[3]).z < torso.z && glm::vec3(sh[3]) != shieldAt);  // behind the torso (the body faces +z)
+            float back = glm::vec3(two[Torso] * glm::vec4(4, 3.5f, 0, 1)).z, board = glm::vec3(sh * glm::vec4(4.5f, 6, 0.5f, 1)).z;
+            CHECK(board < back);  // its board outside the torso's back, not through it
+        }
+        p.move = Move::None, p.hitPending = false;
+        {  // mid-roll the weapon goes where it does one-handed (tucked), not held out in front
+            Player r = p, one = p;
+            r.rollTime = one.rollTime = 0.3f, r.rollLength = one.rollLength = 0.6f;
+            one.twoHanded = false, one.gripBlend = 0;
+            CHECK(glm::distance(center(poseModel(r, ModelPlayer)[HandR]), center(poseModel(one, ModelPlayer)[HandR])) < 0.05f);
+        }
+        startMove(p, Move::Drink, {});
+        p.moveTime = holdTime(p);  // the flask at the lips: the left hand left the hilt for it
+        glm::mat4 h(0);
+        auto drinking = poseModel(p, ModelPlayer, &h);
+        CHECK(glm::distance(center(drinking[HandL]), center(drinking[HandR])) > 0.5f);
+    }
+}
+
 // Status effects (ADR-046): build-up and resists in the stat pipeline, from items and creatures;
 // build-up that fills and wears off; bleed's burst, poison's ticks, frostbite's damage taken; a guard's
 // share; the lockout while poison or frost is on; the timed effects' list; kills by poison; the shipped
@@ -7709,6 +7915,7 @@ int main() {
     criticals();
     statusEffects();
     flasks();
+    scaling();
     sounds();
     combat();
     fighters();

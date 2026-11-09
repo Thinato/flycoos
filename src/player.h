@@ -84,9 +84,10 @@ enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup
                              StanceBreak, Parry, Block, GuardBreak, Bounce, Loot, Talk, Backstep, PerfectGuard,
                              Bleed, Poison, Frost,  // a status took effect on it (ADR-046)
                              Drink, Empty, Rest,    // a flask healed it, an empty one didn't; it rested by a fire (ADR-047)
+                             Grip,                  // it took its weapon in both hands or let go with one (ADR-048)
                              Count };
 // What the player's attack buttons asked for and is still waiting to happen (melee.cpp).
-enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry, Drink };
+enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry, Drink, Grip };
 
 // A timed effect (ADR-046; TALENTS.md foundation 4): poison, frostbite, and later buffs, enchants and
 // the like. Its modifiers count in the stat pipeline (collect) while it lasts; the clock runs in updateCombat.
@@ -164,6 +165,8 @@ struct Combatant {
     std::vector<Modifier> innate;          // its kind's own modifiers (creature "mods": a wolf's bleeding bite)
     float trauma = 0;                      // camera shake, 0..1 (the player's): big hits add it, it wears off (ADR-045)
     int flasks = kBaseFlasks;              // healing flask charges left (ADR-047); a rest fills them to the Flasks stat
+    bool twoHanded = false;                // the player's main-hand weapon in both hands (ADR-048; twoHanding)
+    float gripBlend = 0;                   // 0 .. 1: how far the left hand has gone to the hilt (the pose)
     float deadTime = 0;                    // seconds spent at 0 health
     Inventory inv;                         // equipment and bags
     Progress progress;                     // skills, XP and talents: the player's (NPCs' stay at the start)
@@ -182,8 +185,8 @@ struct Combatant {
 };
 
 // The modifiers on `c` (ADR-022): its innate ones, its equipped items' armor and mods, its skills' and
-// talents' (ADR-027) and its timed effects' (ADR-046), rebuilt on every call, so unequipping, a respec
-// or an effect wearing off needs no undo.
+// talents' (ADR-027), its timed effects' (ADR-046) and two-handing's strength (ADR-048), rebuilt on every
+// call, so unequipping, a respec or an effect wearing off needs no undo.
 std::vector<Modifier> collect(const Combatant& c);
 // Its final stats: base attributes plus every collected modifier. Uncached. `with`: the weapon skill
 // of a swing, whose conditional ("with") modifiers count too.

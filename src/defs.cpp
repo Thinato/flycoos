@@ -289,7 +289,7 @@ void loadItems(const File& f, Defs& d) {
     SaveIds saves;
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
-        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods", "shield", "weight", "damage", "parry", "class"});
+        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods", "shield", "weight", "damage", "parry", "class", "scaling"});
         size_t save = saves.claim(r);
         ItemType t{nullptr, SlotNone, {0, 0, 0}, 0, 0, {}, {}};
         std::string name = r.text("name");
@@ -309,6 +309,16 @@ void loadItems(const File& f, Defs& d) {
             t.attack.maxDamage = int(r.number(a, "attack.max", t.attack.minDamage, 1000));
             t.attack.speed = float(r.number(a, "attack.speed", 0.1, 10, kRequired, false));
         } else if (t.slot == SlotMainHand) throw r.fail("attack", "missing (a main-hand item is a weapon)");
+        if (r.fields.contains("scaling")) {  // ADR-048: what its hits add per attribute point; missing, strength's point a point
+            const json& sc = r.fields["scaling"];
+            if (!r.fields.contains("attack")) throw r.fail("scaling", "only weapons (with an 'attack') scale");
+            if (!sc.is_object()) throw r.fail("scaling", "must be an object {strength, agility, intellect, spirit}");
+            for (const auto& [k, v] : sc.items())
+                if (std::ranges::none_of(kScalingStats, [&](Stat a) { return k == kStatIds[size_t(a)]; }))
+                    throw r.fail("scaling." + k, "unknown attribute (strength, agility, intellect or spirit)");
+            for (size_t i = 0; i < t.attack.scaling.size(); ++i)
+                t.attack.scaling[i] = float(r.number(sc, std::string("scaling.") + kStatIds[size_t(kScalingStats[i])], 0, 5, 0, false));
+        }
         // Weight (ADR-039), what a weapon's swings do (ADR-040), whether it parries (ADR-041).
         t.weight = float(r.number(r.fields, "weight", 0, 100, 0, false));
         if (t.weight > 0 && t.slot >= EquipCount) throw r.fail("weight", "only items worn in an equip slot weigh on the equip load");

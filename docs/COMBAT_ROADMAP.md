@@ -62,12 +62,12 @@ system is summarized in ADR-035.
 
 ## Systems
 
-- [ ] Two-handing (a toggle: more strength, its own moveset, no shield)
+- [x] Two-handing (a toggle: strength x1.5, a better guard, no shield or parry, both hands on the hilt; ADR-048). Its own moveset comes with greatswords
 - [ ] Dual wielding / power stance
 - [ ] Weapon skills (a special move per weapon or per skill gem, costing mana)
 - [x] Backstabs and criticals (from behind an unaware or turned enemy; random crits as stats, ADR-045)
 - [x] Status effects: bleed, poison, frost build-up bars, timed effects (ADR-046); stun is the stance bar (ADR-035)
-- [ ] Weapon scaling with attributes (strength, agility, intellect, spirit)
+- [x] Weapon scaling with attributes (strength, agility, intellect, spirit; per weapon in the data, graded E to S; ADR-048)
 - [x] Equip load: light, medium and heavy rolls; overloaded can't roll (ADR-039)
 - [x] Healing flasks (limited charges, refilled at rest points by any fire; ADR-047)
 - [x] Per-weapon timings and stance values in the data: a moveset per weapon class (ADR-044)
@@ -92,3 +92,11 @@ system is summarized in ADR-035.
 - [ ] Knockback and launch on big hits; ragdoll-ish falls
 - [ ] Charge glow; a riposte and parry flash
 - [ ] Damage numbers by type; a crit marker (the marker done, ADR-045; status numbers by type, ADR-046)
+
+## Controls and accessibility (after most combat commands exist)
+
+- [ ] Controls refactor, especially the PS5 controller: fewer button combinations (Triangle + R1 to
+  two-hand, hold-vs-tap), simpler gestures for one action, rebinding
+- [ ] Button prompts on the HUD: the button each action uses, e.g. a D-pad-down glyph at the
+  flask's bottom left, the two-hand button by the 2H tag; keyboard or pad glyphs by the last device used
+- [ ] Accessibility: hold-to-toggle options (guard, sprint), input buffer and timing assists, readable prompts

@@ -49,7 +49,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel` by weapon class, `partModels`), procedural animation (`poseModel`; swing poses per weapon class, ADR-044). Core (no GPU), since NPC traits name their `Model` |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the quest drain, the knocked-out player's respawn, skill and level-up toasts) |
-| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`, `WEAR`, `REST`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
+| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`, `WEAR`, `REST`, `GRIP`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
 | `src/quest.h/.cpp` | Quests (ADR-026): `GameEvent` (`Killed`, `ItemCountChanged`, `TalkedTo`, `RegionEntered`), the quest data types the loader fills (`QuestDef`, `Stage`, `Trigger`, `Action`, `Condition`, `QuestLine`), `QuestState`; `updateQuests` (the once-per-tick drain), `setQuestStage`/`resetQuest(s)`, the condition evaluator (`passes`, `passesAll`, `pickLine`), `countItem`, `checkQuestMarkers` |
 | `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` and `data/quests/*.json` (records by string id, `copy_from`, field and range checks, quest references resolved to handles, warnings), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
@@ -224,6 +224,8 @@ u32 FNV-1a checksum of every byte before it
   like `NPCS` but apart from it, so `NPCS` keeps its layout; entries without their NPC are dropped.
 - `REST` (ADR-047): `u8 flask charges left` (capped by the Flasks stat on load) | `u8 1 if rested`, then
   `f32 x, y, z` of the rest point (`Session::restPoint`). Missing (older saves): full flasks, never rested.
+- `GRIP` (ADR-048): `u8 1 if two-handed` (`Combatant::twoHanded`; anything else is rejected). Missing
+  (older saves): one-handed.
 - Every new runtime state gets a section here and a round-trip test.
 
 ## Editing (`applyEdit`)
@@ -683,10 +685,10 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Attribute | Effect |
   |---|---|
   | Stamina (shown as Vitality) | +10 max health per point (the id stays `stamina`; "Stamina" in the UI is the melee bar, ADR-035) |
-  | Strength | physical damage: `damage = baseDamage + strength * speed` |
-  | Agility | +1% physical attack speed per point (haste: swing time = speed / (1 + 1% x agility)) |
-  | Intellect | unused until magic |
-  | Spirit | +0.5 health per second, out of combat only |
+  | Strength | physical damage by the weapon's scaling (ADR-048): `damage = baseDamage + sum(attribute x scaling) x speed` |
+  | Agility | +1% physical attack speed per point (haste: swing time = speed / (1 + 1% x agility)); damage by the weapon's scaling |
+  | Intellect | damage by the weapon's scaling (no weapon scales with it yet; magic later) |
+  | Spirit | +0.5 health per second, out of combat only; damage by the weapon's scaling |
   | Armor (from gear) | damage taken x (1 − min(80%, armor / (armor + K x attacker level))), at least 1; K = 40 |
 
 - `speed` in the damage formula is the attack's *base* speed (WoW's weapon speed), not the hasted
@@ -715,7 +717,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   sheet, so unequipping restores the base exactly. The debug Player tab shows the sheet: each
   stat's base and final value and every modifier with its source.
 - **Every landed swing goes through `resolveHit(attacker, defender, attack, ctx)`** (entity.cpp):
-  the attack's roll, + round(strength × attack speed), × the attacker's damage, less
+  the attack's roll, + `attributeBonus` (each attribute × the weapon's scaling × attack speed, rounded once), × the attacker's damage, less
   `armorReduction` (stats.h): `armor / (armor + K x attacker level)` capped at 80%
   (`kMaxArmorReduction`), × the defender's damage taken, rounded once and never below 1.
   `HitContext` carries the damage RNG and K. K (`kArmorK` = 40) is the armor that halves a level 1
@@ -797,6 +799,15 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   and talk and sets `Session::restPoint`, where `respawnPlayer` puts the player back, flasks full.
   The endless world generates a campfire per 96x96 cell where the ground allows
   (`generateChunkColumn`). model.cpp draws the left hand raising `ModelFlask` (`sip`).
+- **Weapon scaling and two-handing** (ADR-048): `Attack::scaling` (items.json `scaling`; default
+  strength 1 for fists and creatures) by `kScalingStats`; `attributeBonus` sums `attributeShare`
+  (attribute x scaling x the `scaling` stat x speed) and rounds once; `scalingGrade` gives E..S.
+  `twoHanding()` (melee.h) is `twoHanded` with a main-hand weapon: `collect()` adds strength more
+  (`gMelee.twoHandStrength`), `shieldOf` returns null (so every guard path uses the weapon's
+  `twoHandNegation`/`twoHandBoost`), `parryOf` 0. updateMelee toggles it from a buffered `Want::Grip`
+  once the body is free and eases `gripBlend`; model.cpp holds the weapon in front at rest
+  (`kTwoHandIdle`), puts the left hand `kPommel` voxels down the weapon's axis in every pose, and
+  hangs the shield on the back (`kShieldBack`).
 - **Shields and the parry** (ADR-036, melee.h): an off-hand item with a `shield` guards by its own
   numbers instead of the sword's (`guardOf`): the Oak Buckler stops 80% and saves 46% of the stamina,
   the Heater Shield 100% / 56%, the Tower Shield 100% / 72%. A guard of at least 65% boost makes an

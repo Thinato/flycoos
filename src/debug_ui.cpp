@@ -192,13 +192,13 @@ static void attributes(Player& b, bool fights) {
     ImGui::SliderInt("Vitality", &s.stamina, 1, 100);
     ImGui::SetItemTooltip("+%d max health per point", kHealthPerStamina);
     ImGui::SliderInt("Strength", &s.strength, 0, 100);
-    ImGui::SetItemTooltip("Physical damage + strength x attack speed");
+    ImGui::SetItemTooltip("Adds to hits by each weapon's scaling with it, x its speed (ADR-048)");
     ImGui::SliderInt("Agility", &s.agility, 0, 100);
-    ImGui::SetItemTooltip("+%.0f%% physical attack speed per point", kHastePerAgility * 100);
+    ImGui::SetItemTooltip("+%.0f%% physical attack speed per point; adds to hits by each weapon's scaling", kHastePerAgility * 100);
     ImGui::SliderInt("Intellect", &s.intellect, 0, 100);
-    ImGui::SetItemTooltip("Unused until magic");
+    ImGui::SetItemTooltip("Adds to hits by each weapon's scaling (none scales with it yet)");
     ImGui::SliderInt("Spirit", &s.spirit, 0, 100);
-    ImGui::SetItemTooltip("+%.1f health per second out of combat per point", kRegenPerSpirit);
+    ImGui::SetItemTooltip("+%.1f health per second out of combat per point; adds to hits by each weapon's scaling", kRegenPerSpirit);
     StatSheet total = sheet(b);
     ImGui::Text("Max health %d, regen %.1f/s out of combat", maxHealth(total), healthRegen(total));
     if (fights) {
@@ -347,7 +347,7 @@ static void playerTab(Session& session, float& armorK, DebugActions& actions, co
         Guard g = guardOf(p), strike = guardOf(p, DamageType::Strike), pierce = guardOf(p, DamageType::Pierce);
         float parry = parryOf(p);
         ImGui::Text("Guard with %s: stops %.0f/%.0f/%.0f%% (slash/strike/pierce), boost %.0f%%%s%s", s ? itemType(p.inv.equipped[SlotOffHand]).name
-                    : p.inv.equipped[SlotMainHand] ? "the weapon" : "bare arms", double(g.negation * 100), double(strike.negation * 100),
+                    : p.inv.equipped[SlotMainHand] ? (twoHanding(p) ? "the weapon in both hands" : "the weapon") : "bare arms", double(g.negation * 100), double(strike.negation * 100),
                     double(pierce.negation * 100), double(g.boost * 100),
                     parry > 0 ? std::format(", parries (x {:.2f})", parry).c_str() : "", g.boost >= m.bounceBoost ? ", bounces" : "");
         ImGui::Text("Perfect guard %s   (guard up %.2f s, %s)", perfectGuard(p) ? "NOW" : "no", double(std::min(p.guardTime, 99.0f)),
@@ -417,6 +417,38 @@ static void playerTab(Session& session, float& armorK, DebugActions& actions, co
         ImGui::SetItemTooltip("Camera trauma from a riposte or backstab; random crits add 60%%, heavy hits by their stance damage.");
         ImGui::ProgressBar(p.trauma, {-FLT_MIN, 0}, std::format("trauma {:.2f}", p.trauma).c_str());
         if (ImGui::Button("Test shake")) p.trauma = 1;
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Scaling and two-handing (ADR-048)")) {
+        bool armed = p.inv.equipped[SlotMainHand] != NoItem;
+        ImGui::BeginDisabled(!armed);
+        ImGui::Checkbox("Two-handed (F / Triangle+R1)", &p.twoHanded);
+        ImGui::EndDisabled();
+        if (!armed) ImGui::SameLine(), ImGui::TextDisabled("(nothing in the main hand)");
+        ImGui::ProgressBar(p.gripBlend, {160, 0}, std::format("left hand on the hilt {:.2f}", p.gripBlend).c_str());
+        ImGui::SliderFloat("Two-handed strength", &m.twoHandStrength, 1, 3, "x %.2f");
+        ImGui::SliderFloat("Two-handed guard stops", &m.twoHandNegation, 0, 1, "%.2f of the damage");
+        ImGui::SliderFloat("Two-handed guard boost", &m.twoHandBoost, 0, 1, "%.2f of the stamina");
+        ImGui::SetItemTooltip("One-handed, the weapon's guard: %.2f and %.2f (Stamina, timing and the guard).", double(m.guardNegation), double(m.guardBoost));
+        StatSheet s = sheet(p);
+        ImGui::Text("Attribute scaling x %.2f (a stat: talents may raise it)", double(s[Stat::Scaling]));
+        // Every weapon in the data: its scaling per attribute (grade, number) and what it adds now with these attributes.
+        if (ImGui::BeginTable("scaling", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+            for (const char* h : {"weapon", "speed", "str", "agi", "int", "spi", "adds now (this grip)"}) ImGui::TableSetupColumn(h);
+            ImGui::TableHeadersRow();
+            for (int id = 0; id < int(defs().items.size()); ++id) {
+                if (id != NoItem && itemType(ItemId(id)).slot != SlotMainHand) continue;
+                const Attack& a = weaponAttack(ItemId(id));
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(), ImGui::TextUnformatted(id ? itemType(ItemId(id)).name : "Fists");
+                ImGui::TableNextColumn(), ImGui::Text("%.2f", double(a.speed));
+                for (size_t i = 0; i < std::size(kScalingStats); ++i)
+                    ImGui::TableNextColumn(), ImGui::Text("%c %.2f", scalingGrade(a.scaling[i]), double(a.scaling[i]));
+                StatSheet with = sheet(p, skillOf(ItemId(id)));
+                ImGui::TableNextColumn(), ImGui::Text("+%d", attributeBonus(with, a));
+            }
+            ImGui::EndTable();
+        }
         ImGui::TreePop();
     }
     if (ImGui::TreeNode("Status effects (ADR-046)")) {

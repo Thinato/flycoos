@@ -12,6 +12,7 @@
 #include <span>
 
 #include "defs.h"
+#include "melee.h"
 #include "text.h"
 
 // Save file layout (little-endian), the .flyw container with another magic:
@@ -37,6 +38,7 @@
 //   NPCS, so that layout stays; an entry without its NPC is dropped silently.
 // "REST" (ADR-047): u8 flask charges left | u8 1 if the player has rested, then f32 x, y, z where.
 //   Missing (older saves): full flasks, never rested.
+// "GRIP" (ADR-048): u8 1 if the player two-hands its weapon. Missing (older saves): one-handed.
 constexpr uint32_t kSaveFileVersion = 1;
 constexpr size_t kMaxSaveBytes = size_t(1) << 20;  // the biggest valid one is a few KB
 constexpr size_t kNpcBytes = 31;
@@ -114,6 +116,7 @@ struct SaveData {
     std::map<std::pair<uint32_t, int>, std::pair<float, float>> wear;  // (marker id, slot) -> xpWear, armorWear
     std::optional<int> flasks;
     std::optional<glm::vec3> restPoint;
+    bool twoHanded = false;
     std::vector<std::string> notes;  // what parsing dropped (ids this build's data doesn't know)
 };
 
@@ -311,6 +314,13 @@ std::string readRest(Reader r, SaveData& d) {
     return r.done("rest");
 }
 
+std::string readGrip(Reader r, SaveData& d) {
+    uint64_t two = r.take(1);
+    if (two > 1) return "bad grip";
+    d.twoHanded = two;
+    return r.done("grip");
+}
+
 std::string parse(const char* path, SaveData& d) {
     std::error_code ec;
     uintmax_t fileBytes = std::filesystem::file_size(path, ec);
@@ -344,6 +354,7 @@ std::string parse(const char* path, SaveData& d) {
         else if (tag == "PROG") error = readProgress(r, d);
         else if (tag == "WEAR") error = readWear(r, d);
         else if (tag == "REST") error = readRest(r, d);
+        else if (tag == "GRIP") error = readGrip(r, d);
         else continue;  // a later build's section
         if (!seen.insert(tag).second) return std::format("duplicate {} section", tag);
         if (!error.empty()) return error;
@@ -420,6 +431,8 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
         if (int spent = pointsSpent(g); !replayTalents(g, p.level))
             r.notes.push_back(std::format("{} talent points no longer fit the talents' rules at level {}: talents reset", spent, p.level));
     }
+    p.twoHanded = d.twoHanded;  // (without a weapon in hand updateMelee lets go)
+    p.gripBlend = twoHanding(p) ? 1 : 0;  // already in both hands, not taking hold
     if (d.player) p.health = std::min(d.player->health, float(maxHealth(sheet(p))));  // after the gear and talents: they add health
     p.flasks = d.flasks ? std::min(*d.flasks, maxFlasks(sheet(p))) : maxFlasks(sheet(p));  // as health: what gear and talents allow
     if (d.restPoint) s.restPoint = inWorld(*d.restPoint);
@@ -570,6 +583,7 @@ std::string savePlayer(const char* path, const Session& s, const std::string& wo
         if (s.restPoint)
             for (float f : {s.restPoint->x, s.restPoint->y, s.restPoint->z}) putF(out, f);
     });
+    section("GRIP", [&] { put(out, p.twoHanded ? 1 : 0, 1); });
     section("PROG", [&] {
         const Progress& g = p.progress;
         put(out, uint32_t(g.xp), 4);

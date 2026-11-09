@@ -421,6 +421,12 @@ static const Grip kShieldGuard{-0.67f, 8, 3.2f, 1.3f, 0.67f, 0.15f, 0.05f, 0.8f}
 // Where a raised shield's hand goes: in front of the chest (a tower shield's lower, so it covers the legs).
 static glm::vec3 shieldGuardHand(const Shield& s) { return {1, s.size == ShieldSize::Great ? 7.0f : 9.5f, 5.5f}; }
 constexpr float kShieldIdleYaw = 1.2f;  // at the side, its face turned out
+// Two-handing (ADR-048): at rest the weapon is held in front, the tip up and forward; the left hand
+// below the right on the hilt, kPommel voxels down the weapon's length (in every pose: swings, the guard).
+static const Grip kTwoHandIdle{0.7f, 7.5f, 3.5f, 0.75f, -0.55f, 0.2f, 0.05f, 0.3f};
+constexpr float kPommel = 2.7f;
+// Where a shield hangs on the back while two-handing: its grip this far from the torso's middle.
+constexpr glm::vec3 kShieldBack{0, 1, -1.5f};
 
 // The swing pose now and how far it has taken over from the idle grip (0 .. 1): it winds up until
 // the hold point, strikes through the hit to the follow-through, then settles back.
@@ -564,6 +570,12 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
             rot[Torso].x -= 0.25f * jolt;
         }
     }
+    if (float k = armed ? p.gripBlend * (1 - w) * (1 - p.guardBlend) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {  // two-handed at rest: the weapon in front
+        const Grip& gg = kTwoHandIdle;
+        glm::vec3 r(-1.5f + gg.reach * std::sin(gg.arc), gg.height, 1.5f + gg.reach * std::cos(gg.arc));
+        off[HandR] += (r - kHumanoid[HandR].center) * k;
+        posture(gg.twist * k, gg.lean * k, gg.dip * k);
+    }
     if (Sip d = sip(p); d.raise > 0) {  // drinking: the flask to the lips, the head tipped back with it
         off[HandL] = glm::mix(off[HandL], kSipHand - kHumanoid[HandL].center, d.raise);
         rot[Head].x -= 0.4f * d.tip;
@@ -657,6 +669,21 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         }
     }
 
+    // The weapon's turn and pitch from the fist: by the swing, the guard or two-handing's rest pose (a parry leaves it be).
+    auto [g, w] = swingPose(p, armed);
+    const Shield* shield = model == ModelDummy || quadruped(model) ? nullptr : shieldOf(p);
+    float guard = p.guardBlend * (1 - w), rest = armed ? p.gripBlend * (1 - w) * (1 - p.guardBlend) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0;
+    const Grip& gg = shield ? kShieldGuard : kGuard;
+    float sw = p.move == Move::Parry && shield ? 0 : w;  // a knife's parry sweeps the blade across
+    float yaw = (g.arc + g.yaw) * sw + (gg.arc + gg.yaw) * guard + (kTwoHandIdle.arc + kTwoHandIdle.yaw) * rest;
+    float pitch = 1.0f + (g.pitch - 1.0f) * sw + (gg.pitch - 1.0f) * guard + (kTwoHandIdle.pitch - 1.0f) * rest;
+    if (float k = armed ? p.gripBlend * (1 - sip(p).raise) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {
+        // Two-handing (ADR-048): the left hand below the right on the hilt, down the weapon's length.
+        glm::vec3 along(std::sin(pitch) * std::sin(yaw), std::cos(pitch), std::sin(pitch) * std::cos(yaw));
+        glm::vec3 at = parts[HandR].center + off[HandR] - kPommel * along;
+        off[HandL] = glm::mix(off[HandL], at - parts[HandL].center, k);
+    }
+
     glm::mat4 base = glm::translate(glm::mat4(1), drawPos(p, alpha));
     base = glm::rotate(base, drawYaw(p, alpha), {0, 1, 0});
     // The chief is bigger and bulkier, the ghoul gaunt; only the drawing scales, not the body's box.
@@ -681,14 +708,7 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         for (glm::mat4& m : out) m = lift * m;
         base = lift * base;
     }
-    auto [g, w] = swingPose(p, armed);
-    const Shield* shield = model == ModelDummy || quadruped(model) ? nullptr : shieldOf(p);
-    float guard = p.guardBlend * (1 - w);
-    if (held && armed) {  // blade tilted forward from the fist; turned and pitched by the swing or the guard (a parry leaves it be)
-        const Grip& gg = shield ? kShieldGuard : kGuard;
-        float sw = p.move == Move::Parry && shield ? 0 : w;  // a knife's parry sweeps the blade across
-        float yaw = (g.arc + g.yaw) * sw + (gg.arc + gg.yaw) * guard;
-        float pitch = 1.0f + (g.pitch - 1.0f) * sw + (gg.pitch - 1.0f) * guard;
+    if (held && armed) {  // blade tilted forward from the fist
         glm::mat4 m = glm::translate(base * tilt, parts[HandR].center + off[HandR]);
         m = glm::rotate(m, yaw, {0, 1, 0});
         m = glm::rotate(m, pitch, {1, 0, 0});
@@ -703,6 +723,14 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         if (Sip d = sip(p); d.raise > 0) hand = glm::mix(hand, parts[HandL].center + glm::vec3(0.5f, 1, 1), d.raise);  // let down at the side to drink
         glm::mat4 m = glm::translate(base * tilt, hand);
         m = glm::rotate(m, yaw, {0, 1, 0});
+        *shieldPose = glm::translate(m, -shieldGrid(shieldModel(p.inv.equipped[SlotOffHand])).grip);
+    } else if (shieldPose && model != ModelDummy && !quadruped(model) && twoHanding(p) &&
+               itemType(p.inv.equipped[SlotOffHand]).shield.size != ShieldSize::None) {  // two-handing: on the back, its face out
+        glm::mat4 m = glm::translate(base * tilt, parts[Torso].center + off[Torso]);
+        m = glm::rotate(m, rot[Torso].y, {0, 1, 0});
+        m = glm::rotate(m, rot[Torso].x, {1, 0, 0});
+        m = glm::translate(m, kShieldBack);
+        m = glm::rotate(m, std::numbers::pi_v<float>, {0, 1, 0});
         *shieldPose = glm::translate(m, -shieldGrid(shieldModel(p.inv.equipped[SlotOffHand])).grip);
     }
     if (Sip d = sip(p); flask && d.raise > 0 && model != ModelDummy && !quadruped(model)) {  // upright in the hand, its neck tipped to the lips

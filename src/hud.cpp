@@ -201,6 +201,13 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     ImVec2 hs = ImGui::CalcTextSize(hp);
     shadowText(dl, ImVec2(center.x - hs.x / 2, center.y - hs.y / 2), uiColor(1, 1, 1), 1, hp);
     flaskIcon(dl, ImVec2(center.x - 140 - 34, center.y + 4), player.flasks);  // left of the bars
+    if (twoHanding(player)) {  // right of them, a tag: the weapon in both hands (ADR-048)
+        const char* tag = "2H";
+        ImVec2 ts = ImGui::CalcTextSize(tag), at(center.x + 140 + 12, center.y + 4 - ts.y / 2);
+        dl->AddRectFilled(ImVec2(at.x - 4, at.y - 2), ImVec2(at.x + ts.x + 4, at.y + ts.y + 2), uiColor(0, 0, 0, 0.6f), 3);
+        dl->AddRect(ImVec2(at.x - 4, at.y - 2), ImVec2(at.x + ts.x + 4, at.y + ts.y + 2), uiColor(0.95f, 0.8f, 0.45f, 0.9f), 3);
+        shadowText(dl, at, uiColor(1, 0.9f, 0.6f), 1, tag);
+    }
     if (rest && !target && player.alive()) {
         const char* text = "[E] Rest by the fire";
         ImVec2 ts = ImGui::CalcTextSize(text);

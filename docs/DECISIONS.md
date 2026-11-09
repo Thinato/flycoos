@@ -2005,3 +2005,68 @@
     Mutation-checked: each of 30 rules broken alone fails a test.
   - **Talents:** charges and healing are stats; a talent like Elden Ring's "more flasks" is a flat
     modifier.
+
+## ADR-048: Weapon scaling with attributes, and two-handing
+
+- **Status:** accepted (2026-11-09)
+- **Context:**
+  - Two roadmap Systems items. Every weapon got the same `strength x speed` bonus (WoW-style), agility
+    only added haste, and intellect and spirit did nothing for weapons, so the build and the weapon
+    choice didn't interact.
+  - Two-handing is mostly "strength x1.5" in Elden Ring, so it builds on scaling. Greatswords and
+    colossal weapons (later) need two hands.
+  - Foundation 1: what a talent could raise is a stat.
+- **Decision:**
+  - **Scaling:** items.json weapons take `"scaling": {strength, agility, intellect, spirit}`, 0..5
+    each (missing: strength 1, the old rule, which fists and creatures keep). A hit adds, per attribute,
+    the attribute x its scaling x the new `scaling` stat (base 1) x the attack's base speed, summed
+    and rounded once (`attributeBonus`, replacing `strengthBonus`). The UIs grade a scaling E (under
+    0.25), D, C, B, A, S (1.4 and over).
+    - Shipped: the sword strength 0.7 / agility 0.5 (C/C), the knife 0.3 / 1.2 (D/A), the axe 1.2 /
+      0.2 (A/E), the mace strength 1.5 (S). The sword's and knife's sums keep their damage at the
+      starting attributes, so NPCs with them hit as before.
+  - **Two-handing:** F (Triangle + R1 on a pad; a Triangle tap opens the bags on release) toggles
+    `Combatant::twoHanded`. It's a buffered want that waits for a free body (not mid-move or mid-roll;
+    it cuts a move's recovery at its cancel point, like a drink press). Bare hands can't, and putting
+    the weapon away lets go (a swing under way keeps its grip to its end); swapping straight to
+    another weapon keeps the grip.
+    - Strength x1.5 (`gMelee.twoHandStrength`) as a "Two-handed" more modifier in `collect()`, so the
+      character sheet, tooltips and hits all see it.
+    - The weapon guards better: 85% of the damage, boost 0.45 (`twoHandNegation`, `twoHandBoost`;
+      one-handed 75% / 0.35, a heater shield 100% / 0.56).
+    - The off hand does nothing: `shieldOf` is null (no shield guard, no bounce) and nothing parries,
+      not even a knife. The shield still weighs on the equip load.
+  - **What shows:** at rest the weapon is held in front, the tip up and forward; in every pose (the
+    guard, every swing of every class; not in a roll's tuck or swimming) the left hand sits on the hilt below the right, `kPommel`
+    voxels down the weapon's length, easing there over about 0.2 s (`gripBlend`). Drinking, it lets go
+    for the flask. A shield hangs on the back, face out. The HUD shows a "2H" tag right of the bars;
+    tooltips show a weapon's grades; the character sheet shows what each attribute adds now and the
+    grip. The equip clink plays on toggling.
+  - **Saves:** a `GRIP` section, a byte (anything but 0 or 1 is rejected). Older saves: one-handed.
+  - **Debug window:** a "Scaling and two-handing" node in the Player tab: the toggle, the hand's
+    blend, the strength and guard knobs, and every weapon's scaling and what it adds now.
+- **Alternatives considered:**
+  - Elden Ring's curve per attribute level (soft caps): with attributes in the single digits so far it
+    reads the same as a straight line. A curve can come when attributes grow past ~20.
+  - Strength x1.5 only inside the damage formula: the modifier is simpler, shows on the sheet, and
+    strength has no other use yet.
+  - Its own two-handed moveset (the roadmap's wording): the one-handed timings with both hands read
+    well, and real two-handed movesets come with greatswords, which are two-handed weapons.
+  - Hiding the shield: on the back says where it went, at the cost of one pose.
+  - One stat per attribute's scaling: one `scaling` stat covers "+10% scaling" talents; a talent bent
+    to one attribute can be a condition later.
+- **Consequences:**
+  - **Balance:** the story fights' bands and the level bands measure the same as before (the sword's
+    damage didn't move at the starting attributes). The axe and mace hit about 1 harder; two-handed,
+    the mace about 2 more.
+  - **Tests:** the `scaling` test checks the grades and their edges, each attribute's share, rounding
+    once, the Scaling stat, the shipped weapons' leanings (agility favours the knife, strength the
+    mace), the toggle (its sound, strength x1.5 in the sheet, more damage, no weapon no grip, letting
+    go on unequip but not on a swap, a swing keeping its grip, waiting out a swing and a roll), no parry
+    two-handed, and the pose (the left hand on the hilt toward the pommel at rest, guarding and
+    mid-swing, letting go to drink, the weapon tucked in a roll as one-handed, the shield's board
+    outside the torso's back). The melee test blocks the same hit one- and two-handed. The data test rejects scaling
+    on non-weapons, unknown attributes and out-of-range values; the save test round-trips `GRIP` and
+    rejects bad ones. Mutation-checked: each of 34 rules broken alone fails a test.
+  - **Talents:** "+10% scaling" is an increased modifier on `scaling`; a two-handed condition can key
+    on `twoHanding()`.

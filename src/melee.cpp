@@ -136,6 +136,11 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     if (in.heavy) p.chargeByHeavy = true, wish(counter ? Want::Counter : Want::Heavy);
     if (in.parry && parryOf(p) > 0) wish(Want::Parry);  // with nothing that parries (a greatshield, a sword), Q does nothing
     if (in.drink) wish(Want::Drink);
+    if (in.grip) wish(Want::Grip);
+    if (!p.weapon()) {  // bare hands have nothing to two-hand: let go (the next weapon starts one-handed; a swap keeps the grip)
+        p.twoHanded = false;
+        if (p.want == Want::Grip) p.want = Want::None;
+    }
     bool over = p.load == Load::Over && !p.tuning.fly && !p.tuning.noclip;  // overloaded: no roll, no run (ADR-039)
     if (move.roll && !over) wish(Want::Roll);
     if (over) move.run = false;
@@ -156,7 +161,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
                 if (p.holding && p.moveTime >= holdTime(p) && (p.charge += dt) >= t.chargeSeconds) p.charged = true, p.holding = false, p.noise(Noise::Charged);
             }
             if (jumpAttack(p.move)) p.holding = airborne(p);  // strikes on landing
-            bool cut = p.want == Want::Roll || p.want == Want::Parry || p.want == Want::Drink || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
+            bool cut = p.want == Want::Roll || p.want == Want::Parry || p.want == Want::Drink || p.want == Want::Grip || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
             if (u >= m.cancel && cut && !wantsAttack(p.want)) endMove(p, p.move);
         }
         // A wanted attack starts once the body is free, or from the current one's chain point.
@@ -196,6 +201,12 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
             p.want = Want::None;
             started = true;
         }
+        // Two-handing (ADR-048) changes once the body is free; mid-roll it waits.
+        if (p.want == Want::Grip && !p.punching() && !p.rolling()) {
+            p.twoHanded = !p.twoHanded;  // (with no weapon the press was dropped above)
+            p.noise(Noise::Grip);
+            p.want = Want::None;
+        }
         if (!p.punching() && p.want == Want::Roll && p.stamina > 0) move.roll = true;  // until updatePlayer can roll
     }
     bool wasGuarding = p.guarding;
@@ -207,6 +218,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
         p.guardTime = std::min(p.guardTime + dt, 99.0f);
     }
     p.guardBlend += ((p.guarding ? 1.0f : 0.0f) - p.guardBlend) * (1 - std::exp(-25 * dt));
+    p.gripBlend += ((twoHanding(p) ? 1.0f : 0.0f) - p.gripBlend) * (1 - std::exp(-15 * dt));
 
     // What the body does: nothing while reeling; an attack steps forward into its hit (in the air it
     // keeps the jump's way) and turns toward the aim through its windup; the guard walks.
@@ -262,10 +274,11 @@ bool guards(const Player& b, glm::vec3 from) { return b.guarding && inFront(b, f
 
 const Shield* shieldOf(const Player& b) {
     const Shield& s = itemType(b.inv.equipped[SlotOffHand]).shield;
-    return s.size != ShieldSize::None ? &s : nullptr;
+    return s.size != ShieldSize::None && !twoHanding(b) ? &s : nullptr;
 }
 
 float parryOf(const Player& b) {
+    if (twoHanding(b)) return 0;
     if (const Shield* s = shieldOf(b)) return s->parry;
     if (b.inv.equipped[SlotOffHand] != NoItem) return 0;
     ItemId w = b.inv.equipped[SlotMainHand];
@@ -274,6 +287,7 @@ float parryOf(const Player& b) {
 
 Guard guardOf(const Player& b, DamageType type) {
     if (const Shield* s = shieldOf(b)) return {s->negation[size_t(type)], s->boost};
+    if (twoHanding(b)) return {gMelee.twoHandNegation, gMelee.twoHandBoost};
     if (b.inv.equipped[SlotMainHand] != NoItem) return {gMelee.guardNegation, gMelee.guardBoost};
     return {gMelee.fistNegation, 0};
 }

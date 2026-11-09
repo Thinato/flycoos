@@ -4,6 +4,8 @@
 #include <cmath>
 #include <numbers>
 
+#include "melee.h"
+
 constexpr float kStride = 1.7f;  // blocks travelled per full gait cycle
 constexpr float kEps = 1e-3f;
 constexpr float kRollRecovery = 0.15f;  // seconds after a roll before the next one
@@ -21,6 +23,7 @@ std::vector<Modifier> collect(const Combatant& c) {
             out.push_back(m);
         }
     }
+    if (twoHanding(c)) out.push_back({Stat::Strength, ModKind::More, gMelee.twoHandStrength - 1, "Two-handed"});  // ADR-048
     progressModifiers(c.progress, out);
     for (const TimedEffect& e : c.effects)
         for (Modifier m : e.mods) {

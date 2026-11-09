@@ -65,7 +65,7 @@ json noteContext(const Session& s, const GameView& view) {
 
     json player = combat(p);
     player.update({{"pos", vec(p.pos)}, {"vel", vec(p.vel)}, {"yaw_degrees", std::round(glm::degrees(p.yaw))},
-                   {"motion", motion(p)}, {"flasks", p.flasks}, {"rest_point", s.restPoint ? vec(*s.restPoint) : json(nullptr)}, {"stamina", round2(p.stamina)}, {"guarding", p.guarding}, {"on_ground", p.onGround}, {"in_water", p.inWater}, {"fly", p.tuning.fly},
+                   {"motion", motion(p)}, {"flasks", p.flasks}, {"two_handed", twoHanding(p)}, {"rest_point", s.restPoint ? vec(*s.restPoint) : json(nullptr)}, {"stamina", round2(p.stamina)}, {"guarding", p.guarding}, {"on_ground", p.onGround}, {"in_water", p.inWater}, {"fly", p.tuning.fly},
                    {"noclip", p.tuning.noclip}, {"seconds_knocked_out", round2(p.deadTime)}, {"xp", p.progress.xp},
                    {"block_at_feet", kBlockNames[s.world.get(glm::ivec3(glm::floor(p.pos)))]},
                    {"block_below", kBlockNames[s.world.get(glm::ivec3(glm::floor(p.pos - glm::vec3(0, 0.05f, 0))))]}});

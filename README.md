@@ -55,6 +55,7 @@ GPU debug layer.
 | Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks. A shield in the off hand guards better; a tower shield makes weak attacks bounce off. Raised just as a hit lands it's a perfect guard (ADR-041): no damage, half the stamina, a bright clink |
 | Q | Parry (ADR-036) with a buckler or heater shield, or with the off hand empty a knife or bare fists (ADR-041): timed just before a hit lands, it deflects the attack and leaves the attacker open to a riposte (left mouse); mistimed, it's a weak guard |
 | R | Drink from the healing flask (ADR-047): a slow walk for a second, then 40% of your health back; a hit that staggers you first cancels it, the charge kept. The red flask by the health bar counts the charges (3); empty, you just shake it |
+| F | Two-hand the weapon, or let go (ADR-048): strength counts 1.5x and the weapon guards better, but the shield goes on your back and nothing parries. A 2H tag shows right of the health bar |
 | E | Loot a nearby corpse, otherwise talk to a nearby villager or guard, otherwise rest by a fire (ADR-047) |
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
@@ -83,7 +84,8 @@ A controller works too (SDL's gamepad layout; PlayStation names here, an Xbox pa
 | R2 | Heavy attack (hold to charge) |
 | L1 | Guard (like right mouse) |
 | L2 | Parry (like Q) |
-| Triangle | Bags |
+| Triangle | Bags (on release) |
+| Triangle + R1 | Two-hand the weapon, or let go (like F) |
 | D-pad down | Drink from the healing flask (like R) |
 | D-pad left / up / right | Character / Journal / Progress; locked on, they switch to the next enemy that way |
 | Options | Close the windows |
@@ -312,6 +314,13 @@ charge. Resting by a fire (E within 3 blocks of embers: a campfire, a cottage he
 brazier, the campfires scattered through the endless world) refills the flasks, heals fully, clears
 statuses, and makes it the place you get back up after being knocked out. You can't rest right
 after being hit or with an enemy after you. Charges and the rest point are saved.
+
+**Weapon scaling and two-handing** (ADR-048): each weapon adds a share of your attributes to every
+hit, by its scaling with each, graded E (a little) to S (the most) in its tooltip. The sword scales
+with strength and agility (C/C), the knife mostly with agility (A), the axe with strength (A) and
+the mace with strength alone (S). The character sheet shows what each attribute adds now. F (or
+Triangle + R1) takes the weapon in both hands: strength counts 1.5x and the weapon guards better,
+but the shield is slung on your back, so there's no shield guard and no parry.
 
 A spawn marker can carry up to 8 **lines** of dialogue (1–160 bytes each). Villagers and guards say
 the next one each time you press E, round and round; anyone who fights (guards too) shouts the

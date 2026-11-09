@@ -1,7 +1,7 @@
 [
-  {"id": "iron_shortsword", "save_id": 1, "name": "Iron Shortsword", "slot": "main_hand", "class": "sword", "attack": {"min": 6, "max": 10, "speed": 1.0}, "weight": 3},
+  {"id": "iron_shortsword", "save_id": 1, "name": "Iron Shortsword", "slot": "main_hand", "class": "sword", "attack": {"min": 6, "max": 10, "speed": 1.0}, "scaling": {"strength": 0.7, "agility": 0.5}, "weight": 3},
   {"id": "canvas_satchel", "save_id": 2, "name": "Canvas Satchel", "slot": "bag", "bag_slots": 6},
-  {"id": "rusty_knife", "save_id": 3, "name": "Rusty Knife", "slot": "main_hand", "class": "dagger", "attack": {"min": 3, "max": 6, "speed": 0.75}, "weight": 1.5, "parry": 0.9, "mods": [{"stat": "crit_chance", "flat": 0.05}, {"stat": "bleed", "flat": 30}]},
+  {"id": "rusty_knife", "save_id": 3, "name": "Rusty Knife", "slot": "main_hand", "class": "dagger", "attack": {"min": 3, "max": 6, "speed": 0.75}, "scaling": {"strength": 0.3, "agility": 1.2}, "weight": 1.5, "parry": 0.9, "mods": [{"stat": "crit_chance", "flat": 0.05}, {"stat": "bleed", "flat": 30}]},
   {"id": "boar_skin", "save_id": 4, "name": "Boar Skin"},
   {"id": "iron_helm", "save_id": 5, "name": "Iron Helm", "slot": "head", "armor": 6, "weight": 4, "mods": [{"stat": "bleed_resist", "flat": 40}, {"stat": "frost_resist", "flat": 40}, {"stat": "poison_resist", "flat": 30}]},
   {"id": "iron_cuirass", "save_id": 6, "name": "Iron Cuirass", "slot": "chest", "armor": 12, "weight": 9, "mods": [{"stat": "bleed_resist", "flat": 85}, {"stat": "frost_resist", "flat": 85}, {"stat": "poison_resist", "flat": 70}]},
@@ -13,6 +13,6 @@
   {"id": "oak_buckler", "save_id": 12, "name": "Oak Buckler", "slot": "off_hand", "shield": {"size": "small", "negation": {"slash": 0.85, "strike": 0.7, "pierce": 0.8}, "boost": 0.46, "parry": 0.9}, "weight": 2},
   {"id": "heater_shield", "save_id": 13, "name": "Heater Shield", "slot": "off_hand", "shield": {"size": "medium", "negation": {"slash": 1, "strike": 0.9, "pierce": 1}, "boost": 0.56, "parry": 1}, "weight": 4.5},
   {"id": "tower_shield", "save_id": 14, "name": "Tower Shield", "slot": "off_hand", "shield": {"size": "great", "negation": 1, "boost": 0.72}, "weight": 13},
-  {"id": "iron_hand_axe", "save_id": 15, "name": "Iron Hand Axe", "slot": "main_hand", "class": "axe", "attack": {"min": 7, "max": 11, "speed": 1.1}, "weight": 3.5},
-  {"id": "iron_mace", "save_id": 16, "name": "Iron Mace", "slot": "main_hand", "class": "mace", "attack": {"min": 6, "max": 10, "speed": 1.15}, "weight": 4, "damage": "strike"}
+  {"id": "iron_hand_axe", "save_id": 15, "name": "Iron Hand Axe", "slot": "main_hand", "class": "axe", "attack": {"min": 7, "max": 11, "speed": 1.1}, "scaling": {"strength": 1.2, "agility": 0.2}, "weight": 3.5},
+  {"id": "iron_mace", "save_id": 16, "name": "Iron Mace", "slot": "main_hand", "class": "mace", "attack": {"min": 6, "max": 10, "speed": 1.15}, "scaling": {"strength": 1.5}, "weight": 4, "damage": "strike"}
 ]

@@ -334,6 +334,8 @@ static int run(SDL_Window* window, const Options& opt) {
     bool heavyQueued = false;  // R2 likewise
     bool parryQueued = false;  // Q / L2 likewise (ADR-036)
     bool drinkQueued = false;  // R / D-pad down: the healing flask (ADR-047)
+    bool gripQueued = false;   // F / Triangle+R1: two-hand the weapon or let go (ADR-048)
+    bool northUsed = false;    // R1 was pressed while Triangle was held: its release two-handed, it doesn't open the bags
     bool pressInGame = false;  // the left button went down while no window was open
     float camYaw = std::numbers::pi_v<float>, camPitch = 0.45f;  // behind the player
     if (opt.fixedLook) {  // degrees on the CLI; yaw 0 looks toward -Z, 90 toward -X
@@ -390,7 +392,7 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.active = on;
         lock = {};
         editor.cursor = false;
-        punchQueued = heavyQueued = parryQueued = drinkQueued = false;  // a press queued mid-swing must not become an editor action, nor the reverse
+        punchQueued = heavyQueued = parryQueued = drinkQueued = gripQueued = false;  // a press queued mid-swing must not become an editor action, nor the reverse
         editor.corner.reset();
         if (on) {
             usedEditor = true;
@@ -490,6 +492,8 @@ static int run(SDL_Window* window, const Options& opt) {
                     parryQueued = true;
                 } else if (e.key.key == SDLK_R && !editor.active && !benchmark && !menus()) {
                     drinkQueued = true;
+                } else if (e.key.key == SDLK_F && !editor.active && !benchmark && !menus()) {
+                    gripQueued = true;
                 } else if (editor.active && e.key.key >= SDLK_1 && e.key.key <= SDLK_1 + int(Tool::Count) + 1) {
                     int tool = int(e.key.key - SDLK_1);  // the brushes, then Prefab, then Marker
                     editor.prefabTool = tool == int(Tool::Count);
@@ -552,8 +556,11 @@ static int run(SDL_Window* window, const Options& opt) {
                     switch (b) {
                         case SDL_GAMEPAD_BUTTON_WEST: interactQueued = true; break;  // Square: loot, else talk, else rest
                         case SDL_GAMEPAD_BUTTON_LEFT_STICK: sprint = !sprint; break;
-                        case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: punchQueued = !menus(); break;
-                        case SDL_GAMEPAD_BUTTON_NORTH: toggle(bagsOpen); break;
+                        case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:  // with Triangle held: two-hand (ADR-048), else attack
+                            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH) && !menus()) gripQueued = !editor.active, northUsed = true;
+                            else punchQueued = !menus();
+                            break;
+                        case SDL_GAMEPAD_BUTTON_NORTH: northUsed = false; break;  // the bags on its release
                         case SDL_GAMEPAD_BUTTON_RIGHT_STICK:  // R3: lock on / let go
                             if (!editor.active && !menus() && player.alive()) toggleLock();
                             break;
@@ -576,6 +583,9 @@ static int run(SDL_Window* window, const Options& opt) {
                             break;
                         default: break;
                     }
+                } else if (b == SDL_GAMEPAD_BUTTON_NORTH) {  // Triangle let go: the bags, unless it two-handed
+                    if (!northUsed) toggle(bagsOpen);
+                    northUsed = false;
                 }
             }
             if (e.type == SDL_EVENT_MOUSE_WHEEL && !ui.wantsMouse())
@@ -639,7 +649,7 @@ static int run(SDL_Window* window, const Options& opt) {
         // Left mouse / R1 attacks (a tap: a light, held: a heavy), R2 is a heavy, right mouse / L1 guards
         // (ADR-035), Q / L2 parries with a shield (ADR-036); they go the way you move, else face, or at
         // the lock-on target. A press that began in a window (e.g. a drag) doesn't attack once the window closes.
-        if (menus()) punchQueued = heavyQueued = parryQueued = drinkQueued = pressInGame = false;
+        if (menus()) punchQueued = heavyQueued = parryQueued = drinkQueued = gripQueued = pressInGame = false;
         if (noteOpen) interactQueued = rollQueued = false;
         uint32_t mouse = SDL_GetMouseState(nullptr, nullptr);
         bool punchHeld = (pressInGame && (mouse & SDL_BUTTON_LMASK)) || button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
@@ -671,10 +681,11 @@ static int run(SDL_Window* window, const Options& opt) {
             sim.heavy = heavyQueued;
             sim.parry = parryQueued;
             sim.drink = drinkQueued;
+            sim.grip = gripQueued;
             sim.interact = interactQueued;
             in.roll = rollQueued;
             StepResult stepped = step(session, sim, kTick);
-            if (!editor.active) punchQueued = heavyQueued = parryQueued = drinkQueued = false;  // the step buffers them (the editor takes its clicks below)
+            if (!editor.active) punchQueued = heavyQueued = parryQueued = drinkQueued = gripQueued = false;  // the step buffers them (the editor takes its clicks below)
             interactQueued = rollQueued = in.roll = false;
             respawned |= stepped.respawned;
             if (stepped.rested) notice = "Rested: health and flasks restored, you'll get back up here", noticeAt = SDL_GetTicksNS();

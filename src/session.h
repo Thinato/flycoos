@@ -65,6 +65,7 @@ struct SimInput {
     bool guard = false;     // the guard button is down
     bool parry = false;     // the parry button went down (ADR-036)
     bool drink = false;     // the flask button went down (ADR-047)
+    bool grip = false;      // the two-hand button went down (ADR-048)
     bool interact = false;  // loot the nearest corpse, else talk to the nearest NPC, else rest by a fire (canRest)
     bool editing = false;   // the editor is open: NPCs and combat pause, no attacks
     float timeRate = 1;     // time-of-day speed-up this step (1 normal, 0 frozen)

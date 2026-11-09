@@ -108,7 +108,7 @@ StepResult step(Session& s, const SimInput& in, float dt) {
     Input move = !p.alive() && !in.editing ? Input{} : in.move;
     if (in.editing) p.pressing = false, p.want = Want::None;  // nothing half-pressed swings on leaving the editor
     else {  // attacks, the guard and stamina (ADR-035); they shape this tick's movement
-        MeleeInput melee{in.attack, in.attackHeld, in.heavy, in.heavyHeld, in.guard, in.parry, in.drink, in.aim};
+        MeleeInput melee{in.attack, in.attackHeld, in.heavy, in.heavyHeld, in.guard, in.parry, in.drink, in.grip, in.aim};
         // At an NPC open to a critical (ADR-045) an attack is the riposte move, aimed at it; once under way,
         // still aimed at the one it caught.
         if (const Entity* e = criticalTarget(s.entities, p, p.move == Move::Riposte && p.hitPending))

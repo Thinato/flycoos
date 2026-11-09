@@ -150,6 +150,18 @@ void icon(ImDrawList* dl, ItemId id, ImVec2 lo, float s) {
     }
 }
 
+// A weapon's scaling (ADR-048): each attribute it scales with and its grade, then with `s` what it adds now.
+std::string scalingText(const Attack& a, const StatSheet* s) {
+    std::string out;
+    for (size_t i = 0; i < std::size(kScalingStats); ++i)
+        if (a.scaling[i] > 0) {
+            out += std::format("{}{} {}", out.empty() ? "" : "   ", std::string_view(kStatNames[size_t(kScalingStats[i])]).substr(0, 3),
+                               scalingGrade(a.scaling[i]));
+            if (s) out += std::format(" +{:.1f}", attributeShare(*s, a, i));
+        }
+    return out.empty() ? "none" : out;
+}
+
 void tooltip(ItemId id, SlotRef where) {
     const ItemType& t = itemType(id);
     ImGui::BeginTooltip();
@@ -178,6 +190,7 @@ void tooltip(ItemId id, SlotRef where) {
     if (a.speed > 0) {
         ImGui::Text("%d - %d damage    Speed %.2f", a.minDamage, a.maxDamage, a.speed);
         ImGui::Text("(%.1f damage per second)", float(a.minDamage + a.maxDamage) / 2 / a.speed);
+        ImGui::Text("Scaling: %s", scalingText(a, nullptr).c_str());
         if (t.slot == SlotMainHand)
             ImGui::TextUnformatted(t.damage == DamageType::Slash ? "Slashes; thrusts pierce" : t.damage == DamageType::Strike ? "Strikes" : "Pierces");
         if (t.parry > 0) ImGui::TextUnformatted("Parries with the off hand empty (Q / L2)");
@@ -260,16 +273,21 @@ void attributes(const Player& p, float armorK) {
     statRow("Health", nullptr, "%d / %d", int(std::ceil(p.health)), maxHealth(s));
     std::snprintf(tip, sizeof tip, "+%d max health per point", kHealthPerStamina);
     gearRow("Vitality", tip, "%.0f", s, base, Stat::Stamina);
-    gearRow("Strength", "Adds strength x weapon speed to every hit", "%.0f", s, base, Stat::Strength);
-    std::snprintf(tip, sizeof tip, "+%.0f%% attack speed per point", kHastePerAgility * 100);
+    gearRow("Strength", "Adds to hits by the weapon's scaling with it (x1.5 two-handed)", "%g", s, base, Stat::Strength);
+    std::snprintf(tip, sizeof tip, "+%.0f%% attack speed per point; adds to hits by the weapon's scaling", kHastePerAgility * 100);
     gearRow("Agility", tip, "%.0f", s, base, Stat::Agility);
-    gearRow("Intellect", "No use yet", "%.0f", s, base, Stat::Intellect);
-    std::snprintf(tip, sizeof tip, "+%.1f health per second out of combat per point", kRegenPerSpirit);
+    gearRow("Intellect", "Adds to hits by the weapon's scaling (none scales with it yet)", "%.0f", s, base, Stat::Intellect);
+    std::snprintf(tip, sizeof tip, "+%.1f health per second out of combat per point; adds to hits by the weapon's scaling", kRegenPerSpirit);
     gearRow("Spirit", tip, "%.0f", s, base, Stat::Spirit);
     ImGui::TableNextRow();
     ImGui::TableNextRow();
     ItemId weapon = p.inv.equipped[SlotMainHand];
     statRow("Damage", weapon ? itemType(weapon).name : "Unarmed", "%d - %d", lo, hi);
+    statRow("Scaling", "What each attribute adds to every hit (ADR-048): the attribute x the weapon's scaling with it "
+            "(E a little .. S the most) x its speed", "%s", scalingText(a, &w).c_str());
+    if (weapon)
+        statRow("Grip", "Two-handed (F / Triangle+R1): strength x1.5 and a better guard; the shield goes on the back, and nothing parries",
+                "%s", twoHanding(p) ? "Two-handed" : "One-handed");
     statRow("Attack speed", "Seconds per swing", "%.2f s", swing);
     statRow("Damage/sec", nullptr, "%.1f", float(lo + hi) / 2 / swing);
     gearRow("Regen", "Health per second, out of combat", "%.1f /s", s, base, Stat::Regen);
