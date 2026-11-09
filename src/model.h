@@ -16,8 +16,8 @@ enum Part { Head, Torso, HandL, HandR, FootL, FootR, PartCount };
 // and `shield` outputs.
 // Armor is a humanoid whose parts are plated: a worn piece swaps in the part it covers.
 // The guard, the bandit chief and the ghoul are humanoids (the chief scaled up, the ghoul thinner).
-enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelBoar, ModelBandit, ModelSword, ModelKnife, ModelIronArmor,
-             ModelWolf, ModelGuard, ModelChief, ModelGhoul, ModelBuckler, ModelHeater, ModelTower, ModelCount };
+enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelBoar, ModelBandit, ModelSword, ModelDagger, ModelIronArmor,
+             ModelWolf, ModelGuard, ModelChief, ModelGhoul, ModelBuckler, ModelHeater, ModelTower, ModelAxe, ModelMace, ModelCount };
 Grid buildPart(Model model, Part part);
 Model heldModel(ItemId weapon);
 Model shieldModel(ItemId shield);  // an off-hand shield's, by its size (ADR-036)

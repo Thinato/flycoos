@@ -1,6 +1,7 @@
 #include "model.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numbers>
 
@@ -94,8 +95,7 @@ static Block dummyVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
     }
 }
 
-// One-handed blades, up along +y, edges along x, all gripped at kGrip.
-constexpr glm::vec3 kGrip{2.5f, 2.5f, 0.5f};
+// One-handed weapons, up along +y, a blade's edges (an axe's head) along x, gripped at heldGrip.
 static Grid buildSword() {
     Grid g({5, 15, 1});
     g.set({2, 0, 0}, Iron);                                    // pommel
@@ -106,7 +106,7 @@ static Grid buildSword() {
     g.set({2, 14, 0}, Steel);                                  // tip
     return g;
 }
-static Grid buildKnife() {  // shorter and narrower, single-edged
+static Grid buildDagger() {  // shorter and narrower, single-edged
     Grid g({5, 11, 1});
     g.set({2, 0, 0}, Iron);
     for (int y = 1; y <= 3; ++y) g.set({2, y, 0}, Belt);
@@ -116,8 +116,37 @@ static Grid buildKnife() {  // shorter and narrower, single-edged
     g.set({2, 10, 0}, Steel);
     return g;
 }
+static Grid buildAxe() {  // a wooden haft, the head out to +x near the top: iron, a steel edge, a short poll behind
+    Grid g({7, 15, 1});
+    for (int y = 0; y <= 13; ++y) g.set({2, y, 0}, y <= 3 ? Belt : Wood);
+    for (int y = 10; y <= 13; ++y) g.set({3, y, 0}, Iron), g.set({4, y, 0}, Iron);
+    for (int y = 9; y <= 14; ++y) g.set({5, y, 0}, Iron);
+    for (int y = 8; y <= 14; ++y) g.set({6, y, 0}, Steel);  // the edge flares past the head
+    g.set({1, 11, 0}, Iron), g.set({1, 12, 0}, Iron);         // poll
+    g.set({2, 14, 0}, Iron);
+    return g;
+}
+static Grid buildMace() {  // a haft and a flanged iron head, the flanges out on four sides
+    Grid g({5, 14, 5});
+    for (int y = 0; y <= 9; ++y) g.set({2, y, 2}, y <= 3 ? Belt : Wood);
+    g.set({2, 0, 2}, Iron);  // pommel
+    for (int y = 9; y <= 12; ++y)
+        for (int x = 1; x <= 3; ++x)
+            for (int z = 1; z <= 3; ++z) g.set({x, y, z}, Iron);
+    for (int y = 9; y <= 12; ++y) g.set({0, y, 2}, Steel), g.set({4, y, 2}, Steel), g.set({2, y, 0}, Steel), g.set({2, y, 4}, Steel);
+    g.set({2, 13, 2}, Iron);
+    return g;
+}
+static glm::vec3 heldGrip(Model m) { return m == ModelMace ? glm::vec3(2.5f, 2.5f, 2.5f) : glm::vec3(2.5f, 2.5f, 0.5f); }
 
-Model heldModel(ItemId weapon) { return weapon == Knife ? ModelKnife : ModelSword; }
+Model heldModel(ItemId weapon) {
+    switch (classOf(weapon)) {
+    case WeaponClass::Dagger: return ModelDagger;
+    case WeaponClass::Axe: return ModelAxe;
+    case WeaponClass::Mace: return ModelMace;
+    default: return ModelSword;
+    }
+}
 
 // Shields face +z; the hand holds them at `grip`, just behind the face.
 struct ShieldGrid { glm::ivec3 size; glm::vec3 grip; };
@@ -231,8 +260,9 @@ static Block ghoulVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
 }
 
 Grid buildPart(Model model, Part part) {
-    if (model == ModelSword || model == ModelKnife)
-        return part != Head ? Grid({1, 1, 1}) : model == ModelSword ? buildSword() : buildKnife();
+    if (model == ModelSword || model == ModelDagger || model == ModelAxe || model == ModelMace)
+        return part != Head ? Grid({1, 1, 1})
+             : model == ModelSword ? buildSword() : model == ModelDagger ? buildDagger() : model == ModelAxe ? buildAxe() : buildMace();
     if (model == ModelBuckler || model == ModelHeater || model == ModelTower) return part != Head ? Grid({1, 1, 1}) : buildShield(model);
     glm::ivec3 s = specs(model)[part].size;
     Grid g(s);
@@ -280,16 +310,27 @@ static float smooth(float a) {
 // The sword arm's pose (ADR-035): the hand on an arc around the right shoulder (`arc` radians from
 // straight ahead toward the left hand, `reach` voxels out, `height` voxels up), the blade pitched
 // `pitch` forward from upright and turned with the arc plus `yaw`, the torso turned `twist` (toward the
-// left hand) and leaning `lean` forward, and the body sunk `dip` voxels.
-struct Grip { float arc = 0, height = 9, reach = 4, pitch = 1, yaw = 0, twist = 0, lean = 0, dip = 0; };
+// left hand) and leaning `lean` forward, and the body sunk `dip` voxels; the weapon turned `roll` about
+// its own length (an axe's head leads the swing: out to the side for 0, ahead of a chop for -pi/2).
+struct Grip { float arc = 0, height = 9, reach = 4, pitch = 1, yaw = 0, twist = 0, lean = 0, dip = 0, roll = 0; };
 static Grip mix(const Grip& a, const Grip& b, float t) {
     auto m = [t](float x, float y) { return x + (y - x) * t; };
     return {m(a.arc, b.arc), m(a.height, b.height), m(a.reach, b.reach), m(a.pitch, b.pitch), m(a.yaw, b.yaw),
-            m(a.twist, b.twist), m(a.lean, b.lean), m(a.dip, b.dip)};
+            m(a.twist, b.twist), m(a.lean, b.lean), m(a.dip, b.dip), m(a.roll, b.roll)};
 }
-// Each move swings from its windup pose to its follow-through (unarmed: the fist does the same).
+// Each move swings from its windup pose to its follow-through (unarmed: the fist does the same), by
+// weapon class (ADR-044).
 struct Swing { Grip wind, through; };
-static const Swing kSwings[] = {
+using Swings = std::array<Swing, size_t(Move::Count)>;
+// A class's table, one row per Move (a missing row would draw at the origin, so it doesn't build).
+template <size_t N> constexpr Swings rows(const Swing (&r)[N]) {
+    static_assert(N == size_t(Move::Count), "a swing pose for every Move");
+    Swings out{};
+    for (size_t i = 0; i < N; ++i) out[i] = r[i];
+    return out;
+}
+constexpr Swing kParrySwing{{0.6f, 9, 3, 1, 0, 0.4f, 0, 0.3f}, {-1.3f, 10, 5, 1, 0, -0.4f, 0.1f, 0.6f}};  // the shield hand, across the body and out
+static const Swings kSwordSwings = rows({
     {},                                                                                     // none
     {{-1.2f, 13, 5, 0.9f, 0, -0.5f, 0, 0}, {1.2f, 5, 5.5f, 2.0f, 0, 0.5f, 0.2f, 0.5f}},     // light 1: diagonal, high right to low left
     {{1.3f, 10, 4, 1.4f, 0, 0.5f, 0, 0}, {-1.4f, 8.5f, 6.5f, 1.6f, 0, -0.5f, 0.1f, 0}},     // light 2: backhand
@@ -303,10 +344,60 @@ static const Swing kSwings[] = {
     {{-0.2f, 18, 1.5f, -0.9f, 0, -0.2f, -0.3f, 0}, {0.1f, 3.5f, 7, 2.6f, 0, 0.1f, 0.55f, 3}}, // jump heavy: big chop
     {{1.0f, 5, 5, 2.0f, 0, 0.5f, 0.1f, 1}, {-1.2f, 14, 5, 0.6f, 0, -0.6f, -0.05f, 0}},       // guard counter: rising slash
     {{-0.4f, 10, 0, 1.57f, 0, -0.6f, -0.2f, 0.5f}, {0, 9, 10, 1.57f, 0, 0.3f, 0.4f, 1}},     // riposte: deep thrust
-    {{0.6f, 9, 3, 1, 0, 0.4f, 0, 0.3f}, {-1.3f, 10, 5, 1, 0, -0.4f, 0.1f, 0.6f}},             // parry: the shield hand, across the body and out
+    kParrySwing,
     {{-1.5f, 9.5f, 5, 1.5f, 0, -0.6f, 0.2f, 0.4f}, {1.6f, 8.5f, 6.5f, 1.55f, 0, 0.6f, 0.3f, 0.5f}},  // backstep: a lunging sweep back in
-};
-static_assert(std::size(kSwings) == size_t(Move::Count));
+});
+// Daggers: tight slashes close in, and stabs (thrusts) for most of the rest; ice-pick stabs from above.
+static const Swings kDaggerSwings = rows({
+    {},
+    {{-1.0f, 12, 4, 1.0f, 0, -0.4f, 0, 0}, {0.9f, 7, 5, 1.8f, 0, 0.4f, 0.15f, 0.3f}},           // light 1: quick slash
+    {{1.0f, 10, 3.5f, 1.4f, 0, 0.4f, 0, 0}, {-1.1f, 8.5f, 5.5f, 1.6f, 0, -0.4f, 0.1f, 0}},       // light 2: backhand slash
+    {{-0.2f, 9, 1, 1.57f, 0, -0.3f, -0.05f, 0}, {0, 9, 8.5f, 1.57f, 0, 0.25f, 0.2f, 0.3f}},      // light 3: stab
+    {{-0.3f, 9.5f, 0.5f, 1.57f, 0, -0.5f, -0.1f, 0.5f}, {0, 8.5f, 9.5f, 1.57f, 0, 0.35f, 0.35f, 1}},  // light 4: lunging stab
+    {{-0.5f, 10, 0, 1.57f, 0, -0.7f, -0.2f, 1}, {0, 9, 10, 1.57f, 0, 0.4f, 0.45f, 1.5f}},        // heavy 1: lunging stab
+    {{-0.1f, 16, 3, 2.7f, 0, -0.2f, -0.2f, 0}, {0.1f, 6, 6, 2.9f, 0, 0.1f, 0.45f, 2}},           // heavy 2: stab down from above
+    {{-0.3f, 9, 1, 1.57f, 0, -0.4f, 0.3f, 0}, {0, 9, 9.5f, 1.57f, 0, 0.3f, 0.4f, 0.5f}},         // running: dashing stab
+    {{-0.2f, 5, 2, 1.3f, 0, -0.3f, 0.3f, 3}, {0, 10, 9, 1.3f, 0, 0.2f, 0.2f, 0.5f}},             // rolling: rising stab
+    {{-0.1f, 15, 3, 2.6f, 0, -0.2f, -0.2f, 0}, {0.1f, 5, 6, 2.9f, 0, 0.1f, 0.4f, 1.5f}},         // jump light: plunging stab
+    {{-0.1f, 17, 2.5f, 2.6f, 0, -0.2f, -0.3f, 0}, {0.1f, 3.5f, 6.5f, 3.0f, 0, 0.1f, 0.55f, 3}},  // jump heavy
+    {{0.9f, 5, 4.5f, 2.0f, 0, 0.5f, 0.1f, 1}, {-1.0f, 13, 4.5f, 0.6f, 0, -0.5f, -0.05f, 0}},     // guard counter: rising slash
+    {{-0.4f, 10, 0, 1.57f, 0, -0.6f, -0.2f, 0.5f}, {0, 9, 10, 1.57f, 0, 0.3f, 0.4f, 1}},         // riposte: deep stab
+    kParrySwing,
+    {{-1.3f, 9.5f, 4.5f, 1.5f, 0, -0.5f, 0.2f, 0.4f}, {1.4f, 8.5f, 6, 1.55f, 0, 0.5f, 0.3f, 0.5f}},  // backstep: a slash back in
+});
+// Axes: chops from high, the head turned to lead (roll), a sweeping cleave, no thrusts.
+constexpr float kChop = -1.57f;  // the head ahead of a downward chop
+static const Swings kAxeSwings = rows({
+    {},
+    {{-1.0f, 15, 4, 0.2f, 0, -0.5f, -0.1f, 0, -1.2f}, {0.9f, 4, 6, 2.3f, 0, 0.5f, 0.3f, 1, -1.2f}},       // light 1: diagonal chop
+    {{1.2f, 12, 4, 0.9f, 0, 0.5f, 0, 0, -2.3f}, {-1.3f, 6, 6.5f, 2.0f, 0, -0.5f, 0.2f, 0.5f, -2.3f}},     // light 2: backhand chop
+    {{-0.3f, 17, 2, -0.6f, 0, -0.2f, -0.25f, 0, kChop}, {0.1f, 4.5f, 7, 2.4f, 0, 0.1f, 0.45f, 1.5f, kChop}},  // light 3: overhead chop
+    {{0.9f, 4, 5, 2.2f, 0, 0.5f, 0.2f, 1, 2.3f}, {-1.0f, 15, 5, 0.4f, 0, -0.5f, -0.05f, 0, 2.3f}},        // light 4: rising chop
+    {{-0.3f, 18, 1, -0.9f, 0, -0.3f, -0.3f, 0, kChop}, {0.1f, 3.5f, 7.5f, 2.6f, 0, 0.1f, 0.55f, 2.5f, kChop}},  // heavy 1: overhead cleave
+    {{-1.8f, 10, 6.5f, 1.5f, 0, -0.8f, 0.1f, 0.5f}, {1.9f, 7, 7, 1.7f, 0, 0.8f, 0.3f, 1}},                // heavy 2: sweeping cleave
+    {{-0.3f, 16, 3, -0.4f, 0, -0.3f, 0.2f, 0, kChop}, {0.1f, 5, 7, 2.3f, 0, 0.1f, 0.5f, 1.5f, kChop}},    // running: leaping chop
+    {{0.6f, 5, 4, 2.0f, 0, 0.4f, 0.3f, 3, 2.0f}, {-0.6f, 14, 5, 0.5f, 0, -0.4f, 0, 0.5f, 2.0f}},          // rolling: rising chop
+    {{-0.2f, 16, 2, -0.4f, 0, -0.2f, -0.2f, 0, kChop}, {0.1f, 6, 6.5f, 2.1f, 0, 0.1f, 0.3f, 1, kChop}},   // jump light: chop
+    {{-0.2f, 18, 1.5f, -0.9f, 0, -0.2f, -0.3f, 0, kChop}, {0.1f, 3.5f, 7, 2.6f, 0, 0.1f, 0.55f, 3, kChop}},  // jump heavy: big chop
+    {{1.0f, 5, 5, 2.0f, 0, 0.5f, 0.1f, 1, 2.3f}, {-1.2f, 14, 5, 0.6f, 0, -0.6f, -0.05f, 0, 2.3f}},        // guard counter: rising chop
+    {{-0.2f, 17, 2, -0.6f, 0, -0.2f, -0.2f, 0.5f, kChop}, {0.1f, 5, 7, 2.5f, 0, 0.1f, 0.5f, 2, kChop}},   // riposte: a hack from above
+    kParrySwing,
+    {{-1.5f, 9.5f, 5, 1.5f, 0, -0.6f, 0.2f, 0.4f}, {1.6f, 8.5f, 6.5f, 1.55f, 0, 0.6f, 0.3f, 0.5f}},      // backstep: a sweep back in
+});
+// Maces: the axe's chops as smashes, the chain's last one a big overhead smash.
+static const Swings kMaceSwings = [] {
+    Swings s = kAxeSwings;
+    s[size_t(Move::Light4)] = {{-0.2f, 17, 2, -0.7f, 0, -0.3f, -0.25f, 0}, {0.1f, 4, 7, 2.5f, 0, 0.1f, 0.5f, 2}};
+    return s;
+}();
+static const Swings& swings(WeaponClass c) {
+    switch (c) {
+    case WeaponClass::Dagger: return kDaggerSwings;
+    case WeaponClass::Axe: return kAxeSwings;
+    case WeaponClass::Mace: return kMaceSwings;
+    default: return kSwordSwings;  // fists swing as a sword does
+    }
+}
 static const Grip kGuard{0.35f, 10, 4, 0.15f, -1.2f, 0.25f, 0.05f, 0.8f};  // blade upright across the front
 static const Grip kShieldGuard{-0.67f, 8, 3.2f, 1.3f, 0.67f, 0.15f, 0.05f, 0.8f};  // behind a shield: the blade forward at the side
 // Where a raised shield's hand goes: in front of the chest (a tower shield's lower, so it covers the legs).
@@ -315,10 +406,10 @@ constexpr float kShieldIdleYaw = 1.2f;  // at the side, its face turned out
 
 // The swing pose now and how far it has taken over from the idle grip (0 .. 1): it winds up until
 // the hold point, strikes through the hit to the follow-through, then settles back.
-static std::pair<Grip, float> swingPose(Move move, float u) {
+static std::pair<Grip, float> swingPose(WeaponClass c, Move move, float u) {
     if (move == Move::None) return {{}, 0};
-    const MoveSpec& m = spec(move);
-    const Swing& sw = kSwings[size_t(move)];
+    const MoveSpec& m = spec(c, move);
+    const Swing& sw = swings(c)[size_t(move)];
     float through = std::min(m.impact + 0.6f * (m.impact - m.holdAt), m.chain);
     if (u <= m.holdAt) return {sw.wind, smooth(u / m.holdAt)};
     if (u < through) return {mix(sw.wind, sw.through, smooth((u - m.holdAt) / (through - m.holdAt))), 1};
@@ -327,10 +418,11 @@ static std::pair<Grip, float> swingPose(Move move, float u) {
 // The same for the body: a chained swing winds up from where the one it cut short was (with a sword:
 // fists change hands).
 static std::pair<Grip, float> swingPose(const Player& p, bool armed) {
-    auto [g, w] = swingPose(p.move, moveProgress(p));
-    const MoveSpec& m = spec(p.move);
+    WeaponClass c = classOf(p.swingWeapon);
+    auto [g, w] = swingPose(c, p.move, moveProgress(p));
+    const MoveSpec& m = spec(c, p.move);
     if (!armed || p.fromMove == Move::None || !p.punching() || moveProgress(p) > m.holdAt) return {g, w};
-    auto [from, fromW] = swingPose(p.fromMove, p.fromU);
+    auto [from, fromW] = swingPose(p.fromClass, p.fromMove, p.fromU);  // with the weapon it swung
     float k = smooth(moveProgress(p) / m.holdAt);
     return {mix(fromW > 0 ? from : g, g, k), fromW + (1 - fromW) * k};
 }
@@ -460,7 +552,7 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
 // A quadruped's gore: the head draws back through the windup, lunges out at the hit, comes back.
 static float gore(const Player& p) {
     if (!p.punching()) return 0;
-    const MoveSpec& m = spec(p.move);
+    const MoveSpec& m = spec(p);
     float u = moveProgress(p);
     if (u <= m.holdAt) return -0.5f * smooth(u / m.holdAt);
     if (u <= m.impact) return -0.5f + 1.5f * smooth((u - m.holdAt) / (m.impact - m.holdAt));
@@ -565,7 +657,9 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         glm::mat4 m = glm::translate(base * tilt, parts[HandR].center + off[HandR]);
         m = glm::rotate(m, yaw, {0, 1, 0});
         m = glm::rotate(m, pitch, {1, 0, 0});
-        *held = glm::translate(m, -kGrip);
+        m = glm::rotate(m, g.roll * sw, {0, 1, 0});
+        Model model = heldModel(p.weapon());
+        *held = glm::translate(m, -heldGrip(model));
     }
     if (shieldPose && shield) {  // its face out at the side, turned forward by the guard, swept along a parry's arc
         float yaw = kShieldIdleYaw * (1 - guard);

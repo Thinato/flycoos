@@ -181,7 +181,7 @@ std::vector<Layer> layersOf(const Sound& s) {
             say("attack");
             break;
         }
-        bool heavy = spec(s.move).heavy || s.move == Move::Riposte, small = !s.with || heldModel(s.with) == ModelKnife;
+        bool heavy = spec(classOf(s.with), s.move).heavy || s.move == Move::Riposte, small = classOf(s.with) <= WeaponClass::Dagger;  // fists, daggers
         add(heavy ? "swing_heavy" : small ? "swing_fast" : "swing_light", heavy ? 1 : 0.8f, small && !s.with ? 1.15f : 1);
         if (heavy && !type) say("attack", 0.6f);  // the player's effort
         break;

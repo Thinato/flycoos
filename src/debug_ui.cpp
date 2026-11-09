@@ -294,12 +294,33 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
     MeleeTuning& m = gMelee;
     ImGui::ProgressBar(p.stamina / m.staminaMax, ImVec2(-FLT_MIN, 0), std::format("stamina {:.0f} / {:.0f}", p.stamina, m.staminaMax).c_str());
     if (p.punching())
-        ImGui::Text("%s  %.2f / %.2f s%s%s", spec(p.move).name, double(p.moveTime), double(moveLength(p)),
+        ImGui::Text("%s  %.2f / %.2f s%s%s", kMoveNames[size_t(p.move)], double(p.moveTime), double(moveLength(p)),
                     p.holding ? std::format("  charging {:.2f} s", p.charge).c_str() : "", p.charged ? "  charged" : "");
-    else ImGui::TextDisabled("not attacking (last: %s, %.1f s ago)", spec(p.lastMove).name, double(p.sinceMove));
+    else ImGui::TextDisabled("not attacking (last: %s, %.1f s ago)", kMoveNames[size_t(p.lastMove)], double(p.sinceMove));
     ImGui::Text("Guard %s   blocked %.1f s ago   %s %.2f s", p.guarding ? "up" : "down", double(std::min(p.blockTime, 99.0f)),
                 p.broken ? "guard broken" : "reeling", double(p.stagger));
     ImGui::Text("i-frames %s   hyperarmor %s", invulnerable(p) ? "yes" : "no", hyperarmor(p) ? "yes" : "no");
+    if (ImGui::TreeNode("Weapon class moveset (ADR-044)")) {  // the held weapon's; tune in data/weapon_classes.json, then Data > Reload defs
+        ItemId w = p.inv.equipped[SlotMainHand];
+        const WeaponClassDef& c = weaponClass(classOf(w));
+        ImGui::Text("%s: %s, speed x %.2f (weapon) x %.2f (class), hit-stop x %.2f", w ? itemType(w).name : "Bare hands", c.name.c_str(),
+                    double(weaponAttack(w).speed), double(c.speed), double(c.hitStop));
+        ImGui::TextDisabled("Edit data/weapon_classes.json, then Data > Reload defs.");
+        if (ImGui::BeginTable("moves", 11, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+            for (const char* h : {"move", "s", "hold", "hit", "chain", "cancel", "dmg", "stance", "stam", "lunge", "kind"}) ImGui::TableSetupColumn(h);
+            ImGui::TableHeadersRow();
+            for (size_t i = 1; i < size_t(Move::Count); ++i) {
+                const MoveSpec& ms = c.moves[i];
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(), ImGui::TextUnformatted(kMoveNames[i]);
+                for (float v : {ms.seconds, ms.holdAt, ms.impact, ms.chain, ms.cancel, ms.damage, ms.stance, ms.stamina, ms.lunge})
+                    ImGui::TableNextColumn(), ImGui::Text("%.3g", double(v));
+                ImGui::TableNextColumn(), ImGui::Text("%s%s", ms.heavy ? "heavy " : "", ms.thrust ? "thrust" : "");
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TreePop();
+    }
     {  // ADR-036
         const Shield* s = shieldOf(p);
         Guard g = guardOf(p), strike = guardOf(p, DamageType::Strike), pierce = guardOf(p, DamageType::Pierce);
@@ -328,7 +349,6 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
         ImGui::SliderFloat("Input buffer", &m.bufferSeconds, 0, 1.5f, "%.2f s");
         ImGui::SliderFloat("Chain grace", &m.chainGrace, 0, 1, "%.2f s");
         ImGui::SetItemTooltip("After a light ends, the next one still goes on with the chain this long.");
-        ImGui::SliderFloat("Fist moves", &m.fistScale, 0.3f, 1.5f, "x %.2f");
         ImGui::SliderFloat("Sword guard stops", &m.guardNegation, 0, 1, "%.2f of the damage");
         ImGui::SliderFloat("Arms guard stops", &m.fistNegation, 0, 1, "%.2f of the damage");
         ImGui::SliderFloat("Guard boost", &m.guardBoost, 0, 1, "%.2f of the stamina");
@@ -575,7 +595,8 @@ static void dataTab(std::string& status, Player& player) {
             ImGui::SetItemTooltip("%s", t.name);
             ImGui::TableNextColumn(), ImGui::TextUnformatted(t.slot < EquipCount ? kSlotNames[t.slot] : t.slot == SlotBag ? "Bag" : "-");
             ImGui::TableNextColumn();
-            if (t.attack.speed > 0) ImGui::Text("%d-%d / %.2f", t.attack.minDamage, t.attack.maxDamage, t.attack.speed);
+            if (t.attack.speed > 0) ImGui::Text("%d-%d / %.2f %s", t.attack.minDamage, t.attack.maxDamage, t.attack.speed,
+                                                t.slot == SlotMainHand ? kWeaponClassIds[size_t(t.weaponClass)] : "");
             ImGui::TableNextColumn();
             if (t.bagSlots || t.armor) ImGui::Text("%d / %d", t.bagSlots, t.armor);
             ImGui::TableNextColumn();

@@ -1750,3 +1750,64 @@
     - The `enemies` test covers tokens, strings and every answer, using test-only kinds that always
       answer one way.
     - The review page shows each in motion.
+
+## ADR-044: Weapon classes: per-class movesets, poses and models in the data
+
+- **Status:** accepted (2026-11-08)
+- **Context:**
+  - The roadmap's "Per-weapon timings and stance values in the data", and its first melee weapon
+    classes: daggers, axes, maces.
+  - Every weapon swung one shared move table (`kMoves`), only faster or slower.
+  - Which model a weapon showed was a knife-or-sword guess on the item id.
+  - The talent plan (docs/TALENTS.md) asks that code asks a weapon's class, never its item id.
+- **Decision:**
+  - **Classes:** a closed set in code, `WeaponClass` {fists, dagger, sword, axe, mace}. Every main-hand
+    item names its `class` in items.json. Bare hands are fists, which no item may claim. Code asks
+    `classOf(weapon)` for the moveset, the poses, the held model, the swing sound and the icon.
+  - **Movesets are data:** `data/weapon_classes.json` holds one record per class. Each gives every
+    attack move's timing (seconds; hold, hit, chain and cancel points) and what it does (damage
+    multiplier, stance damage, stamina, lunge, `heavy`, `thrust`).
+    - The loader checks every move is there and its points come in order.
+    - `none` and `parry` stay code's: the parry is the shield's (or a knife's or the fists') and
+      times the same for every class.
+    - A class may also give `speed` (x every move's length; fists 0.75, which replaces the old
+      `fistScale` knob) and `hit_stop` (x a landed hit's hit-stop).
+    - The weapon's own `attack.speed` still scales its class's moves, so a knife (0.75) and a mace
+      (1.15) differ by item as well as by class.
+  - **The sword's moveset is the old table, number for number.** Fists copy it (`copy_from`) at
+    0.75 speed. Sword and fist fights are unchanged.
+  - **Daggers:** tight slashes and stabs (light 3, light 4 and most special moves pierce). Low stance
+    damage (6 a light), cheap stamina (9), the strongest riposte (x3.5), hit-stop x0.7.
+  - **Axes:** chops with the head turned to lead the swing (a new pose field, `roll`), a rising
+    chop to end the chain, an overhead cleave and a sweeping cleave. No thrusts. 13–18 stance a light,
+    stamina 14, hit-stop x1.15. The Iron Hand Axe: 7–11, speed 1.1, weight 3.5.
+  - **Maces:** the axe's chops as smashes, ending in a big overhead smash. Strike damage, the most
+    stance damage (16–22 a light, 34–36 the heavies), hit-stop x1.3. The Iron Mace: 6–10, speed
+    1.15, weight 4.
+  - **Poses and models:** each class has its own swing poses (model.cpp); fists use the sword's.
+    The axe and mace get voxel models and icons.
+- **Alternatives considered:**
+  - Per-item move tables: a record per weapon would repeat a whole moveset. Classes hold the
+    moveset, items keep their damage, speed and weight.
+  - Poses in the data too: they are tuned by eye against the models, which are code. They stay
+    code until there is an animation tool.
+  - Turning the axe's edge with fixed poses only: horizontal sweeps then led with the poll. A roll
+    per pose fixes it at the cost of one float.
+- **Consequences:**
+  - **Tuning:** movesets tune without a rebuild: edit the file, then Data > Reload defs. The debug
+    Player tab shows the held weapon's moveset.
+  - **Data files:** `weapon_classes.json` is required. Test data folders copy it.
+  - **Replays and balance:**
+    - The bandit's knife swings the dagger's moveset, whose hits land a frame earlier; `fightReplay`
+      was re-pinned.
+    - The bandit's strings (light 1, then light 3) now end in the dagger's stab, which pierces: a
+      buckler stops 80% of it, not 85%.
+    - The story fights (sword, fists) didn't move.
+  - **Getting the new weapons:** the axe and mace have no drop or merchant yet; the debug Items
+    tab gives them.
+  - **Later:** greatswords, two-handing and dual wielding add classes and grips; spears will want
+    a per-class reach.
+  - **Tests and review:**
+    - The `weaponClasses` test pins the sword's numbers and each class's character, damage types and
+      hit-stop, and checks every class's chain lands.
+    - The review page shows each class's chain and heavies.

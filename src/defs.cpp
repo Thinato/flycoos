@@ -190,6 +190,68 @@ std::vector<Modifier> readMods(const Record& r, const json& ms, const std::strin
     return out;
 }
 
+// ---- Weapon classes (ADR-044): one record per WeaponClass, by its id, each with every attack move.
+
+void loadWeaponClasses(const File& f, Defs& d) {
+    std::array<bool, size_t(WeaponClass::Count)> seen{};
+    for (size_t i = 0; i < f.records.size(); ++i) {
+        Record r{f, i, flatten(f, i, i)};
+        r.allow({"id", "copy_from", "name", "speed", "hit_stop", "moves"});
+        auto at = std::ranges::find(kWeaponClassIds, r.id());
+        if (at == std::end(kWeaponClassIds)) throw r.fail("id", oneOf(kWeaponClassIds));
+        size_t c = size_t(at - std::begin(kWeaponClassIds));
+        seen[c] = true;
+        WeaponClassDef w;
+        w.name = r.text("name");
+        w.speed = float(r.number(r.fields, "speed", 0.25, 4, 1, false));
+        w.hitStop = float(r.number(r.fields, "hit_stop", 0, 4, 1, false));
+        const json& ms = r.fields.contains("moves") ? r.fields["moves"] : json();
+        if (!ms.is_object()) throw r.fail("moves", "must be an object of every attack move: {light_1: {...}, ...}");
+        for (const auto& [k, v] : ms.items())
+            if (auto m = std::ranges::find(kMoveIds, k); m == std::end(kMoveIds) || Move(m - std::begin(kMoveIds)) == Move::None ||
+                                                          Move(m - std::begin(kMoveIds)) == Move::Parry)
+                throw r.fail("moves." + k, "not an attack move (none and parry are code's)");
+        for (size_t m = 0; m < size_t(Move::Count); ++m) {
+            if (Move(m) == Move::None) continue;
+            if (Move(m) == Move::Parry) {
+                w.moves[m] = kParrySpec;
+                continue;
+            }
+            std::string field = std::string("moves.") + kMoveIds[m];
+            if (!ms.contains(kMoveIds[m])) throw r.fail(field, "missing (every class has every attack move)");
+            const json& v = ms[kMoveIds[m]];
+            if (!v.is_object()) throw r.fail(field, "must be an object {seconds, hold, hit, chain, cancel, damage, stance, stamina, lunge}");
+            for (const auto& [k, x] : v.items())
+                if (std::string_view ks(k); ks != "seconds" && ks != "hold" && ks != "hit" && ks != "chain" && ks != "cancel" && ks != "damage" &&
+                                            ks != "stance" && ks != "stamina" && ks != "lunge" && ks != "heavy" && ks != "thrust")
+                    throw r.fail(field + "." + k, "unknown field");
+            auto num = [&](const char* key, double lo, double hi) { return float(r.number(v, field + "." + key, lo, hi, kRequired, false)); };
+            auto flag = [&](const char* key) {
+                if (!v.contains(key)) return false;
+                if (!v[key].is_boolean()) throw r.fail(field + "." + key, "must be true or false");
+                return v[key].get<bool>();
+            };
+            MoveSpec& s = w.moves[m];
+            s.seconds = num("seconds", 0.1, 5);
+            // Its phases in order: the windup pose, the hit, the chain point, the cancel point.
+            double hold = r.number(v, field + ".hold", 0.01, 0.99, kRequired, false);
+            double hit = r.number(v, field + ".hit", hold + 0.01, 0.99, kRequired, false);
+            double chain = r.number(v, field + ".chain", hit + 0.01, 1, kRequired, false);
+            s.holdAt = float(hold), s.impact = float(hit), s.chain = float(chain);
+            s.cancel = num("cancel", chain, 1);
+            s.damage = num("damage", 0, 10);
+            s.stance = num("stance", 0, 500);
+            s.stamina = num("stamina", 0, 100);
+            s.lunge = num("lunge", 0, 20);
+            s.heavy = flag("heavy");
+            s.thrust = flag("thrust");
+        }
+        d.weaponClasses[c] = std::move(w);
+    }
+    for (size_t c = 0; c < seen.size(); ++c)
+        if (!seen[c]) throw Bad(std::format("{}: no record for the weapon class '{}' (one for each of them)", f.path, kWeaponClassIds[c]));
+}
+
 // ---- Items.
 
 constexpr const char* kSlotIds[] = {"head", "chest", "hands", "legs", "feet", "main_hand", "off_hand", "trinket", "bag", "none"};  // EquipSlot order
@@ -229,7 +291,7 @@ void loadItems(const File& f, Defs& d) {
     SaveIds saves;
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
-        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods", "shield", "weight", "damage", "parry"});
+        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods", "shield", "weight", "damage", "parry", "class"});
         size_t save = saves.claim(r);
         ItemType t{nullptr, SlotNone, {0, 0, 0}, 0, 0, {}, {}};
         std::string name = r.text("name");
@@ -256,6 +318,14 @@ void loadItems(const File& f, Defs& d) {
             if (!r.fields.contains("attack")) throw r.fail("damage", "only weapons (with an 'attack') do damage");
             t.damage = damageType(r, r.fields["damage"], "damage");
         }
+        if (r.fields.contains("class")) {  // ADR-044: what moveset, poses and model it has
+            if (t.slot != SlotMainHand) throw r.fail("class", "only main_hand weapons have a weapon class");
+            const json& v = r.fields["class"];
+            auto at = std::ranges::find(kWeaponClassIds, v.is_string() ? v.get<std::string>() : "");
+            if (at == std::end(kWeaponClassIds) || at == std::begin(kWeaponClassIds))
+                throw r.fail("class", oneOf(std::span(kWeaponClassIds).subspan(1)));  // fists are bare hands
+            t.weaponClass = WeaponClass(at - std::begin(kWeaponClassIds));
+        } else if (t.slot == SlotMainHand) throw r.fail("class", "missing (a main-hand weapon has a weapon class)");
         t.parry = float(r.number(r.fields, "parry", 0.25, 4, 0, false));
         if (t.parry > 0 && t.slot != SlotMainHand) throw r.fail("parry", "only main_hand weapons parry (shields: shield.parry)");
         if (t.slot == SlotBag) t.bagSlots = int(r.number(r.fields, "bag_slots", 1, 32));
@@ -788,7 +858,8 @@ std::filesystem::path dataDir() {
 
 bool loadDefs(const std::filesystem::path& dir, Defs& out, std::string& err) {
     try {
-        File items = parseFile(dir / "items.json");  // pass 1: every file before any reference is resolved
+        File weaponClasses = parseFile(dir / "weapon_classes.json");  // pass 1: every file before any reference is resolved
+        File items = parseFile(dir / "items.json");
         File creatures = parseFile(dir / "creatures.json");
         std::vector<std::filesystem::path> questPaths;  // every file in quests/, in name order (none: no quests)
         if (std::error_code ec; std::filesystem::is_directory(dir / "quests", ec))
@@ -805,7 +876,8 @@ bool loadDefs(const std::filesystem::path& dir, Defs& out, std::string& err) {
         Defs d;
         if (!skills) d.warnings.push_back((dir / "skills.json").string() + ": missing: skills never improve");
         if (!talents) d.warnings.push_back((dir / "talents.json").string() + ": missing: no talents to learn");
-        loadItems(items, d);  // pass 2, in reference order: items, creatures, skills, talents, quests
+        loadWeaponClasses(weaponClasses, d);  // pass 2, in reference order: weapon classes, items, creatures, skills, talents, quests
+        loadItems(items, d);
         loadCreatures(creatures, d);
         loadSkills(skills ? &*skills : nullptr, d);
         loadTalents(talents ? &*talents : nullptr, d);

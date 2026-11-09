@@ -38,7 +38,7 @@ const char* motion(const Player& p) {
 json combat(const Combatant& c) {
     return {{"health", round2(c.health)}, {"max_health", maxHealth(sheet(c))}, {"level", c.level},
             {"in_combat", c.combatTimer > 0}, {"combat_timer", round2(c.combatTimer)}, {"seconds_since_hit", round2(std::min(c.hitTime, 99.0f))},
-            {"last_damage", c.lastDamage}, {"swinging", c.punching()}, {"move", spec(c.move).name}, {"stance", round2(c.stance)},
+            {"last_damage", c.lastDamage}, {"swinging", c.punching()}, {"move", kMoveNames[size_t(c.move)]}, {"stance", round2(c.stance)},
             {"stagger", round2(c.stagger)}, {"broken", c.broken}, {"weapon", itemId(c.weapon())}};
 }
 

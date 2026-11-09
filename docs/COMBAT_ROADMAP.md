@@ -29,13 +29,15 @@ system is summarized in ADR-035.
 
 ## Melee weapon classes (each needs its own moveset, timings, stance damage and animation set)
 
-- [ ] Daggers / knives: fast, low stance, good for crits (now they reuse the sword's moveset)
+- [x] Daggers / knives: fast, low stance, good for crits (ADR-044)
 - [x] Straight swords (the baseline moveset, ADR-035)
 - [ ] Greatswords / two-handed swords: slow, high stance, wide sweeps
 - [ ] Curved swords / sabres: flowing slashes, long chains
 - [ ] Thrusting swords / rapiers: pierce, counter-attack bonus
-- [ ] Axes: hard chops, high stance; greataxes
-- [ ] Hammers / maces: strike damage, the most stance damage; great hammers
+- [x] Axes: hard chops, high stance (ADR-044)
+- [ ] Greataxes
+- [x] Maces: strike damage, the most stance damage (ADR-044)
+- [ ] Great hammers
 - [ ] Spears / halberds: reach, thrusts, attacking from behind a shield
 - [ ] Fists / claws: multi-hit chains (fists now reuse the sword's swings)
 - [ ] Whips, flails, twinblades (later)
@@ -68,7 +70,7 @@ system is summarized in ADR-035.
 - [ ] Weapon scaling with attributes (strength, agility, intellect, spirit)
 - [x] Equip load: light, medium and heavy rolls; overloaded can't roll (ADR-039)
 - [ ] Healing flasks (limited charges, refilled at rest points)
-- [ ] Per-weapon timings and stance values in the data (items.json), not one shared table
+- [x] Per-weapon timings and stance values in the data: a moveset per weapon class (ADR-044)
 - [ ] Talent trees (Warrior, Ranger, Mage; planned in docs/TALENTS.md): last, once every other item on this roadmap is done. Until then, follow the foundations rules in that file
 
 ## Enemies
@@ -85,7 +87,8 @@ system is summarized in ADR-035.
 
 - [ ] Hit sparks, blood, a slash trail on the blade
 - [x] Sounds: swings, hits, blocks, parries, footsteps, voices, ambience (ADR-037)
-- [ ] Camera shake on heavy hits; hit-stop tuned per weapon class
+- [x] Hit-stop tuned per weapon class (ADR-044)
+- [ ] Camera shake on heavy hits
 - [ ] Knockback and launch on big hits; ragdoll-ish falls
 - [ ] Charge glow; a riposte and parry flash
 - [ ] Damage numbers by type; a crit marker

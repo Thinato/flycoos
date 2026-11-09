@@ -286,6 +286,11 @@ two or three hits, some of them delayed to catch an early roll. Some also answer
 
 An enemy that blocks or parries you hits back quickly. Some step back after a string.
 
+Each weapon swings by its class (ADR-044): **daggers** slash and stab quickly but barely shake a
+foe's stance; the **sword** is the all-rounder; **axes** chop hard; **maces** smash, wear down
+stance the fastest and strike (ghouls are weak to it). The Iron Hand Axe and Iron Mace have no
+drop yet: the debug window's Items tab gives them.
+
 A spawn marker can carry up to 8 **lines** of dialogue (1–160 bytes each). Villagers and guards say
 the next one each time you press E, round and round; anyone who fights (guards too) shouts the
 next one when they turn on you.
@@ -359,7 +364,7 @@ src/stream.*     the endless world: chunk columns generated on worker threads, l
 src/editor_ui.*  Editor panel, crosshair and brush preview (F1)
 src/audio.*      sound (ADR-037): loading data/sounds, the mixer, what each noise sounds like, ambience
 src/main.cpp     window, input, camera, main loop, benchmark mode, runs remote commands
-data/            definition files: items.json, creatures.json (ADR-018), quests/*.json (ADR-026); fonts/alagard.ttf (region titles);
+data/            definition files: items.json, creatures.json (ADR-018), weapon_classes.json (ADR-044), quests/*.json (ADR-026); fonts/alagard.ttf (region titles);
                  sounds/*.ogg (ADR-037: <name>_<n>.ogg are one sound's takes)
 prefabs/         structure prefab files (cottage, tent, camp, well, fence, ruin)
 tools/           flycoos_mcp.py (MCP server bridging Claude Code to the game), test_mcp.py (end-to-end check)

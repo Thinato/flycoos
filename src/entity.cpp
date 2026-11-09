@@ -288,7 +288,7 @@ void answer(Entity& e, const Grid& g, const Player& target, glm::vec2 dir, float
         e.picked = true;
         float r = rand01(e.rng);
         e.answer = r < t.guard ? Answer::Guard : r < t.guard + t.parry ? Answer::Parry : r < t.guard + t.parry + t.dodge ? Answer::Dodge : Answer::None;
-        if (e.answer == Answer::Parry && (spec(target.move).heavy || target.move == Move::Riposte)) e.answer = Answer::Guard;
+        if (e.answer == Answer::Parry && (spec(target).heavy || target.move == Move::Riposte)) e.answer = Answer::Guard;
         e.react = gAi.reactFrom + (gAi.reactTo - gAi.reactFrom) * rand01(e.rng);
         e.aimOff = gAi.aimError * (2 * rand01(e.rng) - 1);
     }
@@ -448,7 +448,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                 return in;
             }
             if (e.string > 1 && e.body.punching() && target.alive() && dist < kPunchReach + 1) {  // a string, the target near:
-                if (moveProgress(e.body) >= spec(e.body.move).chain) nextInString(e, dir);  // the next hit from this one's chain point
+                if (moveProgress(e.body) >= spec(e.body).chain) nextInString(e, dir);  // the next hit from this one's chain point
                 return in;
             }
             setState(e, AiState::Recover, "swung");
@@ -794,7 +794,7 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
     HitContext ctx{rng, armorK};
     tick(player, dt);
     if (lands(player)) {
-        const MoveSpec& m = spec(player.move);
+        const MoveSpec& m = spec(player);
         // A riposte lands on the broken stance it was for; if that's gone it's a plain hit.
         bool riposte = player.move == Move::Riposte;
         Entity* target = riposte ? riposteTarget(entities, player) : nullptr;
@@ -816,7 +816,7 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
         float power = player.move == Move::Riposte && !riposte ? 1 : m.damage * (player.charged ? t.chargeDamage : 1);
         if (target) power *= 1 - target->type().resist[size_t(damageOf(player))];  // its weakness or resistance (ADR-040)
         HitContext hit{rng, armorK, power};
-        float stance = player.move == Move::Riposte && !riposte ? spec(Move::Light1).stance : m.stance * (player.charged ? t.chargeStance : 1);
+        float stance = player.move == Move::Riposte && !riposte ? spec(player, Move::Light1).stance : m.stance * (player.charged ? t.chargeStance : 1);
         int full = target ? resolveHit(player, target->body, weaponAttack(player.swingWeapon), hit) : 0;
         std::optional<Guard> guard = target && !riposte ? guardAgainst(target->body, player.pos, damageOf(player)) : std::nullopt;
         if (guard) {  // its guard (ADR-043), as the player's: part of the damage by type, its stamina; empty, it breaks
@@ -848,7 +848,8 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             if (killed && events) events->push_back(Killed{target->kind, target->spawn.id});
             target->body.hitStance = riposte ? 100 : stance;
             if (!killed) staggerHit(*target, stance, riposte);
-            if (!guard) player.freeze = target->body.freeze = std::min(0.04f + 0.003f * stance, 0.12f);  // hit-stop: heavier hits, longer
+            if (!guard)  // hit-stop: heavier hits, longer, and longer or shorter by the weapon class (ADR-044)
+                player.freeze = target->body.freeze = std::min(0.04f + 0.003f * stance, 0.12f) * weaponClass(classOf(player.swingWeapon)).hitStop;
         }
     }
     for (Entity& e : entities) {

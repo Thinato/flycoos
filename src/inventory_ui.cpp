@@ -23,26 +23,43 @@ constexpr int kColumns = 6;  // item slots per row in the bags window
 void icon(ImDrawList* dl, ItemId id, ImVec2 lo, float s) {
     auto at = [&](float x, float y) { return ImVec2(lo.x + x * s, lo.y + y * s); };
     ImU32 steel = uiColor(0.78f, 0.80f, 0.84f), iron = uiColor(0.30f, 0.30f, 0.33f), leather = uiColor(0.35f, 0.22f, 0.12f);
-    ImU32 plate = uiColor(0.50f, 0.52f, 0.56f);
+    ImU32 plate = uiColor(0.50f, 0.52f, 0.56f), wood = uiColor(0.45f, 0.30f, 0.16f);
+    if (itemType(id).slot == SlotMainHand) {  // weapons by their class (ADR-044)
+        switch (classOf(id)) {
+        case WeaponClass::Dagger:
+            dl->AddLine(at(0.40f, 0.60f), at(0.74f, 0.26f), steel, s * 0.09f);   // blade
+            dl->AddLine(at(0.30f, 0.52f), at(0.48f, 0.70f), iron, s * 0.07f);    // guard
+            dl->AddLine(at(0.40f, 0.60f), at(0.24f, 0.76f), leather, s * 0.08f); // grip
+            dl->AddCircleFilled(at(0.22f, 0.78f), s * 0.05f, iron);
+            break;
+        case WeaponClass::Axe:
+            dl->AddLine(at(0.22f, 0.86f), at(0.70f, 0.18f), wood, s * 0.08f);    // haft
+            dl->AddTriangleFilled(at(0.56f, 0.30f), at(0.86f, 0.18f), at(0.84f, 0.56f), iron);  // head
+            dl->AddLine(at(0.86f, 0.18f), at(0.84f, 0.56f), steel, s * 0.06f);   // edge
+            dl->AddLine(at(0.22f, 0.86f), at(0.32f, 0.72f), leather, s * 0.09f); // grip
+            break;
+        case WeaponClass::Mace:
+            dl->AddLine(at(0.20f, 0.84f), at(0.62f, 0.38f), wood, s * 0.08f);    // haft
+            dl->AddCircleFilled(at(0.68f, 0.32f), s * 0.16f, iron);               // head
+            for (auto [x, y] : {std::pair{0.68f, 0.10f}, std::pair{0.90f, 0.32f}, std::pair{0.68f, 0.54f}, std::pair{0.46f, 0.32f}})
+                dl->AddLine(at(0.68f, 0.32f), at(x, y), steel, s * 0.07f);       // flanges
+            dl->AddLine(at(0.20f, 0.84f), at(0.30f, 0.73f), leather, s * 0.09f); // grip
+            break;
+        default:  // a sword
+            dl->AddLine(at(0.32f, 0.68f), at(0.86f, 0.14f), steel, s * 0.12f);   // blade
+            dl->AddLine(at(0.18f, 0.54f), at(0.46f, 0.82f), iron, s * 0.08f);    // crossguard
+            dl->AddLine(at(0.32f, 0.68f), at(0.16f, 0.84f), leather, s * 0.08f); // grip
+            dl->AddCircleFilled(at(0.14f, 0.86f), s * 0.06f, iron);               // pommel
+        }
+        return;
+    }
     switch (id) {
-    case Shortsword:
-        dl->AddLine(at(0.32f, 0.68f), at(0.86f, 0.14f), steel, s * 0.12f);   // blade
-        dl->AddLine(at(0.18f, 0.54f), at(0.46f, 0.82f), iron, s * 0.08f);    // crossguard
-        dl->AddLine(at(0.32f, 0.68f), at(0.16f, 0.84f), leather, s * 0.08f); // grip
-        dl->AddCircleFilled(at(0.14f, 0.86f), s * 0.06f, iron);               // pommel
-        break;
     case Satchel:
         dl->AddBezierCubic(at(0.32f, 0.38f), at(0.32f, 0.08f), at(0.68f, 0.08f), at(0.68f, 0.38f), leather, s * 0.06f);
         dl->AddRectFilled(at(0.16f, 0.36f), at(0.84f, 0.86f), uiColor(0.76f, 0.66f, 0.48f), s * 0.1f);
         dl->AddRectFilled(at(0.16f, 0.36f), at(0.84f, 0.58f), uiColor(0.62f, 0.52f, 0.36f), s * 0.1f,
                           ImDrawFlags_RoundCornersTop);  // flap
         dl->AddRectFilled(at(0.45f, 0.52f), at(0.55f, 0.64f), iron);  // buckle
-        break;
-    case Knife:
-        dl->AddLine(at(0.40f, 0.60f), at(0.74f, 0.26f), steel, s * 0.09f);   // blade
-        dl->AddLine(at(0.30f, 0.52f), at(0.48f, 0.70f), iron, s * 0.07f);    // guard
-        dl->AddLine(at(0.40f, 0.60f), at(0.24f, 0.76f), leather, s * 0.08f); // grip
-        dl->AddCircleFilled(at(0.22f, 0.78f), s * 0.05f, iron);
         break;
     case BoarSkin: {  // a stretched hide: body with four leg flaps, darker ridge down the middle
         ImU32 hide = uiColor(0.36f, 0.25f, 0.18f), ridge = uiColor(0.25f, 0.17f, 0.12f);
@@ -138,6 +155,7 @@ void tooltip(ItemId id, SlotRef where) {
     ImGui::BeginTooltip();
     ImGui::TextUnformatted(t.name);
     if (t.slot == SlotBag) ImGui::Text("%d slot bag", t.bagSlots);
+    else if (t.slot == SlotMainHand) ImGui::TextDisabled("%s, %s", kSlotNames[t.slot], weaponClass(t.weaponClass).name.c_str());
     else if (t.slot < EquipCount) ImGui::TextDisabled("%s", kSlotNames[t.slot]);
     if (t.armor) ImGui::Text("%d Armor", t.armor);
     if (const Shield& sh = t.shield; sh.size != ShieldSize::None) {

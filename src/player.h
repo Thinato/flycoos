@@ -101,6 +101,7 @@ struct Combatant {
     float freeze = 0;                      // seconds of hit-stop left: the move's clock stops
     Move fromMove = Move::None;            // the move this one cut short (a chain), and how far in: its windup blends from there
     float fromU = 0;
+    WeaponClass fromClass = WeaponClass::Fists;  // the class that move swung with (its pose; ADR-044)
     Move lastMove = Move::None;            // the latest move to end, and seconds since: the chain goes on from it
     float sinceMove = 99;
     float stagger = 0, staggerLength = 0;  // seconds left reeling from a hit (no acting), of how many

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <numbers>
 
+#include "defs.h"
 #include "item.h"
 
 namespace {
@@ -59,11 +60,14 @@ void turnTo(Body& b, glm::vec2 dir, float rate, float dt) {
 
 }  // namespace
 
+const WeaponClassDef& weaponClass(WeaponClass c) { return defs().weaponClasses[size_t(c)]; }
+
 void startMove(Player& b, Move m, glm::vec2 aim, float hold) {
     b.fromMove = b.punching() ? b.move : Move::None;
     b.fromU = moveProgress(b);
+    b.fromClass = classOf(b.swingWeapon);
     b.swingWeapon = b.inv.equipped[SlotMainHand];
-    b.moveScale = swingTime(sheet(b, skillOf(b.swingWeapon)), weaponAttack(b.swingWeapon)) * (b.swingWeapon ? 1 : gMelee.fistScale);
+    b.moveScale = swingTime(sheet(b, skillOf(b.swingWeapon)), weaponAttack(b.swingWeapon)) * weaponClass(classOf(b.swingWeapon)).speed;
     b.move = m;
     b.moveTime = 0;
     b.hold = hold;
@@ -144,7 +148,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     if (p.stagger <= 0) {
         if (p.punching()) {
             float u = moveProgress(p);
-            const MoveSpec& m = spec(p.move);
+            const MoveSpec& m = spec(p);
             if (charges(p.move) && !p.charged) {  // a heavy holds its windup while its button is held, charging
                 bool held = p.chargeByHeavy ? in.heavyHeld : in.attackHeld;
                 p.holding = held && p.moveTime <= holdTime(p);
@@ -155,19 +159,20 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
             if (u >= m.cancel && cut && !wantsAttack(p.want)) endMove(p, p.move);
         }
         // A wanted attack starts once the body is free, or from the current one's chain point.
-        bool free = !p.punching() || moveProgress(p) >= spec(p.move).chain;
+        bool free = !p.punching() || moveProgress(p) >= spec(p).chain;
         bool rollDone = !p.rolling() || p.rollTime > 0.6f * p.rollLength;  // late in a roll: a rolling attack
         bool stunned = p.want == Want::Counter && p.blockTime < t.blockStun;
         if (wantsAttack(p.want) && free && rollDone && !stunned && p.stamina > 0 && !p.inWater) {
             Move next = pick(p, p.want, in.riposte, running);
             Move from = p.move;
             float fromU = moveProgress(p);
+            WeaponClass fromClass = classOf(p.swingWeapon);
             if (p.punching()) endMove(p, p.move);
             if (p.rolling()) p.rollLength = p.rollTime;  // the attack takes over from the roll
             startMove(p, next, next == Move::Riposte || glm::length(in.aim) > 1e-3f ? in.aim : aim);
-            p.fromMove = from, p.fromU = fromU;  // chained: it winds up from where that one was
+            p.fromMove = from, p.fromU = fromU, p.fromClass = fromClass;  // chained: it winds up from where that one was
             if (charges(next)) p.holding = p.chargeByHeavy ? in.heavyHeld : in.attackHeld;
-            spend(p, spec(next).stamina);
+            spend(p, spec(p).stamina);
             p.want = Want::None;
             started = true;
         }
@@ -178,7 +183,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
                 startMove(p, Move::Parry, glm::length(in.aim) > 1e-3f ? in.aim : aim);
                 p.moveScale = length;
                 p.hitPending = false;  // it strikes nothing
-                spend(p, spec(Move::Parry).stamina);
+                spend(p, kParrySpec.stamina);
                 started = true;
             }
             p.want = Want::None;
@@ -200,7 +205,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     if (p.stagger > 0) {
         move = {};
     } else if (p.punching()) {
-        const MoveSpec& m = spec(p.move);
+        const MoveSpec& m = spec(p);
         if (!jumpAttack(p.move) || !airborne(p)) {  // in the air a jump attack keeps the jump's way; landed, it commits
             float x = std::clamp(moveProgress(p) / m.impact, 0.0f, 1.0f);
             bool held = (p.holding || p.hold > 0) && p.moveTime >= holdTime(p);
@@ -231,7 +236,7 @@ bool invulnerable(const Player& b) {
     return (b.rolling() && b.rollTime >= from && b.rollTime < to) || b.move == Move::Riposte;
 }
 
-bool hyperarmor(const Combatant& b) { return (spec(b.move).heavy && b.hitPending) || b.move == Move::Riposte; }
+bool hyperarmor(const Combatant& b) { return (spec(b).heavy && b.hitPending) || b.move == Move::Riposte; }
 
 float playerPoise(const Combatant& b) { return sheet(b)[Stat::Armor] * gMelee.poisePerArmor; }
 
@@ -282,5 +287,5 @@ bool perfectGuard(const Player& b) { return b.guarding && b.perfectReady && b.gu
 DamageType damageOf(const Combatant& c, DamageType bare) {
     if (!c.swingWeapon) return bare;
     DamageType d = itemType(c.swingWeapon).damage;
-    return d == DamageType::Slash && spec(c.move).thrust ? DamageType::Pierce : d;
+    return d == DamageType::Slash && spec(c).thrust ? DamageType::Pierce : d;
 }

@@ -38,7 +38,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |
-| `src/melee.h/.cpp` | Melee (ADR-035): the move table `kMoves` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces`; `parryOf` (a knife or fists parry too) and `perfectGuard` (ADR-041); `damageOf` (ADR-040) |
+| `src/melee.h/.cpp` | Melee (ADR-035): `MoveSpec` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), the weapon classes' movesets (`WeaponClassDef`, `weaponClass`, `spec`; loaded from data/weapon_classes.json, ADR-044), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces`; `parryOf` (a knife or fists parry too) and `perfectGuard` (ADR-041); `damageOf` (ADR-040) |
 | `src/audio.h/.cpp` | Sound (ADR-037): `Audio` (loads `data/sounds/*.ogg` with stb_vorbis into groups of takes; `play` picks a take never twice running with a little random pitch and volume; `mix` is the device thread's stereo mix: up to 48 resampled voices, three buses, a soft limiter), `place` (falloff and pan from the listener), `layersOf`/`hear` (what a `Sound` from the sim plays), `updateAmbience` (looping beds faded by what's around). No device here: main.cpp's `Speaker` feeds `mix` to SDL3's audio stream |
 | `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
@@ -46,7 +46,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (base stats, level, health, swing and damage timers, `Inventory`); `Progress`; `collect`/`sheet` (its modifiers and final stats, optionally with a weapon skill's conditional modifiers), `skillOf`; walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
 | `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch`; `Skill` and the progression formulas (skill XP per use and per level, character XP and level costs, default kill XP; ADR-027) |
 | `src/progress.h/.cpp` | Progression (ADR-027): `SkillDef`/`TalentDef` (filled by the loader), `Progress` (character XP, skill levels, talent ranks), `addSkillXp`/`addCharacterXp`, `canLearn`/`learn`/`respec`, `talentPoints`, `progressModifiers` (what `collect` adds) |
-| `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
+| `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel` by weapon class, `partModels`), procedural animation (`poseModel`; swing poses per weapon class, ADR-044). Core (no GPU), since NPC traits name their `Model` |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the quest drain, the knocked-out player's respawn, skill and level-up toasts) |
 | `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
@@ -746,8 +746,10 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   points in its tree, `requires` a lower-tier talent of the tree at max rank, all in `canLearn`;
   respec clears the ranks. The Progress window (K) spends points; the debug Progression tab grants
   XP, sets level and skills, respecs and shows the formulas.
-- **Melee** (ADR-035, melee.h): every attack is a `Move` from `kMoves`, its timings scaled by the
-  weapon's swing time (fists 0.75x). A tap of LMB / R1 is the next of four lights (diagonal,
+- **Melee** (ADR-035, melee.h): every attack is a `Move` of its weapon class's moveset (ADR-044,
+  `data/weapon_classes.json`), its timings scaled by the weapon's swing time and the class's speed
+  (fists 0.75x). The sword's moveset is described here; daggers, axes and maces swing their own
+  (ADR-044). A tap of LMB / R1 is the next of four lights (diagonal,
   backhand, sweep, a thrust finisher; the chain goes on from a light's chain point or within 0.25 s
   after one); held 0.16 s it's a heavy (a thrust, then an overhead chop), as is R2 at once. A heavy
   holds its windup pose while its button is held and is charged after 0.55 s (x1.45 damage, x1.5
@@ -759,7 +761,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   turn toward the aim through the windup: the lock-on target, else the way the player moves, else
   the facing. Damage lands once, at the impact frame, on the nearest living, attackable entity within
   2 blocks and 60° of the facing (`inReach`), times the move's damage (`HitContext::power`); hits
-  freeze both bodies a moment (hit-stop). Stamina (100) pays for attacks (12 to 22), rolls (14),
+  freeze both bodies a moment (hit-stop). Stamina (100) pays for attacks (the sword's: 10 to 22), rolls (14),
   blocked hits and running in combat; it refills at 45/s after 0.5 s without acting (x0.35 while
   guarding). RMB / L1 guards: a hit from the front (70°) loses 75% of its damage (bare arms 40%) and
   costs 10 + 2.5 per point of damage in stamina (35% less with a sword); with too little left the
@@ -810,7 +812,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   indexed by save id: name, equip slot, weapon `Attack`, bag size, armor. A record:
   `{"id": "iron_helm", "save_id": 5, "name": "Iron Helm", "slot": "head", "armor": 6}`; optional
   fields are `slot` (head, chest, hands, legs, feet, main_hand, off_hand, trinket, bag; default none),
-  `attack` `{min, max, speed}` (required for main_hand), `bag_slots` (required for bag), `armor`,
+  `attack` `{min, max, speed}` (required for main_hand), `class` (required for main_hand: dagger,
+  sword, axe or mace, ADR-044), `bag_slots` (required for bag), `armor`,
   `shield` (off_hand only, ADR-036: `{size: small | medium | great, negation, boost, parry}`, the
   last two shares 0..1, `parry` the parry's length x, omitted for none; greatshields can't parry;
   `negation` is one share or one per damage type `{slash, strike, pierce}`, ADR-040), `weight`
@@ -824,7 +827,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - **Adding an item:** append a record with the next `save_id` (ids are saved in inventories: never
   renumber or reuse one). Code names an item only through the `ItemId` constants; an item that code
   must name gets one, at its save id, plus its row in `kNamedItems` (defs.cpp). Its icon (`inventory_ui.cpp`) and worn or held model
-  (`model.cpp`) are code; without them it shows no icon. Shields need neither: their size picks both.
+  (`model.cpp`) are code; without them it shows no icon. Shields need neither: their size picks both; weapons neither: their class does (ADR-044).
 - The debug window's **Data** tab lists the loaded items (with their mods) and creatures and has **Reload defs**: it
   reloads `data/` between ticks and keeps the old definitions (showing the error) when the files
   are bad, drop an item or creature, or give a loaded save id another string id. Living NPCs keep
@@ -833,14 +836,28 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 
   | Item | Slot | Notes |
   |---|---|---|
-  | Iron Shortsword | Main Hand | one-handed, 6–10 damage, speed 1.0 |
+  | Iron Shortsword | Main Hand | sword, 6–10 damage, speed 1.0 |
   | Canvas Satchel | Bag | +6 item slots |
-  | Rusty Knife | Main Hand | one-handed, 3–6 damage, speed 0.75; dropped by bandits |
+  | Rusty Knife | Main Hand | dagger, 3–6 damage, speed 0.75; dropped by bandits |
   | Boar Skin | – | crafting material later; dropped by boars |
   | Iron Helm / Cuirass / Gauntlets / Greaves / Sabatons | Head / Chest / Hands / Legs / Feet | 6 / 12 / 4 / 10 / 5 armor (37 for the set) |
   | Wolf Pelt | – | crafting material later; dropped by wolves |
   | Bone Charm | Trinket | +2 spirit (regen 1 → 2 per second); dropped by barrow ghouls |
   | Oak Buckler / Heater Shield / Tower Shield | Off Hand | shields (ADR-036): stop 80 / 100 / 100% of a blocked hit (the buckler 85 / 70 / 80% of slash / strike / pierce, the heater 90% of strikes: ADR-040), guard boost 46 / 56 / 72%; the first two parry, the tower bounces weak attacks; weigh 2 / 4.5 / 13; no drop yet (the debug Items tab gives them) |
+  | Iron Hand Axe / Iron Mace | Main Hand | axe 7–11 (speed 1.1, weight 3.5) / mace 6–10 strike (speed 1.15, weight 4), ADR-044; no drop yet (the debug Items tab gives them) |
+
+  Weapon classes (ADR-044, `data/weapon_classes.json`): one record per class (fists, dagger, sword,
+  axe, mace), each with every attack move (`seconds`, `hold`, `hit`, `chain`, `cancel` in order,
+  `damage`, `stance`, `stamina`, `lunge`, optional `heavy` and `thrust`) and optional `speed` and
+  `hit_stop` multipliers; `copy_from` works as in items (fists copy the sword at speed 0.75).
+
+  | Class | Lights: stance / stamina | Thrusts | Hit-stop | Feel |
+  |---|---|---|---|---|
+  | Fists | 10–14 / 12–14 | as the sword (strike) | x1 | the sword's moves, 0.75x long |
+  | Dagger | 6–9 / 9–11 | light 3–4, heavies, running, rolling, jumps, riposte | x0.7 | slashes and stabs; riposte x3.5 |
+  | Sword | 10–14 / 12–14 | light 4, heavy 1, rolling, riposte | x1 | the baseline |
+  | Axe | 13–18 / 14–16 | none | x1.15 | chops, the head leading (pose `roll`) |
+  | Mace | 16–22 / 15–17 | none (strike) | x1.3 | smashes, the most stance damage |
 
   Chest and legs pieces always give more armor than any head, hands, feet or hand item; a test
   checks the whole table.

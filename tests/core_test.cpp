@@ -803,11 +803,11 @@ static void fighters() {
 
     // Models: every part has voxels, the bandit holds its knife, the boar's head lunges when it
     // gores, and the dead fall over.
-    for (Model m : {ModelBoar, ModelBandit, ModelKnife}) {
+    for (Model m : {ModelBoar, ModelBandit, ModelDagger}) {
         Grid part = buildPart(m, Head);
         CHECK(std::ranges::count(part.cells, Air) < std::ssize(part.cells));
     }
-    CHECK(heldModel(Knife) == ModelKnife && heldModel(Shortsword) == ModelSword);
+    CHECK(heldModel(Knife) == ModelDagger && heldModel(Shortsword) == ModelSword);
     glm::mat4 held(0);
     poseModel(bandit.body, ModelBandit, &held);
     CHECK(held != glm::mat4(0));
@@ -998,6 +998,12 @@ static void protection() {
     CHECK(partModels(ModelBoar, player.inv)[Torso] == ModelBoar);
 }
 
+// The shipped weapon classes (ADR-044), which every data folder needs, into `dir`.
+static void copyWeaponClasses(const std::filesystem::path& dir) {
+    std::filesystem::copy_file(std::filesystem::path(FLYCOOS_SOURCE_DIR) / "data" / "weapon_classes.json", dir / "weapon_classes.json",
+                               std::filesystem::copy_options::overwrite_existing);
+}
+
 // The shipped items.json cut to the items code names (ItemId), open for appending records: tests
 // add theirs from save id ItemCount on, whatever the data adds after those.
 static std::string codeNamedItems() {
@@ -1092,6 +1098,7 @@ static void statSheets() {
     // Test items with every kind of modifier (the shipped ones have none but the charm's).
     fs::path dir = fs::temp_directory_path() / "flycoos_stats_test";
     fs::create_directories(dir);
+    copyWeaponClasses(dir);
     std::ofstream(dir / "creatures.json") << codeItemCreatures();
     std::string items = codeNamedItems();
     std::ofstream(dir / "items.json") << items << R"(,
@@ -3142,15 +3149,18 @@ static void fightReplay() {
     // its swing) while its own don't break the Iron set's poise; it died at frame 704, the player at 43.
     // Re-pinned for ADR-042: its swings come in strings of up to two, each costing its swing time, so
     // fewer of them land on the player between its hits (4, was 6); it still dies at frame 712.
+    // Re-pinned for ADR-044: the knife swings the dagger's moveset, whose hits come a little earlier in
+    // the swing (a frame sooner), so two more of them land before the player's (6, was 4) and the
+    // damage rolls shift by those draws; it still dies at frame 712.
     const std::vector<std::tuple<int, char, int>> want{
-        {65, 'b', 11},  {121, 'b', 12}, {171, 'p', 3},  {182, 'b', 9}, {241, 'b', 11}, {298, 'b', 8},  {347, 'p', 3}, {359, 'b', 9},
-        {417, 'b', 12}, {474, 'b', 12}, {535, 'b', 9},  {588, 'p', 5}, {594, 'b', 12}, {651, 'b', 10}, {712, 'b', 13},
+        {65, 'b', 11},  {121, 'b', 12}, {170, 'p', 3},  {182, 'b', 9},  {241, 'b', 11}, {297, 'p', 4},  {298, 'b', 8},  {346, 'p', 3},  {359, 'b', 9},
+        {417, 'b', 12}, {474, 'b', 12}, {535, 'b', 9},  {587, 'p', 5},  {594, 'b', 12}, {651, 'b', 10}, {711, 'p', 3},  {712, 'b', 12},
     };
     CHECK(hits == want);
     if (hits != want)
         for (auto [frame, who, amount] : hits) std::println(stderr, "  got {{{}, '{}', {}}}", frame, who, amount);
     same("fightReplay", "deathFrame", deathFrame, 712);
-    if (std::abs(player.health - 89) >= 0.01f) same("fightReplay", "player.health", player.health, 89.0f);
+    if (std::abs(player.health - 82) >= 0.01f) same("fightReplay", "player.health", player.health, 82.0f);
     same("fightReplay", "bandit.loot", bandit.loot, NoItem);  // the 40% knife roll fails for this seed
     CHECK(!takeLoot(bandit, player.inv) && freeSlots(player.inv) == kBackpackSlots);
 
@@ -3243,6 +3253,7 @@ static void npcAi() {
     // ADR-042, ADR-043; the enemies test has those). A test-only kind joins it below.
     fs::path dir = fs::temp_directory_path() / "flycoos_ai_test";
     fs::create_directories(dir);
+    copyWeaponClasses(dir);
     fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json", dir / "items.json", fs::copy_options::overwrite_existing);
     std::ostringstream text;
     text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
@@ -4122,6 +4133,7 @@ static void dataFiles() {
 
     fs::path dir = fs::temp_directory_path() / "flycoos_defs_test";
     fs::create_directories(dir);
+    copyWeaponClasses(dir);
     std::ofstream(dir / "creatures.json") << codeItemCreatures();
     std::string base = codeNamedItems();
     auto write = [&](std::string_view text) { std::ofstream(dir / "items.json") << text; };
@@ -4134,7 +4146,7 @@ static void dataFiles() {
     Defs grown;
     CHECK(load(base + R"(,{"id": "dented_helm", "save_id": 12, "copy_from": "iron_helm", "name": "Dented Helm", "armor": 4},
                          {"id": "quick_sword", "save_id": 13, "copy_from": "iron_shortsword", "name": "Quick Sword", "attack": {"speed": 0.5}},
-                         {"id": "sword_pommel", "save_id": 14, "copy_from": "iron_shortsword", "name": "Pommel", "slot": null, "attack": null,
+                         {"id": "sword_pommel", "save_id": 14, "copy_from": "iron_shortsword", "name": "Pommel", "slot": null, "attack": null, "class": null,
                           "weight": null}])", grown));
     if (!error.empty()) std::println(stderr, "FAIL grown data: {}", error);
     CHECK(grown.items.size() == 15 && grown.items[12].slot == SlotHead && grown.items[12].armor == 4 &&
@@ -4147,6 +4159,53 @@ static void dataFiles() {
         chain += std::format(R"(,{{"id": "c{}", "save_id": {}, "copy_from": "{}", "name": "C"}})", i, 12 + i, i ? std::format("c{}", i - 1) : "boar_skin");
     std::string chain16 = chain.substr(0, chain.rfind(",{")) + "]";
     CHECK(load(chain16, grown) && grown.items.size() == 28);
+    {  // weapon_classes.json (ADR-044): one record per class, every attack move, its points in order
+        std::ostringstream shipped;
+        shipped << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "weapon_classes.json").rdbuf();
+        std::string wc = shipped.str();
+        auto edited = [&](std::string_view from, std::string_view to) {
+            std::string t = wc;
+            size_t at = t.find(from);
+            CHECK(at != std::string::npos);
+            if (at != std::string::npos) t.replace(at, from.size(), to);
+            return t;
+        };
+        std::string mace = wc.substr(wc.find(R"(,
+  {"id": "mace")"));
+        for (auto [text, want] : std::initializer_list<std::pair<std::string, std::string_view>>{
+                 {edited(mace, "\n]\n"), "no record for the weapon class 'mace'"},
+                 {edited(R"("id": "axe")", R"("id": "spear")"), "record 3 'spear': field 'id': must be one of fists, dagger, sword, axe, mace"},
+                 {edited(R"("light_1": {"seconds": 0.7, "hold": 0.3, "hit": 0.4,)", R"("light_1": {"seconds": 0.7, "hold": 0.4, "hit": 0.4,)"),
+                  "record 0 'sword': field 'moves.light_1.hit': 0.4 is out of range"},
+                 {edited(R"("light_1": {"seconds": 0.7, "hold": 0.3, "hit": 0.4, "chain": 0.5, "cancel": 0.62,)",
+                         R"("light_1": {"seconds": 0.7, "hold": 0.3, "hit": 0.4, "chain": 0.5, "cancel": 0.45,)"),
+                  "record 0 'sword': field 'moves.light_1.cancel': 0.45 is out of range"},
+                 {edited(R"("light_2": {"seconds": 0.65,)", R"("parry": {"seconds": 0.65,)"),
+                  "record 0 'sword': field 'moves.parry': not an attack move (none and parry are code's)"},
+                 {edited(R"("riposte": {"seconds": 1.4,)", R"("ripost": {"seconds": 1.4,)"),
+                  "record 0 'sword': field 'moves.ripost': not an attack move"},
+                 {edited(R"("light_1": {"seconds": 0.7, "hold": 0.3,)", R"("light_1": {"seconds": 0.7, "heavy": 1, "hold": 0.3,)"),
+                  "record 0 'sword': field 'moves.light_1.heavy': must be true or false"},
+                 {edited(R"("light_1": {"seconds": 0.7, "hold": 0.3,)", R"("light_1": {"seconds": 0.7, "pose": 1, "hold": 0.3,)"),
+                  "record 0 'sword': field 'moves.light_1.pose': unknown field"},
+                 {edited(R"("speed": 0.75)", R"("speed": 0)"), "record 1 'fists': field 'speed': 0 is out of range"},
+             }) {
+            std::ofstream(dir / "weapon_classes.json", std::ios::trunc) << text;
+            Defs d;
+            bool ok = load(base + "]", d);
+            CHECK(!ok && error.contains(want) && error.contains("weapon_classes.json"));
+            if (ok || !error.contains(want)) std::println(stderr, "FAIL weapon classes error: got \"{}\", want \"{}\"", error, want);
+        }
+        // A class missing a move (here the dagger's backstep) names it.
+        std::string noBackstep = wc;
+        size_t dagger = noBackstep.find(R"("id": "dagger")"), back = noBackstep.find(R"(,
+     "backstep")", dagger);
+        noBackstep.erase(back, noBackstep.find('}', back) + 1 - back);
+        std::ofstream(dir / "weapon_classes.json", std::ios::trunc) << noBackstep;
+        Defs d;
+        CHECK(!load(base + "]", d) && error.contains("record 2 'dagger': field 'moves.backstep': missing (every class has every attack move)"));
+        copyWeaponClasses(dir);
+    }
     for (auto [text, want] : std::initializer_list<std::pair<std::string, std::string_view>>{
              {base + R"(,{"id": "a", "save_id": 12, "copy_from": "iron_sword", "name": "A"}])",
               "record 11 'a': field 'copy_from': unknown id 'iron_sword'"},
@@ -4225,6 +4284,15 @@ static void dataFiles() {
              {base + R"(,{"id": "a", "save_id": 12, "name": "A‮B"}])", "field 'name': must be 1..48 bytes of text without control"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A\nB"}])", "field 'name': must be 1..48 bytes of text without control"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "armor": 1, "armor": 2}])", "record 11: field 'armor': duplicate key"},
+             // Weapon classes (ADR-044): every main-hand weapon names one, and only those.
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "main_hand", "attack": {"min": 1, "max": 2, "speed": 1}}])",
+              "field 'class': missing (a main-hand weapon has a weapon class)"},
+             {base + R"(,{"id": "a", "save_id": 12, "copy_from": "iron_shortsword", "name": "A", "class": "spear"}])",
+              "field 'class': must be one of dagger, sword, axe, mace"},
+             {base + R"(,{"id": "a", "save_id": 12, "copy_from": "iron_shortsword", "name": "A", "class": "fists"}])",
+              "field 'class': must be one of dagger, sword, axe, mace"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "head", "class": "axe"}])",
+              "field 'class': only main_hand weapons have a weapon class"},
              {base + R"(,{"id": "a", "save_id": 14, "name": "A"}])", "no record has save_id 12"},
              {R"([{"id": "a", "save_id": 1, "name": "A"}])", "save_id 1 must be 'iron_shortsword' (code names it), not 'a'"},
              {base, "not valid JSON"},
@@ -4931,7 +4999,7 @@ static void quests() {
     }
 
     // Data: a quest exercising every trigger, the drain order and the loader's checks, in a scratch data folder.
-    for (const char* f : {"items.json", "creatures.json", "skills.json", "talents.json"})
+    for (const char* f : {"items.json", "creatures.json", "skills.json", "talents.json", "weapon_classes.json"})
         fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / f, dir / f);
     std::string error;
     auto load = [&](std::string_view quest, Defs& d) {
@@ -5488,7 +5556,7 @@ static void progression() {
     // The data files: skills.json and talents.json are optional; their mistakes name file, record and field.
     fs::path data = dir / "data";
     fs::create_directories(data);
-    for (const char* f : {"items.json", "creatures.json"}) fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / f, data / f);
+    for (const char* f : {"items.json", "creatures.json", "weapon_classes.json"}) fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / f, data / f);
     Defs none;
     std::string error;
     CHECK(loadDefs(data, none, error) && none.talents.empty() && none.skills[0].name == "one_handed" && none.skills[0].useMult == 0);
@@ -5775,6 +5843,7 @@ static void enemies() {
     // Test-only kinds that always answer one way: 8 guards, 9 parries (a knife), 10 dodges and backs off.
     fs::path dir = fs::temp_directory_path() / "flycoos_enemies_test";
     fs::create_directories(dir);
+    copyWeaponClasses(dir);
     fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json", dir / "items.json", fs::copy_options::overwrite_existing);
     std::ostringstream text;
     text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
@@ -6009,6 +6078,126 @@ static void enemies() {
 // Melee (ADR-035): the light chain, tap or hold, charging, stamina, the guard and guard counters,
 // stance breaks and ripostes, flinching and poise, i-frames and hyperarmor, and the attacks that come
 // from running, rolling and jumping.
+// Weapon classes (ADR-044): each weapon's class picks its moveset (data/weapon_classes.json), its poses
+// and its model. The sword's is the moveset all weapons shared before; fists are the sword's, faster.
+static void weaponClasses() {
+    const Defs& d = defs();
+    ItemId axe = d.itemById.at("iron_hand_axe"), mace = d.itemById.at("iron_mace");
+    CHECK(classOf(NoItem) == WeaponClass::Fists && classOf(Shortsword) == WeaponClass::Sword && classOf(Knife) == WeaponClass::Dagger &&
+          classOf(axe) == WeaponClass::Axe && classOf(mace) == WeaponClass::Mace);
+    CHECK(heldModel(Shortsword) == ModelSword && heldModel(Knife) == ModelDagger && heldModel(axe) == ModelAxe && heldModel(mace) == ModelMace);
+    // The sword's moveset is the one before ADR-044, number for number (the replays and the story fights pin it too).
+    const MoveSpec &l1 = spec(WeaponClass::Sword, Move::Light1), &rip = spec(WeaponClass::Sword, Move::Riposte);
+    CHECK(l1.seconds == 0.70f && l1.holdAt == 0.30f && l1.impact == 0.40f && l1.chain == 0.50f && l1.cancel == 0.62f && l1.stance == 10 &&
+          l1.stamina == 12 && l1.lunge == 2.5f && !l1.heavy && !l1.thrust);
+    CHECK(rip.damage == 3.0f && rip.thrust && spec(WeaponClass::Sword, Move::Heavy1).heavy && spec(WeaponClass::Sword, Move::GuardCounter).heavy);
+    CHECK(weaponClass(WeaponClass::Fists).speed == 0.75f && weaponClass(WeaponClass::Sword).speed == 1);
+    for (size_t m = 0; m < size_t(Move::Count); ++m) {  // fists swing the sword's moves; every class parries alike
+        const MoveSpec &f = spec(WeaponClass::Fists, Move(m)), &sw = spec(WeaponClass::Sword, Move(m));
+        CHECK(f.seconds == sw.seconds && f.impact == sw.impact && f.stance == sw.stance && f.heavy == sw.heavy);
+        for (size_t c = 0; c < size_t(WeaponClass::Count); ++c)
+            if (Move(m) == Move::Parry) CHECK(spec(WeaponClass(c), Move::Parry).seconds == kParrySpec.seconds);
+    }
+    // Their character: daggers quick and light on stance and stamina, then swords, axes, maces the most stance.
+    auto stance = [](WeaponClass c) {
+        float sum = 0;
+        for (Move m : {Move::Light1, Move::Light2, Move::Light3, Move::Light4, Move::Heavy1, Move::Heavy2}) sum += spec(c, m).stance;
+        return sum;
+    };
+    CHECK(stance(WeaponClass::Dagger) < stance(WeaponClass::Sword) && stance(WeaponClass::Sword) < stance(WeaponClass::Axe) &&
+          stance(WeaponClass::Axe) < stance(WeaponClass::Mace));
+    CHECK(spec(WeaponClass::Dagger, Move::Light1).stamina < spec(WeaponClass::Sword, Move::Light1).stamina &&
+          spec(WeaponClass::Sword, Move::Light1).stamina < spec(WeaponClass::Axe, Move::Light1).stamina);
+    CHECK(spec(WeaponClass::Dagger, Move::Riposte).damage > spec(WeaponClass::Sword, Move::Riposte).damage);  // good for crits
+    // The weapon's speed scales its class's moves: the knife's (0.75) lights are the quickest, the mace's (1.15) the slowest.
+    auto light = [](ItemId w) {
+        Player p;
+        p.inv.equipped[SlotMainHand] = w;
+        startMove(p, Move::Light1, {});
+        return moveLength(p);
+    };
+    CHECK(light(Knife) < light(NoItem) && light(NoItem) < light(Shortsword) && light(Shortsword) < light(axe) && light(axe) < light(mace));
+    CHECK(std::abs(light(NoItem) - 0.75f * light(Shortsword)) < 1e-5f);  // fists: the sword's at 0.75 (the old fist scale)
+    for (ItemId w : {Knife, axe, mace}) {  // a swing spends its class's stamina
+        Player p;
+        p.onGround = true, p.offGround = 0;
+        p.inv.equipped[SlotMainHand] = w;
+        Input move;
+        updateMelee(p, {.attack = true}, move, 1 / 60.0f);
+        updateMelee(p, {}, move, 1 / 60.0f);
+        CHECK(p.move == Move::Light1 && p.stamina == gMelee.staminaMax - spec(classOf(w), Move::Light1).stamina);
+    }
+
+    // What their hits do (ADR-040): a dagger's stabs pierce and its slashes slash, an axe never pierces,
+    // a mace always strikes.
+    Grid g = flatWorld(0);
+    std::mt19937 rng(9);
+    auto swingWith = [](ItemId w, Move m) {
+        Player p;
+        p.inv.equipped[SlotMainHand] = w;
+        startMove(p, m, {});
+        return damageOf(p);
+    };
+    CHECK(swingWith(Knife, Move::Light1) == DamageType::Slash && swingWith(Knife, Move::Light3) == DamageType::Pierce &&
+          swingWith(Shortsword, Move::Light4) == DamageType::Pierce);
+    for (size_t m = 1; m < size_t(Move::Count); ++m) {
+        if (Move(m) == Move::Parry) continue;
+        CHECK(swingWith(axe, Move(m)) == DamageType::Slash && swingWith(mace, Move(m)) == DamageType::Strike);
+    }
+
+    // Every class's light chain lands all four hits on a dummy in reach, each with its class's stance
+    // damage and hit-stop.
+    for (ItemId w : {NoItem, Knife, Shortsword, axe, mace}) {
+        Player p;
+        p.pos = {7.5f, 4, 7.5f};
+        p.onGround = true, p.offGround = 0;
+        p.inv.equipped[SlotMainHand] = w;
+        std::vector<Entity> es;
+        es.reserve(2);
+        spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 1.6f);
+        Player& dummy = es[0].body;
+        WeaponClass c = classOf(w);
+        int hits = 0;
+        Move want = Move::Light1;
+        for (int i = 0; i < 6 * 60 && hits < 4; ++i) {
+            Input move;
+            MeleeInput in{.attack = !p.punching() || moveProgress(p) >= spec(p).chain};
+            updateMelee(p, in, move, 1 / 60.0f);
+            float before = dummy.health;
+            dummy.stance = 1000;  // never broken: no riposte
+            Move m = p.move;
+            updateCombat(p, es, 1 / 60.0f, rng);
+            if (dummy.health < before) {
+                CHECK(m == want);
+                if (m != want) std::println(stderr, "  {}: hit {} with {}, want {}", kWeaponClassIds[size_t(c)], hits, kMoveNames[size_t(m)], kMoveNames[size_t(want)]);
+                float stop = std::min(0.04f + 0.003f * spec(c, m).stance, 0.12f) * weaponClass(c).hitStop;
+                CHECK(std::abs(p.freeze - stop) < 1e-5f);
+                ++hits, want = Move(int(want) + 1);
+                dummy.health = float(maxHealth(sheet(dummy)));
+                p.stamina = gMelee.staminaMax;
+            }
+        }
+        same("weaponClasses", std::format("{} chain hits", kWeaponClassIds[size_t(c)]), hits, 4);
+    }
+    {  // A riposte whose broken stance is gone lands as a plain hit: its class's light 1 stance damage.
+        Player p;
+        p.pos = {7.5f, 4, 7.5f};
+        p.onGround = true, p.offGround = 0;
+        p.inv.equipped[SlotMainHand] = Knife;
+        std::vector<Entity> es;
+        es.reserve(2);
+        spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 1.6f);
+        startMove(p, Move::Riposte, {});
+        for (int i = 0; i < 3 * 60 && p.hitPending; ++i) {
+            advanceMove(p, 1 / 60.0f);
+            updateCombat(p, es, 1 / 60.0f, rng);
+        }
+        CHECK(!p.hitPending && es[0].body.hitStance == spec(WeaponClass::Dagger, Move::Light1).stance);
+    }
+    CHECK(weaponClass(WeaponClass::Dagger).hitStop < 1 && weaponClass(WeaponClass::Mace).hitStop > weaponClass(WeaponClass::Axe).hitStop &&
+          weaponClass(WeaponClass::Axe).hitStop > 1);
+}
+
 static void melee() {
     Grid g = flatWorld(0);
     constexpr float dt = 1 / 60.0f;
@@ -6175,9 +6364,9 @@ static void melee() {
         Entity guard = es[0];
         guard.kind = EntityKind::Guard;
         guard.body.stagger = 0, guard.body.stance = guard.type().stance;
-        staggerHit(guard, spec(Move::Light1).stance, false);
+        staggerHit(guard, spec(WeaponClass::Sword, Move::Light1).stance, false);
         CHECK(guard.body.stagger == 0);
-        staggerHit(guard, spec(Move::Light4).stance, false);
+        staggerHit(guard, spec(WeaponClass::Sword, Move::Light4).stance, false);
         CHECK(guard.body.stagger > 0 && !guard.body.broken);
     }
     {  // The player flinches from an open hit unless its poise holds or a heavy's hyperarmor does;
@@ -6296,7 +6485,7 @@ static void melee() {
         p.inv.equipped[SlotOffHand] = tower;  // a greatshield can't
         CHECK(tick(p, {.parry = true}, es) == Move::None && p.want == Want::None && p.stamina == gMelee.staminaMax);
         p.inv.equipped[SlotOffHand] = buckler;
-        CHECK(tick(p, {.parry = true}, es) == Move::Parry && p.stamina == gMelee.staminaMax - spec(Move::Parry).stamina);
+        CHECK(tick(p, {.parry = true}, es) == Move::Parry && p.stamina == gMelee.staminaMax - kParrySpec.stamina);
         CHECK(p.moveScale == itemType(buckler).shield.parry && !p.hitPending);
         for (int i = 0; i < 60 && !parries(p, bandit.body.pos); ++i) tick(p, {}, es);
         CHECK(strikeNow(p, es, {}) == 0 && bandit.body.broken && bandit.body.stagger > 1 && p.stagger == 0);
@@ -6375,7 +6564,7 @@ static void melee() {
         p.guardBlend = 0;
         p.inv.equipped[SlotOffHand] = buckler;
         tick(p, {.parry = true}, none);
-        while (moveProgress(p) < spec(Move::Parry).holdAt) tick(p, {}, none);  // wound up: across the body
+        for (int i = 0; i < 120 && moveProgress(p) < kParrySpec.holdAt; ++i) tick(p, {}, none);  // wound up: across the body
         poseModel(p, ModelPlayer, &held, 1, &shield);
         glm::mat4 swept = shield;
         p.move = Move::None;
@@ -6887,6 +7076,7 @@ int main() {
     packs();
     enemies();
     melee();
+    weaponClasses();
     sounds();
     combat();
     fighters();
