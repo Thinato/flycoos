@@ -47,7 +47,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch`; `Skill` and the progression formulas (skill XP per use and per level, character XP and level costs, default kill XP; ADR-027) |
 | `src/progress.h/.cpp` | Progression (ADR-027): `SkillDef`/`TalentDef` (filled by the loader), `Progress` (character XP, skill levels, talent ranks), `addSkillXp`/`addCharacterXp`, `canLearn`/`learn`/`respec`, `talentPoints`, `progressModifiers` (what `collect` adds) |
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel`, `partModels`), procedural animation (`poseModel`). Core (no GPU), since NPC traits name their `Model` |
-| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the quest drain, the knocked-out player's respawn, skill and level-up toasts) |
 | `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
 | `src/quest.h/.cpp` | Quests (ADR-026): `GameEvent` (`Killed`, `ItemCountChanged`, `TalkedTo`, `RegionEntered`), the quest data types the loader fills (`QuestDef`, `Stage`, `Trigger`, `Action`, `Condition`, `QuestLine`), `QuestState`; `updateQuests` (the once-per-tick drain), `setQuestStage`/`resetQuest(s)`, the condition evaluator (`passes`, `passesAll`, `pickLine`), `countItem`, `checkQuestMarkers` |
@@ -895,6 +895,19 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   and `body` (`flesh`, the default, or `wood`: how hits on it sound). Damage types (ADR-040):
   `damage` (kinds that fight without a weapon: what their attacks do, default strike) and `resist`
   (attackable kinds: one share or one per type, -1..0.9, default 0; negative is a weakness).
+  Tactics (kinds that fight; ADR-042, ADR-043): `combo` (1..4, default 1: the longest string of
+  hits), `delay` (0..1: the chance a hit after the first is delayed; needs a combo of 2+), `shield`
+  (an off-hand shield item; only kinds with hands), and the chances it answers a player's attack:
+  `guard` (needs a weapon or a shield), `parry` (needs a shield that parries or a weapon with
+  `parry`), `dodge` (together at most 1), and `back_off` (after its own string).
+
+  | Kind | Combo (delay) | Guard / parry / dodge | Backs off | Shield |
+  |---|---|---|---|---|
+  | Bandit | 2 | – / 15% (knife) / 20% | 30% | – |
+  | Wolf | 1 | – / – / 20% (a hop back) | 50% | – |
+  | Guard | 3 (25%) | 60% / 10% / – | – | Heater Shield |
+  | Bandit Chief | 3 (35%) | 10% / – / – | 30% | – |
+  | Barrow Ghoul | 2 (40%) | – | – | – |
 
   | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Temper | Weapon | Drops | Talks |
   |---|---|---|---|---|---|---|---|---|
@@ -914,7 +927,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   bare-handed without armor the chief wins (`storyNpcs` simulates these fights). Stance and poise
   (ADR-035): dummy 80 / never flinches, boar 50, bandit 60, wolf 70, ghoul 90 / 12, guard 90 / 12,
   chief 180 / 20; windups wolf 0.28, ghoul 0.6, chief 0.6 s (the rest 0.5), recoveries wolf 0.15, chief
-  0.25, ghoul 0.4 s; `hit_stance` wolf 8, boar and bandit 12, ghoul 14, guard 20, chief 26. Higher levels get through more armor, so the
+  0.4, ghoul 0.5 s (ADR-042: strings came with longer openings after them); `hit_stance` wolf 8, boar and bandit 12, ghoul 14, guard 20, chief 26. Higher levels get through more armor, so the
   chief and the ghouls pay for theirs with less health. Per kind there's also a wander radius (villager 12, boar and wolf 10, guard
   and chief 6, bandit 5, ghoul 4), a chase speed (ghoul 4, bandit and chief 5.5, boar and guard 6,
   wolf 7.5 b/s; the player walks 5 and runs 9) and a respawn time (30 s; guard 60, ghoul 45, chief
@@ -963,6 +976,27 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   the order they stand, turned to fit where they are. Within 6 blocks, one that isn't at its side yet
   spirals round to it (up to 0.8 rad a step), then closes in; in reach it swings wherever it is.
   After moving, living NPCs push apart to 1 block (half each; ones that don't wander aren't moved).
+- **Attack tokens and strings** (ADR-042): of the fighters on the player only `gAi.attackers` (2)
+  hold a token (`Entity::token`) and may swing: one in its `Windup` keeps its own, the rest go to
+  those within 6 blocks that have waited longest since their last string (`sinceSwing`); one
+  recovering from its string keeps its token too. The others circle on a ring 3.6 blocks out at
+  their side, facing the player, walking slowly one way round and then the other. A swing starts a string of 1 to `combo`
+  hits: each next light starts at the last one's chain point while the player is within reach + 1,
+  some (`delay`) held in the windup ~0.5 s longer, and each adds its swing time to the swing timer,
+  so the pause after a string is as long as the hits in it would have taken apart.
+- **Answers** (ADR-043): while it chases, an NPC whose player's attack can reach it (in front of
+  the player, within reach + 1.5) picks an answer as the attack starts: a guard, a parry or a dodge
+  by its kind's chances, once per attack, as soon as it's chasing (a heavy or riposte can't be
+  parried: it guards). After a reaction time
+  (0.06–0.18 s) the guard goes up (and stays 0.4 s after); a parry starts so its window meets the hit,
+  and a dodge rolls aside (four-legged kinds hop back) 0.12 s before it, both give or take 0.07 s. It
+  doesn't swing while it answers. One with a shield also keeps it up whenever it chases. The
+  player's hit on its guard is the player's guard mirrored: the
+  shield's or weapon's negation by type, stamina (`blockStamina` + per damage, less the boost; it
+  refills as the player's), no stance damage; out of stamina the guard breaks (it reels 1.1 s). Its
+  parry deflects lights (the player reels 1 s); its roll's i-frames let the hit pass through. After
+  a block or a parry its next swing comes within 1 s with a 0.3 s windup (a counter). After its
+  string it may back off (`back_off`) for 0.9 s, walking away facing the player.
 - **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell until it
   respawns; E within 3.5 blocks moves the loot into the bags, else into its empty equip slot (it
   stays on the corpse if neither has room, and E talks instead).

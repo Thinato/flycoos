@@ -13,6 +13,7 @@
 #include <numbers>
 #include <print>
 #include <ranges>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string_view>
@@ -1008,6 +1009,19 @@ static std::string codeNamedItems() {
     return text;
 }
 
+// The shipped creatures.json for codeNamedItems: less the shields they hold (code doesn't name those),
+// and with them the rest of their record from there (the tactics a shield makes valid).
+static std::string codeItemCreatures() {
+    std::ostringstream all;
+    all << std::ifstream(std::filesystem::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
+    std::string text = all.str();
+    for (size_t at; (at = text.find(R"("shield": ")")) != std::string::npos;) {
+        size_t from = text.rfind(',', at);
+        text.erase(from, text.find('}', at) - from);
+    }
+    return text;
+}
+
 // The stat pipeline (ADR-022): compute's arithmetic, collect from worn gear, the trinket slot, the
 // sheet behind regen, max health and swing time, and resolveHit's order.
 static void statSheets() {
@@ -1078,7 +1092,7 @@ static void statSheets() {
     // Test items with every kind of modifier (the shipped ones have none but the charm's).
     fs::path dir = fs::temp_directory_path() / "flycoos_stats_test";
     fs::create_directories(dir);
-    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json", dir / "creatures.json", fs::copy_options::overwrite_existing);
+    std::ofstream(dir / "creatures.json") << codeItemCreatures();
     std::string items = codeNamedItems();
     std::ofstream(dir / "items.json") << items << R"(,
         {"id": "amulet", "save_id": 12, "name": "Amulet", "slot": "trinket",
@@ -2616,7 +2630,8 @@ static void storyNpcs() {
             glm::vec2 to = glm::normalize(flat(*foe));
             if (!player.punching()) player.yaw = std::atan2(to.x, to.y);
             auto due = [&](const Entity& e) {  // when a foe in reach strikes next (99: it isn't winding up)
-                if (e.state != AiState::Windup || !e.body.hitPending || glm::length(flat(e)) > kPunchReach + 0.5f) return 99.0f;
+                if (e.state != AiState::Windup || glm::length(flat(e)) > kPunchReach + 0.5f) return 99.0f;
+                if (!e.body.hitPending) return e.string > 1 ? 0.25f : 99.0f;  // between the hits of a string: the next is coming
                 return e.body.hold + std::max(0.0f, impactTime(e.body) - e.body.moveTime);
             };
             MeleeInput melee{.aim = to};
@@ -2633,21 +2648,24 @@ static void storyNpcs() {
         }
         return 999.0f;  // nobody won in two minutes
     };
-    // Twelve seeds: every fight goes the same way; health left varies a little per seed, so its mean
-    // is what's tuned.
+    // Twelve seeds. Since enemies answer attacks by chance (guards, parries, dodges: ADR-043) one fight
+    // can go either way, as a close fight does; so at least 10 of the 12 go as tuned, and the means
+    // of the health left are what's tuned.
     constexpr int kSeeds = 12;
     float chiefSum = 0, wolvesSum = 0, ghoulsSum = 0;
+    int chiefAsTuned = 0, wolvesAsTuned = 0, ghoulsAsTuned = 0;
     for (uint32_t seed = 1; seed <= kSeeds; ++seed) {
         float chief = fight(EntityKind::BanditChief, 1, true, seed), wolves = fight(EntityKind::Wolf, 2, true, seed);
         float ghouls = fight(EntityKind::Ghoul, 2, true, seed), bare = fight(EntityKind::BanditChief, 1, false, seed);
-        if (!(chief > 0 && chief < 50 && wolves > 0 && wolves < 60 && ghouls > 0 && ghouls < 60 && bare < 0))
-            std::println(stderr, "seed {}: chief {} wolves {} ghouls {} bare-handed {}", seed, chief, wolves, ghouls, bare);
-        CHECK(chief > 0 && chief < 50);    // the chief alone: won, never easily
-        CHECK(wolves > 0 && wolves < 60);  // a pair of wolves
-        CHECK(ghouls > 0 && ghouls < 60);  // a pair of ghouls
-        CHECK(bare < 0);                   // bare-handed and unarmored, the chief wins
+        chiefAsTuned += chief > 0 && chief < 50;     // the chief alone: won, never easily
+        wolvesAsTuned += wolves > 0 && wolves < 60;  // a pair of wolves
+        ghoulsAsTuned += ghouls > 0 && ghouls < 60;  // a pair of ghouls
+        CHECK(bare < 0);                             // bare-handed and unarmored, the chief always wins
+        if (!(chief > 0 && chief < 50 && wolves > 0 && wolves < 60 && ghouls > 0 && ghouls < 60))
+            std::println("story fight seed {} off its band: chief {:.0f} wolves {:.0f} ghouls {:.0f}", seed, chief, wolves, ghouls);
         chiefSum += chief, wolvesSum += wolves, ghoulsSum += ghouls;
     }
+    CHECK(chiefAsTuned >= 10 && wolvesAsTuned >= 10 && ghoulsAsTuned >= 10);
     float chiefMean = chiefSum / kSeeds, wolvesMean = wolvesSum / kSeeds, ghoulsMean = ghoulsSum / kSeeds;
     std::println("story fights, health left on average: chief {:.0f}, wolves {:.0f}, ghouls {:.0f}", chiefMean, wolvesMean, ghoulsMean);
     CHECK(chiefMean >= 20 && chiefMean <= 30);                           // about a quarter
@@ -3122,16 +3140,17 @@ static void fightReplay() {
     // the player for 8-12 (sword 6-10 + 2 strength); the bandit has 120 health. Re-pinned for ADR-035:
     // the bandit's windup telegraphs (0.5 s, varied), and the player's hits make it flinch (cancelling
     // its swing) while its own don't break the Iron set's poise; it died at frame 704, the player at 43.
+    // Re-pinned for ADR-042: its swings come in strings of up to two, each costing its swing time, so
+    // fewer of them land on the player between its hits (4, was 6); it still dies at frame 712.
     const std::vector<std::tuple<int, char, int>> want{
-        {65, 'b', 11}, {121, 'b', 12}, {175, 'p', 3}, {182, 'b', 9},  {235, 'p', 5}, {241, 'b', 8},  {295, 'p', 3},
-        {298, 'b', 9}, {344, 'p', 3},  {359, 'b', 13}, {417, 'b', 9}, {474, 'b', 10}, {535, 'b', 13}, {590, 'p', 5},
-        {594, 'b', 10}, {638, 'p', 3}, {651, 'b', 11}, {704, 'p', 3}, {712, 'b', 11},
+        {65, 'b', 11},  {121, 'b', 12}, {171, 'p', 3},  {182, 'b', 9}, {241, 'b', 11}, {298, 'b', 8},  {347, 'p', 3}, {359, 'b', 9},
+        {417, 'b', 12}, {474, 'b', 12}, {535, 'b', 9},  {588, 'p', 5}, {594, 'b', 12}, {651, 'b', 10}, {712, 'b', 13},
     };
     CHECK(hits == want);
     if (hits != want)
         for (auto [frame, who, amount] : hits) std::println(stderr, "  got {{{}, '{}', {}}}", frame, who, amount);
     same("fightReplay", "deathFrame", deathFrame, 712);
-    if (std::abs(player.health - 75) >= 0.01f) same("fightReplay", "player.health", player.health, 75.0f);
+    if (std::abs(player.health - 89) >= 0.01f) same("fightReplay", "player.health", player.health, 89.0f);
     same("fightReplay", "bandit.loot", bandit.loot, NoItem);  // the 40% knife roll fails for this seed
     CHECK(!takeLoot(bandit, player.inv) && freeSlots(player.inv) == kBackpackSlots);
 
@@ -3220,6 +3239,31 @@ static void npcAi() {
     for (const EntityType& t : defs().creatures)
         CHECK(t.leashRadius == 20 && t.reaggroRadius == 16 && t.windup >= 0.28f && t.cooldown == 0 && t.fleeHealth == 0);
     CHECK(typeOf(EntityKind::Bandit).windup == kDefaultWindup && typeOf(EntityKind::Bandit).recover == kDefaultRecover);
+    // The state machine on its own: the bandit here has no tactics (strings, answers, backing off:
+    // ADR-042, ADR-043; the enemies test has those). A test-only kind joins it below.
+    fs::path dir = fs::temp_directory_path() / "flycoos_ai_test";
+    fs::create_directories(dir);
+    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json", dir / "items.json", fs::copy_options::overwrite_existing);
+    std::ostringstream text;
+    text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
+    std::string creatures = text.str();
+    size_t tactics = creatures.find(R"("combo")", creatures.find(R"("id": "bandit",)"));
+    CHECK(tactics < creatures.find(R"("id": "wolf")"));
+    size_t from = creatures.rfind(',', tactics);
+    creatures.erase(from, creatures.find('}', tactics) - from);
+    creatures.erase(creatures.rfind(']'));
+    Defs plain, shipped;
+    std::string error;
+    auto plainDefs = [&](std::string_view extra) {
+        std::ofstream(dir / "creatures.json") << creatures << extra << "]";
+        Defs d;
+        CHECK(loadDefs(dir, d, error));
+        if (!error.empty()) std::println(stderr, "FAIL npcAi data: {}", error);
+        return d;
+    };
+    CHECK(loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
+    setDefs(plainDefs(""));
+    CHECK(typeOf(EntityKind::Bandit).combo == 1 && typeOf(EntityKind::Bandit).dodge == 0);
 
     Grid g = meadow();
     Player player;
@@ -3388,19 +3432,8 @@ static void npcAi() {
     CHECK(boar->state != AiState::Dead && reason(*boar, boar->state == AiState::Wander ? 0 : 1) == "respawned");
 
     // Fleeing: a test-only kind, a boar that runs below half health, then goes home and heals.
-    fs::path dir = fs::temp_directory_path() / "flycoos_ai_test";
-    fs::create_directories(dir);
-    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json", dir / "items.json", fs::copy_options::overwrite_existing);
-    std::ostringstream text;
-    text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
-    std::string creatures = text.str();
-    creatures.erase(creatures.rfind(']'));
-    std::ofstream(dir / "creatures.json") << creatures << R"(,{"id": "coward", "save_id": 8, "copy_from": "boar", "flee_health": 0.5}])";
-    Defs test, shipped;
-    std::string error;
-    CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
+    setDefs(plainDefs(R"(,{"id": "coward", "save_id": 8, "copy_from": "boar", "flee_health": 0.5})"));
     fs::remove_all(dir);
-    setDefs(std::move(test));
     player.pos = home + glm::vec3(-3, 0, 0);
     Entity* coward = spawn(EntityKind(8));
     CHECK(coward->type().fleeHealth == 0.5f);
@@ -4089,7 +4122,7 @@ static void dataFiles() {
 
     fs::path dir = fs::temp_directory_path() / "flycoos_defs_test";
     fs::create_directories(dir);
-    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json", dir / "creatures.json", fs::copy_options::overwrite_existing);
+    std::ofstream(dir / "creatures.json") << codeItemCreatures();
     std::string base = codeNamedItems();
     auto write = [&](std::string_view text) { std::ofstream(dir / "items.json") << text; };
     auto load = [&](std::string_view text, Defs& d) {
@@ -4224,9 +4257,7 @@ static void dataFiles() {
     // Creatures: save ids are the EntityKind values from 0; weapon and loot name items, model a body
     // model, temper one of three. Null removes an inherited name: the kind gets random villager names.
     write(base + R"(,{"id": "dented_helm", "save_id": 12, "copy_from": "iron_helm", "name": "Dented Helm"}])");
-    std::ostringstream allCreatures;
-    allCreatures << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
-    std::string creatures = allCreatures.str();
+    std::string creatures = codeItemCreatures();
     creatures.erase(creatures.rfind(']'));
     auto writeCreatures = [&](std::string_view text) { std::ofstream(dir / "creatures.json") << text; };
     std::string scarecrow = creatures;
@@ -4289,6 +4320,16 @@ static void dataFiles() {
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "villager", "resist": 0.2}])", "field 'resist': only attackable creatures are hit"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "wolf", "resist": {"slash": 2}}])", "field 'resist.slash': 2 is out of range -1..0.9"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit", "parryable": 1}])", "field 'parryable': must be true or false"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "villager", "combo": 2}])", "field 'combo': harmless creatures don't fight"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit", "combo": 5}])", "field 'combo': 5 is out of range 1..4"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit", "combo": null, "delay": 0.3}])",
+              "field 'delay': only a hit after the first is delayed"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit", "shield": "boar_skin"}])", "field 'shield': 'boar_skin' is not a shield"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "wolf", "shield": "boar_skin"}])", "field 'shield': only creatures with hands hold one"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "ghoul", "guard": 0.5}])", "field 'guard': bare-handed creatures don't guard"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit_chief", "parry": 0.2}])", "field 'parry': nothing it holds parries"},
+             {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "bandit", "guard": 0.5, "parry": 0.5}])",
+              "field 'dodge': guard + parry + dodge are chances of one answer"},
              {creatures + R"(,{"id": "a", "save_id": 8, "copy_from": "boar", "wanders": false}])",
               "field 'wanders': must be true for a creature that fights"},
              {scarecrow + "]",
@@ -5722,6 +5763,249 @@ static void packs() {
     CHECK(es[0].pack == 1);
 }
 
+// Enemies (ADR-042, ADR-043): attack tokens, strings of hits with delayed ones, and the answers to the
+// player's attacks: a guard (with a shield; it breaks), a parry, a dodge; backing off after a string.
+static void enemies() {
+    namespace fs = std::filesystem;
+    constexpr float kT = 1 / 60.0f;
+    Grid g({48, 16, 48});
+    for (int z = 0; z < 48; ++z)
+        for (int x = 0; x < 48; ++x)
+            for (int y = 0; y < 4; ++y) g.set({x, y, z}, Stone);
+    // Test-only kinds that always answer one way: 8 guards, 9 parries (a knife), 10 dodges and backs off.
+    fs::path dir = fs::temp_directory_path() / "flycoos_enemies_test";
+    fs::create_directories(dir);
+    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json", dir / "items.json", fs::copy_options::overwrite_existing);
+    std::ostringstream text;
+    text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
+    std::string creatures = text.str();
+    creatures.erase(creatures.rfind(']'));
+    std::ofstream(dir / "creatures.json") << creatures << R"(,
+        {"id": "duelist", "save_id": 8, "copy_from": "guard", "guard": 1, "parry": null},
+        {"id": "fencer", "save_id": 9, "copy_from": "bandit", "parry": 1, "dodge": null, "back_off": null},
+        {"id": "dancer", "save_id": 10, "copy_from": "bandit", "dodge": 1, "parry": null, "back_off": 1}])";
+    Defs test, shipped;
+    std::string error;
+    CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
+    if (!error.empty()) std::println(stderr, "FAIL enemies data: {}", error);
+    fs::remove_all(dir);
+    setDefs(std::move(test));
+    const EntityKind kDuelist = EntityKind(8), kFencer = EntityKind(9), kDancer = EntityKind(10);
+
+    auto fresh = [&] {
+        Player p;
+        p.pos = {24.5f, 4, 24.5f};
+        p.onGround = true, p.offGround = 0;
+        giveItem(p.inv, Shortsword);
+        quickMove(p.inv, {SlotRef::Item, 0, 0});
+        return p;
+    };
+    Player player = fresh();
+    std::mt19937 rng(7);
+    std::vector<Entity> es;
+    // A tick: the player's buttons, the NPCs, the hits; the player stays up and stands still.
+    auto tick = [&](MeleeInput in = {}) {
+        Input still;
+        updateMelee(player, in, still, kT);
+        updateEntities(es, g, player, kT);
+        separate(player, g, es);
+        updateCombat(player, es, kT, rng);
+        player.health = float(maxHealth(sheet(player)));
+    };
+    auto newest = [](const Entity& e) { return e.transitions ? e.history[(e.transitions - 1) % e.history.size()] : AiTransition{}; };
+    auto facing = [&](const Entity& e) {  // the player turned to face `e`
+        glm::vec2 d(e.body.pos.x - player.pos.x, e.body.pos.z - player.pos.z);
+        player.yaw = std::atan2(d.x, d.y);
+        return glm::normalize(d);
+    };
+
+    {  // tokens: of three bandits on the player one swings at a time (attackers 1), the others wait on
+       // the ring; all get turns. With two tokens two swing at once.
+        for (uint32_t i = 0; i < 3; ++i) {
+            player.yaw = float(i) * 2.1f;
+            spawnAhead(es, g, player, EntityKind::Bandit, 11 + i, 5);
+        }
+        // Counts the most swinging at once, who swung (and how often), and how long the waiting ones
+        // (without a token for a second or more) stood on the ring, give or take a block.
+        std::map<uint32_t, int> strings;
+        uint32_t lastStarter = 0;
+        int again = 0;  // strings started by the one that swung the last, while others waited
+        auto run = [&](int seconds, int& most, int& waiting, int& onRing) {
+            std::map<uint32_t, int> without;
+            for (int i = 0; i < seconds * 60; ++i) {
+                tick();
+                if (i < 60) continue;  // all on the player by now
+                most = std::max(most, int(std::ranges::count(es, AiState::Windup, &Entity::state)));
+                for (const Entity& e : es) {
+                    CHECK(e.pack == 3 && (e.token || e.state != AiState::Windup));
+                    if (e.state == AiState::Windup && e.stateTime == 0 && newest(e).reason == std::string_view("in_reach")) {
+                        ++strings[e.id];
+                        again += e.id == lastStarter && gAi.attackers == 1;
+                        lastStarter = e.id;
+                    }
+                    int& w = without[e.id];
+                    w = e.token ? 0 : w + 1;
+                    if (w > 60 && e.state == AiState::Chase && e.backOff <= 0) {
+                        ++waiting;
+                        onRing += std::abs(glm::distance(e.body.pos, player.pos) - gAi.waitRing) < 1;
+                    }
+                }
+            }
+        };
+        gAi.attackers = 1;
+        int most = 0, waiting = 0, onRing = 0;
+        run(20, most, waiting, onRing);
+        CHECK(most == 1 && strings.size() == 3);
+        for (auto [id, n] : strings) CHECK(n >= 3);  // turns go round...
+        CHECK(again == 0);  // ...always to one that waited
+        CHECK(waiting > 60 && onRing > waiting * 3 / 4);  // the waiting ones stand out on the ring
+        gAi.attackers = 2;
+        most = 0;
+        strings.clear();
+        run(10, most, waiting, onRing);
+        CHECK(most == 2 && strings.size() == 3);
+        gAi = AiTuning{};
+        es.clear();
+    }
+
+    {  // strings: a ghoul swings up to its combo of hits in a row, some of them delayed (held about delaySeconds)
+        player = fresh();
+        Entity& ghoul = spawnAhead(es, g, player, EntityKind::Ghoul, 3, 1.5f);
+        const int combo = ghoul.type().combo;
+        CHECK(combo >= 2 && ghoul.type().delay > 0);
+        int run = 0, longest = 0, delayed = 0, strings = 0;
+        uint32_t seen = 0;
+        bool heldRight = true;
+        for (int i = 0; i < 30 * 60; ++i) {
+            tick();
+            for (; seen < ghoul.transitions; ++seen) {
+                const AiTransition& h = ghoul.history[seen % ghoul.history.size()];
+                std::string_view why = h.reason;
+                if (h.to != AiState::Windup) continue;
+                if (why == "combo" || why == "delayed") ++run;
+                else run = 0, ++strings;
+                longest = std::max(longest, run + 1);
+            }
+            if (newest(ghoul).reason == std::string_view("delayed") && ghoul.stateTime == 0) {  // just started: its hold is the delay
+                ++delayed;
+                heldRight &= ghoul.body.hold >= 0.8f * gAi.delaySeconds - 0.02f && ghoul.body.hold <= 1.2f * gAi.delaySeconds;
+            }
+        }
+        CHECK(strings > 5 && longest == combo && delayed > 0 && heldRight);
+        es.clear();
+    }
+
+    {  // a guard behind its shield: the player's light is blocked (no damage), costs it stamina; it counters fast
+        player = fresh();
+        Entity& d = spawnAhead(es, g, player, kDuelist, 4, 1.4f);
+        CHECK(d.body.inv.equipped[SlotOffHand] == defs().itemById.at("heater_shield") && d.type().guard == 1);
+        setState(d, AiState::Chase, "forced");
+        float health = d.body.health;
+        bool blocked = false, countered = false;
+        float spent = 0;
+        for (int i = 0; i < 90; ++i) {
+            tick({.attack = i == 0, .attackHeld = false, .aim = facing(d)});
+            blocked |= d.body.made(Noise::Block);  // noises add up here (step() clears them in the game)
+            spent = std::max(spent, gMelee.staminaMax - d.body.stamina);
+            if (newest(d).reason == std::string_view("counter")) countered = true;
+        }
+        CHECK(blocked && d.body.health == health && spent > 5 && countered);
+        // Out of stamina, the next blocked hit breaks its guard: it reels.
+        es.clear();
+        Entity& e = spawnAhead(es, g, player, kDuelist, 5, 1.4f);
+        setState(e, AiState::Chase, "forced");
+        e.body.stamina = 1, e.body.staminaWait = 99;
+        bool broke = false;
+        for (int i = 0; i < 40 && !broke; ++i) {
+            tick({.attack = i == 0, .aim = facing(e)});
+            broke = e.body.made(Noise::GuardBreak);
+        }
+        tick();
+        CHECK(broke && e.body.stagger > 0 && !e.body.broken && e.state == AiState::Stagger);  // reels, but no riposte
+        es.clear();
+    }
+
+    {  // a parry with a knife: the player's light is deflected and the player reels; a heavy can't be parried
+        int parried = 0;
+        for (uint32_t seed = 1; seed <= 5; ++seed) {
+            player = fresh();
+            Entity& f = spawnAhead(es, g, player, kFencer, seed, 1.4f);
+            setState(f, AiState::Chase, "forced");
+            float health = f.body.health;
+            bool deflected = false, reeled = false;
+            for (int i = 0; i < 30; ++i) {
+                tick({.attack = i == 0, .aim = facing(f)});
+                deflected |= f.body.made(Noise::Parry);
+                reeled |= player.stagger > 0.8f * gAi.parriedSeconds;
+            }
+            parried += deflected && reeled && f.body.health == health;
+            es.clear();
+        }
+        CHECK(parried == 5);
+        player = fresh();
+        Entity& f = spawnAhead(es, g, player, kFencer, 6, 1.4f);
+        setState(f, AiState::Chase, "forced");
+        bool deflected = false, blocked = false;
+        for (int i = 0; i < 80; ++i) {
+            tick({.heavy = i == 0, .aim = facing(f)});
+            deflected |= f.body.made(Noise::Parry);
+            blocked |= f.body.made(Noise::Block);
+        }
+        CHECK(!deflected && blocked);  // it guards a heavy instead (with its knife: part of the damage)
+        es.clear();
+        // Even a parry already in its window doesn't deflect a heavy: it's a weak guard.
+        player = fresh();
+        Entity& p = spawnAhead(es, g, player, kFencer, 7, 1.4f);
+        setState(p, AiState::Chase, "forced");
+        startMove(player, Move::Heavy1, facing(p));
+        player.moveTime = impactTime(player) - 0.5f * kT;  // lands this tick
+        startMove(p.body, Move::Parry, -facing(p));
+        p.body.moveScale = parryOf(p.body);
+        p.body.hitPending = false;
+        p.body.moveTime = 0.2f * p.body.moveScale;  // in the window
+        CHECK(parries(p.body, player.pos));
+        updateCombat(player, es, kT, rng);
+        CHECK(!p.body.made(Noise::Parry) && p.body.made(Noise::Block) && player.stagger == 0);
+        es.clear();
+    }
+
+    {  // a dodge: it rolls through the player's light (no damage), and backs off after a string of its own
+        int dodged = 0, throughIframes = 0;
+        for (uint32_t seed = 1; seed <= 5; ++seed) {
+            player = fresh();
+            Entity& d = spawnAhead(es, g, player, kDancer, seed, 1.4f);
+            setState(d, AiState::Chase, "forced");
+            float health = d.body.health;
+            bool rolled = false, avoided = false;
+            for (int i = 0; i < 40; ++i) {
+                bool pending = player.hitPending;
+                tick({.attack = i == 0, .aim = facing(d)});
+                rolled |= d.body.rolling();
+                if (pending && !player.hitPending) {  // the hit's moment: rolled out of reach, or through it on i-frames
+                    bool through = invulnerable(d.body) && inReach(player, d.body.pos);
+                    avoided = through || !inReach(player, d.body.pos);
+                    throughIframes += through;
+                }
+            }
+            dodged += rolled && avoided && d.body.health == health;
+            es.clear();
+        }
+        CHECK(dodged == 5 && throughIframes > 0);
+        player = fresh();
+        Entity& d = spawnAhead(es, g, player, kDancer, 7, 1.4f);
+        float before = 0, after = 0;
+        bool backedOff = false;
+        for (int i = 0; i < 5 * 60 && !backedOff; ++i) {
+            tick();
+            if (d.backOff > 0 && before == 0) before = glm::distance(d.body.pos, player.pos);
+            if (before > 0 && d.backOff == 0) after = glm::distance(d.body.pos, player.pos), backedOff = true;
+        }
+        CHECK(backedOff && after > before + 1);
+        es.clear();
+    }
+    setDefs(std::move(shipped));
+}
+
 // Melee (ADR-035): the light chain, tap or hold, charging, stamina, the guard and guard counters,
 // stance breaks and ripostes, flinching and poise, i-frames and hyperarmor, and the attacks that come
 // from running, rolling and jumping.
@@ -6601,6 +6885,7 @@ int main() {
     entities();
     lockOn();
     packs();
+    enemies();
     melee();
     sounds();
     combat();

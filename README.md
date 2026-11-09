@@ -276,6 +276,16 @@ helm and sword), `bandit_chief` (Lv 3, attacks, always drops an Iron Helm) and `
 barrow ghoul, slow, attacks; may drop a Bone Charm). With the Iron set and a sword you beat the
 chief alone, or a pair of wolves or ghouls; a pack of three is too much.
 
+Enemies fight back in more ways (ADR-042, ADR-043). In a pack only two swing at once; the others
+circle a few blocks out and wait their turn. Bandits, guards, the chief and ghouls swing strings of
+two or three hits, some of them delayed to catch an early roll. Some also answer your attacks:
+- **Guards** keep a heater shield up while they come at you; keep hitting the shield to break it.
+- **Bandits** may parry a light attack with their knife; they can't parry your heavies.
+- **Wolves and bandits** may dodge.
+- **The chief** guards with his sword.
+
+An enemy that blocks or parries you hits back quickly. Some step back after a string.
+
 A spawn marker can carry up to 8 **lines** of dialogue (1–160 bytes each). Villagers and guards say
 the next one each time you press E, round and round; anyone who fights (guards too) shouts the
 next one when they turn on you.

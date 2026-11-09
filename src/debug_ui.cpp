@@ -397,6 +397,29 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
     ImGui::SameLine();
     if (ImGui::Button("Remove spawned")) std::erase_if(entities, [](const Entity& e) { return !e.spawn.id; });
     ImGui::SetItemTooltip("The NPCs spawned here or with F6 (not from a marker). They don't come back with the game either.");
+    if (ImGui::TreeNode("Fighting AI: tokens, strings, answers (ADR-042, ADR-043)")) {
+        AiTuning& a = gAi;
+        ImGui::SliderInt("Attackers at once", &a.attackers, 1, 6);
+        ImGui::SetItemTooltip("Attack tokens: this many fighters on you may swing; the rest circle on the ring and wait.");
+        ImGui::SliderFloat("Waiting ring", &a.waitRing, 2.5f, 8, "%.1f blocks");
+        ImGui::SliderFloat("Circling speed", &a.strafeSpeed, 0, 1.5f, "x%.2f walk");
+        ImGui::SliderFloat("Delayed hit", &a.delaySeconds, 0, 1.5f, "+%.2f s");
+        ImGui::SetItemTooltip("A delayed hit in a string holds its windup this much longer (x 0.8 .. 1.2): it catches an early roll.");
+        ImGui::SliderFloat("Reaction from", &a.reactFrom, 0, 0.5f, "%.2f s");
+        ImGui::SliderFloat("Reaction to", &a.reactTo, 0, 0.5f, "%.2f s");
+        ImGui::SliderFloat("Timing error", &a.aimError, 0, 0.3f, "+-%.2f s");
+        ImGui::SetItemTooltip("How far off the right moment its parries and dodges are, at most.");
+        ImGui::SliderFloat("Dodge lead", &a.dodgeLead, 0, 0.4f, "%.2f s");
+        ImGui::SliderFloat("Guard held after", &a.guardHold, 0, 1.5f, "%.2f s");
+        ImGui::SliderFloat("Parried, you reel", &a.parriedSeconds, 0.2f, 2.5f, "%.2f s");
+        ImGui::SliderFloat("Counter windup", &a.counterWindup, 0.05f, 1, "%.2f s");
+        ImGui::SetItemTooltip("Its swing right after it blocked or parried you winds up this fast...");
+        ImGui::SliderFloat("Counter window", &a.counterWindow, 0, 3, "%.2f s");
+        ImGui::SetItemTooltip("...if it starts within this long.");
+        ImGui::SliderFloat("Backing off", &a.backOffSeconds, 0, 3, "%.2f s");
+        if (ImGui::Button("Reset AI")) a = AiTuning{};
+        ImGui::TreePop();
+    }
     for (size_t i = 0; i < entities.size(); ++i) {
         Entity& e = entities[i];
         const EntityType& t = e.type();
@@ -426,6 +449,14 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
             ImGui::SetItemTooltip("Hits wear the stance down; at 0 it breaks (open to a riposte). A hit of at least its poise makes it flinch (ADR-035).");
             if (t.parryable) ImGui::Text("parried %d / %d (to open it to a riposte)", e.parried, t.parries);
             else ImGui::TextDisabled("can't be parried");
+            ImGui::Text("token %s   waited %.1f s   string %d left (of up to %d, %.0f%% delayed)%s", e.token ? "YES" : "no",
+                        double(std::min(e.sinceSwing, 99.0f)), e.string, t.combo, double(t.delay * 100), e.backOff > 0 ? "   backing off" : "");
+            ImGui::SetItemTooltip("Attack tokens and strings of hits (ADR-042): without a token it waits on the ring.");
+            ImGui::Text("answers: guard %.0f%%  parry %.0f%%  dodge %.0f%%  backs off %.0f%%", double(t.guard * 100), double(t.parry * 100),
+                        double(t.dodge * 100), double(t.backOff * 100));
+            ImGui::Text("%s   answer %s   guard %s   stamina %.0f%s", e.threatened ? "THREATENED" : "safe", kAnswerNames[int(e.answer)],
+                        e.body.guarding ? "UP" : "down", double(e.body.stamina), e.counterTimer > 0 ? "   counter ready" : "");
+            ImGui::SetItemTooltip("Your attack can hit it: it answers with a guard, a parry or a dodge, by its kind's chances (ADR-043).");
             ImGui::Text("gives up after %.0f s stuck   flees below %.0f%% health", t.giveUpSeconds, t.fleeHealth * 100);
         }
         if (e.transitions && ImGui::TreeNode("transitions", "Last %u transitions", std::min(e.transitions, uint32_t(e.history.size())))) {
@@ -439,6 +470,7 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
             ImGui::Text("Drops %s %.0f%%%s%s", itemType(t.loot).name, t.lootChance * 100, e.loot ? ", corpse holds " : "",
                         e.loot ? itemType(e.loot).name : "");
         if (t.weapon) ImGui::Text("Wields %s", itemType(t.weapon).name);
+        if (t.shield) ImGui::Text("Holds %s", itemType(t.shield).name);
         ImGui::Text("At %.1f %.1f %.1f, %.1f from you", e.body.pos.x, e.body.pos.y, e.body.pos.z,
                     glm::distance(e.body.pos, player.pos));
         if (t.wanders)

@@ -1665,3 +1665,88 @@
   stamina: it would overlap the parry. No rearm time: the window could be kept open by tapping.
 - **Consequences:** Blocking rewards timing a little, without competing with the parry's riposte. New
   data: the weapons' `parry`. `Combatant` gained `guardTime` and `perfectReady` (not saved).
+
+## ADR-042: Attack tokens, strings of hits and delayed hits
+
+- **Status:** accepted (2026-11-08)
+- **Context:** Three roadmap items for enemies (docs/COMBAT_ROADMAP.md). First, a cap on how many in a
+  pack swing at once (ADR-034's follow-up): soulslike packs hand out a few attack tokens and the
+  rest wait. Second, combos: an NPC swung one hit per windup. Third, delayed attacks: a hit held in
+  its windup to catch a roll that came too soon.
+- **Decision:**
+  - **Tokens:** each tick, after the sides, `gAi.attackers` (2) of the fighters on the player hold a
+    token (`Entity::token`); only they swing. One in its `Windup` or `Recover` keeps its own, and
+    gives it up when its recovery ends. The rest
+    go to the ones within 6 blocks that have waited longest since their last string (`sinceSwing`),
+    so turns rotate. Without a token, a fighter within the ring plus 3 blocks circles on a ring 3.6
+    blocks out at its side, facing the player and walking slowly one way round, then the other.
+  - **Strings:** a swing starts a string of 1 to the kind's `combo` hits (uniform). Each next hit
+    starts at the last one's chain point while the player is within reach + 1, as the next light in
+    turn. Each hit adds its swing time to the swing timer, so a string bunches hits with a longer
+    pause after it, without hitting more often.
+  - **Delayed hits:** a hit after the first is delayed with the kind's `delay` chance. It holds its
+    windup `gAi.delaySeconds` (0.5) × 0.8–1.2 longer and makes the windup sound again.
+  - **Data:** bandit combo 2; guard combo 3, delay 25%; chief combo 3, delay 35%, recovery 0.25 → 0.4 s;
+    ghoul combo 2, delay 40%, recovery 0.4 → 0.5 s. The longer recoveries keep the story fights in
+    their bands: strings land more hits on a player who only guards.
+- **Alternatives considered:**
+  - Strings that cost nothing extra: two- and three-hit strings about doubled the damage taken.
+  - Tokens by distance alone: the nearest would keep swinging and the rest would never get a turn.
+- **Consequences:**
+  - **Balance test:** the story-fight test now needs at least 10 of its 12 seeds in each band, not
+    all 12. Enemies answer by chance (ADR-043), so one fight can go either way. The means are still
+    held to their bands, and bare-handed the chief still always wins.
+  - **Fight replay:** `fightReplay` was re-pinned.
+  - **Tests and debug:** `npcAi` checks the state machine on a bandit without tactics. The Entities
+    tab shows each fighter's token, string and wait, and edits `gAi`.
+  - **Replays:** in a pack of three or more, a waiting fighter draws a random number to pick which
+    way it circles. Replays of such fights change, even for kinds without tactics.
+
+## ADR-043: Enemies that guard, parry, dodge and back off; NPC shields
+
+- **Status:** accepted (2026-11-08)
+- **Context:** The roadmap's "Enemies that guard, parry, dodge and back off" and "NPCs with shields".
+  The player had all of these (ADR-035, ADR-036, ADR-038, ADR-041); NPCs only swung.
+- **Decision:**
+  - **Answers:** a fighter that the player's attack can reach (in front of the player, within reach
+    + 1.5) picks one answer per attack, as soon as it is chasing. Its own swing is committed. The
+    kind's chances pick a `guard`, a `parry` or a `dodge`. A heavy or a riposte can't be parried, so
+    it guards instead.
+  - **Timing:** the answer comes after a reaction time of 0.06–0.18 s. A guard goes up and stays
+    0.4 s after the attack has passed. A parry starts so its window meets the hit. A dodge rolls
+    aside 0.12 s before the hit, whichever side is walkable, else it backsteps; four-legged kinds
+    hop back. Parries and dodges are off by up to ±0.07 s. It doesn't swing while it answers.
+  - **The NPC's guard mirrors the player's.** The shield's (or weapon's) negation by damage type
+    takes part of the damage. Each block costs stamina: `blockStamina` plus an amount per point of
+    damage, less the guard boost. NPCs now have stamina, refilling as the player's does. A blocked
+    hit does no stance damage. Out of stamina the guard breaks: it reels 1.1 s, not open to a riposte.
+  - **Parries, rolls and counters:** its parry deflects a light (the player reels 1 s). Its roll's
+    i-frames let the hit through. After it blocks or parries, its next swing within 1 s winds up in
+    0.3 s (a counter).
+  - **Shields:** a kind may hold a `shield` (an off-hand item; only kinds with hands). It is drawn,
+    guards and parries as the player's, and stays up whenever it chases within 6 blocks. While its
+    guard is up an NPC walks, as the player does.
+  - **Backing off:** after its string, with the kind's `back_off` chance, it walks away facing the
+    player for 0.9 s.
+  - **Data:**
+    - bandit: parry 15% (knife), dodge 20%, backs off 30%
+    - wolf: dodge 20%, backs off 50%
+    - guard: Heater Shield, guard 60%, parry 10%
+    - chief: guard 10% (sword), backs off 30%
+    - Validation: guard + parry + dodge ≤ 1. A guard needs a weapon or a shield. A parry needs
+      something that parries.
+- **Alternatives considered:**
+  - Answers picked only on the tick the attack starts: an NPC that was recovering never answered.
+    In play the player's attacks mostly start then.
+  - A riposte by the NPC after its parry: it would need a knocked-down pose for the player. The fast
+    counter is the punishment for now.
+  - Guard breaks that open a riposte: too cheap against shield users. They only reel.
+- **Consequences:**
+  - **Playing against them:** heavies beat parriers. Strings and guard pressure beat a shield.
+    Attacking in a fighter's recovery is still the safest.
+  - **Data and state:** creatures gained `combo`, `delay`, `shield`, `guard`, `parry`, `dodge` and
+    `back_off`. `Entity` gained tactic state and NPC bodies now use `stamina`; none of it is saved.
+  - **Tests and review:**
+    - The `enemies` test covers tokens, strings and every answer, using test-only kinds that always
+      answer one way.
+    - The review page shows each in motion.

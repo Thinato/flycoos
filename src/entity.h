@@ -54,6 +54,13 @@ struct EntityType {
     bool wooden;
     DamageType damage;  // what its attacks do without a weapon (ADR-040): teeth pierce, claws slash, tusks and fists strike
     PerType resist;     // the share of each damage type it shrugs off (negative: it's weak to it)
+    // Its tactics (ADR-042, ADR-043): the longest string of hits it swings (1: single hits), the chance a
+    // hit after the first is delayed, and the chances it meets a player's attack with a guard, a parry,
+    // a dodge, or backs off after its own. A shield in its off hand guards (and parries) as the player's.
+    int combo;
+    float delay;
+    float guard, parry, dodge, backOff;
+    ItemId shield;
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);
@@ -72,6 +79,28 @@ struct AiTransition {
     const char* reason = "";  // a static string, e.g. "target_left_leash"
     float after = 0;          // seconds it had spent in `from`
 };
+
+// What an NPC means to do about the player's attack under way (ADR-043), chosen as the attack starts.
+enum class Answer : uint8_t { None, Guard, Parry, Dodge, Count };
+inline constexpr const char* kAnswerNames[] = {"none", "guard", "parry", "dodge"};
+static_assert(std::size(kAnswerNames) == size_t(Answer::Count));
+
+// The fighting AI's knobs (ADR-042, ADR-043), live from the debug window's Entities tab.
+struct AiTuning {
+    int attackers = 2;          // fighters on the player that may swing at once (attack tokens); the rest wait
+    float waitRing = 3.6f;      // blocks from the player those that wait keep, circling
+    float strafeSpeed = 0.5f;   // x walking speed while they circle
+    float delaySeconds = 0.5f;  // a delayed hit in a string holds its windup this much longer (x 0.8 .. 1.2)
+    float reactFrom = 0.06f, reactTo = 0.18f;  // seconds before an NPC acts on an attack it sees coming
+    float aimError = 0.07f;     // +- seconds off it times a parry or a dodge by
+    float dodgeLead = 0.12f;    // a dodge starts this long before the hit is due
+    float guardHold = 0.4f;     // seconds the guard stays up after the attack has passed
+    float parriedSeconds = 1.0f;  // a player whose attack an NPC parries reels this long
+    float counterWindup = 0.3f;   // an NPC's swing right after it blocked or parried winds up this fast...
+    float counterWindow = 1.0f;   // ...if it starts within this long
+    float backOffSeconds = 0.9f;  // an NPC backing off walks away facing the player this long
+};
+inline AiTuning gAi;
 
 struct Entity {
     uint32_t id = 0;       // unique in the run (makeEntity counts them): what a lock-on holds
@@ -101,6 +130,19 @@ struct Entity {
     float xpWear = 0;      // the player's hits on it that earned XP lately: each one earns less (awardHitXp)
     float armorWear = 0;   // its hits on the player that earned armor XP lately
     int parried = 0;       // the player's parries on it toward its kind's `parries` (they don't wear off)
+    bool token = false;    // may swing at the player now (ADR-042): else it waits on the ring
+    float sinceSwing = 99; // seconds since it last started a string of hits: who waited longest swings next
+    int string = 0;        // hits left in the string it's swinging (ADR-042)
+    float strafe = 1;      // which way round it circles while it waits (+1, -1), and...
+    float strafeTimer = 0; // ...seconds until it may turn round
+    bool threatened = false;  // the player's attack under way can hit it (ADR-043)
+    bool picked = false;   // it has picked its answer to that attack
+    Answer answer = Answer::None;  // what it means to do about that attack...
+    float react = 0;       // ...in this many seconds (its reaction time)...
+    float aimOff = 0;      // ...this far off the right moment (parries and dodges)
+    float guardTimer = 0;  // > 0: holds its guard up
+    float counterTimer = 0;  // > 0: it just blocked or parried: its next swing comes fast
+    float backOff = 0;     // > 0: backing off after its string
     std::mt19937 rng;
 
     const EntityType& type() const { return typeOf(kind); }

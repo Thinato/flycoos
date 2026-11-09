@@ -25,7 +25,7 @@ system is summarized in ADR-035.
 - [x] Backstep (roll button with no direction) and its attack (ADR-038)
 - [x] Damage types (slash, strike, pierce) with per-shield negation and creature resistances (ADR-040);
       elemental types later, with magic
-- [ ] NPCs with shields that guard and parry (with "Enemies that guard, parry, dodge")
+- [x] NPCs with shields that guard and parry (the guard, ADR-043)
 
 ## Melee weapon classes (each needs its own moveset, timings, stance damage and animation set)
 
@@ -72,10 +72,10 @@ system is summarized in ADR-035.
 
 ## Enemies
 
-- [ ] Combos and delayed attacks (varied timings within a string)
-- [ ] Enemies that guard, parry, dodge and back off
+- [x] Combos and delayed attacks (varied timings within a string; ADR-042)
+- [x] Enemies that guard, parry, dodge and back off (ADR-043)
 - [ ] Ranged enemies keeping their distance (needs projectiles)
-- [ ] Attack tokens: only a few in a pack swing at once, the rest circle (ADR-034 follow-up)
+- [x] Attack tokens: only a few in a pack swing at once, the rest circle (ADR-042)
 - [ ] Grabs, area attacks, charges, jumping attacks
 - [ ] Bosses: phases, unique movesets, stance bars shown
 - [x] Enemy weakness and resistance per damage type (ADR-040)

@@ -313,7 +313,7 @@ void loadCreatures(const File& f, Defs& d) {
                  "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds", "leash_radius",
                  "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
                  "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "damage",
-                 "resist"});
+                 "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
         auto flag = [&](const char* key) {
@@ -406,6 +406,23 @@ void loadCreatures(const File& f, Defs& d) {
         t.damage = given("damage") ? damageType(r, r.fields["damage"], "damage") : DamageType::Strike;
         if (given("resist") && !t.attackable) throw r.fail("resist", "only attackable creatures are hit");
         t.resist = perType(r, given("resist") ? r.fields["resist"] : json(), "resist", -1, 0.9, 0);
+        // Tactics (ADR-042, ADR-043): strings of hits, delayed ones, and answers to the player's attacks.
+        for (const char* key : {"combo", "delay", "guard", "parry", "dodge", "back_off", "shield"})
+            if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");
+        t.combo = int(r.number(r.fields, "combo", 1, 4, 1));
+        t.delay = float(r.number(r.fields, "delay", 0, 1, 0, false));
+        if (t.delay > 0 && t.combo < 2) throw r.fail("delay", "only a hit after the first is delayed (needs a 'combo' of 2 or more)");
+        t.shield = item("shield");
+        if (t.shield && (t.model == ModelDummy || t.model == ModelBoar || t.model == ModelWolf)) throw r.fail("shield", "only creatures with hands hold one");
+        if (t.shield && d.items[t.shield].shield.size == ShieldSize::None) throw r.fail("shield", std::format("'{}' is not a shield", d.itemIds[t.shield]));
+        t.guard = float(r.number(r.fields, "guard", 0, 1, 0, false));
+        t.parry = float(r.number(r.fields, "parry", 0, 1, 0, false));
+        t.dodge = float(r.number(r.fields, "dodge", 0, 1, 0, false));
+        t.backOff = float(r.number(r.fields, "back_off", 0, 1, 0, false));
+        if (t.guard > 0 && !t.weapon && !t.shield) throw r.fail("guard", "bare-handed creatures don't guard (it needs a 'weapon' or a 'shield')");
+        float parriesWith = t.shield ? d.items[t.shield].shield.parry : t.weapon ? d.items[t.weapon].parry : 0;
+        if (t.parry > 0 && parriesWith <= 0) throw r.fail("parry", "nothing it holds parries (a shield that does, or a weapon with 'parry')");
+        if (t.guard + t.parry + t.dodge > 1) throw r.fail("dodge", "guard + parry + dodge are chances of one answer: at most 1 together");
         if (d.creatures.size() <= save) d.creatures.resize(save + 1), d.creatureIds.resize(save + 1), d.creatureNames.resize(save + 1);
         d.creatures[save] = t;
         d.creatureIds[save] = r.id();
