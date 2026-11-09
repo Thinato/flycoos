@@ -298,6 +298,13 @@ Any other hit has a 5% chance to be a **critical hit** for 50% more (a knife: 10
 too. Critical damage numbers are big, orange and end in "!". Big hits shake the camera (the debug
 window's Camera tab turns it down or off).
 
+**Status effects** (ADR-046): some hits build up a status on their target, shown as a bar under its
+health. When the bar fills, the status takes effect. **Bleed** (the Rusty Knife, wolves' bites) takes a burst of health,
+**poison** (barrow ghouls' claws) drains it for 10 seconds and turns the health bar green, and
+**frost** (no source yet) takes a burst and then makes the body take 20% more damage for a while.
+The bars drain over time; armor resists statuses (the iron set a lot), and a shield's guard stops
+the build-up along with the damage. Status damage numbers come in the status's color.
+
 A spawn marker can carry up to 8 **lines** of dialogue (1–160 bytes each). Villagers and guards say
 the next one each time you press E, round and round; anyone who fights (guards too) shouts the
 next one when they turn on you.

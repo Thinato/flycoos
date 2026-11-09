@@ -383,7 +383,7 @@ void loadCreatures(const File& f, Defs& d) {
                  "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "respawn_seconds", "leash_radius",
                  "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
                  "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "damage",
-                 "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield"});
+                 "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield", "mods"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
         auto flag = [&](const char* key) {
@@ -476,6 +476,7 @@ void loadCreatures(const File& f, Defs& d) {
         t.damage = given("damage") ? damageType(r, r.fields["damage"], "damage") : DamageType::Strike;
         if (given("resist") && !t.attackable) throw r.fail("resist", "only attackable creatures are hit");
         t.resist = perType(r, given("resist") ? r.fields["resist"] : json(), "resist", -1, 0.9, 0);
+        if (given("mods")) t.mods = readMods(r, r.fields["mods"], "mods");  // its own (ADR-046): a bite that bleeds, a resist
         // Tactics (ADR-042, ADR-043): strings of hits, delayed ones, and answers to the player's attacks.
         for (const char* key : {"combo", "delay", "guard", "parry", "dodge", "back_off", "shield"})
             if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");

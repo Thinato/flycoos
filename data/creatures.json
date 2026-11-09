@@ -14,7 +14,8 @@
   {"id": "wolf", "save_id": 4, "name": "Wolf", "level": 1, "stats": {"stamina": 8, "strength": 6, "agility": 70, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "wolf", "temper": "aggressive", "aggro_range": 12, "wander_radius": 10, "chase_speed": 7.5,
    "loot": "wolf_pelt", "loot_chance": 0.6, "respawn_seconds": 30, "stance": 70, "attack_windup": 0.28, "attack_recover": 0.15, "hit_stance": 8, "voice": "wolf",
-   "damage": "pierce", "resist": {"slash": -0.15, "strike": 0, "pierce": 0}, "dodge": 0.2, "back_off": 0.5},
+   "damage": "pierce", "resist": {"slash": -0.15, "strike": 0, "pierce": 0}, "dodge": 0.2, "back_off": 0.5,
+   "mods": [{"stat": "bleed", "flat": 22}]},
   {"id": "guard", "save_id": 5, "name": "Guard", "level": 4, "stats": {"stamina": 16, "strength": 5, "agility": 3, "intellect": 2, "spirit": 4},
    "attackable": true, "wanders": true, "talks": true, "model": "guard", "temper": "passive", "wander_radius": 6, "chase_speed": 6,
    "weapon": "iron_shortsword", "respawn_seconds": 60, "stance": 90, "poise": 12, "hit_stance": 20, "voice": "human", "voice_pitch": 0.92,
@@ -26,5 +27,6 @@
   {"id": "ghoul", "save_id": 7, "name": "Barrow Ghoul", "level": 3, "stats": {"stamina": 7, "strength": 4, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "ghoul", "temper": "aggressive", "aggro_range": 8, "wander_radius": 4, "chase_speed": 4,
    "loot": "bone_charm", "loot_chance": 0.3, "respawn_seconds": 45, "stance": 90, "poise": 12, "attack_windup": 0.6, "attack_recover": 0.5, "hit_stance": 14, "voice": "ghoul",
-   "damage": "slash", "resist": {"slash": 0, "strike": -0.3, "pierce": 0.3}, "combo": 2, "delay": 0.4}
+   "damage": "slash", "resist": {"slash": 0, "strike": -0.3, "pierce": 0.3}, "combo": 2, "delay": 0.4,
+   "mods": [{"stat": "poison", "flat": 25}, {"stat": "poison_resist", "flat": 400}]}
 ]

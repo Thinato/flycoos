@@ -55,22 +55,58 @@ void hint(ImDrawList* dl, ImVec2 p, float alpha, const Entity& e) {
     shadowText(dl, ImVec2(p.x - size.x / 2, p.y + 8), uiColor(1, 1, 1, alpha), alpha, text);
 }
 
-// Damage number over `head`: pops big, rises and fades over a second. A critical hit's (ADR-045) is
-// bigger, orange and marked "!".
-void damageNumber(ImDrawList* dl, const glm::mat4& viewProj, ImVec2 screen, glm::vec3 head, const Player& b, glm::vec3 rgb) {
-    float t = b.hitTime;
-    if (t >= 1) return;
-    glm::vec4 c = viewProj * glm::vec4(head + glm::vec3(0, 0.4f + 1.2f * t, 0), 1);
-    if (c.w < 0.1f) return;  // behind the camera
-    char num[16];
-    std::snprintf(num, sizeof num, b.lastCrit ? "%d!" : "%d", b.lastDamage);
-    if (b.lastCrit) rgb = {1, 0.5f, 0.1f};
-    float size = ImGui::GetFontSize() * (2.2f - 0.8f * std::min(t * 4, 1.0f)) * (b.lastCrit ? 1.5f : 1), alpha = 1 - t * t;
-    ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, num);
-    ImVec2 q((c.x / c.w * 0.5f + 0.5f) * screen.x - ts.x / 2, (0.5f - c.y / c.w * 0.5f) * screen.y - ts.y / 2);
-    dl->AddText(ImGui::GetFont(), size, ImVec2(q.x + 2, q.y + 2), uiColor(0, 0, 0, 0.8f * alpha), num);
-    dl->AddText(ImGui::GetFont(), size, q, uiColor(rgb.r, rgb.g, rgb.b, alpha), num);
+// The status colors (ADR-046): bleed crimson (apart from health's red), poison green, frost ice blue
+// (deep enough to read against the sky).
+constexpr glm::vec3 kStatusRgb[] = {{0.9f, 0.1f, 0.4f}, {0.45f, 0.85f, 0.2f}, {0.3f, 0.65f, 1}};
+static_assert(std::size(kStatusRgb) == size_t(Status::Count));
+
+// Damage numbers over `head`: each pops big, rises and fades over a second. A critical hit's (ADR-045)
+// is bigger, orange and marked "!"; a status's (ADR-046) is in its color, beside the hit's: a bleed or
+// frostbite burst big, poison's ticks small.
+void damageNumbers(ImDrawList* dl, const glm::mat4& viewProj, ImVec2 screen, glm::vec3 head, const Player& b, glm::vec3 hit) {
+    for (const DamageNumber& n : b.numbers) {
+        float t = n.age;
+        if (t >= 1) continue;
+        glm::vec4 c = viewProj * glm::vec4(head + glm::vec3(0, 0.4f + 1.2f * t, 0), 1);
+        if (c.w < 0.1f) continue;  // behind the camera
+        bool status = n.kind != Status::Count;
+        char num[16];
+        std::snprintf(num, sizeof num, n.crit || n.kind == Status::Bleed ? "%d!" : "%d", n.amount);
+        glm::vec3 rgb = status ? kStatusRgb[size_t(n.kind)] : n.crit ? glm::vec3(1, 0.5f, 0.1f) : hit;
+        float scale = n.crit ? 1.5f : n.kind == Status::Poison ? 0.75f : status ? 1.3f : 1;
+        float size = ImGui::GetFontSize() * (2.2f - 0.8f * std::min(t * 4, 1.0f)) * scale, alpha = 1 - t * t;
+        ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, num);
+        // Beside the hit's number (which is about 1.3 lines wide): bleed and poison right of it, frost left.
+        float gap = ImGui::GetFontSize() * 1.6f, side = !status ? 0 : n.kind == Status::Frost ? -gap - ts.x / 2 : gap + ts.x / 2;
+        ImVec2 q((c.x / c.w * 0.5f + 0.5f) * screen.x - ts.x / 2 + side, (0.5f - c.y / c.w * 0.5f) * screen.y - ts.y / 2);
+        dl->AddText(ImGui::GetFont(), size, ImVec2(q.x + 2, q.y + 2), uiColor(0, 0, 0, 0.8f * alpha), num);
+        dl->AddText(ImGui::GetFont(), size, q, uiColor(rgb.r, rgb.g, rgb.b, alpha), num);
+    }
 }
+
+// A bar per status building up on `b` or on it (ADR-046), from `at` on, `step` apart: build-up toward
+// its resist, or the time its effect has left (brighter). `label`: its name on the left.
+void statusBars(ImDrawList* dl, ImVec2 at, ImVec2 size, float step, const Player& b, float alpha, bool label) {
+    StatSheet s = sheet(b);
+    for (size_t i = 0; i < size_t(Status::Count); ++i) {
+        const TimedEffect* on = i == size_t(Status::Poison) ? b.effect(Effect::Poisoned)
+                              : i == size_t(Status::Frost)  ? b.effect(Effect::Frostbitten)
+                                                            : nullptr;
+        float resist = s[resistStat(Status(i))], fill = on ? on->seconds / std::max(on->length, 1e-3f) : resist > 0 ? b.buildup[i] / resist : 0;
+        if (fill <= 0) continue;
+        glm::vec3 c = kStatusRgb[i] * (on ? 1.0f : 0.7f);
+        bar(dl, at, size, std::min(fill, 1.0f), uiColor(c.r, c.g, c.b, alpha), alpha);
+        if (label) {
+            const char* name = on ? kEffectNames[size_t(on->kind)] : kStatNames[size_t(buildupStat(Status(i)))];
+            ImVec2 ts = ImGui::CalcTextSize(name);
+            shadowText(dl, ImVec2(at.x - size.x / 2 - ts.x - 8, at.y - ts.y / 2), uiColor(c.r, c.g, c.b, alpha), alpha, name);
+        }
+        at.y += step;
+    }
+}
+
+// Health's color: red, green while poisoned (ADR-046).
+glm::vec3 healthRgb(const Player& b) { return b.effect(Effect::Poisoned) ? glm::vec3(0.35f, 0.6f, 0.12f) : glm::vec3(0.8f, 0.15f, 0.12f); }
 
 }  // namespace
 
@@ -91,7 +127,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         glm::vec4 clip = viewProj * glm::vec4(head, 1);
         if (clip.w < 0.1f) continue;  // behind the camera
         ImVec2 p((clip.x / clip.w * 0.5f + 0.5f) * screen.x, (0.5f - clip.y / clip.w * 0.5f) * screen.y);
-        damageNumber(dl, viewProj, screen, head, e.body, {1, 0.85f, 0.3f});
+        damageNumbers(dl, viewProj, screen, head, e.body, {1, 0.85f, 0.3f});
         // Speech and the talk hint always show; nameplates only nearby and in line of sight (same
         // box march the camera uses, with a thin box).
         const char* speech = e.speech();
@@ -110,11 +146,13 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         ImU32 nameColor = t.temper == Temper::Aggressive ? uiColor(1, 0.35f, 0.3f, alpha)
                         : t.attackable                   ? uiColor(1, 0.78f, 0.35f, alpha)
                                                          : uiColor(0.6f, 1, 0.6f, alpha);
-        ImU32 healthColor = t.attackable ? uiColor(0.85f, 0.2f, 0.15f, alpha) : uiColor(0.3f, 0.8f, 0.3f, alpha);
+        glm::vec3 hc = t.attackable ? healthRgb(e.body) : glm::vec3(0.3f, 0.8f, 0.3f);
+        ImU32 healthColor = uiColor(hc.r, hc.g, hc.b, alpha);
         shadowText(dl, ImVec2(p.x - size.x / 2, p.y - line - 6), nameColor, alpha, label);
         // Health: always for the aggressive, for the rest (friendly, passive) only in combat.
         if (t.temper == Temper::Aggressive || e.angry() || e.body.combatTimer > 0)
             bar(dl, p, ImVec2(90, 7), e.body.health / float(maxHealth(sheet(e.body))), healthColor, alpha);
+        statusBars(dl, ImVec2(p.x, p.y + 8), ImVec2(90, 4), 6, e.body, alpha, false);  // under it
         if (!speech && &e == target) hint(dl, p, alpha, e);
     }
 
@@ -126,7 +164,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
             dl->AddCircleFilled(p, 4.5f, uiColor(1, 1, 1, 0.95f));
         }
     }
-    damageNumber(dl, viewProj, screen, drawPos(player, tickAlpha) + glm::vec3(0, 2.2f, 0), player, {1, 0.3f, 0.25f});
+    damageNumbers(dl, viewProj, screen, drawPos(player, tickAlpha) + glm::vec3(0, 2.2f, 0), player, {1, 0.3f, 0.25f});
     if (!player.alive()) {
         char msg[64];
         std::snprintf(msg, sizeof msg, "Knocked out - back on your feet in %.0f s",
@@ -141,7 +179,9 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     // Player health, bottom center.
     ImVec2 center(screen.x / 2, screen.y - 40);
     int most = maxHealth(sheet(player));
-    bar(dl, center, ImVec2(280, 16), player.health / float(most), uiColor(0.8f, 0.15f, 0.12f), 1);
+    glm::vec3 hc = healthRgb(player);
+    bar(dl, center, ImVec2(280, 16), player.health / float(most), uiColor(hc.r, hc.g, hc.b), 1);
+    statusBars(dl, ImVec2(center.x, center.y - 18), ImVec2(160, 6), -10, player, 1, true);  // over it, up
     char hp[32];
     std::snprintf(hp, sizeof hp, "%d / %d", int(std::ceil(player.health)), most);
     ImVec2 hs = ImGui::CalcTextSize(hp);

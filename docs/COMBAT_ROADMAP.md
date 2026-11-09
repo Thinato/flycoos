@@ -66,7 +66,7 @@ system is summarized in ADR-035.
 - [ ] Dual wielding / power stance
 - [ ] Weapon skills (a special move per weapon or per skill gem, costing mana)
 - [x] Backstabs and criticals (from behind an unaware or turned enemy; random crits as stats, ADR-045)
-- [ ] Status effects: bleed, poison, frost, stun build-up bars
+- [x] Status effects: bleed, poison, frost build-up bars, timed effects (ADR-046); stun is the stance bar (ADR-035)
 - [ ] Weapon scaling with attributes (strength, agility, intellect, spirit)
 - [x] Equip load: light, medium and heavy rolls; overloaded can't roll (ADR-039)
 - [ ] Healing flasks (limited charges, refilled at rest points)
@@ -91,4 +91,4 @@ system is summarized in ADR-035.
 - [x] Camera shake on heavy hits (and criticals, big hits taken; ADR-045)
 - [ ] Knockback and launch on big hits; ragdoll-ish falls
 - [ ] Charge glow; a riposte and parry flash
-- [ ] Damage numbers by type; a crit marker (the marker done, ADR-045)
+- [ ] Damage numbers by type; a crit marker (the marker done, ADR-045; status numbers by type, ADR-046)

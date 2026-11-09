@@ -1869,3 +1869,73 @@
     conditions, and a backstab that holds and knocks down a boar and a recovering bandit. It also
     measures random crit rates (the knife's 10%, an NPC's on the player) and their x1.5, and the
     camera trauma. The debug Player tab's Criticals node tunes the angle, the wait and the shake.
+
+## ADR-046: Status effects: bleed, poison, frost, and one list of timed effects
+
+- **Status:** accepted (2026-11-09)
+- **Context:**
+  - The roadmap's "Status effects: bleed, poison, frost, stun build-up bars", half of Feel's
+    "Damage numbers by type", and the talent plan's foundation 4: timed effects (poison, buffs,
+    enchants) share one list on the combatant. Nothing like that list existed.
+  - Foundation 1: what a talent could raise is a stat, so build-up and resistance are stats.
+- **Decision:**
+  - **Build-up, the Elden Ring way:** six new stats, `bleed`, `poison`, `frost` (what each hit that
+    lands adds to the target's bar, base 0) and `bleed_resist`, `poison_resist`, `frost_resist`
+    (what fills it, base 100).
+    - A hit adds the attacker's build-up, through its weapon skill's sheet like crits. A guard lets
+      through what its negation lets through, even from a hit too light to hurt: a buckler 15% of a
+      slash, a perfect guard or a parry nothing.
+    - The bars drain at 8 a second (`gStatus.decay`). Full, the status takes effect and its bar
+      starts over. Poison and frost don't build while their effect is on.
+    - Status damage skips armor and damage taken, and is a share of the target's max health. So it
+      scales with the target, not the attacker's level or gear.
+  - **The three statuses** (all in `StatusTuning gStatus`, tuned live in the debug window):
+    - **Bleed:** a burst of 10% of max health + 5, at once.
+    - **Poison:** a timed effect: 0.5% of max health + 0.5 (rounded) every second for 10 s. Its
+      ticks aren't hits: a poisoned back can still be stabbed, and an NPC that gave up the chase
+      isn't called back by them.
+    - **Frost(bite):** a burst of 10% + 3, then a timed effect for 15 s with +20% damage taken (an
+      `increased` modifier on DamageTaken).
+  - **Timed effects:** `TimedEffect {kind, source, seconds, length, stacks, modifiers}` in
+    `Combatant::effects`. `collect()` adds their modifiers, so they flow through the stat pipeline;
+    updateCombat runs their clocks and poison's ticks. A fresh one of a kind replaces the one on.
+    A death ends them all and empties the bars. Saves don't keep them.
+  - **Creature mods:** creature records take `mods` like items (`Combatant::innate`). A wolf's bite
+    builds bleed (22), a ghoul's claws poison (25), and ghouls resist poison (+400).
+  - **Sources:** the Rusty Knife builds bleed (30), so the player's knife bleeds a foe in about 4
+    hits, and bandits bleed the player. Frost has no source yet (magic later); the debug window
+    applies it.
+  - **Armor resists statuses:** each iron piece adds bleed and frost resist (40, 85, 25, 75, 25: 250
+    for the set) and a little less poison resist (200 for the set), as Elden Ring's metal armor is
+    robust. Status damage ignores armor, so without this a geared player in the story fights lost
+    most of their health to it.
+  - **What shows:**
+    - Damage numbers come in a list of four per body, so a bleed's burst shows beside the hit that
+      caused it: bleed red and "!", frost pale blue, poison's ticks small and green.
+    - Build-up bars sit under each nameplate's health bar and over the player's, with names. An
+      active poison or frostbite shows as a brighter bar draining with its time; health turns green
+      while poisoned.
+    - The character sheet lists the weapon's build-up and the three resists.
+  - **Sounds:** a wet splat for a bleed (over a heavy hit), bubbles for poison, a glassy clink for
+    frost: CC0 packs already in CREDITS.md, trimmed and levelled.
+  - **Kills:** poison kills, and the kill is the player's (character XP and the Killed event that
+    quests count): only the player afflicts NPCs.
+- **Alternatives considered:**
+  - Status numbers on the creature record as their own fields: creature `mods` reuse the stat
+    pipeline and make every stat a creature trait, so the player's and NPCs' numbers work the same.
+  - Statuses through armor: Elden Ring's status damage ignores defense, and resists are the counter.
+    That's what makes armor's resist matter.
+  - Stacking poison: one at a time with a lockout, as Elden Ring, keeps it readable. `stacks` is in
+    the struct for later effects that stack.
+  - Stun build-up (the roadmap's fourth): the stance system (ADR-035) already is one.
+- **Consequences:**
+  - **Balance:** the story fights hold their bands. Over 48 seeds the wolves leave 27 (28 before),
+    the ghouls 26 (26), the chief 31 (31). An unarmored player is bled and poisoned often: armor and
+    shields are the answer.
+  - **Tests:** the crit tests and two bandit-hit tests give their bodies a huge bleed resist, so they
+    measure what they're about. The `statusEffects` test checks the stats and sources, build-up, decay
+    and resists, each status, the lockout, the guard's share both ways, the effects' modifiers through
+    `sheet()`, a death clearing them, a poison kill's XP and event, and bleeds in fights both ways.
+    Mutation-checked: each of 18 rules broken alone fails it.
+  - **Talents:** build-up and resists are stats; the effects list is ready for buffs, enchants and
+    spells. The proc numbers are global knobs (`gStatus`) for now, as the foundations allow.

@@ -7,7 +7,7 @@ Status: **planned, not built**. The talent trees come after every combat feature
 1. **What a talent could raise goes in the stat pipeline.** Per-character numbers are new `Stat`s, so items, buffs and (later) talents raise them the same way, through `collect()` modifiers. Examples: crit chance and crit damage, poison or bleed build-up, spell power, max mana, draw speed. The rule tunables in `gMelee` stay global for now; when the trees arrive, the ones talents bend get read through one per-combatant accessor.
 2. **Every weapon gets a class in its data**, e.g. `"class": "dagger"` in items.json, and code asks the class, never the item id. Conditions key on the class. This also replaces `heldModel`'s knife-or-sword guess.
 3. **Pressed actions share one path.** Spells, weapon skills and special shots all go through one action path with a cost (stamina or mana), a cooldown and a cast or windup. The ability bar will then just call it, and a talent or spell is only data naming an action.
-4. **Timed effects share one list.** Poison, bleed, frost, buffs, invisibility and weapon enchants are timed effects on the combatant: a kind, a source, a duration, stacks and modifiers. Spells, items and talents all add to it.
+4. **Timed effects share one list.** Poison, bleed, frost, buffs, invisibility and weapon enchants are timed effects on the combatant: a kind, a source, a duration, stacks and modifiers. Spells, items and talents all add to it. Built in ADR-046: `Combatant::effects`, whose modifiers `collect()` adds.
 5. **No new use-based skills.** No Archery or Destruction skill that levels as you use it. Use-based skills are going away. Until the rework, new weapons earn the existing XP the way swords do.
 
 ## Decisions (2026-11-08)

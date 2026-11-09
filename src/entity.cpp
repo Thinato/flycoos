@@ -98,6 +98,8 @@ Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 fa
     e.body.tuning.runSpeed = t.chaseSpeed;
     e.body.inv.equipped[SlotMainHand] = t.weapon;
     e.body.inv.equipped[SlotOffHand] = t.shield;
+    e.body.innate = t.mods;
+    for (Modifier& m : e.body.innate) m.source = "innate";  // (not its kind's name: defs may be reloaded under it)
     e.body.health = float(maxHealth(sheet(e.body)));
     e.body.stance = t.stance;
     e.body.breathPhase = kTau * rand01(e.rng);
@@ -661,20 +663,21 @@ bool takeLoot(Entity& e, Inventory& inv) {
     return true;
 }
 
-bool hurt(Player& b, int amount, bool crit) {
+bool hurt(Player& b, int amount, bool crit, Status kind) {
     if (amount <= 0 || !b.alive()) return false;
     b.health = std::max(0.0f, b.health - float(amount));
-    b.lastDamage = amount;
-    b.lastCrit = crit;
-    b.hitTime = 0;
+    if (kind == Status::Count) b.lastDamage = amount, b.lastCrit = crit;  // the last hit's (a status's has its number)
+    if (kind != Status::Poison) b.hitTime = 0;  // a poisoned back can still be stabbed
     b.combatTimer = kCombatSeconds;
+    *std::ranges::max_element(b.numbers, {}, &DamageNumber::age) = {amount, 0, crit, kind};
+    if (!b.alive()) b.effects.clear(), b.buildup = {};  // death ends them (ADR-046)
     return true;
 }
 
-bool damage(Entity& e, int amount, bool crit) {
+bool damage(Entity& e, int amount, bool crit, Status kind) {
     const EntityType& t = e.type();
-    if (!t.attackable || !hurt(e.body, amount, crit)) return false;
-    if (t.temper != Temper::Harmless) e.events |= EventDamaged;
+    if (!t.attackable || !hurt(e.body, amount, crit, kind)) return false;
+    if (t.temper != Temper::Harmless && kind != Status::Poison) e.events |= EventDamaged;  // poison's ticks don't call it back
     if (!e.body.alive() && (t.lootChance >= 1 || rand01(e.rng) < t.lootChance)) e.loot = t.loot;  // rand01 may return 1
     return true;
 }
@@ -762,7 +765,42 @@ void staggerHit(Entity& e, float stance, bool critical) {
     }
 }
 
-static void tick(Player& b, float dt) {
+int afflict(Player& b, Status s, std::string_view source) {
+    if (!b.alive()) return 0;
+    const StatusTuning& t = gStatus;
+    float most = float(maxHealth(sheet(b)));
+    auto put = [&](Effect kind, float seconds, std::vector<Modifier> mods) {
+        std::erase_if(b.effects, [&](const TimedEffect& e) { return e.kind == kind; });
+        b.effects.push_back({kind, std::string(source), seconds, seconds, 1, std::move(mods), 1});
+    };
+    b.buildup[size_t(s)] = 0;
+    switch (s) {
+    case Status::Bleed: b.noise(Noise::Bleed); return int(std::lround(t.bleedShare * most + t.bleedFlat));
+    case Status::Poison: put(Effect::Poisoned, t.poisonSeconds, {}), b.noise(Noise::Poison); return 0;
+    case Status::Frost:
+        put(Effect::Frostbitten, t.frostSeconds, {{Stat::DamageTaken, ModKind::Increased, t.frostTaken}}), b.noise(Noise::Frost);
+        return int(std::lround(t.frostShare * most + t.frostFlat));
+    case Status::Count: break;
+    }
+    return 0;
+}
+
+std::array<int, size_t(Status::Count)> buildUp(const Combatant& attacker, Player& b, float share, std::string_view source) {
+    std::array<int, size_t(Status::Count)> burst{};
+    if (share <= 0 || !b.alive()) return burst;
+    StatSheet a = sheet(attacker, skillOf(attacker.swingWeapon)), d = sheet(b);
+    for (size_t i = 0; i < burst.size(); ++i) {
+        Status s = Status(i);
+        float add = a[buildupStat(s)] * share;
+        if (add <= 0 || (s != Status::Bleed && b.effect(s == Status::Poison ? Effect::Poisoned : Effect::Frostbitten))) continue;
+        if ((b.buildup[i] += add) >= d[resistStat(s)]) burst[i] = afflict(b, s, source);
+    }
+    return burst;
+}
+
+// The clocks of `b`'s body: its swing, move, reeling and combat timers, its status build-up and timed
+// effects, its regeneration. Returns the poison damage due this tick, for the caller to deal.
+static int tick(Player& b, float dt) {
     // May go up to one frame negative, so back-to-back swings don't lose time to frame rounding.
     b.swingTimer = std::max(b.swingTimer - dt, -dt);
     advanceMove(b, dt);
@@ -771,10 +809,20 @@ static void tick(Player& b, float dt) {
     b.hitTime += dt;
     b.combatTimer = std::max(0.0f, b.combatTimer - dt);
     b.trauma = std::max(0.0f, b.trauma - dt);  // a full shake wears off in a second
+    for (DamageNumber& n : b.numbers) n.age = std::min(n.age + dt, 99.0f);
+    for (float& v : b.buildup) v = std::max(0.0f, v - gStatus.decay * dt);
     StatSheet s = sheet(b);
     if (!b.alive()) b.deadTime += dt;
     else if (b.combatTimer == 0) b.health += healthRegen(s) * dt;
     b.health = std::min(b.health, float(maxHealth(s)));
+    int poison = 0;
+    for (TimedEffect& e : b.effects) {
+        e.seconds -= dt;
+        if (e.kind == Effect::Poisoned && (e.tick -= dt) <= 1e-4f)  // (the last tick lands as it runs out)
+            e.tick += 1, poison += e.stacks * int(std::lround(gStatus.poisonShare * float(maxHealth(s)) + gStatus.poisonFlat));
+    }
+    std::erase_if(b.effects, [](const TimedEffect& e) { return e.seconds <= 1e-4f; });
+    return poison;
 }
 
 // True once per swing, at its impact frame. A swing dies with its swinger.
@@ -799,11 +847,16 @@ static bool rollCrit(const Combatant& attacker, std::mt19937& rng) {
 static float critDamage(const Combatant& attacker) { return 1 + sheet(attacker, skillOf(attacker.swingWeapon))[Stat::CritDamage]; }
 static void shake(Player& p, float trauma) { p.trauma = std::min(1.0f, p.trauma + trauma); }
 
+// A kill's character XP: the creature's `xp`, worn by the player's hits on it lately (`wear`).
+static void awardKillXp(Combatant& player, const Entity& npc, float wear) {
+    addCharacterXp(player.progress, player.level, int(std::lround(float(npc.type().xp) * std::exp2(-wear / kXpWearHalving))));
+}
+
 void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed) {
     const EntityType& t = npc.type();
     if (!t.attackable) return;  // can't be hurt or killed: nothing to learn from (the Skyrim companion exploit)
     float& wear = playerHit ? npc.xpWear : npc.armorWear;
-    float worn = std::exp2(-wear / kXpWearHalving), rate = (t.temper == Temper::Harmless ? kTrainingRate : 1) * worn;
+    float before = wear, worn = std::exp2(-wear / kXpWearHalving), rate = (t.temper == Temper::Harmless ? kTrainingRate : 1) * worn;
     auto use = [&](Skill s, const Attack& a) {  // base damage, so gear, strength and talents don't speed it up
         const SkillDef& d = skillDef(s);
         addSkillXp(player.progress, player.level, s, skillUseXp(d.useMult, d.useOffset, float(a.minDamage + a.maxDamage) / 2) * rate);
@@ -811,7 +864,7 @@ void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed) {
     };
     if (playerHit) {
         use(skillOf(player.swingWeapon), weaponAttack(player.swingWeapon));
-        if (killed) addCharacterXp(player.progress, player.level, int(std::lround(float(t.xp) * worn)));
+        if (killed) awardKillXp(player, npc, before);
     } else if (sheet(player)[Stat::Armor] > 0) {
         use(Skill::Armor, weaponAttack(npc.body.swingWeapon));
     }
@@ -819,7 +872,7 @@ void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed) {
 
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK,
                   std::vector<GameEvent>* events) {
-    tick(player, dt);
+    if (hurt(player, tick(player, dt), false, Status::Poison) && !player.alive()) player.noise(Noise::Death);
     if (lands(player)) {
         const MoveSpec& m = spec(player);
         // A riposte lands on the broken stance it was for, a backstab on the back it caught; if that's gone it's a plain hit.
@@ -868,7 +921,13 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             full = int(std::lround(float(full) * (1 - guard->negation)));
             stance = 0;  // a guard takes the stance damage on its stamina
         }
-        if (target && damage(*target, full, crit && !guard)) {  // a blocked crit is marked as the block
+        bool landed = target && damage(*target, full, crit && !guard);  // a blocked crit is marked as the block
+        if (target && (landed || guard)) {  // statuses build up by what a guard let through, a light hit's too (ADR-046)
+            std::string_view with = player.swingWeapon ? itemType(player.swingWeapon).name : "Fists";
+            auto bursts = buildUp(player, target->body, guard ? 1 - guard->negation : 1, with);
+            for (size_t s = 0; s < bursts.size(); ++s) landed |= damage(*target, bursts[s], false, Status(s));
+        }
+        if (landed) {
             player.combatTimer = kCombatSeconds;
             bool killed = !target->body.alive();
             awardHitXp(player, *target, true, killed);
@@ -886,7 +945,11 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
         }
     }
     for (Entity& e : entities) {
-        tick(e.body, dt);
+        if (int poison = tick(e.body, dt); damage(e, poison, false, Status::Poison) && !e.body.alive()) {  // the player's kill
+            e.body.noise(Noise::Death);
+            awardKillXp(player, e, e.xpWear);
+            if (events) events->push_back(Killed{e.kind, e.spawn.id});
+        }
         e.xpWear = std::max(0.0f, e.xpWear - dt / kXpWearSeconds);
         e.armorWear = std::max(0.0f, e.armorWear - dt / kXpWearSeconds);
         if (e.body.stanceWait > 0) e.body.stanceWait = std::max(0.0f, e.body.stanceWait - dt);
@@ -899,6 +962,7 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             int full = resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), {rng, armorK, crit ? critDamage(e.body) : 1});
             const MeleeTuning& t = gMelee;
             bool guarded = false;
+            float through = 1;  // the share a guard let through (status build-up)
             if (e.type().parryable && parries(player, e.body.pos)) {  // deflected (ADR-036): the last of its parries opens it
                 player.combatTimer = kCombatSeconds;
                 if (++e.parried >= e.type().parries) e.parried = 0, interrupt(e.body, t.parrySeconds, true), e.body.noise(Noise::StanceBreak);
@@ -920,11 +984,17 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
                 if (player.stamina > 0 && bounces(*guard, e.type().hitStance)) interrupt(e.body, t.recoilSeconds, false), player.noise(Noise::Bounce);  // off a greatshield
                 perfect &= !player.broken;  // a guard that broke wasn't perfect
                 full = perfect ? 0 : int(std::lround(float(full) * (1 - guard->negation)));
+                through = perfect ? 0 : 1 - guard->negation;
                 if (perfect) player.noise(Noise::PerfectGuard);
             } else if (full > 0 && !hyperarmor(player) && e.type().hitStance >= playerPoise(player)) {
                 interrupt(player, gMelee.flinchSeconds, false);
             }
-            if (hurt(player, full, crit && !guarded)) {
+            bool landed = hurt(player, full, crit && !guarded);
+            if (landed || guarded) {  // statuses build up by what the guard let through, a light hit's too (ADR-046)
+                auto bursts = buildUp(e.body, player, through, e.type().name ? e.type().name : e.name.c_str());
+                for (size_t s = 0; s < bursts.size(); ++s) landed |= hurt(player, bursts[s], false, Status(s));
+            }
+            if (landed) {
                 awardHitXp(player, e, false, false);
                 if (!player.alive()) player.noise(Noise::Death);
                 else if (!guarded) player.noise(Noise::Hurt);  // a blocked hit sounds as the block
@@ -942,6 +1012,7 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
             e.body.stamina = gMelee.staminaMax;
             e.body.deadTime = 0;
             e.body.combatTimer = 0;
+            e.body.effects.clear(), e.body.buildup = {};
             e.loot = NoItem;
             e.wanderDir = {};
         }

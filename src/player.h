@@ -1,6 +1,8 @@
 #pragma once
 #include <cmath>
 #include <numbers>
+#include <string>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -78,9 +80,31 @@ enum class Move : uint8_t { None, Light1, Light2, Light3, Light4, Heavy1, Heavy2
 // What a body did this tick that can be heard (ADR-037): bits of Combatant::noises, set where it
 // happens and gathered by step() into Session::sounds. Steps and swim strokes come from the gait.
 enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup, Charged, GuardUp, Hurt, Crit, Death,
-                             StanceBreak, Parry, Block, GuardBreak, Bounce, Loot, Talk, Backstep, PerfectGuard, Count };
+                             StanceBreak, Parry, Block, GuardBreak, Bounce, Loot, Talk, Backstep, PerfectGuard,
+                             Bleed, Poison, Frost, Count };  // a status took effect on it (ADR-046)
 // What the player's attack buttons asked for and is still waiting to happen (melee.cpp).
 enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry };
+
+// A timed effect (ADR-046; TALENTS.md foundation 4): poison, frostbite, and later buffs, enchants and
+// the like. Its modifiers count in the stat pipeline (collect) while it lasts; the clock runs in updateCombat.
+enum class Effect : uint8_t { Poisoned, Frostbitten, Count };
+inline constexpr const char* kEffectNames[] = {"Poisoned", "Frostbitten"};
+static_assert(std::size(kEffectNames) == size_t(Effect::Count));
+struct TimedEffect {
+    Effect kind;
+    std::string source;          // what put it on (a creature's or weapon's name), for the UI
+    float seconds = 0, length = 0;  // left, and of how many
+    int stacks = 1;
+    std::vector<Modifier> mods;  // their source is the effect's name
+    float tick = 0;              // seconds to its next tick of damage (poison)
+};
+// A damage number over a body (the HUD's): a hit's, or a status's (`kind`; Count: a hit).
+struct DamageNumber {
+    int amount = 0;
+    float age = 99;  // seconds since; shown for one
+    bool crit = false;
+    Status kind = Status::Count;
+};
 
 // What fights: attributes, health, the swing and damage timers, and the gear it wears and carries.
 struct Combatant {
@@ -131,6 +155,10 @@ struct Combatant {
     Move swung = Move::None;               // the move the latest Noise::Swing came from (it may be cut short the same tick)
     int lastDamage = 0;
     bool lastCrit = false;                 // that hit was a critical one (ADR-045): a random crit, a riposte or a backstab
+    std::array<DamageNumber, 4> numbers{};  // the latest damage numbers (hurt() replaces the oldest)
+    std::array<float, size_t(Status::Count)> buildup{};  // status build-up toward its resists (ADR-046); wears off
+    std::vector<TimedEffect> effects;      // what's on it now (ADR-046)
+    std::vector<Modifier> innate;          // its kind's own modifiers (creature "mods": a wolf's bleeding bite)
     float trauma = 0;                      // camera shake, 0..1 (the player's): big hits add it, it wears off (ADR-045)
     float deadTime = 0;                    // seconds spent at 0 health
     Inventory inv;                         // equipment and bags
@@ -142,10 +170,16 @@ struct Combatant {
     bool punching() const { return move != Move::None; }  // any attack move, armed or not
     // What's in hand: the main hand, or what the current swing started with (swapping mid-swing waits).
     ItemId weapon() const { return punching() ? swingWeapon : inv.equipped[SlotMainHand]; }
+    const TimedEffect* effect(Effect k) const {
+        for (const TimedEffect& e : effects)
+            if (e.kind == k) return &e;
+        return nullptr;
+    }
 };
 
-// The modifiers on `c` (ADR-022): its equipped items' armor and mods, then its skills' and talents'
-// (ADR-027), rebuilt on every call, so unequipping or a respec needs no undo.
+// The modifiers on `c` (ADR-022): its innate ones, its equipped items' armor and mods, its skills' and
+// talents' (ADR-027) and its timed effects' (ADR-046), rebuilt on every call, so unequipping, a respec
+// or an effect wearing off needs no undo.
 std::vector<Modifier> collect(const Combatant& c);
 // Its final stats: base attributes plus every collected modifier. Uncached. `with`: the weapon skill
 // of a swing, whose conditional ("with") modifiers count too.

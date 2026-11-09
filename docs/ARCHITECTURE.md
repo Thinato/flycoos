@@ -777,6 +777,15 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   (`holdCritical`, called by `step` before the NPCs think) and knocks it down. Every other hit, both ways, rolls `crit_chance` (base 5%) for `crit_damage` more (base
   +50%); the damage number marks it (bigger, orange, "!"). `Player::trauma` shakes the camera
   (main.cpp, `GameSettings::cameraShake`).
+- **Status effects** (ADR-046, entity.h): the stats `bleed`, `poison`, `frost` are what a landed hit
+  adds to the target's `Combatant::buildup` (`buildUp`, times what a guard let through), and
+  `*_resist` (base 100) what fills it; bars drain at `gStatus.decay`. Full, the status takes effect
+  (`afflict`): a bleed bursts 10% of max health + 5, poison is a `TimedEffect` ticking 0.5% + 0.5 a
+  second for 10 s, frostbite bursts 10% + 3 and adds +20% damage taken for 15 s. `Combatant::effects`
+  is the one list of timed effects (TALENTS.md foundation 4): `collect()` adds their modifiers,
+  updateCombat runs their clocks; a death clears them. Status damage skips armor. `hurt()` keeps the
+  last four `DamageNumber`s (a hit's, or a status's by kind) for the HUD. Creatures' `mods` (data)
+  are copied into `Combatant::innate`.
 - **Shields and the parry** (ADR-036, melee.h): an off-hand item with a `shield` guards by its own
   numbers instead of the sword's (`guardOf`): the Oak Buckler stops 80% and saves 46% of the stamina,
   the Heater Shield 100% / 56%, the Tower Shield 100% / 72%. A guard of at least 65% boost makes an
@@ -844,9 +853,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   |---|---|---|
   | Iron Shortsword | Main Hand | sword, 6–10 damage, speed 1.0 |
   | Canvas Satchel | Bag | +6 item slots |
-  | Rusty Knife | Main Hand | dagger, 3–6 damage, speed 0.75, +5% crit chance (ADR-045); dropped by bandits |
+  | Rusty Knife | Main Hand | dagger, 3–6 damage, speed 0.75, +5% crit chance (ADR-045), 30 bleed build-up (ADR-046); dropped by bandits |
   | Boar Skin | – | crafting material later; dropped by boars |
-  | Iron Helm / Cuirass / Gauntlets / Greaves / Sabatons | Head / Chest / Hands / Legs / Feet | 6 / 12 / 4 / 10 / 5 armor (37 for the set) |
+  | Iron Helm / Cuirass / Gauntlets / Greaves / Sabatons | Head / Chest / Hands / Legs / Feet | 6 / 12 / 4 / 10 / 5 armor (37 for the set); bleed and frost resist 40 / 85 / 25 / 75 / 25, poison resist 30 / 70 / 20 / 60 / 20 (ADR-046) |
   | Wolf Pelt | – | crafting material later; dropped by wolves |
   | Bone Charm | Trinket | +2 spirit (regen 1 → 2 per second); dropped by barrow ghouls |
   | Oak Buckler / Heater Shield / Tower Shield | Off Hand | shields (ADR-036): stop 80 / 100 / 100% of a blocked hit (the buckler 85 / 70 / 80% of slash / strike / pierce, the heater 90% of strikes: ADR-040), guard boost 46 / 56 / 72%; the first two parry, the tower bounces weak attacks; weigh 2 / 4.5 / 13; no drop yet (the debug Items tab gives them) |
@@ -922,7 +931,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   hits), `delay` (0..1: the chance a hit after the first is delayed; needs a combo of 2+), `shield`
   (an off-hand shield item; only kinds with hands), and the chances it answers a player's attack:
   `guard` (needs a weapon or a shield), `parry` (needs a shield that parries or a weapon with
-  `parry`), `dodge` (together at most 1), and `back_off` (after its own string).
+  `parry`), `dodge` (together at most 1), and `back_off` (after its own string). `mods` (ADR-046):
+  its own stat modifiers, as items' (wolves: 22 bleed build-up; ghouls: 25 poison, +400 poison resist).
 
   | Kind | Combo (delay) | Guard / parry / dodge | Backs off | Shield |
   |---|---|---|---|---|

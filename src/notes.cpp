@@ -36,10 +36,14 @@ const char* motion(const Player& p) {
 }
 
 json combat(const Combatant& c) {
-    return {{"health", round2(c.health)}, {"max_health", maxHealth(sheet(c))}, {"level", c.level},
-            {"in_combat", c.combatTimer > 0}, {"combat_timer", round2(c.combatTimer)}, {"seconds_since_hit", round2(std::min(c.hitTime, 99.0f))},
-            {"last_damage", c.lastDamage}, {"swinging", c.punching()}, {"move", kMoveNames[size_t(c.move)]}, {"stance", round2(c.stance)},
-            {"stagger", round2(c.stagger)}, {"broken", c.broken}, {"weapon", itemId(c.weapon())}};
+    json out = {{"health", round2(c.health)}, {"max_health", maxHealth(sheet(c))}, {"level", c.level},
+                {"in_combat", c.combatTimer > 0}, {"combat_timer", round2(c.combatTimer)}, {"seconds_since_hit", round2(std::min(c.hitTime, 99.0f))},
+                {"last_damage", c.lastDamage}, {"swinging", c.punching()}, {"move", kMoveNames[size_t(c.move)]}, {"stance", round2(c.stance)},
+                {"stagger", round2(c.stagger)}, {"broken", c.broken}, {"weapon", itemId(c.weapon())}};
+    for (size_t i = 0; i < c.buildup.size(); ++i)  // status build-up and timed effects (ADR-046), when any
+        if (c.buildup[i] > 0) out["buildup"][kStatusIds[i]] = round2(c.buildup[i]);
+    for (const TimedEffect& e : c.effects) out["effects"].push_back({{"kind", kEffectNames[size_t(e.kind)]}, {"seconds", round2(e.seconds)}, {"source", e.source}});
+    return out;
 }
 
 std::string localTime(const char* format) {

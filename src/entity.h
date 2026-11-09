@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "model.h"
@@ -61,6 +62,7 @@ struct EntityType {
     float delay;
     float guard, parry, dodge, backOff;
     ItemId shield;
+    std::vector<Modifier> mods;  // its own modifiers on top of its stats (ADR-046): a bite's bleed, a status resist
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);
@@ -209,11 +211,35 @@ Entity* lootTarget(std::vector<Entity>& entities, const Player& player);
 // Moves the corpse's loot into the player's bags, else its empty equip slot (stowItem); false if neither.
 bool takeLoot(Entity& e, Inventory& inv);
 
-// Takes damage if alive; health stops at 0. Puts the body in combat. Returns whether it applied.
-// `crit`: a critical hit (ADR-045), for its damage number.
-bool hurt(Player& body, int amount, bool crit = false);
+// Takes damage if alive; health stops at 0. Puts the body in combat and shows a damage number.
+// Returns whether it applied. `crit`: a critical hit (ADR-045); `kind`: a status's damage (ADR-046),
+// not a hit's (Count): it shows its own number and leaves lastDamage alone. Poison's ticks aren't hits:
+// they leave hitTime alone (and damage() doesn't call a fighter back for them). A death ends its status
+// build-up and timed effects.
+bool hurt(Player& body, int amount, bool crit = false, Status kind = Status::Count);
 // hurt() for attackable entities only. Tells fighters (EventDamaged); a kill rolls the loot.
-bool damage(Entity& e, int amount, bool crit = false);
+bool damage(Entity& e, int amount, bool crit = false, Status kind = Status::Count);
+
+// The status effects' knobs (ADR-046), live from the debug window's Player tab. Shares are of the
+// afflicted body's max health; status damage skips armor and damage taken.
+struct StatusTuning {
+    float decay = 8;                                  // build-up a body loses per second
+    float bleedShare = 0.1f, bleedFlat = 5;           // a bleed: a burst of this share, plus this
+    float poisonSeconds = 10;                         // poison: this long...
+    float poisonShare = 0.005f, poisonFlat = 0.5f;    // ...this much a second (rounded)
+    float frostShare = 0.1f, frostFlat = 3;           // frostbite: a burst...
+    float frostSeconds = 15, frostTaken = 0.2f;       // ...then this much more damage taken (increased) this long
+};
+inline StatusTuning gStatus;
+// Status `s` takes effect on `b` now, if alive (its build-up starts over): a bleed is a burst, poison a timed
+// effect that ticks every second, frostbite a burst and a timed effect with more damage taken. One
+// already on is replaced, fresh. Returns the burst's damage, for the caller to deal with its number.
+int afflict(Player& b, Status s, std::string_view source);
+// A landed hit's status build-up on `b`: the attacker's Bleed, Poison and Frost (with its swing's
+// weapon skill) times `share` (what a guard let through), toward b's resists. One that fills takes
+// effect (afflict); poison and frost don't build while their effect is on. Returns each status's burst
+// damage due now, for the caller to deal.
+std::array<int, size_t(Status::Count)> buildUp(const Combatant& attacker, Player& b, float share, std::string_view source);
 
 // An NPC's attack (main-hand weapon, or a punch): the next light of its chain toward `aim` (XZ
 // direction), if the body is alive, not reeling or rolling, and its swing is ready (the weapon's
@@ -263,7 +289,8 @@ constexpr float kXpWearHalving = 20, kXpWearSeconds = 10, kTrainingRate = 0.25f;
 // count; the XP scales with the attack's average base damage (never the final hit), the NPC's wear
 // and, for harmless ones, kTrainingRate. A kill gives the creature's `xp` times its wear, once per kill.
 void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed);
-// Combat timers, the moves' clocks, stance recovery and out-of-combat regeneration for everyone; lands
+// Combat timers, the moves' clocks, stance recovery, status build-up and timed effects (poison's ticks,
+// a kill by them the player's) and out-of-combat regeneration for everyone; lands
 // every swing at its impact frame (the player's on entities, entities' on the player) through
 // resolveHit (`armorK` is the K of armorReduction) and awardHitXp; brings the dead back home. Any hit
 // but the riposte move's may be a random critical (the attacker's CritChance, for CritDamage more). A kill
@@ -271,6 +298,6 @@ void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed);
 // (staggerHit) and freeze both bodies a moment (hit-stop). An NPC's hit passes through a rolling
 // player's i-frames, is blocked by its guard from the front (part of the damage, stamina; a guard
 // with too little stamina breaks), and else makes it flinch unless it has hyperarmor (ADR-035).
-// Big hits either way add camera trauma.
+// Big hits either way add camera trauma. Hits that land build up statuses (buildUp).
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK = kArmorK,
                   std::vector<GameEvent>* events = nullptr);

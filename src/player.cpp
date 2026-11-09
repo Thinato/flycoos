@@ -12,7 +12,7 @@ constexpr float kRollCut = 0.12f;       // seconds a roll jumped out of takes to
 constexpr float kCoyoteTime = 0.1f;     // seconds after stepping off an edge that a jump still takes off
 
 std::vector<Modifier> collect(const Combatant& c) {
-    std::vector<Modifier> out;
+    std::vector<Modifier> out = c.innate;
     for (ItemId id : c.inv.equipped) {
         const ItemType& t = itemType(id);
         if (t.armor) out.push_back({Stat::Armor, ModKind::Flat, float(t.armor), t.name});
@@ -22,6 +22,11 @@ std::vector<Modifier> collect(const Combatant& c) {
         }
     }
     progressModifiers(c.progress, out);
+    for (const TimedEffect& e : c.effects)
+        for (Modifier m : e.mods) {
+            m.source = kEffectNames[size_t(e.kind)];
+            out.push_back(m);
+        }
     return out;
 }
 

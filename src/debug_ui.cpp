@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <functional>
 #include <string>
 
 #include <sys/stat.h>
@@ -238,6 +239,25 @@ static void statSheet(const Combatant& b) {
     ImGui::TextDisabled("final = (base + flat) x (1 + increased) x (1 + more)...");
 }
 
+// A body's status build-ups and timed effects (ADR-046), with buttons that put each status on it now
+// (`apply` deals the burst).
+static void statusPanel(const Player& b, const std::function<void(Status)>& apply) {
+    StatSheet s = sheet(b);
+    for (size_t i = 0; i < size_t(Status::Count); ++i) {
+        float resist = s[resistStat(Status(i))];
+        ImGui::ProgressBar(resist > 0 ? std::min(b.buildup[i] / resist, 1.0f) : 0, {160, 0},
+                           std::format("{} {:.0f} / {:.0f}", kStatusIds[i], b.buildup[i], resist).c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton(std::format("Apply##{}", kStatusIds[i]).c_str())) apply(Status(i));
+        ImGui::SameLine();
+        ImGui::TextDisabled("hits add %.0f", double(s[buildupStat(Status(i))]));
+    }
+    for (const TimedEffect& e : b.effects)
+        ImGui::BulletText("%s from %s: %.1f / %.0f s, %d stack%s, %zu modifier%s", kEffectNames[size_t(e.kind)], e.source.c_str(),
+                          double(e.seconds), double(e.length), e.stacks, e.stacks == 1 ? "" : "s", e.mods.size(), e.mods.size() == 1 ? "" : "s");
+    if (b.effects.empty()) ImGui::TextDisabled("No timed effects");
+}
+
 static void playerTab(Player& p, float& armorK, DebugActions& actions, const char* region) {
     attributes(p, true);
     ImGui::SeparatorText("Stat sheet");
@@ -398,6 +418,23 @@ static void playerTab(Player& p, float& armorK, DebugActions& actions, const cha
         if (ImGui::Button("Test shake")) p.trauma = 1;
         ImGui::TreePop();
     }
+    if (ImGui::TreeNode("Status effects (ADR-046)")) {
+        statusPanel(p, [&](Status s) { hurt(p, afflict(p, s, "the debug window"), false, s); });
+        StatusTuning& st = gStatus;
+        ImGui::SliderFloat("Build-up decay", &st.decay, 0, 50, "%.1f / s");
+        ImGui::SliderFloat("Bleed share", &st.bleedShare, 0, 1, "%.2f of max health");
+        ImGui::SliderFloat("Bleed flat", &st.bleedFlat, 0, 50, "%.0f");
+        ImGui::SliderFloat("Poison seconds", &st.poisonSeconds, 1, 60, "%.0f s");
+        ImGui::SliderFloat("Poison share", &st.poisonShare, 0, 0.1f, "%.3f of max health / s");
+        ImGui::SliderFloat("Poison flat", &st.poisonFlat, 0, 10, "%.1f / s");
+        ImGui::SliderFloat("Frost share", &st.frostShare, 0, 1, "%.2f of max health");
+        ImGui::SliderFloat("Frost flat", &st.frostFlat, 0, 50, "%.0f");
+        ImGui::SliderFloat("Frost seconds", &st.frostSeconds, 1, 60, "%.0f s");
+        ImGui::SliderFloat("Frost damage taken", &st.frostTaken, 0, 1, "+%.2f");
+        ImGui::SetItemTooltip("Frostbite's increased damage taken (a modifier in the stat pipeline while it lasts).");
+        if (ImGui::Button("Reset statuses")) st = StatusTuning{};
+        ImGui::TreePop();
+    }
 
     ImGui::SeparatorText("Flight");
     ImGui::Checkbox("Fly", &t.fly);
@@ -413,8 +450,8 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
     std::vector<Entity>& entities = session.entities;
     const Player& player = session.player;
     // Hits from here count for quests as the player's would.
-    auto hit = [&](Entity& e, int amount) {
-        if (damage(e, amount) && !e.body.alive()) session.events.push_back(Killed{e.kind, e.spawn.id});
+    auto hit = [&](Entity& e, int amount, Status kind = Status::Count) {
+        if (damage(e, amount, false, kind) && !e.body.alive()) session.events.push_back(Killed{e.kind, e.spawn.id});
     };
     if (ImGui::Button("Respawn NPCs at their markers")) actions.respawnEntities = true;
     const std::vector<std::string>& kinds = defs().creatureIds;
@@ -512,6 +549,10 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
             ImGui::Text("%s %.1f s more, %.1f from home (wanders %.0f)", e.wanderDir == glm::vec2(0) ? "Standing" : "Walking",
                         e.wanderTimer, glm::distance(e.body.pos, e.home), e.wanderRadius);
         if (e.spawn.id) ImGui::Text("From spawn marker #%u %s (%zu lines)", e.spawn.id, e.spawn.name.c_str(), e.spawn.lines.size());
+        if (t.attackable && ImGui::TreeNode("status", "Status effects (ADR-046)")) {
+            statusPanel(e.body, [&](Status s) { hit(e, afflict(e.body, s, "the debug window"), s); });
+            ImGui::TreePop();
+        }
         if (t.attackable) {
             if (ImGui::Button("Hit for 10")) hit(e, 10);
             ImGui::SameLine();

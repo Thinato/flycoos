@@ -283,6 +283,13 @@ void attributes(const Player& p, float armorK) {
     float taken = (1 - armorReduction(s[Stat::Armor], 1, armorK)) * s[Stat::DamageTaken];
     statRow("Damage taken", "Against a level 1 enemy, after armor and damage taken modifiers. Higher levels get through more.",
             "%+.1f%%", double(taken - 1) * 100);
+    // Status effects (ADR-046): what the weapon builds up, if anything, and what fills each bar.
+    for (Status st : {Status::Bleed, Status::Poison, Status::Frost})
+        if (float add = w[buildupStat(st)]; add > 0)
+            statRow(kStatNames[size_t(buildupStat(st))], "Added to the target's bar by each hit that lands; full, it takes effect", "%.0f", double(add));
+    statRow("Bleed resist", "Build-up a bleed takes to fill: a burst of damage", "%.0f", double(s[Stat::BleedResist]));
+    statRow("Poison resist", "Build-up poison takes to fill: damage every second for a while", "%.0f", double(s[Stat::PoisonResist]));
+    statRow("Frost resist", "Build-up frost takes to fill: a burst, then more damage taken for a while", "%.0f", double(s[Stat::FrostResist]));
     ImGui::EndTable();
 }
 

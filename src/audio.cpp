@@ -197,6 +197,9 @@ std::vector<Layer> layersOf(const Sound& s) {
         else say("death", 1, 0.05f), add("body_fall", 0.8f, 1, 0.45f);
         break;
     case Noise::Crit: add("hit_crit"); break;
+    case Noise::Bleed: add("status_bleed"), add("hit_heavy", 0.5f); break;  // a status took effect (ADR-046)
+    case Noise::Poison: add("status_poison"); break;
+    case Noise::Frost: add("status_frost"); break;
     case Noise::StanceBreak: add("stance_break"); break;
     case Noise::Parry: add("parry"); break;
     case Noise::Block: {

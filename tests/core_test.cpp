@@ -725,6 +725,7 @@ static void fighters() {
 
     // Aggressive: the bandit charges a player inside its aggro range and hits with the knife.
     player.health = 100;
+    player.innate = {{Stat::BleedResist, ModKind::Flat, 1e5f}};  // its knife's bleeds aside (ADR-046): the hits alone
     player.pos = bandit.body.pos + glm::vec3(-8, 0, 0);
     sim(0.1f);
     CHECK(bandit.angry());
@@ -966,6 +967,7 @@ static void protection() {
     Entity& bandit = es[3];
     player.pos = bandit.body.pos + glm::vec3(-1.5f, 0, 0);
     setState(bandit, AiState::Chase, "test");
+    player.innate = {{Stat::BleedResist, ModKind::Flat, 1e5f}};  // its knife's bleeds aside (ADR-046): the hits alone
     std::mt19937 rng(5);
     auto hits = [&](float k) {
         int lo = 99, hi = 0, n = 0;
@@ -1072,10 +1074,13 @@ static void statSheets() {
     }
     CHECK(p.inv.equipped[SlotTrinket] == BoneCharm);  // right-click puts the charm in the trinket slot
     std::vector<Modifier> mods = collect(p);
-    CHECK(mods.size() == 6 && std::string_view(mods[0].source) == "Iron Helm" && mods[0].stat == Stat::Armor && mods[0].value == 6);
-    CHECK(std::string_view(mods[5].source) == "Bone Charm" && mods[5].stat == Stat::Spirit && mods[5].kind == Flat);
+    // The armor, then each iron piece's three status resists (ADR-046), the charm's spirit last.
+    CHECK(mods.size() == 21 && std::string_view(mods[0].source) == "Iron Helm" && mods[0].stat == Stat::Armor && mods[0].value == 6);
+    CHECK(std::string_view(mods[1].source) == "Iron Helm" && mods[1].stat == Stat::BleedResist && mods[1].value == 40);
+    CHECK(std::string_view(mods[20].source) == "Bone Charm" && mods[20].stat == Stat::Spirit && mods[20].kind == Flat);
     StatSheet worn = sheet(p);
     CHECK(worn[Stat::Armor] == 37 && worn[Stat::Spirit] == 4 && healthRegen(worn) == 4 * kRegenPerSpirit && maxHealth(worn) == 100);
+    CHECK(worn[Stat::BleedResist] == 350 && worn[Stat::FrostResist] == 350 && worn[Stat::PoisonResist] == 300);
     for (int s = 0; s < EquipCount; ++s) quickMove(p.inv, {Equip, s});
     CHECK(collect(p).empty() && sheet(p).v == compute(p.stats).v && freeSlots(p.inv) == kBackpackSlots - 7);
     // The trinket slot takes trinkets only, and a trinket goes nowhere else.
@@ -3092,7 +3097,8 @@ static void tables() {
         same(row, "name", str(t.name), str(w.name));
         SAME(slot), SAME(attack.minDamage), SAME(attack.maxDamage), SAME(attack.speed), SAME(bagSlots), SAME(armor);
 #undef SAME
-        same(row, "mods.size()", t.mods.size(), size_t(i == BoneCharm || i == Knife));  // only the Bone Charm (+2 spirit) and the knife (+5% crit chance, ADR-045)
+        // The Bone Charm (+2 spirit), the knife (+5% crit chance, ADR-045; bleed, ADR-046), the iron set (status resists, ADR-046).
+        same(row, "mods.size()", t.mods.size(), size_t(i == BoneCharm ? 1 : i == Knife ? 2 : i >= IronHelm && i <= IronSabatons ? 3 : 0));
     }
     const std::vector<Modifier>& charm = itemType(BoneCharm).mods;
     CHECK(charm.size() == 1 && charm[0].stat == Stat::Spirit && charm[0].kind == ModKind::Flat && charm[0].value == 2);
@@ -6810,8 +6816,6 @@ static void melee() {
     }
 }
 
-// Sound (ADR-037): what a session hears (footsteps from the gait, a jump and its landing, a roll, a
-// splash, loot), what each noise sounds like, the mixer and placing, and takes for every sound played.
 // Criticals (ADR-045): crit chance and damage in the stat pipeline, the backstab's geometry and when
 // it's open, a backstab that holds its NPC until it lands, random crits both ways, the camera trauma.
 static void criticals() {
@@ -6949,6 +6953,7 @@ static void criticals() {
         std::vector<Entity> es;
         Entity& d = spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 1.5f);
         d.body.yaw = kPi;  // facing p: no backstabs
+        d.body.innate = {{Stat::BleedResist, ModKind::Flat, 1e5f}};  // and no bleeds (ADR-046): the crits alone
         int hits = 0, crits = 0;
         float plain = 0, critical = 0, most = 0;
         for (int i = 0; i < 60 * 60 * 15 && hits < 600; ++i) {
@@ -6974,6 +6979,7 @@ static void criticals() {
         std::vector<Entity> es;
         Entity& b = spawnAhead(es, g, p, EntityKind::Bandit, 1, 1.5f);
         b.body.onGround = true;
+        p.innate = {{Stat::BleedResist, ModKind::Flat, 1e5f}};  // its knife's bleeds aside (ADR-046)
         int hits = 0, crits = 0;
         bool shook = true;
         for (int i = 0; i < 60 * 60 * 20 && hits < 400; ++i) {
@@ -6992,6 +6998,255 @@ static void criticals() {
     }
 }
 
+// Status effects (ADR-046): build-up and resists in the stat pipeline, from items and creatures;
+// build-up that fills and wears off; bleed's burst, poison's ticks, frostbite's damage taken; a guard's
+// share; the lockout while poison or frost is on; the timed effects' list; kills by poison; the shipped
+// sources, in fights both ways.
+static void statusEffects() {
+    Grid g = flatWorld(0);
+    constexpr float dt = 1 / 60.0f;
+    std::mt19937 rng(11);
+    std::vector<Entity> none;
+    StatSheet base = compute(Stats{});
+    for (int i = 0; i < int(Status::Count); ++i) {
+        Status s = Status(i);
+        CHECK(base[buildupStat(s)] == 0 && base[resistStat(s)] == kBaseStatusResist && !percentStat(buildupStat(s)));
+        CHECK(std::string_view(kStatIds[size_t(buildupStat(s))]) == kStatusIds[i]);
+        CHECK(std::string_view(kStatIds[size_t(resistStat(s))]) == std::string(kStatusIds[i]) + "_resist");
+    }
+    // Sources: the knife bleeds, a wolf's bite bleeds, a ghoul's claws poison and it shrugs poison off.
+    Player knifer;
+    knifer.inv.equipped[SlotMainHand] = Knife;
+    CHECK(sheet(knifer)[Stat::Bleed] == 30 && sheet(knifer)[Stat::Poison] == 0);
+    Player at;
+    at.pos = {7.5f, 4, 7.5f};
+    std::vector<Entity> beasts;
+    beasts.reserve(2);
+    Entity& wolf = spawnAhead(beasts, g, at, EntityKind::Wolf, 1);
+    Entity& ghoul = spawnAhead(beasts, g, at, EntityKind::Ghoul, 2, 8);
+    CHECK(sheet(wolf.body)[Stat::Bleed] == 22 && sheet(wolf.body)[Stat::BleedResist] == kBaseStatusResist);
+    CHECK(sheet(ghoul.body)[Stat::Poison] == 25 && sheet(ghoul.body)[Stat::PoisonResist] == 500);
+    CHECK(collect(wolf.body).size() == 1 && std::string_view(collect(wolf.body)[0].source) == "innate");
+
+    // Build-up: two bites of 40 fill 80 of 100; the third fills it: a bleed of 10% of max health + 5, and
+    // the bar starts over. A guard that lets half through builds half.
+    Player biter, p;
+    biter.innate = {{Stat::Bleed, ModKind::Flat, 40}};
+    auto bite = [&](float share = 1) { return buildUp(biter, p, share, "Biter")[size_t(Status::Bleed)]; };
+    CHECK(bite() == 0 && bite() == 0 && p.buildup[0] == 80 && !p.made(Noise::Bleed));
+    CHECK(bite() == 15 && p.buildup[0] == 0 && p.made(Noise::Bleed) && p.effects.empty());
+    CHECK(bite(0.5f) == 0 && p.buildup[0] == 20 && bite(0) == 0 && p.buildup[0] == 20);
+    // It wears off at gStatus.decay a second.
+    for (int i = 0; i < 60; ++i) updateCombat(p, none, dt, rng);
+    CHECK(std::abs(p.buildup[0] - (20 - gStatus.decay)) < 0.01f);
+    for (int i = 0; i < 180; ++i) updateCombat(p, none, dt, rng);
+    CHECK(p.buildup[0] == 0);
+    // A higher resist takes more: the whole iron set's 350.
+    for (ItemId id : {IronHelm, IronCuirass, IronGauntlets, IronGreaves, IronSabatons}) p.inv.equipped[itemType(id).slot] = id;
+    for (int i = 0; i < 8; ++i) CHECK(bite() == 0);
+    CHECK(bite() == 15 && p.buildup[0] == 0);  // the 9th of 40
+    p.inv = {};
+
+    // Poison: a timed effect, 1 a second (0.5% of 100 + 0.5) for 10 s. Its ticks are damage numbers, not
+    // hits (a back still open to a backstab), and keep the body in combat. No poison builds while it's on.
+    Player venom;
+    venom.innate = {{Stat::Poison, ModKind::Flat, 100}};
+    p = Player{};
+    CHECK(buildUp(venom, p, 1, "Venom")[size_t(Status::Poison)] == 0 && p.made(Noise::Poison));
+    const TimedEffect* poisoned = p.effect(Effect::Poisoned);
+    CHECK(poisoned && poisoned->seconds == gStatus.poisonSeconds && poisoned->length == gStatus.poisonSeconds &&
+          poisoned->source == "Venom" && poisoned->stacks == 1 && poisoned->mods.empty() && p.buildup[1] == 0);
+    Player sting;
+    sting.innate = {{Stat::Poison, ModKind::Flat, 30}};
+    buildUp(sting, p, 1, "Sting");
+    CHECK(p.buildup[1] == 0 && p.effects.size() == 1 && p.effects[0].source == "Venom");  // locked out
+    int ticks = 0;
+    float hit = p.hitTime;
+    for (int i = 0; i < 11 * 60; ++i) {
+        float before = p.health;
+        updateCombat(p, none, dt, rng);
+        if (p.health < before) {
+            ++ticks;
+            CHECK(before - p.health == 1 && p.combatTimer == kCombatSeconds && p.lastDamage == 0);  // a number, not a hit
+            CHECK(std::ranges::any_of(p.numbers, [](const DamageNumber& n) { return n.age == 0 && n.kind == Status::Poison && n.amount == 1; }));
+        }
+    }
+    CHECK(ticks == 10 && p.health == 90 && p.effects.empty() && p.hitTime > hit);
+    CHECK(buildUp(venom, p, 1, "Venom")[1] == 0 && p.effect(Effect::Poisoned));  // over: it builds again
+
+    // Frostbite: a burst of 10% + 3, then 20% more damage taken (a modifier in the pipeline) for 15 s;
+    // a fresh one replaces it.
+    p = Player{};
+    CHECK(afflict(p, Status::Frost, "Ice") == 13 && p.made(Noise::Frost) && p.buildup[2] == 0);
+    CHECK(std::abs(sheet(p)[Stat::DamageTaken] - 1.2f) < 1e-5f && collect(p).size() == 1 && std::string_view(collect(p)[0].source) == "Frostbitten");
+    Player hitter;
+    hitter.stats.strength = 0;
+    CHECK(resolveHit(hitter, p, {10, 10, 1}, {rng}) == 12 && resolveHit(hitter, Player{}, {10, 10, 1}, {rng}) == 10);
+    for (int i = 0; i < 10 * 60; ++i) updateCombat(p, none, dt, rng);
+    CHECK(afflict(p, Status::Frost, "Ice") == 13 && p.effects.size() == 1 && p.effects[0].seconds == gStatus.frostSeconds);
+    Player frosty;
+    frosty.innate = {{Stat::Frost, ModKind::Flat, 30}};
+    buildUp(frosty, p, 1, "Frosty");
+    CHECK(p.buildup[2] == 0 && p.effects[0].source == "Ice");  // locked out while it's on
+    for (int i = 0; i < 15 * 60 + 1; ++i) updateCombat(p, none, dt, rng);
+    CHECK(p.effects.empty() && sheet(p)[Stat::DamageTaken] == 1);
+    // Poison kills, with the death's noise; nothing takes on a dead body.
+    afflict(p, Status::Poison, "Venom");
+    p.health = 1;
+    for (int i = 0; i < 2 * 60 && p.alive(); ++i) p.noises = 0, updateCombat(p, none, dt, rng);
+    CHECK(!p.alive() && p.made(Noise::Death) && p.effects.empty() && afflict(p, Status::Frost, "Ice") == 0 && p.effects.empty());
+    p = Player{};
+    // Death ends them all.
+    afflict(p, Status::Poison, "Venom"), p.buildup[0] = 50;
+    CHECK(hurt(p, 99) && p.alive() && p.effects.size() == 1 && hurt(p, 5) && !p.alive() && p.effects.empty() && p.buildup[0] == 0);
+
+    // A kill by poison is the player's: the creature's XP and a Killed event.
+    {
+        Player hero;
+        hero.pos = {7.5f, 4, 7.5f};
+        std::vector<Entity> es;
+        Entity& boar = spawnAhead(es, g, hero, EntityKind::Boar, 3);
+        afflict(boar.body, Status::Poison, "Rusty Knife");
+        boar.body.health = 2;
+        std::vector<GameEvent> events;
+        for (int i = 0; i < 3 * 60 && boar.body.alive(); ++i) updateCombat(hero, es, dt, rng, kArmorK, &events);
+        CHECK(!boar.body.alive() && boar.body.made(Noise::Death) && events.size() == 1 && hero.progress.xp == boar.type().xp);
+        CHECK(std::get<Killed>(events[0]).kind == EntityKind::Boar && boar.body.effects.empty());
+        // Poison's ticks don't call back a fighter that gave up: a wolf going home stays on its way.
+        Entity& wolf = spawnAhead(es, g, hero, EntityKind::Wolf, 4, 30);
+        setState(wolf, AiState::Return, "test");
+        afflict(wolf.body, Status::Poison, "Rusty Knife");
+        for (int i = 0; i < 3 * 60; ++i) updateCombat(hero, es, dt, rng);
+        CHECK(wolf.body.health < float(maxHealth(sheet(wolf.body))) && !(wolf.events & EventDamaged));
+    }
+
+    // In fights: the player's knife on the dummy bleeds it every few hits, the bleed's number beside the
+    // hit's; a wolf's bites bleed the player.
+    {
+        Player hero;
+        hero.pos = {7.5f, 4, 7.5f};
+        hero.onGround = true, hero.offGround = 0;
+        hero.inv.equipped[SlotMainHand] = Knife;
+        std::vector<Entity> es;
+        Entity& d = spawnAhead(es, g, hero, EntityKind::TrainingDummy, 1, 1.5f);
+        d.body.yaw = std::numbers::pi_v<float>;  // facing: no backstabs
+        int hits = 0, bleeds = 0, firstBleed = 0;
+        for (int i = 0; i < 60 * 60 && hits < 40; ++i) {
+            float before = d.body.health;
+            d.body.stance = d.type().stance;
+            Input still;
+            updateMelee(hero, {.attack = !hero.punching()}, still, dt);
+            updateCombat(hero, es, dt, rng);
+            if (d.body.health < before) {
+                ++hits;
+                if (d.body.made(Noise::Bleed)) {
+                    ++bleeds;
+                    if (!firstBleed) firstBleed = hits;
+                    auto fresh = [&](const DamageNumber& n) { return n.age <= dt; };  // (its clock ran once since)
+                    CHECK(std::ranges::count_if(d.body.numbers, fresh) == 2);
+                    CHECK(std::ranges::any_of(d.body.numbers, [&](const DamageNumber& n) { return fresh(n) && n.kind == Status::Bleed && n.amount == 15; }));
+                }
+            }
+            d.body.health = float(maxHealth(sheet(d.body)));
+            d.body.noises = 0;
+        }
+        std::println("status: {} bleeds in {} knife hits on the dummy, the first on hit {}", bleeds, hits, firstBleed);
+        CHECK(hits == 40 && firstBleed == 4 && bleeds >= 8 && bleeds <= 10);
+        // A guard behind a buckler (slash negation 0.85) lets 15% of the knife's build-up through.
+        es.clear();
+        Entity& guard = spawnAhead(es, g, hero, EntityKind::Guard, 2, 1.5f);
+        guard.body.yaw = std::numbers::pi_v<float>;
+        guard.body.inv.equipped[SlotOffHand] = defs().itemById.at("oak_buckler");
+        int blocked = 0;
+        for (int i = 0; i < 60 * 60 && blocked < 5; ++i) {
+            guard.body.guarding = true, guard.body.stamina = gMelee.staminaMax, guard.body.buildup = {};
+            Input still;
+            updateMelee(hero, {.attack = !hero.punching()}, still, dt);
+            updateCombat(hero, es, dt, rng);
+            if (guard.body.made(Noise::Block) && guard.body.health < float(maxHealth(sheet(guard.body)))) {
+                ++blocked;
+                CHECK(std::abs(guard.body.buildup[0] - (30 * 0.15f - gStatus.decay * dt)) < 0.01f);  // (its clock ran once since)
+            }
+            guard.body.health = float(maxHealth(sheet(guard.body)));
+            guard.body.noises = 0, guard.body.stagger = 0;
+        }
+        CHECK(blocked == 5);
+        // A hit so light the guard stops all its damage still builds by that share.
+        hero.innate = {{Stat::Damage, ModKind::More, -0.95f}};
+        int light = 0;
+        for (int i = 0; i < 60 * 60 && light < 3; ++i) {
+            guard.body.guarding = true, guard.body.stamina = gMelee.staminaMax, guard.body.buildup = {};
+            Input still;
+            updateMelee(hero, {.attack = !hero.punching()}, still, dt);
+            updateCombat(hero, es, dt, rng);
+            if (guard.body.made(Noise::Block)) {
+                ++light;
+                CHECK(guard.body.health == float(maxHealth(sheet(guard.body))));
+                CHECK(std::abs(guard.body.buildup[0] - (30 * 0.15f - gStatus.decay * dt)) < 0.01f);
+            }
+            guard.body.noises = 0, guard.body.stagger = 0;
+        }
+        CHECK(light == 3);
+    }
+    {
+        Player hero;
+        hero.pos = {7.5f, 4, 7.5f};
+        hero.onGround = true, hero.offGround = 0;
+        std::vector<Entity> es;
+        Entity& w = spawnAhead(es, g, hero, EntityKind::Wolf, 1, 1.5f);
+        w.body.onGround = true;
+        int bites = 0, bleeds = 0;
+        for (int i = 0; i < 60 * 60 && bites < 30; ++i) {
+            if (!w.body.punching() && w.body.swingTimer <= 0) startPunch(w.body, {0, -1});
+            float before = hero.health;
+            Input still;
+            updateMelee(hero, {}, still, dt);
+            updateCombat(hero, es, dt, rng);
+            if (hero.health < before) ++bites, bleeds += hero.made(Noise::Bleed);
+            hero.health = float(maxHealth(sheet(hero)));
+            hero.noises = 0, hero.stagger = 0;
+        }
+        std::println("status: {} bleeds in {} wolf bites on the player", bleeds, bites);
+        CHECK(bites == 30 && bleeds >= 4 && bleeds <= 7);
+        // Behind a buckler (pierce negation 0.8) a bite builds a fifth; a perfect guard none.
+        hero.inv.equipped[SlotOffHand] = defs().itemById.at("oak_buckler");
+        int blocked = 0;
+        for (int i = 0; i < 60 * 60 && blocked < 5; ++i) {
+            if (!w.body.punching() && w.body.swingTimer <= 0) startPunch(w.body, {0, -1});
+            hero.buildup = {};
+            Input still;
+            updateMelee(hero, {.guard = true}, still, dt);
+            updateCombat(hero, es, dt, rng);
+            if (hero.made(Noise::Block)) {
+                ++blocked;
+                float want = hero.made(Noise::PerfectGuard) ? 0 : 22 * (1 - 0.8f);
+                CHECK(std::abs(hero.buildup[0] - want) < 0.01f);
+            }
+            hero.health = float(maxHealth(sheet(hero)));
+            hero.noises = 0, hero.stagger = 0, hero.stamina = gMelee.staminaMax;
+        }
+        CHECK(blocked == 5);
+        // A bite so light the buckler stops all its damage still builds a fifth.
+        w.body.innate.push_back({Stat::Damage, ModKind::More, -0.95f});
+        int light = 0;
+        for (int i = 0; i < 60 * 60 && light < 3; ++i) {
+            if (!w.body.punching() && w.body.swingTimer <= 0) startPunch(w.body, {0, -1});
+            hero.buildup = {};
+            Input still;
+            updateMelee(hero, {.guard = true}, still, dt);
+            updateCombat(hero, es, dt, rng);
+            if (hero.made(Noise::Block) && !hero.made(Noise::PerfectGuard)) {
+                ++light;
+                CHECK(hero.health == float(maxHealth(sheet(hero))) && std::abs(hero.buildup[0] - 22 * 0.2f) < 0.01f);
+            }
+            hero.noises = 0, hero.stagger = 0, hero.stamina = gMelee.staminaMax;
+        }
+        CHECK(light == 3);
+    }
+}
+
+// Sound (ADR-037): what a session hears (footsteps from the gait, a jump and its landing, a roll, a
+// splash, loot), what each noise sounds like, the mixer and placing, and takes for every sound played.
 static void sounds() {
     Session s{.world = meadow(), .seed = 2};
     s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}}};
@@ -7263,6 +7518,7 @@ int main() {
     melee();
     weaponClasses();
     criticals();
+    statusEffects();
     sounds();
     combat();
     fighters();
