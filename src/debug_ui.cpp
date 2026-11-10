@@ -18,6 +18,7 @@
 #include "defs.h"
 #include "hud.h"
 #include "melee.h"
+#include "projectile.h"
 #include "stream.h"
 #include "text.h"
 
@@ -575,6 +576,10 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
         ImGui::SliderFloat("Counter window", &a.counterWindow, 0, 3, "%.2f s");
         ImGui::SetItemTooltip("...if it starts within this long.");
         ImGui::SliderFloat("Backing off", &a.backOffSeconds, 0, 3, "%.2f s");
+        ImGui::SliderFloat("Archer's draw held", &a.drawHold, 0.2f, 2, "%.2f s");
+        ImGui::SetItemTooltip("An archer holds its full draw this long (x 0.85 .. 1.15) before it looses: the tell (ADR-051).");
+        ImGui::SliderFloat("Archer's sidearm within", &a.closeIn, 0, 8, "%.1f blocks");
+        ImGui::SetItemTooltip("An archer with a sidearm takes it out once you're this close; the bow comes back past its range band's near end.");
         if (ImGui::Button("Reset AI")) a = AiTuning{};
         ImGui::TreePop();
     }
@@ -616,6 +621,14 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
                         e.body.guarding ? "UP" : "down", double(e.body.stamina), e.counterTimer > 0 ? "   counter ready" : "");
             ImGui::SetItemTooltip("Your attack can hit it: it answers with a guard, a parry or a dodge, by its kind's chances (ADR-043).");
             ImGui::Text("gives up after %.0f s stuck   flees below %.0f%% health", t.giveUpSeconds, t.fleeHealth * 100);
+            if (t.keepMax > 0) {  // an archer (ADR-051)
+                ImGui::Text("archer: keeps %.0f..%.0f blocks   aim +-%.1f deg   %s   %s", double(t.keepMin), double(t.keepMax),
+                            double(glm::degrees(t.aimError)), ranged(e.body) ? "bow out" : "SIDEARM out", e.sight ? "SEES you" : "no line to you");
+                ImGui::SetItemTooltip("Within its band and seeing your chest from its bow, it shoots (cooldown %.1f s); too far or blind it closes in,\n"
+                                      "too close it backs off, else it strafes. Close in, it fights with its sidearm.", double(t.cooldown));
+                if (e.body.move == Move::Shot)
+                    ImGui::Text("drawing %.0f%%%s", double(drawOf(e.body) * 100), e.body.hitPending ? "" : "   loosed");
+            }
         }
         if (e.transitions && ImGui::TreeNode("transitions", "Last %u transitions", std::min(e.transitions, uint32_t(e.history.size())))) {
             for (uint32_t k = 0; k < std::min(e.transitions, uint32_t(e.history.size())); ++k) {  // newest first

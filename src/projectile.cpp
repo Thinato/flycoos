@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <random>
 
 #include "edit.h"
 #include "melee.h"
@@ -48,21 +49,37 @@ Box3 hitBox(const Entity& e) {
     return {e.body.pos - glm::vec3(r, 0, r), e.body.pos + glm::vec3(r, h, r)};
 }
 
-void loose(Session& s, std::optional<glm::vec3> aimAt) {
-    Player& p = s.player;
-    if (p.arrows <= 0) return;
-    --p.arrows;
+// An arrow off `p`'s bow by its draw, at `at` (none: along its facing), lobbed or straight; `owner` as Projectile's.
+static void shoot(Session& s, Player& p, uint32_t owner, std::optional<glm::vec3> at, bool lob) {
     float draw = drawOf(p), k = gRanged.minPower + (1 - gRanged.minPower) * draw;
-    const MoveSpec& m = spec(p, Move::Shot);  // (a hit that made the player flinch this tick ended the move already)
+    const MoveSpec& m = spec(p, Move::Shot);  // (a hit that made the shooter flinch this tick ended the move already)
     glm::vec3 from = shotOrigin(p);
-    Projectile a{from, from, shotVelocity(from, p.yaw, aimAt, !p.aiming, gRanged.minSpeed + (gRanged.maxSpeed - gRanged.minSpeed) * draw),
+    Projectile a{from, from, shotVelocity(from, p.yaw, at, lob, gRanged.minSpeed + (gRanged.maxSpeed - gRanged.minSpeed) * draw),
                  p.swingWeapon, m.damage * k, m.stance * k};
+    a.owner = owner;
     if (s.projectiles.size() >= kMaxProjectiles) {  // the oldest stuck one goes, else the oldest
         auto old = std::ranges::find_if(s.projectiles, &Projectile::stuck);
         s.projectiles.erase(old != s.projectiles.end() ? old : s.projectiles.begin());
     }
     s.projectiles.push_back(a);
     p.noise(Noise::Loose);
+}
+
+void loose(Session& s, std::optional<glm::vec3> aimAt) {
+    Player& p = s.player;
+    if (p.arrows <= 0) return;
+    --p.arrows;
+    shoot(s, p, 0, aimAt, !p.aiming);
+}
+
+void loose(Session& s, Entity& e) {
+    const Player& target = s.player;
+    std::uniform_real_distribution<float> off(-e.type().aimError, e.type().aimError);
+    float yaw = e.body.yaw + off(e.rng), pitch = off(e.rng);
+    float dist = std::max(glm::length(glm::vec2(target.pos.x - e.body.pos.x, target.pos.z - e.body.pos.z)), 1.0f);  // (right overhead: still ahead)
+    glm::vec3 at = e.body.pos + glm::vec3(std::sin(yaw), 0, std::cos(yaw)) * dist;
+    at.y = target.pos.y + 1.1f + dist * std::tan(pitch);  // its chest
+    shoot(s, e.body, e.id, at, true);
 }
 
 void updateProjectiles(Session& s, float dt) {
@@ -87,16 +104,31 @@ void updateProjectiles(Session& s, float dt) {
             if (wall) best = wall->distance;
             Entity* hit = nullptr;
             for (Entity& e : s.entities) {  // a dodge's i-frames let it through (ADR-043)
-                if (!e.type().attackable || !e.body.alive() || invulnerable(e.body)) continue;
+                if (a.owner || !e.type().attackable || !e.body.alive() || invulnerable(e.body)) continue;
                 Box3 box = hitBox(e);
                 if (std::optional<float> t = segmentBox(from, from + step, box.lo, box.hi); t && *t * length < best) best = *t * length, hit = &e;
             }
-            if (hit) {  // through the one hit path, as with the bow's own stats (its swing weapon, for the moment)
+            auto owner = a.owner ? std::ranges::find(s.entities, a.owner, &Entity::id) : s.entities.end();
+            Entity* shooter = owner != s.entities.end() ? &*owner : nullptr;  // an archer's arrow (ADR-051): at the player
+            bool player = false;
+            if (shooter && p.alive() && !invulnerable(p)) {  // (a roll's i-frames let it through)
+                glm::vec3 r(gRanged.hitRadius, 0, gRanged.hitRadius);
+                if (std::optional<float> t = segmentBox(from, from + step, p.pos - r, p.pos + r + glm::vec3(0, kHeight, 0)); t && *t * length < best)
+                    best = *t * length, player = true;
+            }
+            glm::vec2 flat(dir.x, dir.z);  // where it came from, level (a guard faces that way; straight down: any)
+            if (glm::length(flat) > 1e-3f) flat = glm::normalize(flat) * 3.0f;
+            glm::vec3 source = from + dir * best - glm::vec3(flat.x, 0, flat.y);
+            if (player) {  // with the archer's stats and the bow it loosed
+                ItemId held = shooter->body.swingWeapon;
+                shooter->body.swingWeapon = a.weapon;
+                strikePlayer(*shooter, p, {a.power, a.stance, source, itemType(a.weapon).damage, false, true, false}, s.rng, s.armorK);
+                shooter->body.swingWeapon = held;
+                gone = true;
+            } else if (hit) {  // through the one hit path, as with the bow's own stats (its swing weapon, for the moment)
                 ItemId held = p.swingWeapon;
                 p.swingWeapon = a.weapon;
-                glm::vec2 flat(dir.x, dir.z);  // where it came from, level (a guard faces that way; straight down: any)
-                if (glm::length(flat) > 1e-3f) flat = glm::normalize(flat) * 3.0f;
-                Strike st{a.power, a.stance, from + dir * best - glm::vec3(flat.x, 0, flat.y), itemType(a.weapon).damage, false, true, false};
+                Strike st{a.power, a.stance, source, itemType(a.weapon).damage, false, true, false};
                 strike(p, *hit, st, s.rng, s.armorK, &s.events);
                 p.swingWeapon = held;
                 gone = true;

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 
 #include <glm/glm.hpp>
@@ -10,11 +11,11 @@ struct Entity;
 struct Player;
 struct Session;
 
-// Projectiles (ADR-050): the player's arrows, in the sim at its fixed tick. Each flies under gravity,
-// swept from where it was to where it gets each tick (a voxel ray and a box per body, so nothing fast
-// tunnels through a thin wall), and the first thing on its way stops it: a body takes the hit through
-// strike() (guards block it, a dodge's i-frames let it through), terrain keeps it stuck where it went
-// in for a while, to be picked back up. Deterministic: no randomness in flight.
+// Projectiles (ADR-050): arrows, in the sim at its fixed tick; the player's hit NPCs, an archer's (ADR-051) only
+// the player. Each flies under gravity, swept from where it was to where it gets each tick (a voxel ray and a
+// box per body, so nothing fast tunnels through a thin wall), and the first thing on its way stops it: a body
+// takes the hit through strike() or strikePlayer() (guards block it, a dodge's i-frames let it through),
+// terrain keeps it stuck where it went in for a while, to be picked back up. Deterministic: no randomness in flight.
 struct Projectile {
     glm::vec3 pos{}, prevPos{}, vel{};  // its tip; drawn between prevPos and pos; blocks/s (stuck: the way it went in)
     ItemId weapon = NoItem;             // the bow that loosed it: its damage roll, type and skill
@@ -22,6 +23,7 @@ struct Projectile {
     float stance = 0;                   // its stance damage
     float age = 0;                      // seconds in flight, or since it stuck
     bool stuck = false;                 // in terrain: it lies there stuckSeconds, to be picked up
+    uint32_t owner = 0;                 // who loosed it: 0 the player, else the Entity::id of an archer (ADR-051)
 };
 
 // The knobs, live from the debug window's Projectiles node.
@@ -57,6 +59,11 @@ Box3 hitBox(const Entity& e);
 // Looses the player's drawn arrow (step() calls it at the shot's release): one from the quiver, at
 // `aimAt` (SimInput's) straight in aim mode, else lobbed onto it, by the draw's speed and power.
 void loose(Session& s, std::optional<glm::vec3> aimAt);
-// A tick of every projectile: flight, the first body or voxel on its way, sticking, expiry, and
-// stuck arrows the player walks over back into its quiver.
+// Looses archer `e`'s drawn arrow (ADR-051; step() calls it at the release): lobbed at the player's chest as far
+// away as the player is, along e's facing (it stops turning just before, so a sidestep can beat it), off by up
+// to its kind's aimError either way and up or down. Its quiver never runs out.
+void loose(Session& s, Entity& e);
+// A tick of every projectile: flight, the first body or voxel on its way (an NPC's arrow: the player's, never
+// another NPC's; its shooter gone, it flies through), sticking, expiry, and stuck arrows the player walks over
+// back into its quiver (an archer's too).
 void updateProjectiles(Session& s, float dt);

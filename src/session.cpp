@@ -126,6 +126,8 @@ StepResult step(Session& s, const SimInput& in, float dt) {
         auto skills = p.progress.skills;
         updateCombat(p, s.entities, dt, s.rng, s.armorK, &s.events);
         if (p.loosed) p.loosed = false, loose(s, in.aimAt);  // a bow's release (ADR-050)
+        for (Entity& e : s.entities)  // an archer's (ADR-051)
+            if (e.body.loosed) e.body.loosed = false, loose(s, e);
         updateProjectiles(s, dt);
         for (size_t k = 0; k < skills.size(); ++k)  // progression news (ADR-027) for the HUD, like quest news
             if (int now = p.progress.skills[k].level; now > skills[k].level && s.toasts.size() < 8)

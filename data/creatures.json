@@ -28,5 +28,10 @@
    "attackable": true, "wanders": true, "model": "ghoul", "temper": "aggressive", "aggro_range": 8, "wander_radius": 4, "chase_speed": 4,
    "loot": "bone_charm", "loot_chance": 0.3, "rare_loot": "barrow_greataxe", "rare_loot_chance": 0.12, "respawn_seconds": 45, "stance": 90, "poise": 12, "attack_windup": 0.6, "attack_recover": 0.5, "hit_stance": 14, "voice": "ghoul",
    "damage": "slash", "resist": {"slash": 0, "strike": -0.3, "pierce": 0.3}, "combo": 2, "delay": 0.4,
-   "mods": [{"stat": "poison", "flat": 25}, {"stat": "poison_resist", "flat": 400}]}
+   "mods": [{"stat": "poison", "flat": 25}, {"stat": "poison_resist", "flat": 400}]},
+  {"id": "bandit_archer", "save_id": 8, "name": "Bandit Archer", "level": 2, "stats": {"stamina": 9, "strength": 2, "agility": 4, "intellect": 2, "spirit": 2},
+   "attackable": true, "wanders": true, "model": "bandit", "temper": "aggressive", "aggro_range": 14, "wander_radius": 5, "chase_speed": 5,
+   "weapon": "short_bow", "keep_range": [7, 16], "aim_error": 0.07, "sidearm": "rusty_knife",
+   "loot": "short_bow", "loot_chance": 0.25, "respawn_seconds": 30, "stance": 40, "hit_stance": 10, "attack_recover": 0.5, "attack_cooldown": 3.2,
+   "voice": "human", "voice_pitch": 1.08, "dodge": 0.25}
 ]

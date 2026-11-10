@@ -39,7 +39,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |
 | `src/melee.h/.cpp` | Melee (ADR-035): `MoveSpec` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), the weapon classes' movesets (`WeaponClassDef`, `weaponClass`, `spec`; loaded from data/weapon_classes.json, ADR-044), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces`; `parryOf` (a knife or fists parry too) and `perfectGuard` (ADR-041); `damageOf` (ADR-040) |
-| `src/projectile.h/.cpp` | Projectiles (ADR-050): `Projectile` (an arrow: tip, velocity, the bow, power, stance, stuck), `RangedTuning gRanged` (gravity, speeds by draw, the draw time, expiry, pickup, the aim walk; the debug Player tab edits it), `drawOf`, `shotOrigin`, `shotVelocity` (straight at a point, lobbed onto it, or along the facing), `segmentBox`, `hitBox`, `loose` (the release: an arrow from the quiver) and `updateProjectiles` (gravity, a swept voxel ray and body boxes, hits through `strike()`, sticking, pickup, expiry) |
+| `src/projectile.h/.cpp` | Projectiles (ADR-050): `Projectile` (an arrow: tip, velocity, the bow, power, stance, stuck), `RangedTuning gRanged` (gravity, speeds by draw, the draw time, expiry, pickup, the aim walk; the debug Player tab edits it), `drawOf`, `shotOrigin`, `shotVelocity` (straight at a point, lobbed onto it, or along the facing), `segmentBox`, `hitBox`, `loose` (the release: an arrow from the quiver; an archer's, ADR-051: at the player along its facing, off by its aim error) and `updateProjectiles` (gravity, a swept voxel ray and body boxes, hits through `strike()`, or for an archer's arrow (`Projectile::owner`) only the player's box, through `strikePlayer()`; sticking, pickup, expiry) |
 | `src/audio.h/.cpp` | Sound (ADR-037): `Audio` (loads `data/sounds/*.ogg` with stb_vorbis into groups of takes; `play` picks a take never twice running with a little random pitch and volume; `mix` is the device thread's stereo mix: up to 48 resampled voices, three buses, a soft limiter), `place` (falloff and pan from the listener), `layersOf`/`hear` (what a `Sound` from the sim plays), `updateAmbience` (looping beds faded by what's around). No device here: main.cpp's `Speaker` feeds `mix` to SDL3's audio stream |
 | `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
@@ -830,6 +830,19 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   `ModelArrow`, the bow pose (`nock`: raise, draw, the nocked arrow), `heldModel(const Player&)` and
   `arrowPose`; main.cpp draws every projectile as a model instance, moves the camera over the right
   shoulder by `aimBlend`, and hud.cpp draws the crosshair and the quiver's count.
+- **Archers** (ADR-051): a creature whose `weapon` shoots has a range band (`keep_range`), an
+  `aim_error` and maybe a `sidearm`. In `think()` its hands come first: the sidearm once the player is
+  within `gAi.closeIn` in a fight (the bow back past the band's near end), never mid-move. With the bow
+  out, Chase hands over to `keepDistance`: a line from its bow to the player's chest (`clearLine`, the
+  voxel `raycast`) or it steps in; too far it steps in, too close it backs off facing the player (when
+  it can), and in its band (or cornered) it starts `Move::Shot` once `sinceSwing` passes its
+  `attack_cooldown`, holding the draw `gAi.drawHold` (the tell; Windup builds its `charge` as
+  updateMelee does the player's), else strafes. updateCombat sets its `loosed` at the shot's impact
+  frame and `step()` calls `loose(s, e)`. The NPC→player hit moved out of updateCombat into
+  `strikePlayer()` (entity.h), swings and arrows alike (`Strike::melee`: only a swing can be parried,
+  freezes its attacker on the guard and bounces off a greatshield). An archer with its bow out takes no
+  side or attack token (`assignSides`) and doesn't guard. The Entities tab shows its band, line of
+  sight, hands and draw; the AI node has `drawHold` and `closeIn`.
 - **Shields and the parry** (ADR-036, melee.h): an off-hand item with a `shield` guards by its own
   numbers instead of the sword's (`guardOf`): the Oak Buckler stops 80% and saves 46% of the stamina,
   the Heater Shield 100% / 56%, the Tower Shield 100% / 72%. A guard of at least 65% boost makes an
@@ -988,6 +1001,11 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   `guard` (needs a weapon or a shield), `parry` (needs a shield that parries or a weapon with
   `parry`), `dodge` (together at most 1), and `back_off` (after its own string). `mods` (ADR-046):
   its own stat modifiers, as items' (wolves: 22 bleed build-up; ghouls: 25 poison, +400 poison resist).
+  Archers (ADR-051): a `weapon` that shoots needs `keep_range` (`[min, max]` blocks between feet,
+  2 <= min < max <= 40) and allows `aim_error` (radians either way, 0..0.5) and `sidearm` (a main-hand
+  weapon that swings, for up close); all three only with one, and no `guard` or `parry` (a bow does
+  neither, and it holds no `shield`). Its `attack_cooldown` is the time from one shot's start to the
+  next, and spaces its sidearm's swings too.
 
   | Kind | Combo (delay) | Guard / parry / dodge | Backs off | Shield |
   |---|---|---|---|---|
@@ -996,6 +1014,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Guard | 3 (25%) | 60% / 10% / – | – | Heater Shield |
   | Bandit Chief | 3 (35%) | 10% / – / – | 30% | – |
   | Barrow Ghoul | 2 (40%) | – | – | – |
+  | Bandit Archer | 1 | – / – / 25% | – | – (bow; Rusty Knife up close) |
 
   | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Temper | Weapon | Drops | Talks |
   |---|---|---|---|---|---|---|---|---|
@@ -1007,6 +1026,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Guard | "Guard" | 4 | 16/5/3/2/4 | 160 | passive | Iron Shortsword (11–15) | Short Bow 50% | yes (E) |
   | Bandit Chief | "Bandit Chief" | 3 | 11/3/2/2/2 | 110 | aggressive, aggro 10 | Iron Shortsword (9–13) | Iron Helm 100% | no |
   | Barrow Ghoul | "Barrow Ghoul" | 3 | 7/4/2/2/2 | 70 | aggressive, aggro 8 | claws (= punch, 5–8) | Bone Charm 30% | no |
+  | Bandit Archer | "Bandit Archer" | 2 | 9/2/4/2/2 | 90 | aggressive, aggro 14 | Short Bow (keeps 7–16 blocks, aim ±0.07 rad, a shot every 3.2 s), Rusty Knife within 3 | Short Bow 25% | no |
 
   The story's foes are tuned for a level-1 player (there's no leveling yet): in the whole Iron set
   with the sword, played the Elden Ring way (guarding a foe about to strike, attacking when its
@@ -1090,7 +1110,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   stays on the corpse if neither has room, and E talks instead).
 - **Default spawns:** dummy and villager just in front of the spawn, the boar about 14 blocks out, the
   bandit's camp about 22 blocks out: outside its leash from the spawn, and even at the edge of its
-  wander radius more than its aggro range away.
+  wander radius more than its aggro range away. A bandit archer (ADR-051) stands a few blocks behind
+  the bandit, about 27 blocks out (aggro 14).
 - **Talking:** E picks the nearest talker within 3.5 blocks. It shows its spawn marker's next line,
   or else a random phrase (never the same twice in a row), for 5 s, while it stops and turns to
   face the player.
@@ -1101,7 +1122,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   40 blocks. They're hidden when terrain blocks the line of sight, using the camera's box march. The
   HUD always runs an ImGui frame; the UI render pass is skipped when there is nothing to draw.
 - **From markers:** the NPCs come from spawn markers (see "Markers"); a world without markers
-  gets the four above as default markers. Regeneration resets the markers to those defaults; the
+  gets the five above as default markers. Regeneration resets the markers to those defaults; the
   Entities tab respawns every NPC at its marker.
 
 ## Quests (`quest.h`, ADR-026)

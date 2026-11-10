@@ -10,7 +10,9 @@
 #include <tuple>
 
 #include "defs.h"
+#include "edit.h"
 #include "melee.h"
+#include "projectile.h"
 
 namespace {
 
@@ -148,12 +150,13 @@ std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t se
         }
         out.push_back(makeEntity(kind, seed * 2654435761u + uint32_t(out.size()), pos, near));
     };
-    // In front of the starting camera, which looks toward +Z. The bandit's camp is over 20 blocks
-    // out: beyond its leash from the spawn, and even wandering it stays out of aggro range.
+    // In front of the starting camera, which looks toward +Z. The bandit's camp (its archer's too) is over 20
+    // blocks out: beyond their leash from the spawn, and even wandering they stay out of aggro range.
     add(EntityKind::TrainingDummy, {3, 6});
     add(EntityKind::Villager, {-4, 7});
     add(EntityKind::Boar, {9, 11});
     add(EntityKind::Bandit, {-5, 22});
+    add(EntityKind::BanditArcher, {-9, 25});  // (ADR-051) at the bandit's camp, behind it
     return out;
 }
 
@@ -341,6 +344,41 @@ void nextInString(Entity& e, glm::vec2 dir) {
     if (delayed) e.body.noise(Noise::Windup);
 }
 
+// Whether nothing solid stands between `from` and `to`.
+bool clearLine(const Grid& g, glm::vec3 from, glm::vec3 to) {
+    glm::vec3 d = to - from;
+    float length = glm::length(d);
+    return length < 1e-4f || !raycast(g, from, d / length, length);
+}
+
+// An archer with its bow out, chasing (ADR-051): steps in while too far or with nothing to see (no line from its bow
+// to the player's chest), backs off facing it while too close, and in its band (or cornered, too close with no
+// room behind) looses at it once its cooldown has passed since its last shot started (the first comes at once),
+// strafing round it in between. True with a shot started (it's in Windup).
+bool keepDistance(Entity& e, const Grid& g, const Player& target, glm::vec2 dir, float dist, float dt, Input& in) {
+    const EntityType& t = e.type();
+    e.sight = clearLine(g, shotOrigin(e.body), target.pos + glm::vec3(0, 1.1f, 0));
+    bool closing = dist > t.keepMax || !e.sight, backing = !closing && dist < t.keepMin && walkable(g, e.body.pos, -dir, target.pos);
+    if (!closing && !backing && e.sinceSwing >= t.cooldown && !e.body.punching() && e.body.stagger <= 0) {  // (cornered: point-blank)
+        e.sinceSwing = 0;
+        setState(e, AiState::Windup, "shoots");
+        startMove(e.body, Move::Shot, dir, gAi.drawHold * (0.85f + 0.3f * rand01(e.rng)));
+        e.body.noise(Noise::Windup);  // the bow creaks: the tell
+        return true;
+    }
+    if (e.strafeTimer <= 0) e.strafe = rand01(e.rng) < 0.5f ? 1.0f : -1.0f, e.strafeTimer = 1.5f + 2 * rand01(e.rng);
+    glm::vec2 go = closing ? dir : backing ? -dir : glm::vec2(-dir.y, dir.x) * e.strafe;
+    if (walkable(g, e.body.pos, go, target.pos)) {
+        in.move = go, in.face = dir, in.run = closing && dist > t.keepMax + 2;
+        e.lostTime = 0;
+    } else {
+        turnToward(e.body, dir, dt);
+        if (closing) e.lostTime += dt;
+        else e.strafe = -e.strafe;  // a wall: the other way round
+    }
+    return false;
+}
+
 // One AI update of a wanderer: transitions (as many as the situation calls for, so e.g. a hit from
 // beyond the leash is Chase and back to Return in one update), then the input of the state it ends in.
 Input think(Entity& e, const Grid& g, const Player& target, float dt) {
@@ -352,6 +390,10 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
     // In reach as inReach() counts it (about level), so a player up a pillar counts toward giving up.
     bool fighter = t.temper != Temper::Harmless, inReach = dist < kPunchReach - 0.2f && std::abs(target.pos.y - e.body.pos.y) < kHeight;
     Input in;
+    // An archer's hands (ADR-051): its sidearm once the player is close in a fight, the bow back past its keepMin
+    // (or closeIn, if that's farther: no flip-flopping between the two).
+    if (ItemId& hand = e.body.inv.equipped[SlotMainHand]; t.sidearm && !e.body.punching())
+        hand = e.angry() && dist < (hand == t.sidearm ? std::max(t.keepMin, gAi.closeIn) : gAi.closeIn) ? t.sidearm : t.weapon;
     if (fighter) answer(e, g, target, dir, dist, dt, in);
     constexpr int kMaxHops = 8;  // the longest chain is 3 transitions (e.g. Recover, Chase, Return, Wander), then the input
     for (int hops = 0; hops < kMaxHops; ++hops) {
@@ -394,11 +436,14 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             else if (e.lostTime >= t.giveUpSeconds) setState(e, AiState::Return, "lost_target");
             else if (e.body.health < t.fleeHealth * float(maxHealth(sheet(e.body)))) setState(e, AiState::Flee, "low_health");
             else if (in.roll || e.body.move == Move::Parry || e.body.rolling()) return in;  // dodging, or in a parry
+            else if (t.keepMax > 0 && ranged(e.body)) {  // an archer's bow out: it keeps its distance (ADR-051)
+                if (!keepDistance(e, g, target, dir, dist, dt, in)) return in;
+            }
             // Swings with a token, not while it answers an attack (ADR-042, ADR-043). The windup varies a
             // little, so its timing can't just be counted (ADR-035); right after a block or a parry it's quick.
             else if (bool counter = e.counterTimer > 0;
                      inReach && e.token && e.backOff <= 0 && !(e.threatened && e.answer != Answer::None) &&
-                     (e.guardTimer <= 0 || counter) && (e.stateTime >= t.cooldown || counter) &&
+                     (e.guardTimer <= 0 || counter) && (e.stateTime >= t.cooldown || counter) &&  // (an archer's spaces its knife too: a poor fighter up close)
                      startPunch(e.body, dir, counter ? gAi.counterWindup : t.windup * (0.85f + 0.5f * rand01(e.rng)))) {
                 e.string = t.combo > 1 ? 1 + int(e.rng() % unsigned(t.combo)) : 1;
                 e.sinceSwing = e.counterTimer = e.guardTimer = 0;
@@ -449,6 +494,9 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             continue;
         case AiState::Windup:  // stands in its windup pose turning after the target, then commits to the strike; updateCombat lands it
             if (e.body.hitPending) {
+                Player& b = e.body;  // an archer's draw builds at its hold point, as the player's (ADR-051)
+                if (b.move == Move::Shot && b.moveTime >= holdTime(b) && !b.charged && (b.charge += dt) >= gRanged.drawSeconds)
+                    b.charged = true, b.noise(Noise::Charged);
                 if (e.body.moveTime < holdTime(e.body) || e.body.hold > gMelee.trackSeconds) turnToward(e.body, dir, dt);
                 return in;
             }
@@ -456,7 +504,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                 if (moveProgress(e.body) >= spec(e.body).chain) nextInString(e, dir);  // the next hit from this one's chain point
                 return in;
             }
-            setState(e, AiState::Recover, "swung");
+            setState(e, AiState::Recover, e.body.move == Move::Shot ? "shot" : "swung");
             continue;
         case AiState::Stagger:  // reels (a stance break: open to a riposte), then fights on
             if (e.body.stagger > 0) return in;
@@ -515,7 +563,7 @@ static void assignSides(std::vector<Entity>& entities, const Player& player) {
     std::vector<std::pair<float, Entity*>> pack;
     for (Entity& e : entities) {
         e.pack = 0;
-        if (e.angry() && e.body.alive() && e.type().wanders) {
+        if (e.angry() && e.body.alive() && e.type().wanders && !ranged(e.body)) {  // (an archer's bow out: it keeps away, ADR-051)
             glm::vec2 d = xz(e.body.pos - player.pos);
             pack.emplace_back(std::atan2(d.x, d.y), &e);
         }
@@ -591,7 +639,7 @@ void updateEntities(std::vector<Entity>& entities, const Grid& world, const Play
         bool was = b.guarding;
         bool near = glm::distance(xz(b.pos), xz(player.pos)) < 6;
         b.guarding = (e.guardTimer > 0 || (e.type().shield && near)) && e.state == AiState::Chase && !b.punching() && !b.rolling() && !in.roll && b.stagger <= 0 &&
-                     (b.inv.equipped[SlotMainHand] || b.inv.equipped[SlotOffHand]);
+                     (b.inv.equipped[SlotMainHand] || b.inv.equipped[SlotOffHand]) && !ranged(b);  // (a bow doesn't guard)
         if (b.guarding && !was) b.noise(Noise::GuardUp);
         b.guardBlend += ((b.guarding ? 1.0f : 0.0f) - b.guardBlend) * (1 - std::exp(-25 * dt));
         if (b.guarding) in.run = false;  // as the player's: a guard walks
@@ -946,6 +994,56 @@ void strike(Player& player, Entity& target, const Strike& s, std::mt19937& rng, 
     }
 }
 
+void strikePlayer(Entity& e, Player& player, const Strike& s, std::mt19937& rng, float armorK) {
+    e.body.combatTimer = kCombatSeconds;
+    bool crit = rollCrit(e.body, rng);  // a random critical (ADR-045)
+    int full = resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), {rng, armorK, s.power * (crit ? critDamage(e.body) : 1)});
+    const MeleeTuning& t = gMelee;
+    bool guarded = false;
+    float through = 1;  // the share a guard let through (status build-up)
+    if (s.melee && e.type().parryable && parries(player, e.body.pos)) {  // deflected (ADR-036): the last of its parries opens it
+        player.combatTimer = kCombatSeconds;
+        if (++e.parried >= e.type().parries) e.parried = 0, interrupt(e.body, t.parrySeconds, true), e.body.noise(Noise::StanceBreak);
+        else interrupt(e.body, t.recoilSeconds, false);
+        player.noise(Noise::Parry);
+        player.freeze = e.body.freeze = 0.1f;
+        full = 0;
+    } else if (std::optional<Guard> guard = guardAgainst(player, s.from, s.type)) {
+        // Blocked: part of the damage (by its type), and stamina; a guard raised just now takes none (ADR-041).
+        bool perfect = perfectGuard(player);
+        player.stamina -= (t.blockStamina + t.blockStaminaPerDamage * float(full)) * (1 - guard->boost) * (perfect ? t.perfectStamina : 1);
+        player.staminaWait = t.staminaDelay;
+        player.combatTimer = kCombatSeconds;
+        player.noise(Noise::Block), guarded = true;
+        if (player.stamina < 0)  // guard broken
+            player.stamina = 0, interrupt(player, t.guardBreakSeconds, true), player.noise(Noise::GuardBreak), shake(player, 0.3f);
+        else if (player.guarding) player.blockTime = 0;  // a guard counter only off a real guard, not a parry's weak one
+        if (s.melee) {
+            e.body.freeze = 0.08f;
+            if (player.stamina > 0 && bounces(*guard, s.stance)) interrupt(e.body, t.recoilSeconds, false), player.noise(Noise::Bounce);  // off a greatshield
+        }
+        perfect &= !player.broken;  // a guard that broke wasn't perfect
+        full = perfect ? 0 : int(std::lround(float(full) * (1 - guard->negation)));
+        through = perfect ? 0 : 1 - guard->negation;
+        if (perfect) player.noise(Noise::PerfectGuard);
+    } else if (full > 0 && !hyperarmor(player) && s.stance >= playerPoise(player)) {
+        interrupt(player, gMelee.flinchSeconds, false);
+    }
+    bool landed = hurt(player, full, crit && !guarded);
+    if (landed || guarded) {  // statuses build up by what the guard let through, a light hit's too (ADR-046)
+        auto bursts = buildUp(e.body, player, through, e.type().name ? e.type().name : e.name.c_str());
+        for (size_t k = 0; k < bursts.size(); ++k) landed |= hurt(player, bursts[k], false, Status(k));
+    }
+    if (landed) {
+        awardHitXp(player, e, false, false);
+        if (!player.alive()) player.noise(Noise::Death);
+        else if (!guarded) player.noise(Noise::Hurt);  // a blocked hit sounds as the block
+        if (crit && !guarded) player.noise(Noise::Crit);
+        shake(player, std::min(0.6f, 1.5f * float(full) / float(maxHealth(sheet(player)))));  // by the share of its health it took
+        player.hitWith = e.body.swingWeapon, player.hitStance = s.stance;
+    }
+}
+
 void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::mt19937& rng, float armorK,
                   std::vector<GameEvent>* events) {
     if (hurt(player, tick(player, dt), false, Status::Poison) && !player.alive()) player.noise(Noise::Death);
@@ -996,53 +1094,10 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
         else e.body.stance = std::min(e.body.stance + 13 * dt, e.type().stance);
         if (e.body.staminaWait > 0) e.body.staminaWait = std::max(0.0f, e.body.staminaWait - dt);  // what its guard spends (ADR-043)
         else e.body.stamina = std::min(e.body.stamina + gMelee.staminaRegen * (e.body.guarding ? gMelee.guardRegen : 1) * dt, gMelee.staminaMax);
-        if (lands(e.body) && inReach(e.body, player.pos) && player.alive() && !invulnerable(player)) {
-            e.body.combatTimer = kCombatSeconds;
-            bool crit = rollCrit(e.body, rng);  // a random critical (ADR-045)
-            int full = resolveHit(e.body, player, weaponAttack(e.body.swingWeapon), {rng, armorK, crit ? critDamage(e.body) : 1});
-            const MeleeTuning& t = gMelee;
-            bool guarded = false;
-            float through = 1;  // the share a guard let through (status build-up)
-            if (e.type().parryable && parries(player, e.body.pos)) {  // deflected (ADR-036): the last of its parries opens it
-                player.combatTimer = kCombatSeconds;
-                if (++e.parried >= e.type().parries) e.parried = 0, interrupt(e.body, t.parrySeconds, true), e.body.noise(Noise::StanceBreak);
-                else interrupt(e.body, t.recoilSeconds, false);
-                player.noise(Noise::Parry);
-                player.freeze = e.body.freeze = 0.1f;
-                full = 0;
-            } else if (std::optional<Guard> guard = guardAgainst(player, e.body.pos, damageOf(e.body, e.type().damage))) {
-                // Blocked: part of the damage (by its type), and stamina; a guard raised just now takes none (ADR-041).
-                bool perfect = perfectGuard(player);
-                player.stamina -= (t.blockStamina + t.blockStaminaPerDamage * float(full)) * (1 - guard->boost) * (perfect ? t.perfectStamina : 1);
-                player.staminaWait = t.staminaDelay;
-                player.combatTimer = kCombatSeconds;
-                player.noise(Noise::Block), guarded = true;
-                if (player.stamina < 0)  // guard broken
-                    player.stamina = 0, interrupt(player, t.guardBreakSeconds, true), player.noise(Noise::GuardBreak), shake(player, 0.3f);
-                else if (player.guarding) player.blockTime = 0;  // a guard counter only off a real guard, not a parry's weak one
-                e.body.freeze = 0.08f;
-                if (player.stamina > 0 && bounces(*guard, e.type().hitStance)) interrupt(e.body, t.recoilSeconds, false), player.noise(Noise::Bounce);  // off a greatshield
-                perfect &= !player.broken;  // a guard that broke wasn't perfect
-                full = perfect ? 0 : int(std::lround(float(full) * (1 - guard->negation)));
-                through = perfect ? 0 : 1 - guard->negation;
-                if (perfect) player.noise(Noise::PerfectGuard);
-            } else if (full > 0 && !hyperarmor(player) && e.type().hitStance >= playerPoise(player)) {
-                interrupt(player, gMelee.flinchSeconds, false);
-            }
-            bool landed = hurt(player, full, crit && !guarded);
-            if (landed || guarded) {  // statuses build up by what the guard let through, a light hit's too (ADR-046)
-                auto bursts = buildUp(e.body, player, through, e.type().name ? e.type().name : e.name.c_str());
-                for (size_t s = 0; s < bursts.size(); ++s) landed |= hurt(player, bursts[s], false, Status(s));
-            }
-            if (landed) {
-                awardHitXp(player, e, false, false);
-                if (!player.alive()) player.noise(Noise::Death);
-                else if (!guarded) player.noise(Noise::Hurt);  // a blocked hit sounds as the block
-                if (crit && !guarded) player.noise(Noise::Crit);
-                shake(player, std::min(0.6f, 1.5f * float(full) / float(maxHealth(sheet(player)))));  // by the share of its health it took
-                player.hitWith = e.body.swingWeapon, player.hitStance = e.type().hitStance;
-            }
-        }
+        bool swings = lands(e.body);
+        if (swings && e.body.move == Move::Shot) swings = false, e.body.loosed = true;  // an archer's release: step() looses it (ADR-051)
+        if (swings && inReach(e.body, player.pos) && player.alive() && !invulnerable(player))
+            strikePlayer(e, player, {1, e.type().hitStance, e.body.pos, damageOf(e.body, e.type().damage)}, rng, armorK);
         if (!e.body.alive() && e.body.deadTime >= e.type().respawnSeconds) {  // back home, fully healed
             e.body.teleport(e.home);
             e.body.vel = {};

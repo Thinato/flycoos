@@ -10,8 +10,8 @@
 
 // NPC kinds: the `save_id` of their record in data/creatures.json, saved in spawn markers: append-only,
 // never renumbered. These are the ones code names, with their string ids; data may add more after Count.
-enum class EntityKind : uint8_t { TrainingDummy, Villager, Boar, Bandit, Wolf, Guard, BanditChief, Ghoul, Count };
-inline constexpr const char* kEntityKindNames[] = {"dummy", "villager", "boar", "bandit", "wolf", "guard", "bandit_chief", "ghoul"};
+enum class EntityKind : uint8_t { TrainingDummy, Villager, Boar, Bandit, Wolf, Guard, BanditChief, Ghoul, BanditArcher, Count };
+inline constexpr const char* kEntityKindNames[] = {"dummy", "villager", "boar", "bandit", "wolf", "guard", "bandit_chief", "ghoul", "bandit_archer"};
 
 // Story markers: authored places in the world (see docs/ARCHITECTURE.md, "Markers"). Saved in world
 // files: only append kinds.

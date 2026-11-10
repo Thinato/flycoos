@@ -307,7 +307,15 @@ guard button to aim over the shoulder with a crosshair; otherwise arrows fly the
 arc onto your lock-on target. Arrows fall as they fly, stick where they land (walk over them to
 pick them up), and a shield in front blocks them; a roll lets them through. The quiver (30, shown
 right of the health bar) fills when you rest by a fire. No guard or parry with a bow in hand.
-Guards drop it half the time.
+Guards drop it half the time, bandit archers a quarter of the time.
+
+**Archers** (ADR-051): the **Bandit Archer** (at the bandit camp near the start, or F6) keeps 7 to
+16 blocks from you and shoots. Watch for the tell: it raises its bow and holds the draw, creaking,
+for most of a second, and stops turning just before it lets go, so a late sidestep or a roll beats
+it. A shield in front blocks its arrows (a sword's guard lets some through; raised just as one
+lands it's a perfect guard), but arrows can't be parried. It backs away from you, steps in when it
+can't see you, and strafes between shots; catch it up close and it pulls a knife. Its arrows never
+hit other enemies, and you can pick up the ones that miss.
 
 **Criticals** (ADR-045): attack an enemy from behind while it isn't attacking or reeling to
 **backstab** it: it's caught, hit for the riposte's damage and knocked down. Enemies that have

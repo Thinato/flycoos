@@ -42,7 +42,7 @@ struct EntityType {
     float giveUpSeconds;   // can't step toward the player (out of reach) this long: goes home
     float windup;          // seconds from starting a swing to its hit, standing committed
     float recover;         // seconds it stands after the hit
-    float cooldown;        // seconds of chasing before the next swing (the weapon's swing time gates it too)
+    float cooldown;        // seconds of chasing before the next swing (the weapon's swing time gates it too); an archer's: from one shot's start to the next (and between its knife's swings)
     float fleeHealth;      // runs away below this fraction of its health; 0: never
     float stance;          // stance damage it takes to break its stance (ADR-035); 0: never breaks
     float poise;           // a hit with at least this stance damage makes it flinch (cancels its attack)
@@ -65,6 +65,11 @@ struct EntityType {
     float guard, parry, dodge, backOff;
     ItemId shield;
     std::vector<Modifier> mods;  // its own modifiers on top of its stats (ADR-046): a bite's bleed, a status resist
+    // An archer (ADR-051): a ranged weapon, the range band it keeps from the player (blocks between feet), how far
+    // off its shots go (radians, either way), and what it fights with up close (a main-hand weapon; none: the bow).
+    float keepMin = 0, keepMax = 0;
+    float aimError = 0;
+    ItemId sidearm;
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);
@@ -103,6 +108,8 @@ struct AiTuning {
     float counterWindup = 0.3f;   // an NPC's swing right after it blocked or parried winds up this fast...
     float counterWindow = 1.0f;   // ...if it starts within this long
     float backOffSeconds = 0.9f;  // an NPC backing off walks away facing the player this long
+    float drawHold = 0.8f;      // an archer holds its draw this long before it looses (x 0.85 .. 1.15): the tell (ADR-051)
+    float closeIn = 3;          // an archer with a sidearm takes it out once the player is this close (the bow back past keepMin)
 };
 inline AiTuning gAi;
 
@@ -147,6 +154,7 @@ struct Entity {
     float guardTimer = 0;  // > 0: holds its guard up
     float counterTimer = 0;  // > 0: it just blocked or parried: its next swing comes fast
     float backOff = 0;     // > 0: backing off after its string
+    bool sight = false;    // an archer: it saw the player's chest from its bow at its last look (ADR-051)
     std::mt19937 rng;
 
     const EntityType& type() const { return typeOf(kind); }
@@ -166,8 +174,8 @@ constexpr float kFleeSeconds = 4;    // how long a fleeing NPC runs before it he
 constexpr float kPlayerRespawnSeconds = 5;
 constexpr float kCorpseLinger = 3;  // seconds an empty corpse of an inactive spawn marker (ADR-023) lies before it goes
 
-// The training dummy, a villager, a boar and a bandit on grass beside `near` (usually the player
-// spawn). The bandit's camp is far enough away that it can't see `near`.
+// The training dummy, a villager, a boar, a bandit and a bandit archer on grass beside `near` (usually the player
+// spawn). The bandit's camp is far enough away that they can't see `near`.
 std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t seed);
 // A fresh `kind` `distance` blocks in front of `player` (the way its body faces), lifted out of the
 // terrain and facing it; for trying out fights (debug window, F6). Not from a marker (spawn.id 0):
@@ -314,11 +322,17 @@ struct Strike {
 };
 void strike(Player& player, Entity& target, const Strike& s, std::mt19937& rng, float armorK = kArmorK,
             std::vector<GameEvent>* events = nullptr);
+// The other way round (ADR-051): a hit by `npc` that reached the player (not rolled through): a swing's at its
+// impact frame, or its arrow's. A random critical, resolveHit with npc's swingWeapon times `s.power`, then a
+// swing's parry (an arrow can't be parried: a parry is a weak guard), the guard from `s.from` (a fresh one
+// is perfect), else a flinch from `s.stance` unless hyperarmor; statuses, armor XP, the noises and camera
+// shake. A swing (`melee`) also freezes its attacker on the guard and bounces off a greatshield.
+void strikePlayer(Entity& npc, Player& player, const Strike& s, std::mt19937& rng, float armorK = kArmorK);
 // Combat timers, the moves' clocks, stance recovery, status build-up and timed effects (poison's ticks,
 // a kill by them the player's) and out-of-combat regeneration for everyone; lands
 // every swing at its impact frame (the player's on entities, entities' on the player) through
 // resolveHit (`armorK` is the K of armorReduction) and awardHitXp (the player's through strike()); brings the dead back home.
-// A bow's shot reaching its release sets the player's `loosed` instead (step() looses the arrow). Any hit
+// A bow's shot reaching its release sets the shooter's `loosed` instead (step() looses the arrow; an NPC's too, ADR-051). Any hit
 // but the riposte move's may be a random critical (the attacker's CritChance, for CritDamage more). A kill
 // by the player raises Killed into `events`. The player's moves hit with their damage and stance
 // (staggerHit) and freeze both bodies a moment (hit-stop). An NPC's hit passes through a rolling

@@ -105,8 +105,8 @@ def main():
             except OSError:
                 time.sleep(0.1)
         err, state, _ = tool("state")
-        check(not err and state["size"] == [1024, 192, 1024] and state["undo_steps"] == 0 and state["markers"] == 4,
-              "state (a new world has the 4 default spawn markers)")
+        check(not err and state["size"] == [1024, 192, 1024] and state["undo_steps"] == 0 and state["markers"] == 5,
+              "state (a new world has the 5 default spawn markers)")
         if err:
             raise RuntimeError(state)
         x, z = int(state["player"][0]) + 20, int(state["player"][2]) + 20
@@ -251,11 +251,11 @@ def main():
         check(len(made) == 1 and made[0]["entity"] == "bandit" and made[0]["count"] == 2 and made[0]["instance"] == camp_id,
               "a placed camp brings its bandits' spawn marker")
         err, r, _ = tool("remove", id=camp_id)
-        check(not err and r["markers_removed"] == 1 and tool("markers", kind="spawn")[1]["count"] == 4,
+        check(not err and r["markers_removed"] == 1 and tool("markers", kind="spawn")[1]["count"] == 5,
               "removing the camp takes its marker along")
         # story markers: add each kind, edit, list, map, undo; hostile arguments change nothing
         err, r, _ = tool("markers", kind="spawn")
-        check(not err and r["count"] == 4 and {m["entity"] for m in r["markers"]} == {"dummy", "villager", "boar", "bandit"},
+        check(not err and r["count"] == 5 and {m["entity"] for m in r["markers"]} == {"dummy", "villager", "boar", "bandit", "bandit_archer"},
               "markers lists the default spawns")
         steps = tool("state")[1]["undo_steps"]
         err, well, _ = tool("mark", kind="poi", name="Old Well", x=x, z=z - 10)
@@ -329,9 +329,9 @@ def main():
         err2, msg2, _ = tool("unmark", id=0)
         check(err and err2 and tool("state")[1]["undo_steps"] == steps, "bad ids are errors, and nothing changed")
         err, r, _ = tool("unmark", id=den_id)
-        check(not err and tool("markers", kind="spawn")[1]["count"] == 4, "unmark")
+        check(not err and tool("markers", kind="spawn")[1]["count"] == 5, "unmark")
         tool("undo")
-        check(tool("markers", kind="spawn")[1]["count"] == 5, "undo brings the marker back")
+        check(tool("markers", kind="spawn")[1]["count"] == 6, "undo brings the marker back")
         err, r, _ = tool("goto", position=[x, before + 20, z + 30], look_at=[x, before, z])
         check(not err and r["moved"], "goto")
         err, r, _ = tool("save")

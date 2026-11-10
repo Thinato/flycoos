@@ -2244,3 +2244,90 @@
   - **Later:** crossbows (load and fire), throwables and archer enemies on the same projectiles;
     staff spells as projectiles with their own model; arrows as items with crafting; arrows stuck in
     bodies.
+
+## ADR-051: Archers that keep their distance
+
+- **Status:** accepted (2026-11-09)
+- **Context:**
+  - The roadmap's enemies section: "Ranged enemies keeping their distance (needs projectiles)".
+    ADR-050's arrows flew one way, player to NPCs, and its data check refused a ranged NPC weapon.
+  - The NPC→player hit was one block of `updateCombat`, used only by swings landing in reach.
+  - NPCs fight at a sword's length: Chase closes in, attack tokens decide who swings, the rest circle.
+  - Foundations (TALENTS.md): pressed actions share one path, so an NPC's shot goes the way the
+    player's does.
+- **Decision:**
+  - **One hit path the other way:** the NPC→player block moved into `strikePlayer()` (entity.h), the
+    mirror of `strike()`: a random critical, `resolveHit` with the NPC's swing weapon times
+    `Strike::power`, then the player's parry (swings only), the guard from `Strike::from` (a fresh one
+    is perfect), else a flinch from `Strike::stance` unless hyperarmor; statuses, armor XP, noises,
+    camera shake. A swing (`melee`) also freezes its attacker on the guard and bounces off a
+    greatshield; an arrow does neither. The rng draws are as before, so the story fights, level bands
+    and replays are unchanged.
+  - **Arrows have an owner** (`Projectile::owner`: 0 the player, else an `Entity::id`). An archer's
+    arrow tests only the player's box (no friendly fire), skips a rolling player (i-frames), hits
+    through `strikePlayer` with the archer's stats and the bow that loosed it (its swing weapon, set
+    for the moment of the hit), and a wall in the way stops it. With its archer gone (despawned) an
+    arrow is no one's and flies on. Missed arrows stick and can be picked up, as the player's.
+  - **The archer's shot** is the player's: `Move::Shot` with its own hold. It raises the bow, holds
+    the draw `gAi.drawHold` (0.8 s, x 0.85–1.15; the draw builds in Windup as in updateMelee, the
+    creak at full draw) while turning after the player, stops turning 0.12 s before the release, and
+    looses at the impact frame (`loosed`, then `step()` calls `loose(s, e)`): lobbed at the player's
+    chest as far away as the player is but along its own facing, off by up to its kind's `aim_error`
+    either way, up or down. No lead: a sidestep late in the draw, a roll or a shield beats it. Its
+    quiver never runs out. A hit that makes it flinch mid-draw spoils the shot.
+  - **Keeping its distance** (`keepDistance`, Chase with the bow out): too far, or no line from its
+    bow to the player's chest (`clearLine`, the voxel `raycast`), it steps in; too close (inside
+    `keep_range`'s min) it backs off facing the player while there's room; in its band, or cornered,
+    it shoots once its `attack_cooldown` has passed since its last shot started (the first comes at
+    once), and strafes round the player between shots. It gives up stuck (as a chase does).
+  - **Up close** (`sidearm`): once the player is within `gAi.closeIn` (3 blocks) in a fight it takes
+    out its knife and fights with it in the pack with attack tokens, slowly (its cooldown spaces its
+    swings too: a poor fighter up close, a fallback, not a second bandit); the bow comes back past its
+    band's min or `closeIn`, whichever is farther (no flip-flopping), never mid-move, and when the
+    fight ends. With the bow out an
+    archer takes no side and no token (it isn't on the ring) and doesn't guard.
+  - **Data:** a `weapon` that shoots needs `keep_range` (`[min, max]`, 2 <= min < max <= 40) and
+    allows `aim_error` (0..0.5 rad) and `sidearm` (a main-hand weapon that swings); all three need
+    one, and it can't `guard`, `parry` or hold a `shield`. `bandit_archer` (save id 8, `EntityKind::BanditArcher`):
+    level 2, 9/2/4/2/2 (90 health), aggressive at 14 blocks, the Short Bow, keeps 7–16 blocks,
+    ±0.07 rad, a shot every 3.2 s, the Rusty Knife up close, dodges 25%, drops the bow 25%.
+  - **Where:** at the bandit's camp in the default spawns (the endless world's start, and worlds
+    without markers), a few blocks behind the bandit; F6 and the Entities tab spawn it anywhere.
+    The story world is untouched (its spawns are authored in the editor).
+  - **Debug window:** the Entities tab shows an archer's band, aim, hands, line of sight and draw;
+    the AI node has the draw hold and the sidearm distance.
+- **Alternatives considered:**
+  - Arrows that can be parried: a parry's window is timed against a swing's arc, and Elden Ring's
+    parries don't take arrows either; a parry meeting one is a weak guard.
+  - Aiming at the player's position at the release (or leading it): nothing would beat it but a roll
+    or a shield. Along its facing, which stops tracking just before, a late sidestep works too.
+  - A kick or a bow bash up close instead of a sidearm: a new move and pose for one kind; the knife
+    reuses the bandit's moveset, and data can give any archer any sidearm (or none: it shoots
+    point-blank).
+  - Attack tokens for shots too: archers stand out of the ring, and a token held at 14 blocks would
+    starve the melee fighters; one archer per camp needs no limit yet.
+  - A data-only kind (no `EntityKind`): the default spawns name it in code, as they name the bandit.
+- **Consequences:**
+  - **Balance:** melee is unchanged (the story fights and level bands measure the same). A new band:
+    the starting player (shortsword, no armor) rushing an archer from 14 blocks wins 12 of 12 with
+    87 health left on average (its first arrow lands as the player closes in, then the slow knife);
+    rushing a bandit with an archer behind it wins 9 of 12 with 21 left, against 28 for two bandits
+    and 56 for one, played the same way: an archer covering a fighter is about as much trouble as
+    a second fighter.
+  - **Tests:** `archers` checks the data (and its checks), the shot (at once, the creaking tell held at
+    full draw, the arrow at the player, lobbed, its hit and sounds, back to Chase after "shot"), a
+    shield blocking from the front (not from behind, no hit-stop or recoil), the sword's guard letting
+    some through and a perfect guard none, a flinch by the arrow's stance against the poise, a roll
+    through it, no friendly fire, the player's arrows still hitting NPCs, a wall stopping it, an
+    ownerless arrow, a mid-draw flinch, the band (backing off facing the player, closing in, strafing
+    between shots), no shot without a line of sight, a cornered shot, the sidearm's hysteresis (and
+    none mid-swing, the bow back on death, no flip-flop with a far `closeIn`, the knife's slow swings), no ring, side or guard with the bow, `strikePlayer`'s
+    power and parry rule, the aim's spread both ways and along the facing, determinism and the band
+    above. Mutation-checked: each of 51 rules broken alone fails a test.
+  - **Limits:** an archer reads the player's position, not the world: no pathfinding round a wall it
+    can't see past (it steps in, then gives up); several archers can shoot at once. An arrow's hit
+    reads its archer's gear as it is when it lands (the knife out by then: its modifiers), as the
+    player's arrows do. The tick it takes out its knife it still holds its token from the tick before.
+    Blocking an arrow opens a guard counter, as blocking a swing does.
+  - **Later:** crossbows and throwables (likely ADR-052) on the same path; an archer limit if camps
+    grow; arrows stuck in bodies.

@@ -77,7 +77,7 @@ system is summarized in ADR-035.
 
 - [x] Combos and delayed attacks (varied timings within a string; ADR-042)
 - [x] Enemies that guard, parry, dodge and back off (ADR-043)
-- [ ] Ranged enemies keeping their distance (needs projectiles)
+- [x] Ranged enemies keeping their distance: the bandit archer, its arrows hit only the player (ADR-051)
 - [x] Attack tokens: only a few in a pack swing at once, the rest circle (ADR-042)
 - [ ] Grabs, area attacks, charges, jumping attacks
 - [ ] Bosses: phases, unique movesets, stance bars shown

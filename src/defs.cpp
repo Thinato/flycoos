@@ -410,7 +410,7 @@ void loadCreatures(const File& f, Defs& d) {
                  "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "rare_loot", "rare_loot_chance", "respawn_seconds", "leash_radius",
                  "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
                  "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "damage",
-                 "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield", "mods"});
+                 "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield", "mods", "keep_range", "aim_error", "sidearm"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
         auto flag = [&](const char* key) {
@@ -452,8 +452,7 @@ void loadCreatures(const File& f, Defs& d) {
         if (t.chaseSpeed <= 0 && t.temper != Temper::Harmless) throw r.fail("chase_speed", "missing (a creature that fights chases)");
         t.weapon = item("weapon");
         if (t.weapon && d.items[t.weapon].slot != SlotMainHand) throw r.fail("weapon", std::format("'{}' is not a main_hand item", d.itemIds[t.weapon]));
-        if (t.weapon && d.weaponClasses[size_t(d.items[t.weapon].weaponClass)].ranged)  // its AI only swings (archers: later)
-            throw r.fail("weapon", std::format("'{}' shoots: creatures can't use ranged weapons yet", d.itemIds[t.weapon]));
+        bool shoots = t.weapon && d.weaponClasses[size_t(d.items[t.weapon].weaponClass)].ranged;
         t.loot = item("loot");
         t.lootChance = float(r.number(r.fields, "loot_chance", 0, 1, 0, false));
         if (t.lootChance > 0 && !t.loot) throw r.fail("loot_chance", "no 'loot' to drop");
@@ -528,6 +527,22 @@ void loadCreatures(const File& f, Defs& d) {
         float parriesWith = t.shield ? d.items[t.shield].shield.parry : t.weapon ? d.items[t.weapon].parry : 0;
         if (t.parry > 0 && parriesWith <= 0) throw r.fail("parry", "nothing it holds parries (a shield that does, or a weapon with 'parry')");
         if (t.guard + t.parry + t.dodge > 1) throw r.fail("dodge", "guard + parry + dodge are chances of one answer: at most 1 together");
+        // An archer (ADR-051): a ranged weapon goes with the range band it keeps, its aim and what it fights with up close.
+        for (const char* key : {"keep_range", "aim_error", "sidearm"})
+            if (given(key) && !shoots) throw r.fail(key, "only for a creature whose 'weapon' shoots (a bow)");
+        if (shoots && !given("keep_range")) throw r.fail("keep_range", "missing (a creature whose weapon shoots keeps its distance: [min, max] blocks)");
+        if (shoots) {
+            const json& k = r.fields["keep_range"];
+            if (!k.is_array() || k.size() != 2 || !k[0].is_number() || !k[1].is_number()) throw r.fail("keep_range", "must be [min, max] blocks");
+            t.keepMin = k[0].get<float>(), t.keepMax = k[1].get<float>();
+            if (!(t.keepMin >= 2 && t.keepMin < t.keepMax && t.keepMax <= 40)) throw r.fail("keep_range", "must be 2 <= min < max <= 40");
+            if (t.parry > 0 || t.guard > 0) throw r.fail(t.parry > 0 ? "parry" : "guard", "a bow doesn't guard or parry");
+            if (t.shield) throw r.fail("shield", "a bow is held in both hands");
+        }
+        t.aimError = float(r.number(r.fields, "aim_error", 0, 0.5, 0, false));
+        t.sidearm = item("sidearm");
+        if (t.sidearm && (d.items[t.sidearm].slot != SlotMainHand || d.weaponClasses[size_t(d.items[t.sidearm].weaponClass)].ranged))
+            throw r.fail("sidearm", std::format("'{}' is not a main_hand weapon that swings", d.itemIds[t.sidearm]));
         if (d.creatures.size() <= save) d.creatures.resize(save + 1), d.creatureIds.resize(save + 1), d.creatureNames.resize(save + 1);
         d.creatures[save] = t;
         d.creatureIds[save] = r.id();
