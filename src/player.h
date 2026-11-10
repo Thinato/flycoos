@@ -76,9 +76,10 @@ struct Body {
 // A melee move (ADR-035; melee.h has their timings): the four-swing light chain, the two heavies,
 // and the attacks that depend on what the body was doing; the parry, and a drink from the healing
 // flask (ADR-047), which commit like attacks but strike nothing. A bow's shot (ADR-050) draws to its
-// hold point, holds while the button is down and looses an arrow at its impact frame.
+// hold point, holds while the button is down and looses an arrow at its impact frame. A crossbow's (ADR-052)
+// shot doesn't hold: it fires at its impact frame, and its reload seats a bolt at its own.
 enum class Move : uint8_t { None, Light1, Light2, Light3, Light4, Heavy1, Heavy2, Running, Rolling, JumpLight, JumpHeavy,
-                            GuardCounter, Riposte, Parry, Backstep, Drink, Shot, Count };
+                            GuardCounter, Riposte, Parry, Backstep, Drink, Shot, Reload, Count };
 // What a body did this tick that can be heard (ADR-037): bits of Combatant::noises, set where it
 // happens and gathered by step() into Session::sounds. Steps and swim strokes come from the gait.
 enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup, Charged, GuardUp, Hurt, Crit, Death,
@@ -153,6 +154,7 @@ struct Combatant {
     Load load = Load::Light;               // the worn gear's (updatePlayer)
     Want want = Want::None;                // a press waiting until the body can act on it
     float wantAge = 0;
+    bool reloadWant = false;               // `want` is a crossbow's automatic reload (ADR-052), not a press: dropped if it no longer loads
     bool pressing = false;                 // the attack button is down and not yet a tap or a hold
     float pressTime = 0;
     bool chargeByHeavy = false;            // the charging heavy follows the heavy button (else the attack button)
@@ -176,6 +178,7 @@ struct Combatant {
     bool aiming = false;                   // a bow's aim mode (ADR-050): the guard button with a bow
     float aimBlend = 0;                    // 0 .. 1: how far the bow is raised to aim (the pose, the camera)
     bool loosed = false;                   // the shot under way reached its release this tick: step() looses the arrow
+    ItemId loaded = NoItem;                // the crossbow with a bolt in it (ADR-052; a reload seats one, the shot spends it); not saved
     float deadTime = 0;                    // seconds spent at 0 health
     Inventory inv;                         // equipment and bags
     Progress progress;                     // skills, XP and talents: the player's (NPCs' stay at the start)

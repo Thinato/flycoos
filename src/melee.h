@@ -38,6 +38,10 @@
 // Bows (ADR-050): a `ranged` class has one move, the shot. The attack button draws at once (no tap or
 // hold), holds at full draw while down and looses on release; a longer draw shoots farther and harder.
 // It takes an arrow from the quiver. The guard button aims instead of guarding (no guard, no parry).
+// Crossbows (ADR-052): a ranged class that `loads`. Loaded, a press fires at once (a raise to the
+// shoulder, no draw: always full power, a faster bolt); then it reloads (a move of its own, queued like
+// a press, so a roll replaces it), seating a bolt from the quiver at its impact frame. Cut before then,
+// it stays empty: the next press reloads first.
 
 // A move's timing and what it does. Every weapon class has its own (ADR-044): data/weapon_classes.json
 // gives each class every attack move; None, Parry and Drink are code's (kParrySpec: the parry is the off
@@ -54,9 +58,9 @@ struct MoveSpec {
 };
 // Ids in data files (none, parry and drink aren't: code has them) and names in the UI, by Move.
 inline constexpr const char* kMoveIds[] = {"none", "light_1", "light_2", "light_3", "light_4", "heavy_1", "heavy_2", "running", "rolling",
-                                           "jump_light", "jump_heavy", "guard_counter", "riposte", "parry", "backstep", "drink", "shot"};
+                                           "jump_light", "jump_heavy", "guard_counter", "riposte", "parry", "backstep", "drink", "shot", "reload"};
 inline constexpr const char* kMoveNames[] = {"none", "light 1", "light 2", "light 3", "light 4", "heavy 1", "heavy 2", "running",
-                                             "rolling", "jump light", "jump heavy", "guard counter", "riposte", "parry", "backstep", "drink", "shot"};
+                                             "rolling", "jump light", "jump heavy", "guard counter", "riposte", "parry", "backstep", "drink", "shot", "reload"};
 static_assert(std::size(kMoveIds) == size_t(Move::Count) && std::size(kMoveNames) == size_t(Move::Count));
 constexpr bool codeMove(Move m) { return m == Move::None || m == Move::Parry || m == Move::Drink; }  // not in data files
 inline constexpr MoveSpec kParrySpec{0.75f, 0.14f, 0.44f, 1.00f, 1.00f, 0, 0, 10, 0};  // a swipe (no hit; scaled by its parry length)
@@ -74,6 +78,7 @@ struct WeaponClassDef {
     float arc = 60;     // ...and degrees off the facing, either side (ADR-049: great weapons sweep wider)
     float arcCos = 0.5f;  // cos(arc), worked out once in double precision (60 degrees: exactly 0.5)
     bool ranged = false;  // shoots (ADR-050: bows): its only move is the shot, in data; the others are empty
+    bool loads = false;   // a crossbow (ADR-052): fires loaded, then reloads (its second move, in data)
     std::array<MoveSpec, size_t(Move::Count)> moves{};  // by Move
 };
 const WeaponClassDef& weaponClass(WeaponClass c);  // from the loaded defs
@@ -172,8 +177,9 @@ float playerPoise(const Combatant& b);
 // Whether `b`'s guard takes a hit from feet position `from` (in front of it).
 bool guards(const Player& b, glm::vec3 from);
 
-// Whether `b`'s weapon in hand shoots (ADR-050: a bow).
+// Whether `b`'s weapon in hand shoots (ADR-050: a bow), and whether it loads (ADR-052: a crossbow).
 inline bool ranged(const Combatant& b) { return weaponClass(classOf(b.weapon())).ranged; }
+inline bool loads(const Combatant& b) { return weaponClass(classOf(b.weapon())).loads; }
 // Whether `b` holds its main-hand weapon in both hands (ADR-048): two-handed with a weapon to hold, or
 // a weapon of a two-handed class (ADR-049). (Mid-swing it's the swing's weapon: put away then, the
 // swing keeps its grip to the end.)

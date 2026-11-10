@@ -17,5 +17,6 @@
   {"id": "iron_mace", "save_id": 16, "name": "Iron Mace", "slot": "main_hand", "class": "mace", "attack": {"min": 6, "max": 10, "speed": 1.15}, "scaling": {"strength": 1.5}, "weight": 4, "damage": "strike"},
   {"id": "iron_greatsword", "save_id": 17, "name": "Iron Greatsword", "slot": "main_hand", "class": "greatsword", "attack": {"min": 9, "max": 13, "speed": 1.45}, "scaling": {"strength": 1.1, "agility": 0.4}, "weight": 9},
   {"id": "barrow_greataxe", "save_id": 18, "name": "Barrow Greataxe", "slot": "main_hand", "class": "greataxe", "attack": {"min": 10, "max": 14, "speed": 1.55}, "scaling": {"strength": 1.45}, "weight": 10},
-  {"id": "short_bow", "save_id": 19, "name": "Short Bow", "slot": "main_hand", "class": "bow", "attack": {"min": 5, "max": 8, "speed": 1.0}, "scaling": {"strength": 0.3, "agility": 1.1}, "weight": 2, "damage": "pierce"}
+  {"id": "short_bow", "save_id": 19, "name": "Short Bow", "slot": "main_hand", "class": "bow", "attack": {"min": 5, "max": 8, "speed": 1.0}, "scaling": {"strength": 0.3, "agility": 1.1}, "weight": 2, "damage": "pierce"},
+  {"id": "light_crossbow", "save_id": 20, "name": "Light Crossbow", "slot": "main_hand", "class": "crossbow", "attack": {"min": 12, "max": 16, "speed": 1.0}, "scaling": {}, "weight": 3.5, "damage": "pierce"}
 ]

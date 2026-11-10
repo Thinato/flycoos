@@ -873,14 +873,14 @@ static int run(SDL_Window* window, const Options& opt) {
             push(heldModel(body), held);
             push(shieldModel(body.inv.equipped[SlotOffHand]), shield);
             push(body.flasks > 0 ? ModelFlask : ModelFlaskEmpty, flask);
-            push(ModelArrow, arrow);
+            push(loads(body) ? ModelBolt : ModelArrow, arrow);  // a crossbow's bolt (ADR-052)
         };
         pushModel(player, ModelPlayer);
         for (const Entity& npc : entities) pushModel(npc.body, npc.type().model);
         for (const Projectile& a : session.projectiles) {  // arrows in flight, and stuck a little way into what they hit (ADR-050)
             glm::vec3 dir = glm::normalize(a.vel + glm::vec3(0, 1e-6f, 0));
             ModelInstance item;
-            item.parts.fill(ModelArrow);
+            item.parts.fill(weaponClass(classOf(a.weapon)).loads ? ModelBolt : ModelArrow);  // a crossbow's bolt (ADR-052)
             item.pose.fill(arrowPose(a.stuck ? a.pos + dir * 0.2f : glm::mix(a.prevPos, a.pos, alpha), dir));
             fp.models.push_back(item);
         }

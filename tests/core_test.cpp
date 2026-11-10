@@ -1022,15 +1022,15 @@ static std::string codeNamedItems() {
 
 // The shipped creatures.json for codeNamedItems: less the shields they hold (code doesn't name those),
 // and with them the rest of their record from there (the tactics a shield makes valid), and less their
-// rare drops (the great weapons, ADR-049) and their bows (ADR-050, ADR-051: the archer fights with fists).
+// rare drops (the great weapons, ADR-049) and their bows (ADR-050, ADR-051: the archer fights with fists; ADR-052's crossbow).
 static std::string codeItemCreatures() {
     std::ostringstream all;
     all << std::ifstream(std::filesystem::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
     std::string text = all.str();
     for (size_t at; (at = text.find(R"( "rare_loot": ")")) != std::string::npos;)
         text.erase(at, text.find(',', text.find("rare_loot_chance", at)) + 1 - at);
-    for (size_t at; (at = text.find(R"( "loot": "short_bow",)")) != std::string::npos;)  // the guard's and the archer's bow (ADR-050, ADR-051)
-        text.erase(at, text.find(',', text.find("loot_chance", at)) + 1 - at);
+    for (const char* bow : {R"( "loot": "short_bow",)", R"( "loot": "light_crossbow",)"})  // the archer's bow (ADR-051), the guard's crossbow (ADR-052)
+        for (size_t at; (at = text.find(bow)) != std::string::npos;) text.erase(at, text.find(',', text.find("loot_chance", at)) + 1 - at);
     if (size_t at = text.find(R"( "weapon": "short_bow",)"); at != std::string::npos)  // the archer's bow and all that goes with it: a bandit with fists
         text.erase(at, text.find(',', text.find("\"sidearm\"", at)) + 1 - at);
     for (size_t at; (at = text.find(R"("shield": ")")) != std::string::npos;) {
@@ -2582,7 +2582,7 @@ static void storyNpcs() {
     struct Row { EntityKind kind; int level; Temper temper; bool talks; Model model; ItemId weapon, loot; };
     constexpr Row kRows[] = {
         {EntityKind::Wolf, 1, Temper::Aggressive, false, ModelWolf, NoItem, WolfPelt},
-        {EntityKind::Guard, 4, Temper::Passive, true, ModelGuard, Shortsword, ItemId(19)},  // the short bow (ADR-050)
+        {EntityKind::Guard, 4, Temper::Passive, true, ModelGuard, Shortsword, ItemId(20)},  // the light crossbow (ADR-052; the short bow before)
         {EntityKind::BanditChief, 3, Temper::Aggressive, false, ModelChief, Shortsword, IronHelm},
         {EntityKind::Ghoul, 3, Temper::Aggressive, false, ModelGhoul, NoItem, BoneCharm},
     };
@@ -3086,7 +3086,7 @@ static void tables() {
         {"Wolf",           1, {8, 6, 70, 2, 2},   true,  true,  false, ModelWolf,
                            Temper::Aggressive, 12,   10,    7.5f, NoItem,     WolfPelt,  0.6f,  30},
         {"Guard",          4, {16, 5, 3, 2, 4},  true,  true,  true,  ModelGuard,
-                           Temper::Passive,    0,    6,     6,    Shortsword, ItemId(19), 0.5f, 60},  // loot: the short bow (save id 19, ADR-050)
+                           Temper::Passive,    0,    6,     6,    Shortsword, ItemId(20), 0.5f, 60},  // loot: the light crossbow (save id 20, ADR-052; the short bow before)
         {"Bandit Chief",   3, {11, 3, 2, 2, 2},  true,  true,  false, ModelChief,
                            Temper::Aggressive, 10,   6,     5.5f, Shortsword, IronHelm,  1,     120},
         {"Barrow Ghoul",   3, {7, 4, 2, 2, 2},   true,  true,  false, ModelGhoul,
@@ -4288,6 +4288,15 @@ static void dataFiles() {
                  {edited(R"("shot": {"seconds": 1.0,)", R"("light_1": {"seconds": 1}, "shot": {"seconds": 1.0,)"),
                   "record 7 'bow': field 'moves.light_1': a ranged class has only the shot"},
                  {edited(R"("shot": {"seconds": 1.0,)", R"("shoot": {"seconds": 1.0,)"), "record 7 'bow': field 'moves.shoot': not an attack move"},
+                 // Crossbows (ADR-052): a ranged class that loads, and only it, reloads.
+                 {edited(R"("ranged": true, "loads": true)", R"("ranged": true, "loads": 1)"), "record 8 'crossbow': field 'loads': must be true or false"},
+                 {edited(R"("id": "sword", "name": "Straight Sword",)", R"("id": "sword", "name": "Straight Sword", "loads": true,)"),
+                  "record 0 'sword': field 'loads': only a ranged class loads"},
+                 {edited(R"("ranged": true, "moves")", R"("ranged": true, "loads": true, "moves")"), "record 7 'bow': field 'moves.reload': missing (a class that loads reloads)"},
+                 {edited(R"("shot": {"seconds": 1.0,)", R"("reload": {"seconds": 1}, "shot": {"seconds": 1.0,)"),
+                  "record 7 'bow': field 'moves.reload': only a class that loads reloads"},
+                 {edited(R"("reload": {"seconds": 1.6,)", R"("light_1": {"seconds": 1}, "reload": {"seconds": 1.6,)"),
+                  "record 8 'crossbow': field 'moves.light_1': a ranged class has only the shot (and the reload if it loads)"},
                  {[&] {
                       std::string t = wc;
                       size_t at = t.find(R"("shot": {)");
@@ -7472,10 +7481,10 @@ static void greatWeapons() {
     ItemId gs = d.itemById.at("iron_greatsword"), ga = d.itemById.at("barrow_greataxe"), mace = d.itemById.at("iron_mace");
     CHECK(classOf(gs) == WeaponClass::Greatsword && classOf(ga) == WeaponClass::Greataxe);
     CHECK(heldModel(gs) == ModelGreatsword && heldModel(ga) == ModelGreataxe);
-    for (size_t c = 0; c < size_t(WeaponClass::Count); ++c) {  // only the great classes (and the bow, ADR-050) are two-handed; they reach farther and wider
+    for (size_t c = 0; c < size_t(WeaponClass::Count); ++c) {  // only the great classes (and the bows, ADR-050/052) are two-handed; they reach farther and wider
         const WeaponClassDef& w = weaponClass(WeaponClass(c));
         bool great = WeaponClass(c) == WeaponClass::Greatsword || WeaponClass(c) == WeaponClass::Greataxe;
-        CHECK(w.twoHanded == (great || WeaponClass(c) == WeaponClass::Bow) && (w.reach > 2.4f) == great && (w.arc > 65) == great);
+        CHECK(w.twoHanded == (great || w.ranged) && (w.reach > 2.4f) == great && (w.arc > 65) == great);
         CHECK(great || (w.reach == 2 && w.arc == 60 && w.arcCos == 0.5f));  // the one-handed reach is the old kPunchReach's, 60 degrees (exactly the old 0.5)
         CHECK(std::abs(w.arcCos - std::cos(glm::radians(w.arc))) < 1e-6f);
     }
@@ -8257,14 +8266,14 @@ static void bows() {
     const MoveSpec& shot = spec(WeaponClass::Bow, Move::Shot);
     CHECK(classOf(bow) == WeaponClass::Bow && itemType(bow).damage == DamageType::Pierce && itemType(bow).slot == SlotMainHand);
     CHECK(heldModel(bow) == ModelBow && weaponClass(WeaponClass::Bow).ranged && weaponClass(WeaponClass::Bow).twoHanded);
-    for (size_t c = 0; c < size_t(WeaponClass::Count); ++c) {  // a ranged class has only the shot, the rest every move but it
+    for (size_t c = 0; c < size_t(WeaponClass::Count); ++c) {  // a ranged class has only the shot (and a crossbow the reload, ADR-052), the rest every move but them
         const WeaponClassDef& w = weaponClass(WeaponClass(c));
-        CHECK(w.ranged == (WeaponClass(c) == WeaponClass::Bow));
+        CHECK(w.ranged == (WeaponClass(c) == WeaponClass::Bow || WeaponClass(c) == WeaponClass::Crossbow) && w.loads == (WeaponClass(c) == WeaponClass::Crossbow));
         for (size_t m = 1; m < size_t(Move::Count); ++m)
-            if (!codeMove(Move(m))) CHECK((w.moves[m].seconds > 0) == (w.ranged == (Move(m) == Move::Shot)));
+            if (!codeMove(Move(m))) CHECK((w.moves[m].seconds > 0) == (Move(m) == Move::Shot ? w.ranged : Move(m) == Move::Reload ? w.loads : !w.ranged));
     }
     CHECK(shot.holdAt < shot.impact && shot.lunge == 0 && shot.thrust);
-    CHECK(typeOf(EntityKind::Guard).loot == bow && typeOf(EntityKind::Guard).lootChance == 0.5f && Player{}.arrows == kQuiver);
+    CHECK(typeOf(EntityKind::Guard).loot == d.itemById.at("light_crossbow") && typeOf(EntityKind::Guard).lootChance == 0.5f && Player{}.arrows == kQuiver);  // (ADR-052: the guard's crossbow; archers drop the bow)
     for (Model m : {ModelBow, ModelBowDrawn, ModelArrow}) {  // voxels in the Head slot only
         int n = 0;
         Grid g = buildPart(m, Head);
@@ -8299,6 +8308,7 @@ static void bows() {
                  {R"("copy_from": "bandit_archer", "sidearm": "iron_helm")", "field 'sidearm': 'iron_helm' is not a main_hand weapon that swings"},
                  {R"("copy_from": "bandit_archer", "dodge": null, "guard": 0.5)", "field 'guard': a bow doesn't guard or parry"},
                  {R"("copy_from": "bandit_archer", "shield": "heater_shield")", "field 'shield': a bow is held in both hands"},
+                 {R"("copy_from": "bandit_archer", "weapon": "light_crossbow")", "field 'weapon': creatures can't reload a crossbow yet"},
                  {R"("copy_from": "bandit_archer", "keep_range": [3, 5], "aim_error": 0, "sidearm": null)", ""}}) {
             std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,{"id": "archer", "save_id": 9, )" << extra << "}]";
             Defs t;
@@ -9090,6 +9100,276 @@ static void archers() {
     setDefs(std::move(shipped));
 }
 
+// Crossbows (ADR-052): a ranged class that loads. Loaded, a press fires at once (no draw: full power, a
+// faster bolt); then it reloads, a move queued like a press, seating a bolt from the quiver at its impact
+// frame. A roll before then leaves it empty, and the next press reloads first.
+static void crossbows() {
+    const Defs& d = defs();
+    const ItemId xbow = d.itemById.at("light_crossbow"), bow = d.itemById.at("short_bow");
+    const WeaponClassDef& c = weaponClass(WeaponClass::Crossbow);
+    const MoveSpec &shot = spec(WeaponClass::Crossbow, Move::Shot), &reload = spec(WeaponClass::Crossbow, Move::Reload);
+    CHECK(classOf(xbow) == WeaponClass::Crossbow && c.ranged && c.loads && c.twoHanded && heldModel(xbow) == ModelCrossbow);
+    CHECK(itemType(xbow).damage == DamageType::Pierce && itemType(xbow).attack.minDamage > itemType(bow).attack.maxDamage);  // harder than a bow...
+    CHECK(std::ranges::all_of(itemType(xbow).attack.scaling, [](float k) { return k == 0; }));  // ...and no attribute adds to it
+    CHECK(shot.stance > spec(WeaponClass::Bow, Move::Shot).stance && shot.seconds < reload.seconds && reload.damage == 0 && gRanged.boltSpeed > gRanged.maxSpeed);
+    CHECK(!weaponClass(WeaponClass::Bow).loads && spec(WeaponClass::Bow, Move::Reload).seconds == 0);
+
+    // A field: ground top at y 4, the player at x 8.5 facing +x with the crossbow, empty.
+    auto field = [&] {
+        Session s{.world = Grid({128, 32, 32}), .seed = 5};
+        for (int z = 0; z < 32; ++z)
+            for (int x = 0; x < 128; ++x)
+                for (int y = 0; y < 4; ++y) s.world.set({x, y, z}, Stone);
+        startSession(s);
+        s.player.teleport({8.5f, 4, 16.5f});
+        s.player.yaw = std::numbers::pi_v<float> / 2;
+        s.player.inv.equipped[SlotMainHand] = xbow;
+        for (int i = 0; i < 10; ++i) step(s, {}, kTick);
+        s.sounds.clear();
+        return s;
+    };
+    auto heard = [](const Session& s, Noise n, Move m) {
+        return std::ranges::any_of(s.sounds, [&](const Sound& h) { return h.what == n && h.kind < 0 && h.move == m; });
+    };
+    SimInput press{.attack = true, .attackHeld = true}, roll;
+    roll.move.roll = true, roll.move.move = {0, 1};
+    // Steps until `done`, at most `most` ticks; how many it took (most + 1: never).
+    auto until = [](Session& s, const std::function<bool()>& done, int most = 300, SimInput in = {}) {
+        for (int i = 1; i <= most; ++i) {
+            step(s, in, kTick);
+            if (done()) return i;
+        }
+        return most + 1;
+    };
+
+    {  // Empty, a press reloads: the crank, the bolt seated from the quiver at the reload's impact frame; no shot.
+        Session s = field();
+        Player& p = s.player;
+        CHECK(p.loaded == NoItem && heldModel(p) == ModelCrossbow);
+        step(s, press, kTick);
+        CHECK(p.move == Move::Reload && p.hitPending && !p.holding && heard(s, Noise::Windup, Move::Reload));
+        int seat = until(s, [&] { return p.loaded == xbow; }, 200, {.attackHeld = true});
+        CHECK(std::abs(float(seat + 1) * kTick - reload.impact * reload.seconds) < 2.5f * kTick && p.arrows == kQuiver - 1);
+        CHECK(heard(s, Noise::Charged, Move::Reload) && heldModel(p) == ModelCrossbowSpanned);
+        until(s, [&] { return !p.punching(); }, 200, {.attackHeld = true});
+        for (int i = 0; i < 60; ++i) step(s, {.attackHeld = true}, kTick);  // held down it doesn't fire: a press does
+        CHECK(s.projectiles.empty() && p.loaded == xbow && p.move == Move::None);
+
+        // Loaded, a press fires at once: no draw however long it's held, full power, the fast bolt along the facing.
+        s.sounds.clear();
+        step(s, press, kTick);
+        CHECK(p.move == Move::Shot && !p.holding && p.stamina < gMelee.staminaMax);
+        int fired = until(s, [&] { return !s.projectiles.empty(); }, 60, {.attackHeld = true});
+        CHECK(std::abs(float(fired + 1) * kTick - shot.impact * shot.seconds) < 2.5f * kTick);
+        const Projectile& a = s.projectiles[0];
+        CHECK(a.weapon == xbow && a.power == shot.damage && a.stance == shot.stance && std::abs(glm::length(a.vel) - gRanged.boltSpeed) < 0.01f);
+        CHECK(a.vel.x > 0.99f * glm::length(a.vel) && p.loaded == NoItem && p.arrows == kQuiver - 1 && heard(s, Noise::Loose, Move::Shot));
+        CHECK(heldModel(p) == ModelCrossbow);
+        // Then it reloads by itself, like a press: the next bolt, from the quiver.
+        CHECK(until(s, [&] { return p.move == Move::Reload; }, 60) <= int(shot.seconds / kTick) && p.want == Want::None);
+        CHECK(until(s, [&] { return p.loaded == xbow; }, 200) <= 200 && p.arrows == kQuiver - 2 && s.projectiles.size() == 1);
+        // A press during the reload waits for it (the buffer): it fires as the reload ends.
+        Session t = field();
+        t.player.loaded = xbow;
+        step(t, press, kTick);
+        until(t, [&] { return t.player.move == Move::Reload; }, 60);
+        until(t, [&] { return t.player.moveTime > 0.7f * moveLength(t.player); }, 200);
+        step(t, press, kTick);
+        CHECK(until(t, [&] { return t.projectiles.size() == 2; }, 120) <= 60 && t.player.arrows == kQuiver - 1);
+    }
+    {  // A roll in the reload before the bolt is in: it stays empty, the arrow still in the quiver; the next press reloads first.
+        Session s = field();
+        Player& p = s.player;
+        step(s, press, kTick);
+        for (int i = 0; i < 30; ++i) step(s, {}, kTick);
+        CHECK(p.move == Move::Reload && p.hitPending);
+        step(s, roll, kTick);
+        for (int i = 0; i < 90; ++i) step(s, {}, kTick);
+        CHECK(p.move == Move::None && p.loaded == NoItem && p.arrows == kQuiver);
+        step(s, press, kTick);
+        CHECK(p.move == Move::Reload);
+        // A roll out of the shot's recovery skips the reload it queued.
+        Session t = field();
+        t.player.loaded = xbow;
+        step(t, press, kTick);
+        until(t, [&] { return !t.projectiles.empty(); }, 60);
+        step(t, roll, kTick);
+        for (int i = 0; i < 120; ++i) step(t, {}, kTick);
+        CHECK(t.player.rollTime < 99 && t.player.move == Move::None && t.player.loaded == NoItem && t.player.arrows == kQuiver);
+        // A roll in the raise, before the release, keeps the bolt in.
+        Session u = field();
+        u.player.loaded = xbow;
+        step(u, press, kTick);
+        step(u, roll, kTick);
+        for (int i = 0; i < 60; ++i) step(u, {}, kTick);
+        CHECK(u.projectiles.empty() && u.player.loaded == xbow && u.player.move == Move::None);
+    }
+    {  // The automatic reload isn't a press: a sword swapped in before it starts doesn't swing for it...
+        Session s = field();
+        Player& p = s.player;
+        p.loaded = xbow;
+        step(s, press, kTick);
+        until(s, [&] { return !s.projectiles.empty(); }, 60);
+        CHECK(p.want == Want::Light && p.reloadWant);
+        p.inv.equipped[SlotMainHand] = Shortsword;
+        bool swung = false;
+        for (int i = 0; i < 60; ++i) step(s, {}, kTick), swung |= p.move != Move::None && p.move != Move::Shot;
+        CHECK(!swung && p.move == Move::None && p.want == Want::None && p.arrows == kQuiver);
+        // ...and a shot that spends the last stamina still reloads (a reload costs none).
+        Session t = field();
+        t.player.loaded = xbow, t.player.stamina = 3;
+        step(t, press, kTick);
+        CHECK(until(t, [&] { return t.player.move == Move::Reload; }, 60) <= 60 && t.player.stamina <= 0);
+        // Mid-swing with a sword, a bow equipped and pressed shoots (what's in hand decides, not the swing's).
+        Session u = field();
+        u.player.inv.equipped[SlotMainHand] = Shortsword;
+        step(u, {.attack = true}, kTick);
+        step(u, {}, kTick);
+        CHECK(u.player.move == Move::Light1);
+        u.player.inv.equipped[SlotMainHand] = bow;
+        step(u, {.attack = true}, kTick);
+        CHECK(until(u, [&] { return u.player.move == Move::Shot; }, 60) <= 60);
+    }
+    {  // A bandit facing a reloading player doesn't answer it as an attack (it hits nothing); a shot it does.
+        Session s = field();
+        Player& p = s.player;
+        Entity& e = spawnAhead(s.entities, s.world, p, EntityKind::Bandit, 3, 2.5f);
+        setState(e, AiState::Chase, "test");
+        e.body.swingTimer = 5;
+        step(s, press, kTick);
+        CHECK(p.move == Move::Reload);
+        bool answered = false;
+        for (int i = 0; i < 40 && p.move == Move::Reload; ++i) step(s, {}, kTick), answered |= e.picked;
+        CHECK(!answered);
+    }
+    {  // An empty quiver: a loaded crossbow still fires, then has nothing to reload; a press does nothing.
+        Session s = field();
+        Player& p = s.player;
+        p.loaded = xbow, p.arrows = 0;
+        step(s, press, kTick);
+        CHECK(until(s, [&] { return !s.projectiles.empty(); }, 60) <= 60);
+        for (int i = 0; i < 120; ++i) step(s, {}, kTick);
+        CHECK(p.move == Move::None && p.loaded == NoItem && p.arrows == 0);
+        step(s, press, kTick);
+        CHECK(p.move == Move::None && p.want == Want::None);
+    }
+    {  // The bolt is the crossbow's: put away it stays in; a bow in hand shoots its own arrows (from the same quiver).
+        Session s = field();
+        Player& p = s.player;
+        p.loaded = xbow;
+        p.inv.equipped[SlotMainHand] = bow;
+        CHECK(!loads(p));
+        step(s, {.attack = true}, kTick);
+        CHECK(until(s, [&] { return !s.projectiles.empty(); }, 90) <= 90 && p.arrows == kQuiver - 1 && p.loaded == xbow);
+        for (int i = 0; i < 90; ++i) step(s, {}, kTick);
+        p.inv.equipped[SlotMainHand] = xbow;
+        CHECK(heldModel(p) == ModelCrossbowSpanned);
+        step(s, press, kTick);
+        CHECK(p.move == Move::Shot);  // still loaded: it fires
+        // Another weapon's bolt isn't this one's: it reloads; and with none in it, the release looses nothing.
+        Session t = field();
+        t.player.loaded = bow;
+        step(t, press, kTick);
+        CHECK(t.player.move == Move::Reload);
+        t.player.loaded = NoItem, t.player.swingWeapon = xbow;
+        loose(t, std::nullopt);
+        CHECK(t.projectiles.empty() && t.player.arrows == kQuiver);
+    }
+    {  // Aim mode (the guard button) as with a bow: aiming, a slow walk, straight at the crosshair's point.
+        Session s = field();
+        Player& p = s.player;
+        p.loaded = xbow;
+        glm::vec3 at = p.pos + glm::vec3(30, 4, 3);
+        for (int i = 0; i < 20; ++i) step(s, {.guard = true, .aimAt = at}, kTick);
+        CHECK(p.aiming && !p.guarding);
+        step(s, {.attack = true, .attackHeld = true, .guard = true, .aimAt = at}, kTick);
+        until(s, [&] { return !s.projectiles.empty(); }, 60, {.guard = true, .aimAt = at});
+        CHECK(!s.projectiles.empty());
+        if (!s.projectiles.empty()) {
+            const Projectile& a = s.projectiles[0];
+            CHECK(glm::length(glm::normalize(a.vel) - glm::normalize(at - a.pos)) < 0.05f);
+        }
+        // While reloading it walks slowly.
+        until(s, [&] { return p.move == Move::Reload; }, 60);
+        SimInput walk;
+        walk.move.move = {0, 1}, walk.move.run = true;
+        for (int i = 0; i < 20; ++i) step(s, walk, kTick);
+        float speed = glm::length(glm::vec2(p.vel.x, p.vel.z));
+        CHECK(p.move == Move::Reload && speed <= gRanged.aimWalk + 0.01f && speed > 0.7f * gRanged.aimWalk);
+    }
+    {  // A bolt into a bandit: it hurts, and harder than a bow's full draw on average (twelve of each).
+        auto hits = [&](ItemId weapon) {
+            float total = 0;
+            for (int i = 0; i < 12; ++i) {
+                Session s = field();
+                s.rng.seed(uint32_t(100 + i));
+                Entity& e = spawnAhead(s.entities, s.world, s.player, EntityKind::Bandit, 3, 8);
+                float before = e.body.health;
+                s.player.inv.equipped[SlotMainHand] = weapon;
+                s.player.loaded = xbow;
+                s.player.charge = gRanged.drawSeconds;  // (a bow at full draw)
+                s.projectiles.clear();
+                std::optional<glm::vec3> none;
+                s.player.swingWeapon = weapon;
+                loose(s, none);
+                for (int k = 0; k < 60 && !s.projectiles.empty() && !s.projectiles[0].stuck; ++k) updateProjectiles(s, kTick);
+                total += before - s.entities[0].body.health;
+            }
+            return total / 12;
+        };
+        float bolt = hits(xbow), arrow = hits(bow);
+        CHECK(bolt > 0 && arrow > 0 && bolt > 1.3f * arrow);
+        std::println("level band: a crossbow bolt into a bandit {:.1f}, a full-draw arrow {:.1f} (the starting stats)", bolt, arrow);
+    }
+    {  // The models: voxels in the Head slot only; spanned differs from slack; a bolt shorter than an arrow, tipped the same.
+        auto count = [](Model m) {
+            Grid g = buildPart(m, Head);
+            int n = 0;
+            for (int z = 0; z < g.size.z; ++z)
+                for (int y = 0; y < g.size.y; ++y)
+                    for (int x = 0; x < g.size.x; ++x) n += g.get({x, y, z}) != Air;
+            return n;
+        };
+        CHECK(count(ModelCrossbow) > 30 && count(ModelCrossbowSpanned) > 30 && count(ModelBolt) > 5 && count(ModelBolt) < count(ModelArrow));
+        CHECK(buildPart(ModelBolt, Head).size == buildPart(ModelArrow, Head).size && buildPart(ModelCrossbow, Torso).size == glm::ivec3(1));
+        Grid slack = buildPart(ModelCrossbow, Head), spanned = buildPart(ModelCrossbowSpanned, Head);
+        CHECK(slack.get({6, 2, 8}) == Straw && spanned.get({6, 2, 4}) == Straw && slack.get({6, 2, 4}) == Air);
+    }
+    {  // The pose: in both hands; raised, the trigger hand at its grip and the butt at the shoulder; the bolt drawn only when in it.
+        Session s = field();
+        Player& p = s.player;
+        auto at = [](const glm::mat4& m, glm::vec3 v) { return glm::vec3(m * glm::vec4(v, 1)); };
+        auto hand = [&](const std::array<glm::mat4, PartCount>& parts, int i) { return at(parts[i], glm::vec3(1.5f)); };  // a hand's middle (3 voxels)
+        glm::mat4 held(0), arrow(0);
+        auto parts = poseModel(p, ModelPlayer, &held, 1, nullptr, nullptr, &arrow);
+        CHECK(held != glm::mat4(0) && arrow == glm::mat4(0));
+        CHECK(glm::length(hand(parts, HandR) - at(held, {6.5f, 0.5f, 3.5f})) < 0.15f);  // at rest it hangs from the right hand...
+        Player withBow = p;  // ...where the hand is with a bow (no two-handed rest pose)
+        withBow.inv.equipped[SlotMainHand] = bow;
+        CHECK(glm::length(hand(parts, HandR) - hand(poseModel(withBow, ModelPlayer), HandR)) < 1e-4f && p.gripBlend > 0.9f);
+        p.loaded = xbow, p.aimBlend = 1, p.aiming = true;
+        held = arrow = glm::mat4(0);
+        parts = poseModel(p, ModelPlayer, &held, 1, nullptr, nullptr, &arrow);
+        CHECK(arrow != glm::mat4(0) && glm::length(hand(parts, HandR) - at(held, {6.5f, 0.5f, 3.5f})) < 0.05f &&
+              glm::length(hand(parts, HandL) - at(held, {6.5f, 0.5f, 8.5f})) < 0.05f);
+        glm::vec3 butt = at(held, {6.5f, 1, 0}), nose = at(held, {6.5f, 1, 12});
+        CHECK(butt.y > p.pos.y + 0.9f && std::abs(nose.y - butt.y) < 0.05f && nose.x > butt.x + 1);  // level, pointing +x (the facing)
+        CHECK(butt.z - p.pos.z > 0.45f);  // at the right shoulder (facing +x, the right is +z), not in front of the chest
+        CHECK(glm::length(at(arrow, {1.5f, 10, 0.5f}) - at(held, {6.5f, 2.5f, 11})) < 0.01f);  // the bolt's tip in the groove's front
+        // Reloading: tipped nose down, the right hand on the string.
+        p.aiming = false, p.aimBlend = 0, p.loaded = NoItem;
+        step(s, press, kTick);
+        for (int i = 0; i < 40; ++i) step(s, {}, kTick);
+        CHECK(p.move == Move::Reload);
+        held = glm::mat4(0);
+        parts = poseModel(p, ModelPlayer, &held, 1);
+        CHECK(at(held, {6.5f, 1, 12}).y < at(held, {6.5f, 1, 0}).y - 0.5f);
+        glm::vec3 r = hand(parts, HandR), a = at(held, {6.5f, 2.5f, 8.5f}), b = at(held, {6.5f, 2.5f, 4.5f});  // on the string's way back
+        float along = std::clamp(glm::dot(r - a, b - a) / glm::dot(b - a, b - a), 0.0f, 1.0f);
+        CHECK(glm::length(r - glm::mix(a, b, along)) < 0.03f && along > 0.1f && along < 0.9f);
+    }
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -9129,6 +9409,7 @@ int main() {
     greatWeapons();
     bows();
     archers();
+    crossbows();
     sounds();
     combat();
     fighters();

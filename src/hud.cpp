@@ -212,6 +212,11 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         char n[8];
         std::snprintf(n, sizeof n, "%d", player.arrows);
         shadowText(dl, ImVec2(c.x + 14, c.y - ImGui::GetFontSize() / 2), player.arrows > 0 ? uiColor(1, 1, 1) : uiColor(0.6f, 0.6f, 0.6f), 1, n);
+        if (loads(player)) {  // a crossbow (ADR-052): under the arrow, a bar lit while a bolt is in it
+            bool in = player.loaded == player.weapon();
+            dl->AddRectFilled(ImVec2(c.x - 10, c.y + 13), ImVec2(c.x + 10, c.y + 17), ink, 2);
+            dl->AddRectFilled(ImVec2(c.x - 9, c.y + 14), ImVec2(c.x + 9, c.y + 16), in ? uiColor(1, 0.85f, 0.4f) : uiColor(0.3f, 0.3f, 0.3f), 1);
+        }
     } else if (twoHanding(player)) {  // right of them, a tag: the weapon in both hands (ADR-048)
         const char* tag = "2H";
         ImVec2 ts = ImGui::CalcTextSize(tag), at(center.x + 140 + 12, center.y + 4 - ts.y / 2);
@@ -227,7 +232,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     // Aiming a bow (ADR-050): a crosshair at the middle of the screen, where the camera looks; it
     // closes in as the string comes back.
     if (float a = std::clamp(player.aimBlend * 2 - 1, 0.0f, 1.0f); a > 0 && player.alive()) {
-        float gap = 9 - 5 * (player.move == Move::Shot ? drawOf(player) : 0), len = 6;
+        float gap = loads(player) ? (player.loaded == player.weapon() ? 4 : 12) : 9 - 5 * (player.move == Move::Shot ? drawOf(player) : 0), len = 6;  // a crossbow: tight loaded (ADR-052)
         ImVec2 m(screen.x / 2, screen.y / 2);
         for (int k = 0; k < 2; ++k) {  // a dark outline under a light cross
             ImU32 col = k ? uiColor(1, 1, 1, 0.9f * a) : uiColor(0, 0, 0, 0.6f * a);

@@ -287,7 +287,7 @@ void answer(Entity& e, const Grid& g, const Player& target, glm::vec2 dir, float
     const EntityType& t = e.type();
     glm::vec2 fwd{std::sin(target.yaw), std::cos(target.yaw)};
     const WeaponClassDef& w = weaponClass(classOf(target.weapon()));  // a great weapon reaches farther and wider (ADR-049)
-    bool threat = target.alive() && target.punching() && target.hitPending && !codeMove(target.move) &&
+    bool threat = target.alive() && target.punching() && target.hitPending && !codeMove(target.move) && target.move != Move::Reload &&  // (a reload hits nothing, ADR-052)
                   dist < std::max(kPunchReach, w.reach) + 1.5f && glm::dot(-dir, fwd) > std::min(0.3f, w.arcCos) &&
                   std::abs(target.pos.y - e.body.pos.y) < kHeight;
     if (!threat) e.picked = false;
@@ -1049,7 +1049,14 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
     if (hurt(player, tick(player, dt), false, Status::Poison) && !player.alive()) player.noise(Noise::Death);
     bool strikes = lands(player);
     if (strikes && player.move == Move::Drink) strikes = false, drink(player);  // the flask's drink frame (ADR-047)
-    if (strikes && player.move == Move::Shot) strikes = false, player.loosed = true;  // a bow's release: step() looses it (ADR-050)
+    if (strikes && player.move == Move::Shot) {  // a bow's release: step() looses it (ADR-050)
+        strikes = false, player.loosed = true;
+        if (weaponClass(classOf(player.swingWeapon)).loads) player.want = Want::Light, player.wantAge = 0, player.reloadWant = true;  // a crossbow reloads next, like a press (ADR-052)
+    }
+    if (strikes && player.move == Move::Reload) {  // a crossbow's bolt seated (ADR-052), from the quiver
+        strikes = false;
+        if (player.arrows > 0) --player.arrows, player.loaded = player.swingWeapon, player.noise(Noise::Charged);
+    }
     if (strikes) {
         const MoveSpec& m = spec(player);
         // A riposte lands on the broken stance it was for, a backstab on the back it caught; if that's gone it's a plain hit.

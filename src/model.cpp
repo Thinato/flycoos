@@ -197,6 +197,34 @@ static Grid buildArrow() {
 }
 constexpr glm::vec3 kArrowTip{1.5f, 10, 0.5f};  // its nock is at y 0, 10 voxels back
 static glm::vec3 bowGrip(bool drawn) { return {0.5f, 7.5f, drawn ? 6.5f : 3.5f}; }
+// A crossbow (ADR-052), level along +z (its nose): the stock down the middle (x 6) from the butt at z 0,
+// the prod across the front swept back to its tips, and the string between them, slack across the front
+// or spanned back to the latch. A bolt: an arrow's shorter cousin in the arrow's grid (tipped where it is).
+static Grid buildCrossbow(bool spanned) {
+    Grid g({13, 3, 13});
+    for (int z = 0; z <= 11; ++z) g.set({6, 1, z}, Wood);
+    for (int z = 0; z <= 2; ++z) g.set({6, 0, z}, Wood);  // the butt, deeper
+    g.set({6, 1, 2}, Belt), g.set({6, 1, 3}, Belt);       // the grip
+    g.set({6, 0, 4}, Iron);                               // the trigger
+    for (int x = 0; x <= 12; ++x) g.set({x, 1, 10 - int(std::lround((x - 6) * (x - 6) / 18.0))}, x == 6 ? Iron : Wood);  // the prod
+    g.set({5, 1, 12}, Iron), g.set({6, 1, 12}, Iron), g.set({7, 1, 12}, Iron);  // the stirrup
+    for (int x = 1; x <= 11; ++x) {  // over the stock, the string rides on top of it
+        int z = spanned ? 4 + int(std::lround(4.0 * std::abs(x - 6) / 6)) : 8;
+        g.set({x, std::abs(x - 6) <= 1 ? 2 : 1, z}, Straw);
+    }
+    return g;
+}
+static Grid buildBolt() {
+    Grid g({3, 10, 1});
+    for (int y = 3; y <= 8; ++y) g.set({1, y, 0}, Wood);
+    g.set({0, 3, 0}, Belt), g.set({2, 3, 0}, Belt);  // vanes
+    g.set({1, 9, 0}, Iron);
+    return g;
+}
+// Its points (model voxels): the trigger hand's grip, the fore hand under the stock, the string slack
+// and at the latch (the right hand's way through a reload), and the bolt's tip in the groove.
+constexpr glm::vec3 kCrossbowGrip{6.5f, 0.5f, 3.5f}, kCrossbowFore{6.5f, 0.5f, 8.5f}, kStringSlack{6.5f, 2.5f, 8.5f},
+    kStringLatch{6.5f, 2.5f, 4.5f}, kBoltTip{6.5f, 2.5f, 11};
 
 static glm::vec3 heldGrip(Model m) {
     switch (m) {
@@ -213,6 +241,7 @@ static float pommel(Model m) { return m == ModelGreatsword ? 3.0f : m == ModelGr
 Model heldModel(ItemId weapon) {
     switch (classOf(weapon)) {
     case WeaponClass::Bow: return ModelBow;
+    case WeaponClass::Crossbow: return ModelCrossbow;
     case WeaponClass::Dagger: return ModelDagger;
     case WeaponClass::Axe: return ModelAxe;
     case WeaponClass::Mace: return ModelMace;
@@ -349,6 +378,8 @@ Grid buildPart(Model model, Part part) {
     if (model == ModelFlask || model == ModelFlaskEmpty) return part != Head ? Grid({1, 1, 1}) : buildFlask(model == ModelFlask);
     if (model == ModelBow || model == ModelBowDrawn) return part != Head ? Grid({1, 1, 1}) : buildBow(model == ModelBowDrawn);
     if (model == ModelArrow) return part != Head ? Grid({1, 1, 1}) : buildArrow();
+    if (model == ModelCrossbow || model == ModelCrossbowSpanned) return part != Head ? Grid({1, 1, 1}) : buildCrossbow(model == ModelCrossbowSpanned);
+    if (model == ModelBolt) return part != Head ? Grid({1, 1, 1}) : buildBolt();
     glm::ivec3 s = specs(model)[part].size;
     Grid g(s);
     Block tunic = model == ModelVillager ? Robe : model == ModelBandit ? Leather : Tunic;
@@ -433,6 +464,7 @@ static const Swings kSwordSwings = rows({
     {{-1.5f, 9.5f, 5, 1.5f, 0, -0.6f, 0.2f, 0.4f}, {1.6f, 8.5f, 6.5f, 1.55f, 0, 0.6f, 0.3f, 0.5f}},  // backstep: a lunging sweep back in
     {},  // drink: its own pose (sip)
     {},  // shot: a bow's own pose (ADR-050)
+    {},  // reload: a crossbow's own pose (ADR-052)
 });
 // Daggers: tight slashes close in, and stabs (thrusts) for most of the rest; ice-pick stabs from above.
 static const Swings kDaggerSwings = rows({
@@ -453,6 +485,7 @@ static const Swings kDaggerSwings = rows({
     {{-1.3f, 9.5f, 4.5f, 1.5f, 0, -0.5f, 0.2f, 0.4f}, {1.4f, 8.5f, 6, 1.55f, 0, 0.5f, 0.3f, 0.5f}},  // backstep: a slash back in
     {},  // drink
     {},  // shot: a bow's own pose (ADR-050)
+    {},  // reload: a crossbow's own pose (ADR-052)
 });
 // Axes: chops from high, the head turned to lead (roll), a sweeping cleave, no thrusts.
 constexpr float kChop = -1.57f;  // the head ahead of a downward chop
@@ -474,6 +507,7 @@ static const Swings kAxeSwings = rows({
     {{-1.5f, 9.5f, 5, 1.5f, 0, -0.6f, 0.2f, 0.4f}, {1.6f, 8.5f, 6.5f, 1.55f, 0, 0.6f, 0.3f, 0.5f}},      // backstep: a sweep back in
     {},  // drink
     {},  // shot: a bow's own pose (ADR-050)
+    {},  // reload: a crossbow's own pose (ADR-052)
 });
 // Maces: the axe's chops as smashes, the chain's last one a big overhead smash.
 static const Swings kMaceSwings = [] {
@@ -501,6 +535,7 @@ static const Swings kGreatswordSwings = rows({
     {{-1.7f, 9.5f, 5, 1.5f, 0, -0.7f, 0.2f, 0.4f}, {1.8f, 8.5f, 6.5f, 1.6f, 0, 0.7f, 0.3f, 0.6f}},    // backstep: a sweep back in
     {},  // drink
     {},  // shot: a bow's own pose (ADR-050)
+    {},  // reload: a crossbow's own pose (ADR-052)
 });
 // Greataxes (ADR-049): the axe's chops, bigger, the chain's last one a wide horizontal cleave.
 static const Swings kGreataxeSwings = rows({
@@ -521,6 +556,7 @@ static const Swings kGreataxeSwings = rows({
     {{-1.7f, 9.5f, 5, 1.5f, 0, -0.7f, 0.2f, 0.4f}, {1.8f, 8.5f, 6.5f, 1.6f, 0, 0.7f, 0.3f, 0.6f}},           // backstep: a cleave back in
     {},  // drink
     {},  // shot: a bow's own pose (ADR-050)
+    {},  // reload: a crossbow's own pose (ADR-052)
 });
 static const Swings& swings(WeaponClass c) {
     switch (c) {
@@ -546,7 +582,7 @@ constexpr glm::vec3 kShieldBack{0, 1, -1.5f};
 // The swing pose now and how far it has taken over from the idle grip (0 .. 1): it winds up until
 // the hold point, strikes through the hit to the follow-through, then settles back.
 static std::pair<Grip, float> swingPose(WeaponClass c, Move move, float u) {
-    if (move == Move::None || move == Move::Drink || move == Move::Shot) return {{}, 0};
+    if (move == Move::None || move == Move::Drink || move == Move::Shot || move == Move::Reload) return {{}, 0};
     const MoveSpec& m = spec(c, move);
     const Swing& sw = swings(c)[size_t(move)];
     float through = std::min(m.impact + 0.6f * (m.impact - m.holdAt), m.chain);
@@ -561,6 +597,7 @@ static std::pair<Grip, float> swingPose(const Player& p, bool armed) {
     auto [g, w] = swingPose(c, p.move, moveProgress(p));
     const MoveSpec& m = spec(c, p.move);
     if (!armed || p.fromMove == Move::None || !p.punching() || moveProgress(p) > m.holdAt) return {g, w};
+    if (p.move == Move::Shot || p.move == Move::Reload || p.move == Move::Drink) return {{}, 0};  // their own poses: no swing to blend from
     auto [from, fromW] = swingPose(p.fromClass, p.fromMove, p.fromU);  // with the weapon it swung
     float k = smooth(moveProgress(p) / m.holdAt);
     return {mix(fromW > 0 ? from : g, g, k), fromW + (1 - fromW) * k};
@@ -595,8 +632,38 @@ static Nock nock(const Player& p) {
 constexpr glm::vec3 kBowHand{-4, 11, 11}, kStringRest{-4, 11, 8}, kStringDrawn{-4, 11.2f, 5};
 constexpr float kBowDown = 2.0f;  // radians the bow is pitched forward at rest (raised: upright)
 
+// A crossbow (ADR-052): how far it's up at the shoulder (aiming, or a shot: up by its hold point, down
+// over the last of the recovery) and how far tipped down to reload (in by its hold point, back up over
+// its last 15%), the right hand's way from the slack string to the latch (the hold point to the seat),
+// then on to lay the bolt in.
+// Chained (a reload after a shot, a shot pressed through a reload), it eases from where that one was.
+struct Span { float raise = 0, tip = 0, pull = 0, lay = 0; };
+static float shotRaise(const MoveSpec& m, float u) { return u < m.impact ? smooth(u / m.holdAt) : smooth(2 * (1 - u) / (1 - m.impact)); }
+static float reloadTip(const MoveSpec& m, float u) { return smooth(u / m.holdAt) * smooth((1 - u) / 0.15f); }
+static Span span(const Player& p) {
+    Span n{p.aimBlend};
+    float u = moveProgress(p);
+    if (p.move == Move::Shot) {
+        n.raise = std::max(n.raise, shotRaise(spec(p), u));
+        if (p.fromMove == Move::Reload) n.tip = reloadTip(spec(p.fromClass, Move::Reload), p.fromU) * (1 - n.raise);
+    } else if (p.move == Move::Reload) {
+        const MoveSpec& m = spec(p);
+        n.tip = reloadTip(m, u);
+        n.pull = smooth((u - m.holdAt) / (m.impact - m.holdAt));
+        n.lay = smooth((u - m.impact) / 0.1f);
+        if (p.fromMove == Move::Shot) n.raise = std::max(n.raise, shotRaise(spec(p.fromClass, Move::Shot), p.fromU));
+        n.raise *= 1 - n.tip;
+    }
+    return n;
+}
+// Where it is (body voxels: its grip there, pitched nose down by `pitch` radians) at the shoulder and
+// tipped to reload; at rest it hangs from the right hand, nose a little down.
+constexpr glm::vec3 kCrossbowRaised{-5.5f, 10, 3.5f}, kCrossbowTipped{-2.5f, 9.5f, 6};
+constexpr float kCrossbowRestPitch = 0.5f, kCrossbowTipPitch = 1.0f;
+
 Model heldModel(const Player& p) {
     Model m = heldModel(p.weapon());
+    if (m == ModelCrossbow && (p.loaded == p.weapon() || (p.move == Move::Reload && !p.hitPending && p.alive()))) return ModelCrossbowSpanned;
     return m == ModelBow && nock(p).draw >= 0.5f ? ModelBowDrawn : m;
 }
 
@@ -717,8 +784,8 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
             rot[Torso].x -= 0.25f * jolt;
         }
     }
-    bool bow = armed && ranged(p);
-    if (float k = armed && !bow ? p.gripBlend * (1 - w) * (1 - p.guardBlend) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {  // two-handed at rest: the weapon in front
+    bool shoots = armed && ranged(p), bow = shoots && !loads(p);  // (a crossbow: poseModel puts the hands on it, ADR-052)
+    if (float k = armed && !shoots ? p.gripBlend * (1 - w) * (1 - p.guardBlend) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {  // two-handed at rest: the weapon in front
         const Grip& gg = kTwoHandIdle;
         glm::vec3 r(-1.5f + gg.reach * std::sin(gg.arc), gg.height, 1.5f + gg.reach * std::cos(gg.arc));
         off[HandR] += (r - kHumanoid[HandR].center) * k;
@@ -788,7 +855,7 @@ static void animateBoar(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 
 std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::mat4* held, float alpha, glm::mat4* shieldPose,
                                            glm::mat4* flask, glm::mat4* arrow) {
     bool armed = model != ModelDummy && !quadruped(model) && p.weapon() != NoItem;
-    bool bow = armed && ranged(p);
+    bool shoots = armed && ranged(p), bow = shoots && !loads(p), crossbow = shoots && loads(p);
     const PartSpec* parts = specs(model);
     glm::vec3 off[PartCount]{}, rot[PartCount]{};  // offsets in voxels, rotations (pitch x, yaw y)
     glm::mat4 tilt(1);  // the dummy above its base: wobbles back when hit, topples when out of health
@@ -832,7 +899,21 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
     float sw = p.move == Move::Parry && shield ? 0 : w;  // a knife's parry sweeps the blade across
     float yaw = (g.arc + g.yaw) * sw + (gg.arc + gg.yaw) * guard + (kTwoHandIdle.arc + kTwoHandIdle.yaw) * rest;
     float pitch = 1.0f + (g.pitch - 1.0f) * sw + (gg.pitch - 1.0f) * guard + (kTwoHandIdle.pitch - 1.0f) * rest;
-    if (float k = armed && !bow ? p.gripBlend * (1 - sip(p).raise) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {
+    // A crossbow (ADR-052): from the right hand at rest to the shoulder or tipped to reload, the hands put on it.
+    glm::mat4 crossbowAt(1);
+    if (crossbow) {
+        Span n = span(p);
+        float k = std::min(n.raise + n.tip, 1.0f) * (1 - roll(p).tuck) * (1 - p.swimAmount) * (1 - sip(p).raise), tipped = n.tip / std::max(n.raise + n.tip, 1e-4f);
+        glm::vec3 at = glm::mix(parts[HandR].center + off[HandR], glm::mix(kCrossbowRaised, kCrossbowTipped, tipped), k);
+        crossbowAt = glm::translate(glm::mat4(1), at);
+        crossbowAt = glm::rotate(crossbowAt, glm::mix(kCrossbowRestPitch, tipped * kCrossbowTipPitch, k), {1, 0, 0});
+        crossbowAt = glm::translate(crossbowAt, -kCrossbowGrip);
+        glm::vec3 reload = n.lay > 0 ? glm::mix(kStringLatch, kBoltTip - glm::vec3(0, 0, 3), n.lay) : glm::mix(kStringSlack, kStringLatch, n.pull);
+        glm::vec3 right = glm::mix(kCrossbowGrip, reload, tipped);
+        off[HandR] = glm::mix(off[HandR], glm::vec3(crossbowAt * glm::vec4(right, 1)) - parts[HandR].center, k);
+        off[HandL] = glm::mix(off[HandL], glm::vec3(crossbowAt * glm::vec4(kCrossbowFore, 1)) - parts[HandL].center, k);
+    }
+    if (float k = armed && !shoots ? p.gripBlend * (1 - sip(p).raise) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {
         // Two-handing (ADR-048): the left hand below the right on the hilt, down the weapon's length.
         glm::vec3 along(std::sin(pitch) * std::sin(yaw), std::cos(pitch), std::sin(pitch) * std::cos(yaw));
         glm::vec3 at = parts[HandR].center + off[HandR] - pommel(heldModel(p.weapon())) * along;
@@ -874,6 +955,10 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
             glm::vec3 a = world * glm::vec4(nockAt, 1), b = world * glm::vec4(through, 1);
             if (glm::length(b - a) > 1e-4f) *arrow = arrowPose(a + glm::normalize(b - a) * (10 * kVoxel), glm::normalize(b - a));
         }
+    } else if (held && crossbow) {  // ADR-052: where the hands put it; a bolt in the groove
+        *held = base * tilt * crossbowAt;
+        if (arrow && p.loaded == p.weapon()) *arrow = base * tilt * crossbowAt * glm::inverse(glm::scale(glm::mat4(1), glm::vec3(kVoxel))) *
+                                                       arrowPose(kBoltTip * kVoxel, {0, 0, 1});
     } else if (held && armed) {  // blade tilted forward from the fist
         glm::mat4 m = glm::translate(base * tilt, parts[HandR].center + off[HandR]);
         m = glm::rotate(m, yaw, {0, 1, 0});

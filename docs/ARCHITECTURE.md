@@ -39,7 +39,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |
 | `src/melee.h/.cpp` | Melee (ADR-035): `MoveSpec` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), the weapon classes' movesets (`WeaponClassDef`, `weaponClass`, `spec`; loaded from data/weapon_classes.json, ADR-044), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces`; `parryOf` (a knife or fists parry too) and `perfectGuard` (ADR-041); `damageOf` (ADR-040) |
-| `src/projectile.h/.cpp` | Projectiles (ADR-050): `Projectile` (an arrow: tip, velocity, the bow, power, stance, stuck), `RangedTuning gRanged` (gravity, speeds by draw, the draw time, expiry, pickup, the aim walk; the debug Player tab edits it), `drawOf`, `shotOrigin`, `shotVelocity` (straight at a point, lobbed onto it, or along the facing), `segmentBox`, `hitBox`, `loose` (the release: an arrow from the quiver; an archer's, ADR-051: at the player along its facing, off by its aim error) and `updateProjectiles` (gravity, a swept voxel ray and body boxes, hits through `strike()`, or for an archer's arrow (`Projectile::owner`) only the player's box, through `strikePlayer()`; sticking, pickup, expiry) |
+| `src/projectile.h/.cpp` | Projectiles (ADR-050): `Projectile` (an arrow: tip, velocity, the bow, power, stance, stuck), `RangedTuning gRanged` (gravity, speeds by draw, the draw time, expiry, pickup, the aim walk; the debug Player tab edits it), `drawOf`, `shotOrigin`, `shotVelocity` (straight at a point, lobbed onto it, or along the facing), `segmentBox`, `hitBox`, `loose` (the release: an arrow from the quiver, or a crossbow's loaded bolt at `boltSpeed`, ADR-052; an archer's, ADR-051: at the player along its facing, off by its aim error) and `updateProjectiles` (gravity, a swept voxel ray and body boxes, hits through `strike()`, or for an archer's arrow (`Projectile::owner`) only the player's box, through `strikePlayer()`; sticking, pickup, expiry) |
 | `src/audio.h/.cpp` | Sound (ADR-037): `Audio` (loads `data/sounds/*.ogg` with stb_vorbis into groups of takes; `play` picks a take never twice running with a little random pitch and volume; `mix` is the device thread's stereo mix: up to 48 resampled voices, three buses, a soft limiter), `place` (falloff and pan from the listener), `layersOf`/`hear` (what a `Sound` from the sim plays), `updateAmbience` (looping beds faded by what's around). No device here: main.cpp's `Speaker` feeds `mix` to SDL3's audio stream |
 | `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
@@ -830,6 +830,14 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   `ModelArrow`, the bow pose (`nock`: raise, draw, the nocked arrow), `heldModel(const Player&)` and
   `arrowPose`; main.cpp draws every projectile as a model instance, moves the camera over the right
   shoulder by `aimBlend`, and hud.cpp draws the crosshair and the quiver's count.
+- **Crossbows** (ADR-052): a ranged class that `loads` (`loads(b)`). `Player::loaded` is the
+  crossbow with a bolt in it; `pick` returns `Move::Shot` for it loaded (no hold: full power,
+  `gRanged.boltSpeed`) and `Move::Reload` empty. At the shot's release updateCombat also queues
+  `Want::Light` (the automatic reload, replaced by a roll like any press); at the reload's impact
+  frame it seats a bolt from the quiver. `loose` spends the bolt, not the quiver. The reload walks
+  slowly like the shot and is let down by a roll before its seat. model.cpp: `ModelCrossbow`,
+  `ModelCrossbowSpanned`, `ModelBolt` and the pose (`span`: raised, tipped, the string hand), held in
+  both hands; main.cpp draws bolts for crossbow projectiles.
 - **Archers** (ADR-051): a creature whose `weapon` shoots has a range band (`keep_range`), an
   `aim_error` and maybe a `sidearm`. In `think()` its hands come first: the sidearm once the player is
   within `gAi.closeIn` in a fight (the bow back past the band's near end), never mid-move. With the bow
@@ -918,7 +926,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Oak Buckler / Heater Shield / Tower Shield | Off Hand | shields (ADR-036): stop 80 / 100 / 100% of a blocked hit (the buckler 85 / 70 / 80% of slash / strike / pierce, the heater 90% of strikes: ADR-040), guard boost 46 / 56 / 72%; the first two parry, the tower bounces weak attacks; weigh 2 / 4.5 / 13; no drop yet (the debug Items tab gives them) |
   | Iron Hand Axe / Iron Mace | Main Hand | axe 7–11 (speed 1.1, weight 3.5) / mace 6–10 strike (speed 1.15, weight 4), ADR-044; no drop yet (the debug Items tab gives them) |
   | Iron Greatsword / Barrow Greataxe | Main Hand (both hands) | greatsword 9–13 (speed 1.45, strength A, agility D, weight 9) / greataxe 10–14 (speed 1.55, strength S, weight 10), ADR-049; rare drops of bandits (10% when the knife doesn't drop) / barrow ghouls (12% when the charm doesn't) |
-  | Short Bow | Main Hand (both hands) | 5–8 pierce (speed 1.0, agility B 1.1, strength E 0.3, weight 2), shoots arrows from the quiver (ADR-050); dropped by guards 50% |
+  | Short Bow | Main Hand (both hands) | 5–8 pierce (speed 1.0, agility B 1.1, strength E 0.3, weight 2), shoots arrows from the quiver (ADR-050); dropped by bandit archers 25% (ADR-051) |
+  | Light Crossbow | Main Hand (both hands) | 12–16 pierce (speed 1.0, no scaling, weight 3.5), fires bolts from the quiver and reloads after (ADR-052); dropped by guards 50% |
 
   Weapon classes (ADR-044, `data/weapon_classes.json`): one record per class (fists, dagger, sword,
   axe, mace, greatsword, greataxe), each with every attack move (`seconds`, `hold`, `hit`, `chain`, `cancel` in order,
@@ -927,7 +936,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   ADR-049 adds optional `two_handed` (always held in both hands; not fists), `reach` (blocks, 1–4,
   default 2) and `arc` (degrees either side of the facing, 15–120, default 60). ADR-050 adds
   `ranged` (shoots; needs `two_handed`): a ranged class has only the `shot` move, the others every
-  move but it. Creatures can't wield a ranged weapon yet.
+  move but it. ADR-052 adds `loads` (needs `ranged`): such a class (the crossbow) has the `reload`
+  move too, and only it. Creatures can't wield one that loads yet.
 
   | Class | Lights: stance / stamina | Thrusts | Hit-stop | Feel |
   |---|---|---|---|---|

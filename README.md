@@ -307,7 +307,15 @@ guard button to aim over the shoulder with a crosshair; otherwise arrows fly the
 arc onto your lock-on target. Arrows fall as they fly, stick where they land (walk over them to
 pick them up), and a shield in front blocks them; a roll lets them through. The quiver (30, shown
 right of the health bar) fills when you rest by a fire. No guard or parry with a bow in hand.
-Guards drop it half the time, bandit archers a quarter of the time.
+Bandit archers drop it a quarter of the time.
+
+**Crossbows** (ADR-052): the **Light Crossbow** fires at once, with no draw: press attack and the
+bolt flies, faster and flatter than an arrow and harder (12 to 16, whatever your attributes), then
+it reloads by itself (about a second and a half: walking slowly, cranking the string back, a click
+as the bolt goes in). Roll out of the reload and it stays empty: your next press reloads first. A
+press near the end of the reload fires as it ends. Bolts come from the same quiver as arrows; a bar under
+the quiver lights while it's loaded. Aim with the guard button as with a bow. Guards drop it half
+the time.
 
 **Archers** (ADR-051): the **Bandit Archer** (at the bandit camp near the start, or F6) keeps 7 to
 16 blocks from you and shoots. Watch for the tell: it raises its bow and holds the draw, creaking,

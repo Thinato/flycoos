@@ -30,6 +30,7 @@ struct Projectile {
 struct RangedTuning {
     float gravity = 10;                  // blocks/s^2 (bodies fall at 28: an arrow's flight is flatter)
     float minSpeed = 20, maxSpeed = 55;  // blocks/s leaving the bow, by the draw
+    float boltSpeed = 75;                // blocks/s a crossbow's bolt leaves at (ADR-052; no draw): a flatter flight
     float drawSeconds = 0.6f;            // at the hold pose this long: full draw
     float minPower = 0.4f;               // x damage and stance at no draw (full draw: 1)
     float hipPitch = 0.05f;              // radians up a shot goes with nothing to aim at (along the facing)
@@ -57,7 +58,8 @@ struct Box3 { glm::vec3 lo, hi; };
 Box3 hitBox(const Entity& e);
 
 // Looses the player's drawn arrow (step() calls it at the shot's release): one from the quiver, at
-// `aimAt` (SimInput's) straight in aim mode, else lobbed onto it, by the draw's speed and power.
+// `aimAt` (SimInput's) straight in aim mode, else lobbed onto it, by the draw's speed and power. A
+// crossbow (ADR-052) fires the bolt in it instead, at full power and boltSpeed.
 void loose(Session& s, std::optional<glm::vec3> aimAt);
 // Looses archer `e`'s drawn arrow (ADR-051; step() calls it at the release): lobbed at the player's chest as far
 // away as the player is, along e's facing (it stops turning just before, so a sidestep can beat it), off by up

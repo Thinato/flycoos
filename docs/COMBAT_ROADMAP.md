@@ -46,7 +46,7 @@ system is summarized in ADR-035.
 ## Ranged
 
 - [x] **Bows:** draw and hold, aim mode (over the shoulder), arc and drop; arrows a quiver count, not items yet (ADR-050)
-- [ ] **Crossbows:** load and fire, slower and stronger, no draw time
+- [x] **Crossbows:** load and fire, slower and stronger, no draw time (ADR-052; bolts share the quiver)
 - [ ] Throwables (knives, pots, bombs)
 - [x] Projectiles in the sim: travel, hit detection, sticking into terrain, blocked by guards (ADR-050)
 - [x] Lock-on aiming for ranged weapons (a lobbed arc onto the target, ADR-050)

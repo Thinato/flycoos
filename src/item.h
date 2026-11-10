@@ -28,9 +28,9 @@ using PerType = std::array<float, size_t(DamageType::Count)>;  // a number for e
 // What kind of weapon it is (ADR-044): it picks the moveset (data/weapon_classes.json), the swing
 // poses and the held model. Code asks a weapon's class, never its item id. Bare hands are Fists.
 // Greatswords and greataxes (ADR-049) are held in both hands. Bows (ADR-050) shoot: a class that is
-// `ranged` has one move, the shot. Only append classes.
-enum class WeaponClass : uint8_t { Fists, Dagger, Sword, Axe, Mace, Greatsword, Greataxe, Bow, Count };
-inline constexpr const char* kWeaponClassIds[] = {"fists", "dagger", "sword", "axe", "mace", "greatsword", "greataxe", "bow"};  // in data files
+// `ranged` has one move, the shot. Crossbows (ADR-052) shoot and `load`: a reload after each shot. Only append classes.
+enum class WeaponClass : uint8_t { Fists, Dagger, Sword, Axe, Mace, Greatsword, Greataxe, Bow, Crossbow, Count };
+inline constexpr const char* kWeaponClassIds[] = {"fists", "dagger", "sword", "axe", "mace", "greatsword", "greataxe", "bow", "crossbow"};  // in data files
 static_assert(std::size(kWeaponClassIds) == size_t(WeaponClass::Count));
 
 // What an off-hand shield does when guarding (ADR-036): the share of a blocked hit's damage it stops

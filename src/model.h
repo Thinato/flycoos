@@ -20,10 +20,12 @@ enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelBoar, ModelBandit, Mod
              ModelWolf, ModelGuard, ModelChief, ModelGhoul, ModelBuckler, ModelHeater, ModelTower, ModelAxe, ModelMace,
              ModelFlask, ModelFlaskEmpty,  // the healing flask (ADR-047), held while drinking
              ModelGreatsword, ModelGreataxe,  // great weapons (ADR-049), held in both hands
-             ModelBow, ModelBowDrawn, ModelArrow, ModelCount };  // a bow (its string drawn back) and its arrow (ADR-050)
+             ModelBow, ModelBowDrawn, ModelArrow,  // a bow (its string drawn back) and its arrow (ADR-050)
+             ModelCrossbow, ModelCrossbowSpanned, ModelBolt, ModelCount };  // a crossbow (spanned: loaded, or the reload past its seat) and its bolt (ADR-052)
 Grid buildPart(Model model, Part part);
 Model heldModel(ItemId weapon);
-// What `p` has in hand drawn as: heldModel, but a bow with its string well back is ModelBowDrawn (ADR-050).
+// What `p` has in hand drawn as: heldModel, but a bow with its string well back is ModelBowDrawn (ADR-050),
+// a crossbow with a bolt in it ModelCrossbowSpanned (ADR-052).
 Model heldModel(const Player& p);
 // An arrow's pose (ADR-050) with its tip at `tip`, pointing along `dir`.
 glm::mat4 arrowPose(glm::vec3 tip, glm::vec3 dir);
@@ -40,5 +42,8 @@ std::array<Model, PartCount> partModels(Model model, const Inventory& inv);
 // out by a parry). Drinking (ADR-047), `flask` gets the flask's pose (in the left hand, tipped to the lips).
 // A bow (ADR-050) is held in the left hand: down at the side, raised to aim or shoot with the right hand
 // drawing the string back; `arrow` gets the nocked arrow's pose while there is one (a draw, aiming).
+// A crossbow (ADR-052) is held in both hands: low at the right hip at rest, its butt to the right shoulder
+// to aim or shoot, tipped nose down in front to reload (the right hand drawing the string back to the
+// latch); `arrow` gets the bolt's pose (draw it as ModelBolt) while one is in it.
 std::array<glm::mat4, PartCount> poseModel(const Player& body, Model model, glm::mat4* held = nullptr, float alpha = 1,
                                            glm::mat4* shield = nullptr, glm::mat4* flask = nullptr, glm::mat4* arrow = nullptr);

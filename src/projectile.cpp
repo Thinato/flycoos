@@ -51,10 +51,11 @@ Box3 hitBox(const Entity& e) {
 
 // An arrow off `p`'s bow by its draw, at `at` (none: along its facing), lobbed or straight; `owner` as Projectile's.
 static void shoot(Session& s, Player& p, uint32_t owner, std::optional<glm::vec3> at, bool lob) {
-    float draw = drawOf(p), k = gRanged.minPower + (1 - gRanged.minPower) * draw;
+    bool bolt = weaponClass(classOf(p.swingWeapon)).loads;  // a crossbow's (ADR-052): always full power, faster
+    float draw = bolt ? 1 : drawOf(p), k = gRanged.minPower + (1 - gRanged.minPower) * draw;
     const MoveSpec& m = spec(p, Move::Shot);  // (a hit that made the shooter flinch this tick ended the move already)
     glm::vec3 from = shotOrigin(p);
-    Projectile a{from, from, shotVelocity(from, p.yaw, at, lob, gRanged.minSpeed + (gRanged.maxSpeed - gRanged.minSpeed) * draw),
+    Projectile a{from, from, shotVelocity(from, p.yaw, at, lob, bolt ? gRanged.boltSpeed : gRanged.minSpeed + (gRanged.maxSpeed - gRanged.minSpeed) * draw),
                  p.swingWeapon, m.damage * k, m.stance * k};
     a.owner = owner;
     if (s.projectiles.size() >= kMaxProjectiles) {  // the oldest stuck one goes, else the oldest
@@ -67,8 +68,13 @@ static void shoot(Session& s, Player& p, uint32_t owner, std::optional<glm::vec3
 
 void loose(Session& s, std::optional<glm::vec3> aimAt) {
     Player& p = s.player;
-    if (p.arrows <= 0) return;
-    --p.arrows;
+    if (weaponClass(classOf(p.swingWeapon)).loads) {  // a crossbow spends the bolt in it (ADR-052; the reload took it from the quiver)
+        if (p.loaded != p.swingWeapon) return;
+        p.loaded = NoItem;
+    } else {
+        if (p.arrows <= 0) return;
+        --p.arrows;
+    }
     shoot(s, p, 0, aimAt, !p.aiming);
 }
 

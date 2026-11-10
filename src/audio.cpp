@@ -177,7 +177,7 @@ std::vector<Layer> layersOf(const Sound& s) {
             add("flask_open", 0.6f);
             break;
         }
-        if (s.move == Move::Shot) break;  // the string lets go: Loose has it (ADR-050)
+        if (s.move == Move::Shot || s.move == Move::Reload) break;  // the string lets go: Loose has it (ADR-050); a reload cranks (ADR-052)
         if (s.move == Move::Parry && s.with && defs().items[s.with].shield.size != ShieldSize::None) {
             add("swing_shield", 0.8f);
             break;
@@ -193,15 +193,20 @@ std::vector<Layer> layersOf(const Sound& s) {
         if (heavy && !type) say("attack", 0.6f);  // the player's effort
         break;
     }
-    case Noise::Windup:  // the tell: it's coming; a bow being drawn creaks (ADR-050)
+    case Noise::Windup:  // the tell: it's coming; a bow being drawn creaks (ADR-050), a crossbow cranked back (ADR-052)
         if (s.move == Move::Shot) add("bow_draw", 0.7f);
+        else if (s.move == Move::Reload) add("bow_draw", 0.75f, 0.7f), add("bow_draw", 0.5f, 0.8f, 0.45f);
         else say("windup", 0.9f);
         break;
-    case Noise::Charged:  // a heavy charged; a bow at full draw, a last creak
+    case Noise::Charged:  // a heavy charged; a bow at full draw, a last creak; a crossbow's bolt seated, a click (ADR-052)
         if (s.move == Move::Shot) add("bow_draw", 0.45f, 1.2f);
+        else if (s.move == Move::Reload) add("equip", 0.7f, 1.3f);
         else add("charge", 0.8f);
         break;
-    case Noise::Loose: add("bow_loose", 0.9f); break;
+    case Noise::Loose:  // a crossbow's (ADR-052) snaps deeper, with the latch's knock
+        if (s.with && weaponClass(classOf(s.with)).loads) add("bow_loose", 1, 0.72f), add("block_arms", 0.35f, 1.4f);
+        else add("bow_loose", 0.9f);
+        break;
     case Noise::Thunk: {  // an arrow into terrain: brighter off stone, duller in earth
         std::string_view on = surface(s.ground);
         add("arrow_hit", 0.8f, on == "stone" ? 1.2f : on == "wood" ? 1 : 0.85f);

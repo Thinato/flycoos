@@ -197,7 +197,7 @@ void loadWeaponClasses(const File& f, Defs& d) {
     std::array<bool, size_t(WeaponClass::Count)> seen{};
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
-        r.allow({"id", "copy_from", "name", "speed", "hit_stop", "two_handed", "reach", "arc", "ranged", "moves"});
+        r.allow({"id", "copy_from", "name", "speed", "hit_stop", "two_handed", "reach", "arc", "ranged", "loads", "moves"});
         auto at = std::ranges::find(kWeaponClassIds, r.id());
         if (at == std::end(kWeaponClassIds)) throw r.fail("id", oneOf(kWeaponClassIds));
         size_t c = size_t(at - std::begin(kWeaponClassIds));
@@ -218,6 +218,14 @@ void loadWeaponClasses(const File& f, Defs& d) {
             w.ranged = r.fields["ranged"].get<bool>();
             if (w.ranged && !w.twoHanded) throw r.fail("ranged", "a ranged class takes both hands: needs \"two_handed\": true");
         }
+        // Crossbows (ADR-052): a ranged class that loads has a reload too.
+        if (r.fields.contains("loads")) {
+            if (!r.fields["loads"].is_boolean()) throw r.fail("loads", "must be true or false");
+            w.loads = r.fields["loads"].get<bool>();
+            if (w.loads && !w.ranged) throw r.fail("loads", "only a ranged class loads (\"ranged\": true)");
+        }
+        // Which moves it has: a melee class every attack move, a ranged one the shot, and the reload if it loads.
+        auto has = [&](Move m) { return m == Move::Shot ? w.ranged : m == Move::Reload ? w.loads : !w.ranged; };
         w.reach = float(r.number(r.fields, "reach", 1, 4, 2, false));
         w.arc = float(r.number(r.fields, "arc", 15, 120, 60, false));
         w.arcCos = float(std::cos(double(w.arc) * std::numbers::pi / 180));  // in double: 60 gives exactly 0.5f, the old test
@@ -226,16 +234,19 @@ void loadWeaponClasses(const File& f, Defs& d) {
         for (const auto& [k, v] : ms.items())
             if (auto m = std::ranges::find(kMoveIds, k); m == std::end(kMoveIds) || codeMove(Move(m - std::begin(kMoveIds))))
                 throw r.fail("moves." + k, "not an attack move (none, parry and drink are code's)");
-            else if ((Move(m - std::begin(kMoveIds)) == Move::Shot) != w.ranged)
-                throw r.fail("moves." + k, w.ranged ? "a ranged class has only the shot" : "only a ranged class shoots (\"ranged\": true)");
+            else if (Move mv = Move(m - std::begin(kMoveIds)); !has(mv))
+                throw r.fail("moves." + k, mv == Move::Reload ? "only a class that loads reloads (\"loads\": true)"
+                                           : w.ranged         ? "a ranged class has only the shot (and the reload if it loads)"
+                                                              : "only a ranged class shoots (\"ranged\": true)");
         for (size_t m = 0; m < size_t(Move::Count); ++m) {
             if (codeMove(Move(m))) {
                 w.moves[m] = Move(m) == Move::Parry ? kParrySpec : Move(m) == Move::Drink ? kDrinkSpec : MoveSpec{};
                 continue;
             }
-            if ((Move(m) == Move::Shot) != w.ranged) continue;  // a bow has only the shot, the rest only melee classes (empty)
+            if (!has(Move(m))) continue;  // a bow has only the shot (a crossbow the reload too), the rest only melee classes (empty)
             std::string field = std::string("moves.") + kMoveIds[m];
-            if (!ms.contains(kMoveIds[m])) throw r.fail(field, w.ranged ? "missing (a ranged class has the shot)" : "missing (every class has every attack move)");
+            if (!ms.contains(kMoveIds[m]))
+                throw r.fail(field, Move(m) == Move::Reload ? "missing (a class that loads reloads)" : w.ranged ? "missing (a ranged class has the shot)" : "missing (every class has every attack move)");
             const json& v = ms[kMoveIds[m]];
             if (!v.is_object()) throw r.fail(field, "must be an object {seconds, hold, hit, chain, cancel, damage, stance, stamina, lunge}");
             for (const auto& [k, x] : v.items())
@@ -538,6 +549,7 @@ void loadCreatures(const File& f, Defs& d) {
             if (!(t.keepMin >= 2 && t.keepMin < t.keepMax && t.keepMax <= 40)) throw r.fail("keep_range", "must be 2 <= min < max <= 40");
             if (t.parry > 0 || t.guard > 0) throw r.fail(t.parry > 0 ? "parry" : "guard", "a bow doesn't guard or parry");
             if (t.shield) throw r.fail("shield", "a bow is held in both hands");
+            if (d.weaponClasses[size_t(d.items[t.weapon].weaponClass)].loads) throw r.fail("weapon", "creatures can't reload a crossbow yet (ADR-052)");
         }
         t.aimError = float(r.number(r.fields, "aim_error", 0, 0.5, 0, false));
         t.sidearm = item("sidearm");

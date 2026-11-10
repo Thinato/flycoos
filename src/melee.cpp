@@ -34,10 +34,12 @@ bool airborne(const Player& p) { return !p.onGround && !p.inWater && !p.tuning.f
 bool wantsAttack(Want w) { return w == Want::Light || w == Want::Heavy || w == Want::Counter; }
 
 // The attack `want` makes now, from what the body is doing (the first that holds): a guard counter
-// just after a block (a bow: always its shot), a riposte at a stance-broken enemy, a jump attack in the air, a rolling attack
+// just after a block (a bow: always its shot; a crossbow: its shot loaded, else its reload), a riposte at a stance-broken enemy, a jump attack in the air, a rolling attack
 // late in a roll or just after, a running attack, else the next light of the chain (or heavy).
 Move pick(const Player& p, Want want, bool riposte, bool running) {
-    if (weaponClass(classOf(p.inv.equipped[SlotMainHand])).ranged) return Move::Shot;  // a bow only shoots (ADR-050)
+    ItemId hand = p.inv.equipped[SlotMainHand];  // (what's in hand now, not the swing's)
+    if (const WeaponClassDef& w = weaponClass(classOf(hand)); w.ranged)
+        return w.loads && p.loaded != hand ? Move::Reload : Move::Shot;  // a bow only shoots (ADR-050), a crossbow loads first (ADR-052)
     if (want == Want::Counter && p.blockTime < gMelee.counterWindow) return Move::GuardCounter;
     bool heavy = want == Want::Heavy;  // a counter press that waited too long is a light
     if (riposte) return Move::Riposte;
@@ -127,7 +129,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
 
     // Presses become wants: an attack press is a light once let go, a heavy once held tapSeconds,
     // either a guard counter right after a block. A newer press replaces an older one.
-    auto wish = [&](Want w) { p.want = w, p.wantAge = 0; };
+    auto wish = [&](Want w) { p.want = w, p.wantAge = 0, p.reloadWant = false; };
     bool counter = p.blockTime < t.counterWindow && !p.punching();
     bool bow = ranged(p);
     if (in.attack) p.pressing = true, p.pressTime = 0;
@@ -147,8 +149,15 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     } else if (weaponClass(classOf(p.weapon())).twoHanded && p.want == Want::Grip) {
         p.want = Want::None;  // a great weapon (ADR-049) stays in both hands: the press does nothing
     }
-    bool quiver = !weaponClass(classOf(p.inv.equipped[SlotMainHand])).ranged || p.arrows > 0;  // a bow needs an arrow (ADR-050)
+    ItemId hand = p.inv.equipped[SlotMainHand];
+    const WeaponClassDef& held = weaponClass(classOf(hand));
+    bool quiver = !held.ranged || p.arrows > 0 || (held.loads && p.loaded == hand);  // a bow needs an arrow (ADR-050), a crossbow one in it or to load (ADR-052)
     if (!quiver && wantsAttack(p.want)) p.want = Want::None;  // an empty quiver: the press does nothing (it doesn't wait for one)
+    if (p.reloadWant && (p.want != Want::Light || !held.loads || p.loaded == hand)) {  // the automatic reload, with no crossbow to reload now
+        if (p.want == Want::Light) p.want = Want::None;
+        p.reloadWant = false;
+    }
+    bool reloads = held.loads && p.loaded != hand;  // (a reload costs no stamina: it goes on at 0)
     bool over = p.load == Load::Over && !p.tuning.fly && !p.tuning.noclip;  // overloaded: no roll, no run (ADR-039)
     if (move.roll && !over) wish(Want::Roll);
     if (over) move.run = false;
@@ -168,7 +177,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
                 p.holding = held && p.moveTime <= holdTime(p);
                 if (p.holding && p.moveTime >= holdTime(p) && (p.charge += dt) >= t.chargeSeconds) p.charged = true, p.holding = false, p.noise(Noise::Charged);
             }
-            if (p.move == Move::Shot && p.hitPending) {  // draws while held; at full draw it holds on until let go (ADR-050)
+            if (p.move == Move::Shot && p.hitPending && !weaponClass(classOf(p.swingWeapon)).loads) {  // draws while held; at full draw it holds on until let go (ADR-050)
                 bool held = p.chargeByHeavy ? in.heavyHeld : in.attackHeld;
                 p.holding = held && p.moveTime <= holdTime(p);
                 if (p.holding && p.moveTime >= holdTime(p) && !p.charged && (p.charge += dt) >= gRanged.drawSeconds)
@@ -177,14 +186,15 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
             if (jumpAttack(p.move)) p.holding = airborne(p);  // strikes on landing
             bool wants = p.want == Want::Roll || p.want == Want::Parry || p.want == Want::Drink || p.want == Want::Grip;
             bool cut = wants || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
-            bool letDown = p.move == Move::Shot && p.hitPending && wants;  // a draw can be let down any time (the arrow kept)
+            // A draw can be let down any time (the arrow kept), a crossbow's raise or its reload cut (ADR-052: the bolt not yet in, it stays empty).
+            bool letDown = (p.move == Move::Shot || p.move == Move::Reload) && p.hitPending && wants;
             if (((u >= m.cancel && cut) || letDown) && !wantsAttack(p.want)) endMove(p, p.move);
         }
         // A wanted attack starts once the body is free, or from the current one's chain point.
         bool free = !p.punching() || moveProgress(p) >= spec(p).chain;
         bool rollDone = !p.rolling() || p.rollTime > 0.6f * p.rollLength;  // late in a roll: a rolling attack
         bool stunned = p.want == Want::Counter && p.blockTime < t.blockStun;
-        if (wantsAttack(p.want) && free && rollDone && !stunned && p.stamina > 0 && !p.inWater) {
+        if (wantsAttack(p.want) && free && rollDone && !stunned && (p.stamina > 0 || reloads) && !p.inWater) {
             Move next = pick(p, p.want, in.riposte, running);
             Move from = p.move;
             float fromU = moveProgress(p);
@@ -193,10 +203,11 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
             if (p.rolling()) p.rollLength = p.rollTime;  // the attack takes over from the roll
             startMove(p, next, next == Move::Riposte || glm::length(in.aim) > 1e-3f ? in.aim : aim);
             p.fromMove = from, p.fromU = fromU, p.fromClass = fromClass;  // chained: it winds up from where that one was
-            if (charges(next) || next == Move::Shot) p.holding = p.chargeByHeavy ? in.heavyHeld : in.attackHeld;
-            if (next == Move::Shot) p.noise(Noise::Windup);  // the draw's creak (ADR-050)
+            bool draws = next == Move::Shot && !loads(p);  // a bow's draw; a crossbow's shot doesn't hold (ADR-052)
+            if (charges(next) || draws) p.holding = p.chargeByHeavy ? in.heavyHeld : in.attackHeld;
+            if (draws || next == Move::Reload) p.noise(Noise::Windup);  // the draw's creak (ADR-050), the reload's crank (ADR-052)
             spend(p, spec(p).stamina);
-            p.want = Want::None;
+            p.want = Want::None, p.reloadWant = false;
             started = true;
         }
         // A parry (a shield that can, else a knife or fists) starts once the body is free; it commits
@@ -247,10 +258,10 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     } else if (p.move == Move::Drink) {  // walks slowly, may turn (a lock-on still faces its target)
         move.speed = t.drinkSpeed;
         move.run = move.jump = false;
-    } else if (p.move == Move::Shot || p.aiming) {  // drawing or aiming a bow: walks slowly, facing the aim (ADR-050)
+    } else if (p.move == Move::Shot || p.move == Move::Reload || p.aiming) {  // drawing or aiming a bow, reloading a crossbow: walks slowly, facing the aim (ADR-050)
         move.speed = gRanged.aimWalk;
         move.run = false;
-        move.jump &= p.move != Move::Shot;
+        move.jump &= p.move != Move::Shot && p.move != Move::Reload;
         move.face = aim;
     } else if (p.punching()) {
         const MoveSpec& m = spec(p);

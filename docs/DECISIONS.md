@@ -2331,3 +2331,77 @@
     Blocking an arrow opens a guard counter, as blocking a swing does.
   - **Later:** crossbows and throwables (likely ADR-052) on the same path; an archer limit if camps
     grow; arrows stuck in bodies.
+
+## ADR-052: Crossbows: load and fire
+
+- **Status:** accepted (2026-11-09)
+- **Context:**
+  - The roadmap's ranged section: "Crossbows: load and fire, slower and stronger, no draw time".
+  - ADR-050 built the bow on one move (`Move::Shot`: draw, hold, loose at the impact frame) and the
+    projectile path; ADR-051 made it shoot both ways. A crossbow differs in when its work happens:
+    the effort (spanning the string) comes after a shot, not before.
+  - Foundations (TALENTS.md): pressed actions share one path. The reload must not be a separate
+    button or system.
+- **Decision:**
+  - **A ranged class that `loads`** (WeaponClass::Crossbow, data `"loads": true`, needs `ranged`) has
+    two moves in data: the shot and a new `Move::Reload` (only classes that load have it). The bolt in
+    it is `Player::loaded`, the crossbow's ItemId: put away it stays in, and a bow in hand shoots its
+    own arrows. It isn't saved: a crossbow comes back from a load empty.
+  - **Loaded, a press fires at once:** `pick` returns the shot; it doesn't hold (no draw: always full
+    power), raises to the shoulder by its hold point and fires at its impact frame (0.24 s), a bolt at
+    `gRanged.boltSpeed` (75 b/s, against an arrow's 55 at full draw: a flatter flight). `loose` spends
+    the bolt in it, not the quiver.
+  - **Then it reloads, as a press would:** at the release updateCombat queues `Want::Light`, so the
+    reload starts at the shot's chain point through the input buffer, and a roll (a newer want)
+    replaces it. Empty, `pick` returns the reload (1.6 s, walking slowly): tipped nose down, the right
+    hand drawing the string back to the latch, and at its impact frame (1.2 s) a bolt from the quiver
+    is seated (a click). A roll or the flask before then lets it down, still empty, and the next press
+    reloads first; a press late in the reload (within the input buffer, 0.5 s, of its end) fires as
+    it ends. The queued reload is marked (`reloadWant`): a weapon swapped in before it starts drops
+    it, it isn't a press. Decided from what's in hand now (not the swing's weapon), and a reload goes
+    on at 0 stamina (it costs none). An empty quiver drops the press (a loaded crossbow still fires
+    its bolt). NPCs don't answer a reload as an attack (it hits nothing).
+  - **The Light Crossbow** (save id 20): 12–16 pierce with no attribute scaling (its power is in the
+    mechanism: as strong in weak hands), shot stance 20 (a bow's 9), weight 3.5. **Guards drop it**
+    (50%) instead of the bow; archers drop the bow (ADR-051).
+  - **One quiver:** bolts and arrows are the same count (ADR-050's quiver), picked up the same way.
+  - **Look and sound:** `ModelCrossbow` (slack), `ModelCrossbowSpanned` (a bolt in it, or the reload
+    past its seat) and `ModelBolt` (an arrow's grid, shorter, tipped the same so `arrowPose` serves
+    both); poseModel puts both hands on it (the trigger hand on the grip, the other under the
+    fore-stock): low at the right hip at rest, the butt at the right shoulder to aim or fire, tipped
+    nose down to reload. Sounds from the bow's CC0 samples: the fire a deeper snap with a knock, the
+    reload a lower creak, the seat the equip click.
+  - **HUD:** under the quiver's arrow a bar lit while loaded; the crosshair is tight loaded, open empty.
+    The inventory names it ("press to fire, it reloads after"). **Debug window:** the Bows node shows
+    loaded or empty, the reload's progress and a Load button, and the bolt speed slider.
+  - **Creatures can't carry one yet** (a data error): an NPC would need the reload in its AI.
+- **Alternatives considered:**
+  - The reload as the shot's recovery (one move): a roll out of it would load for free, or need the
+    loaded flag anyway; two moves keep each one plain.
+  - Reloading on a press only (no automatic reload): two presses a shot. Queued like a press it's
+    automatic and still cancellable, and the buffer lets a press during it fire at its end.
+  - One-handed with a shield in the off hand: the guard button aims, so a shield would need the
+    controls refactor (deferred); two-handed for now.
+  - Bolts as their own count: a new save field and HUD count for no play difference yet.
+  - Attribute scaling: the bow already rewards agility; the crossbow's niche is power without stats.
+- **Consequences:**
+  - **Balance:** with the starting stats a bolt averages 1.4x a full-draw arrow on a bandit (14 vs
+    10; tested over 12 seeds), and breaks stances twice as fast, but a shot every ~2 s (0.6 + 1.6)
+    against the bow's ~1.6 s: about even early, the bow ahead as agility grows.
+  - **Tests:** `crossbows` checks the data and its checks (`loads` needs `ranged`, the reload only and
+    always with it, no creature with one), reloading on a press (the crank, the seat's timing, the
+    bolt from the quiver, the spanned model, no shot while held), firing at once (no hold, full power,
+    the bolt's speed, along the facing, the quiver untouched), the queued reload, a press buffered
+    through it, a roll in the reload (empty, the arrow kept), a roll after the shot (no reload), a
+    roll in the raise (still loaded), an empty quiver, the bolt kept through a swap to the bow (and
+    another weapon's bolt not counting), the automatic reload dropped by a swap to a sword, a reload
+    at 0 stamina, what's in hand deciding mid-swing, NPCs not answering a reload, aim mode (straight
+    at the point; walking slowly in the reload), the damage against the bow, the models and the pose
+    (hands on it, level at the right shoulder, as at rest a bow's hand, the bolt in the groove, tipped
+    to reload with the hand on the string's way). Mutation-checked: each of 32 rules broken alone
+    fails a test.
+  - **Limits:** no NPC crossbows; the loaded bolt is lost on a save and load; bolts and arrows share
+    one count; only haste (as with every move) makes the reload faster. A press early in the reload
+    expires before it ends.
+  - **Later:** an NPC crossbowman (keepDistance with a reload between shots); heavier crossbows;
+    throwables on the same path.

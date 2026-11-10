@@ -64,6 +64,15 @@ void icon(ImDrawList* dl, ItemId id, ImVec2 lo, float s) {
             dl->AddLine(at(0.20f, 0.80f), at(0.78f, 0.22f), uiColor(0.75f, 0.6f, 0.4f), s * 0.04f);       // arrow
             dl->AddTriangleFilled(at(0.84f, 0.16f), at(0.72f, 0.22f), at(0.78f, 0.28f), steel);
             break;
+        case WeaponClass::Crossbow:  // ADR-052: the stock corner to corner, the prod across its nose, spanned, a bolt in it
+            dl->AddLine(at(0.16f, 0.84f), at(0.74f, 0.26f), wood, s * 0.1f);                              // stock
+            dl->AddBezierQuadratic(at(0.46f, 0.12f), at(0.80f, 0.36f), at(0.88f, 0.54f), wood, s * 0.08f);  // prod
+            dl->AddLine(at(0.46f, 0.12f), at(0.52f, 0.48f), uiColor(0.9f, 0.85f, 0.65f), s * 0.025f);     // string to the latch
+            dl->AddLine(at(0.88f, 0.54f), at(0.52f, 0.48f), uiColor(0.9f, 0.85f, 0.65f), s * 0.025f);
+            dl->AddLine(at(0.52f, 0.48f), at(0.78f, 0.22f), uiColor(0.75f, 0.6f, 0.4f), s * 0.04f);       // bolt
+            dl->AddLine(at(0.30f, 0.70f), at(0.36f, 0.76f), iron, s * 0.06f);                             // trigger
+            dl->AddLine(at(0.16f, 0.84f), at(0.26f, 0.74f), leather, s * 0.12f);                          // butt
+            break;
         default:  // a sword
             dl->AddLine(at(0.32f, 0.68f), at(0.86f, 0.14f), steel, s * 0.12f);   // blade
             dl->AddLine(at(0.18f, 0.54f), at(0.46f, 0.82f), iron, s * 0.08f);    // crossguard
@@ -214,7 +223,8 @@ void tooltip(ItemId id, SlotRef where) {
             ImGui::TextUnformatted(t.damage == DamageType::Slash ? "Slashes; thrusts pierce" : t.damage == DamageType::Strike ? "Strikes" : "Pierces");
         if (t.parry > 0) ImGui::TextUnformatted("Parries with the off hand empty (Q / L2)");
         if (const WeaponClassDef& c = weaponClass(t.weaponClass); t.slot == SlotMainHand) {  // ADR-049
-            if (c.ranged) ImGui::TextUnformatted("Shoots arrows: hold to draw, let go to loose    Two-handed");  // ADR-050
+            if (c.loads) ImGui::TextUnformatted("Fires bolts (from the quiver): press to fire, it reloads after    Two-handed");  // ADR-052
+            else if (c.ranged) ImGui::TextUnformatted("Shoots arrows: hold to draw, let go to loose    Two-handed");  // ADR-050
             else ImGui::Text("Reach %g blocks%s", double(c.reach), c.twoHanded ? "    Two-handed (a shield goes on the back)" : "");
         }
     }
