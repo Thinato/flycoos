@@ -1,0 +1,16 @@
+description: Archery target: a straw butt with a red centre on a wooden stand, its face toward +z and -z; arrows stick in it
+foundation: Wood
+W = Wood
+H = Hay
+R = Hood
+
+layer
+W W
+layer
+W W
+layer
+HHH
+layer
+HRH
+layer
+HHH

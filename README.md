@@ -34,6 +34,7 @@ cmake --build --preset release    # build flycoos + core_test
 ctest --preset release            # run engine-core checks
 ./build/release/flycoos           # play the endless world (streamed around you; --seed picks it)
 ./build/release/flycoos --world worlds/story.flyw   # or the hand-made story world
+./build/release/flycoos --world worlds/arena.flyw   # or the combat test arena
 ```
 
 The `dev` preset (`cmake --preset dev`, etc.) builds Debug with AddressSanitizer, UBSan and the SDL
@@ -67,7 +68,7 @@ GPU debug layer.
 | Tab | Lock on to the enemy nearest the middle of the view (again: let go). With nothing in reach the camera swings behind you. Locked on, you walk facing the target and attack toward it (running and rolls go where you steer); the arrow keys, or a quick flick of the mouse, switch to the next enemy that way on screen. A kill moves the lock to the next enemy in reach |
 | F1 | Enter/leave the world editor (see below) |
 | F2 | With `--debug`: write a debug note. The game pauses; the note goes to `debug_notes/notes.jsonl` with the game's state (player, combat, nearby NPCs, quests, latest events) and a screenshot from that moment. Each note starts `"status": "open"` and becomes `"done"` with a `"resolution"` once handled; list the open ones with `jq -c 'select(.status != "done") \| [.id, .note]' debug_notes/notes.jsonl` |
-| F6 | Spawn an NPC 5 blocks in front of you, a bandit unless the debug window's Entities tab picks another kind (for trying out fights; it isn't saved) |
+| F6 | Spawn what the debug window's Entities tab sets (one bandit unless it picks another kind and count), 5 blocks in front of you or at a point from the world's middle (for trying out fights; it isn't saved) |
 | F5 / F9 | Save / load the game (the player save next to the world file, e.g. `worlds/story.flys`) |
 | Esc | Close the open windows, otherwise quit (asks twice with unsaved world edits); quitting saves the game (see below) |
 
@@ -330,6 +331,18 @@ behind a wall, never you): the bomb hits hard and breaks stances, the pot poison
 shield facing the burst blocks it; its dodge goes through. X readies the next kind, or click one in
 the Bags window.
 
+**The arena** (ADR-054, `--world worlds/arena.flyw`): a walled sand ring for trying out fights, at
+the world's middle, so (0, 0) in the debug window's spawn panel is its centre. You start near its
+south gate by a brazier (rest there) and three training dummies. Around the open middle, each zone
+a named point the spawn panel lists: **the Hill** (a plateau 5 up: a ramp, stairs and a cliff),
+**the Pillars** (columns, a wall that hides you, a kerb, crates), **the Pool** (a shallow end, a
+deep end and a plank bridge), **the Rough** (uneven ground), **the Narrows** (an L-shaped
+corridor two wide) and **the Targets** (archery butts that arrows stick in). Braziers on the
+diagonals are rest points too. Spawn, say, 3 wolves at the centre or 2 bandits and an archer on
+the Hill, and fight. `flycoos --build-arena worlds/arena.flyw` rebuilds it from code
+(`src/arena.cpp`), overwriting edits made in the editor; its pieces are prefabs you can place
+anywhere (`arena_pillar`, `brazier`, `banner`, `arena_gate`, `archery_target`, `crate_stack`).
+
 **Archers** (ADR-051): the **Bandit Archer** (at the bandit camp near the start, or F6) keeps 7 to
 16 blocks from you and shoots. Watch for the tell: it raises its bow and holds the draw, creaking,
 for most of a second, and stops turning just before it lets go, so a late sidestep or a roll beats
@@ -383,7 +396,7 @@ unless a text field has focus.
 | Player | The region you're in, health, the five attributes and what derives from them (max health, regen, attack damage and speed, combat state), armor K (damage reduction = armor / (armor + K x attacker level)) with the current armor and its reduction vs level 1 and 2, position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
 | Items | Give any item or the whole Iron armor set, see what's equipped and in the bag slots, empty the inventory |
 | Data | The loaded item definitions (save id, id, slot, attack, bag size, armor); Reload defs re-reads data/ and keeps the old ones on an error |
-| Entities | Every NPC: health and attributes, traits and temper, aggro/leash/chase numbers, angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers |
+| Entities | Spawn (ADR-054): how many of which kind, 5 blocks ahead or at x, z from the world's middle (the arena's centre), with a button per named point (the arena's zones), and remove them again. Every NPC: health and attributes, traits and temper, aggro/leash/chase numbers, angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | In the endless world, streaming: the window, columns at each stage, what the last frame installed and lit (and how long that took), a worker's time per column, the light budget per frame, the player's column's stage. Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
 | Audio | Mute, volume (all and per bus: effects, ambience, interface), random pitch and volume spread, hearing distance, the voices playing, the ambience's readings (water, trees, fire around) and its loops' volumes, the latest sounds, sounds with no takes, and a button per sound to play it (ADR-037) |
@@ -395,6 +408,7 @@ unless a text field has focus.
 | Flag | Meaning |
 |---|---|
 | `--world PATH` | World file: load it if it exists, otherwise generate a 1024² world from `--seed`; the editor saves here. The player save is the same path with `.flys`. Without it: the endless world (streamed around the player; no editor yet, not saved; the player save is `worlds/world.flys`) |
+| `--build-arena PATH` | Build the combat test arena (ADR-054) into world file PATH and exit, without a window |
 | `--new-game` | Don't load the player save on start (quitting still writes it) |
 | `--seed N` | World seed (default 1337) |
 | `--time T` | Start time of day, 0..1 (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset) |

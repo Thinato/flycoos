@@ -1,0 +1,20 @@
+description: Tall banner: a wooden pole flying a dark red cloth along x, a lantern on top; for walls and gates
+foundation: Wood
+W = Wood
+H = Hood
+L = Lantern
+
+layer
+W  
+layer
+W  
+layer
+WHH
+layer
+WHH
+layer
+WHH
+layer
+WH 
+layer
+L  

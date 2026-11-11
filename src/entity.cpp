@@ -134,6 +134,34 @@ Entity& spawnAhead(std::vector<Entity>& entities, const Grid& world, const Playe
     return entities.emplace_back(makeEntity(kind, seed, clearOfTerrain(world, at), player.pos));
 }
 
+// Where the i-th of a group stands from the first (spawn markers and spawnGroup): a golden-angle spiral.
+static glm::vec2 spiral(int i) {
+    float r = 1.6f * std::sqrt(float(i)), a = 2.4f * float(i);
+    return r * glm::vec2(std::cos(a), std::sin(a));
+}
+
+int spawnGroup(std::vector<Entity>& entities, const Grid& world, EntityKind kind, int count, glm::vec3 at,
+               glm::vec3 face, uint32_t seed) {
+    if (!(std::abs(at.x) < 1e6f && std::abs(at.y) < 1e6f && std::abs(at.z) < 1e6f)) return 0;  // NaN, far out: nowhere
+    int made = 0, y0 = int(std::floor(at.y));
+    for (int i = 0; i < std::min(count, kMaxSpawnedNpcs); ++i) {
+        glm::vec2 p = xz(at) + spiral(i);
+        glm::ivec2 c(glm::floor(p));
+        // The standing place nearest `at`'s height (not a roof or a crown above it), else the column's top.
+        int feet = -1;
+        for (int k = 0; k < 9 && feet < 0; ++k) {
+            int y = y0 + (k % 2 ? (k + 1) / 2 : -k / 2);  // 0, +1, -1, +2, -2 ... +-4
+            auto b = [&](int dy) { return world.get({c.x, y + dy, c.y}); };
+            if (isOpaque(b(-1)) && !isOpaque(b(0)) && !isOpaque(b(1))) feet = y;
+        }
+        if (feet < 0) feet = groundTop(world, c.x, c.y) + 1;
+        if (feet <= 0) continue;
+        entities.push_back(makeEntity(kind, seed + uint32_t(i) * 0x9E3779B9u, {p.x, float(feet), p.y}, face));
+        ++made;
+    }
+    return made;
+}
+
 std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t seed) {
     std::vector<Entity> out;
     auto add = [&](EntityKind kind, glm::vec2 offset) {
@@ -167,7 +195,7 @@ static void spawnAt(std::vector<Entity>& out, const Grid& world, const Marker& m
     for (int i = 0; i < m.count; ++i) {
         if (!(slots >> i & 1)) continue;
         glm::vec3 pos = clearOfTerrain(world, m.pos);
-        glm::vec2 at = xz(m.pos) + (i ? 1.6f * std::sqrt(float(i)) * glm::vec2(std::cos(2.4f * float(i)), std::sin(2.4f * float(i))) : glm::vec2(0));
+        glm::vec2 at = xz(m.pos) + spiral(i);
         glm::ivec2 c(glm::floor(at));
         for (int y = int(m.pos.y) + 3; i && y > int(m.pos.y) - 4; --y) {
             auto block = [&](int dy) { return world.get({c.x, y + dy, c.y}); };

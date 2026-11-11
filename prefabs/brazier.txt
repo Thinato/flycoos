@@ -1,0 +1,14 @@
+description: Iron brazier on a stone foot with embers in its bowl at waist height; rest by it like a campfire (ADR-047)
+foundation: Cobble
+C = Cobble
+I = Iron
+E = Ember
+
+layer
+ C 
+CCC
+ C 
+layer
+I I
+ E 
+I I

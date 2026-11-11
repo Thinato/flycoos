@@ -37,6 +37,20 @@ struct DebugActions {
 enum class NoteAction { None, Save, Cancel };
 NoteAction noteWindow(char* text, size_t size, bool focus);
 
+// What the debug window's Entities tab and F6 spawn (ADR-054): `count` of `kind`, 5 blocks ahead of
+// the player or at `point`, x, z from the world's middle (worldMiddle: the arena's centre).
+// A bigger group stands a little further ahead, so none lands behind the player.
+struct SpawnSettings {
+    EntityKind kind = EntityKind::Bandit;
+    int count = 1;
+    bool atPoint = false;
+    glm::vec2 point{0};
+    int made = -1;  // how many the last spawn made (-1: none yet)
+};
+// Spawns them (spawnGroup) facing the player, near its height ahead, else on the ground under any
+// trees at the point; records and returns how many.
+int spawnNpcs(Session& session, SpawnSettings& s, uint32_t seed);
+
 // Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Progression, Items, Entities, Quests, Data, Camera, World, Save,
 // Audio, Stats.
 // Also owns the ImGui frame the in-game HUD draws into.
@@ -63,8 +77,8 @@ public:
     const char* region = nullptr;  // the name of the region the player is in (main sets it each frame)
     const Stream* stream = nullptr;  // the endless world's, else null (main sets it)
     SDL_Gamepad* gamepad = nullptr;  // the controller playing, else null (main sets it)
-    EntityKind spawnKind = EntityKind::Bandit;
-    const LockOn* lock = nullptr;  // the player's lock-on (main sets it)  // what F6 and the Entities tab spawn in front of the player
+    SpawnSettings spawn;           // what F6 and the Entities tab spawn, and where
+    const LockOn* lock = nullptr;  // the player's lock-on (main sets it)
     int ticks = 0;                 // sim ticks this frame, and how far into the next one it's drawn (main sets them)
     float tickAlpha = 0;
     // The Save tab (main sets them): the player save's path, the last save or load's result, and the

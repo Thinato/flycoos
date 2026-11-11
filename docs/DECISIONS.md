@@ -2497,3 +2497,71 @@
     save made before a kind was added has none of it until the next rest.
   - **Later:** NPC throwers (a bandit's fire pot, through `strikePlayer`); frost pots and other kinds
     are data; elemental damage with magic; a lingering cloud; throwables as stackable items.
+
+## ADR-054: The arena: a combat test world, and spawning groups
+
+- **Status:** accepted (2026-11-11)
+- **Context:**
+  - Trying out a fight meant finding a fitting place in the endless or story world and pressing F6
+    once per NPC, one kind at a time, always 5 blocks ahead. Mechanics that depend on terrain (high
+    ground, cover from arrows and bursts, water, footing, corridors) had no fixed place to test them,
+    and the review pages had no repeatable stage.
+  - The user asked for a combat debug world, "arena", with different terrain, and spawning by
+    count at points measured from its middle ("spawn 3 of Wolf at 0, 0").
+- **Decision:**
+  - **`worlds/arena.flyw`, built by code** (`src/arena.cpp`, `buildArena`), so it can be rebuilt
+    and is tested: `flycoos --build-arena PATH` builds it without a window and saves it. A 1024²
+    world file like the others (the editor edits it; rebuilding overwrites edits). Centred on
+    `worldMiddle` (a world file's centre corner (512, 512), the endless world's origin).
+  - **The ring:** a sand floor 112 across with a clay duel ring and (0, 0) marked, a wall 7 high
+    (a walkway on top, too high to climb out), nine tiers of stands with plank seats, an outer brick
+    wall with merlons, two gates with iron bars; outside, a flat grass plain.
+  - **Zones,** each with a named point (poi marker) a radius around it: the Hill (a plateau 5 up, a
+    ramp a block every two, stairs a block every one, a cliff), the Pillars (five columns 7 high, a
+    wall 3 high that hides you, a kerb 1 high, crates), the Pool (a shallow end a block deep, a deep
+    end four, a plank bridge a block wide on posts), the Rough (bumps 1 and 2 high), the Narrows (a
+    L-shaped corridor 2 wide between walls 4 high) and the Targets. The player spawn is at the south
+    gate by a brazier with three training dummies (a spawn marker); a region names the arena.
+  - **Its pieces are prefabs** (structure files, so the editor can place them anywhere, and they're
+    instances in the arena it can move): `arena_pillar`, `brazier` (embers at waist height: a rest
+    point, ADR-047; five in the arena), `banner` (eight on the walkway), `arena_gate`,
+    `archery_target` (hay, arrows stick in it), `crate_stack`.
+  - **Spawning groups** (`spawnGroup`, entity.h): `count` of a kind (at most 256) around a point,
+    the first on it and the others on the spiral spawn markers use, each in its column's standing
+    place nearest the point's height (within 4 blocks: under a roof or a crown, not on it; else the
+    column's top), facing the player; columns without ground (the endless world's unloaded ones)
+    and non-finite points spawn none. Not from a marker, like F6's: not saved, not respawned. The
+    debug window's Entities tab sets the kind, a count (1 to 16) and where: ahead (5 blocks, a
+    bigger group a little further, at the player's height), or at x, z from the world's middle
+    (on the ground under any trees there), typed or set by a button per named point (the arena's
+    zones) or "Here"; F6 spawns the same, and both say when fewer landed than asked.
+- **Alternatives considered:**
+  - Building the arena by hand with the editor or the MCP tools: not repeatable or testable, and
+    every layout change would be manual. Code first; hand edits on top remain possible.
+  - A small world file (e.g. 256²): world files are 1024² (the grid and the renderer assume it);
+    the plain around compresses to little (the file is 120 KB).
+  - Generated terrain around the arena: scenery nobody fights in, and a seed's hills would sit
+    against the outer wall unevenly. A plain is enough for a test world.
+  - A `spawn` command on the MCP server: the command server edits the world, not the sim; captures
+    stage fights with the same `spawnGroup`. Later if needed.
+- **Consequences:**
+  - Combat reviews get a fixed, varied stage; the new prefabs give the story world arena-like
+    pieces. Nothing in the endless or story worlds changes.
+  - **Tested** (`arena()` in core_test): `worldMiddle` for fixed and streamed grids; the shipped
+    prefabs load without errors, the arena's among them; the build fails cleanly without them; the instance and marker counts, every
+    marker valid; the middle flat with its marks, the wall too high, the stands rising, the plain
+    outside, nothing just inside the wall and every banner's pole and cloth on the walkway, the
+    gates' bars (too close to walk through) and passages, each zone's heights and blocks (ramp, stairs, cliff,
+    water depths, bridge, wall, kerb, columns, the corridor clear through, the bumps' heights); the
+    player starting at the gate able to rest, the three dummies; the world file round trip; groups
+    on the point and the spiral, apart, facing the player, each its own seed, on the hill's top,
+    under a canopy (on it only when asked at its height), on the top when asked far above, none
+    without ground or at a non-finite point, at most 256, the same for the same seed.
+    Mutation-checked: each of 22 rules broken alone fails a test (a 23rd, a banner's centre a cell
+    off its pole, still leaves them on the walkway, which is what the check asks).
+  - **Limits:** rebuilding overwrites hand edits; the spawn panel's points are relative to the world's
+    middle in every world (only the arena is laid out around it); a group's spiral can put one on
+    a crate or behind a wall it reaches; no compass in game, so the zones are told apart by
+    their names.
+  - **Later:** a `spawn` command for the MCP bridge; saved spawn presets ("3 wolves at the centre");
+    sides (NPCs against NPCs); more zones as mechanics need them (ice, a ledge over a drop, doors).

@@ -1,0 +1,48 @@
+description: Stone arena column: a 3x3 shaft on a plinth under a slate capital, 7 high; cover that breaks line of sight
+foundation: Cobble
+C = Cobble
+S = Stone
+B = Slate
+
+layer
+CCCCC
+CCCCC
+CCCCC
+CCCCC
+CCCCC
+layer
+
+ SSS 
+ SSS 
+ SSS 
+
+layer
+
+ SSS 
+ SSS 
+ SSS 
+
+layer
+
+ SSS 
+ SSS 
+ SSS 
+
+layer
+
+ SSS 
+ SSS 
+ SSS 
+
+layer
+
+ SSS 
+ SSS 
+ SSS 
+
+layer
+BBBBB
+BBBBB
+BBBBB
+BBBBB
+BBBBB

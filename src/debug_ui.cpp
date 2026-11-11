@@ -16,6 +16,7 @@
 #include <imgui_impl_sdlgpu3.h>
 
 #include "defs.h"
+#include "edit.h"
 #include "hud.h"
 #include "melee.h"
 #include "projectile.h"
@@ -568,7 +569,18 @@ static void playerTab(Session& session, float& armorK, DebugActions& actions, co
     if (ImGui::Button("Reset movement")) t = PlayerTuning{};
 }
 
-static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spawnKind) {
+int spawnNpcs(Session& session, SpawnSettings& s, uint32_t seed) {
+    const Player& p = session.player;
+    glm::vec3 at = p.pos + (5 + 1.6f * std::sqrt(float(std::max(s.count - 1, 0)))) * glm::vec3(std::sin(p.yaw), 0, std::cos(p.yaw));
+    if (s.atPoint) {
+        glm::vec2 c = glm::vec2(worldMiddle(session.world)) + s.point;
+        at = {c.x, 0, c.y};
+        if (std::abs(c.x) < 1e6f && std::abs(c.y) < 1e6f) at.y = float(groundUnderTrees(session.world, int(std::floor(c.x)), int(std::floor(c.y))) + 1);
+    }
+    return s.made = spawnGroup(session.entities, session.world, s.kind, s.count, at, p.pos, seed);
+}
+
+static void entitiesTab(Session& session, DebugActions& actions, SpawnSettings& spawn) {
     std::vector<Entity>& entities = session.entities;
     const Player& player = session.player;
     // Hits from here count for quests as the player's would.
@@ -576,21 +588,50 @@ static void entitiesTab(Session& session, DebugActions& actions, EntityKind& spa
         if (damage(e, amount, false, kind) && !e.body.alive()) session.events.push_back(Killed{e.kind, e.spawn.id});
     };
     if (ImGui::Button("Respawn NPCs at their markers")) actions.respawnEntities = true;
+    ImGui::SeparatorText("Spawn (ADR-054)");
     const std::vector<std::string>& kinds = defs().creatureIds;
-    if (size_t(spawnKind) >= kinds.size()) spawnKind = EntityKind(0);
+    if (size_t(spawn.kind) >= kinds.size()) spawn.kind = EntityKind(0);
+    ImGui::SetNextItemWidth(70);
+    ImGui::SliderInt("of", &spawn.count, 1, 16, "%d", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SameLine();
     ImGui::SetNextItemWidth(160);
-    if (ImGui::BeginCombo("##spawnKind", kinds.empty() ? "-" : kinds[size_t(spawnKind)].c_str())) {
+    if (ImGui::BeginCombo("##spawnKind", kinds.empty() ? "-" : kinds[size_t(spawn.kind)].c_str())) {
         for (size_t k = 0; k < kinds.size(); ++k)
-            if (ImGui::Selectable(kinds[k].c_str(), size_t(spawnKind) == k)) spawnKind = EntityKind(k);
+            if (ImGui::Selectable(kinds[k].c_str(), size_t(spawn.kind) == k)) spawn.kind = EntityKind(k);
         ImGui::EndCombo();
     }
+    if (ImGui::RadioButton("ahead", !spawn.atPoint)) spawn.atPoint = false;
+    ImGui::SetItemTooltip("5 blocks in front of you (a bigger group a little further).");
     ImGui::SameLine();
+    if (ImGui::RadioButton("at x, z", spawn.atPoint)) spawn.atPoint = true;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120);
+    if (ImGui::DragFloat2("##spawnPoint", &spawn.point.x, 0.25f, -500, 500, "%.1f", ImGuiSliderFlags_AlwaysClamp)) spawn.atPoint = true;
+    ImGui::SetItemTooltip("From the world's middle: (0, 0) is the arena's centre (worlds/arena.flyw). Drag, or double-click to type.");
+    glm::vec2 mid(worldMiddle(session.world));
+    ImGui::TextDisabled("You: %.0f, %.0f", player.pos.x - mid.x, player.pos.z - mid.y);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Here")) spawn.point = glm::round(glm::vec2(player.pos.x, player.pos.z) - mid), spawn.atPoint = true;
+    int places = 0;  // the world's named points (the arena's zones): a click spawns there
+    for (const Marker& m : session.markers) {
+        if (m.kind != MarkerKind::Poi) continue;
+        if (places++ % 4) ImGui::SameLine();
+        ImGui::PushID(int(m.id));
+        if (ImGui::SmallButton(m.name.c_str())) spawn.point = glm::vec2(m.pos.x, m.pos.z) - mid, spawn.atPoint = true;
+        ImGui::PopID();
+    }
     ImGui::BeginDisabled(kinds.empty());
-    if (ImGui::Button("Spawn 5 blocks ahead (F6)")) spawnAhead(entities, session.world, player, spawnKind, SDL_rand_bits());
+    if (ImGui::Button("Spawn (F6)")) spawnNpcs(session, spawn, SDL_rand_bits());
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Remove spawned")) std::erase_if(entities, [](const Entity& e) { return !e.spawn.id; });
     ImGui::SetItemTooltip("The NPCs spawned here or with F6 (not from a marker). They don't come back with the game either.");
+    if (spawn.made >= 0) {
+        ImGui::SameLine();
+        if (spawn.made < spawn.count) ImGui::TextColored({1, 0.6f, 0.3f, 1}, "spawned %d of %d (no ground there)", spawn.made, spawn.count);
+        else ImGui::TextDisabled("spawned %d", spawn.made);
+    }
+    ImGui::Separator();
     if (ImGui::TreeNode("Fighting AI: tokens, strings, answers (ADR-042, ADR-043)")) {
         AiTuning& a = gAi;
         ImGui::SliderInt("Attackers at once", &a.attackers, 1, 6);
@@ -1025,7 +1066,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
         if (ImGui::BeginTabItem("Player")) { playerTab(session, session.armorK, actions, region); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Progression")) { progressionTab(player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Items")) { itemsTab(player); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Entities")) { entitiesTab(session, actions, spawnKind); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Entities")) { entitiesTab(session, actions, spawn); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Quests")) { questsTab(session); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Data")) { dataTab(defsStatus_, player); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { cameraTab(game, gamepad, lock, session); ImGui::EndTabItem(); }

@@ -179,10 +179,17 @@ constexpr float kCorpseLinger = 3;  // seconds an empty corpse of an inactive sp
 // spawn). The bandit's camp is far enough away that they can't see `near`.
 std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t seed);
 // A fresh `kind` `distance` blocks in front of `player` (the way its body faces), lifted out of the
-// terrain and facing it; for trying out fights (debug window, F6). Not from a marker (spawn.id 0):
+// terrain and facing it; for trying out fights (tests; the debug window uses spawnGroup). Not from a marker (spawn.id 0):
 // marker syncs and the player save leave it alone, and it doesn't come back with the game.
 Entity& spawnAhead(std::vector<Entity>& entities, const Grid& world, const Player& player, EntityKind kind,
                    uint32_t seed, float distance = 5);
+// `count` (at most kMaxSpawnedNpcs) fresh `kind`s around `at`: the first on its column, the others
+// on the spiral spawn markers use, each in the standing place of its column nearest at.y (within 4
+// blocks: on the ground under a roof or a crown, not on it), else on the column's highest opaque
+// voxel, facing `face`. Columns with no ground (the endless world's unloaded ones) are skipped, and a
+// non-finite or far-out `at` spawns none. Not from a marker, like spawnAhead's. Returns how many.
+int spawnGroup(std::vector<Entity>& entities, const Grid& world, EntityKind kind, int count, glm::vec3 at,
+               glm::vec3 face, uint32_t seed);
 // The NPCs of every spawn marker. Entities whose marker is gone or changed (position, radius, kind
 // or count) are replaced by fresh ones at the marker; the rest are left alone (a new name or new
 // lines only update their copy of the marker), so it's cheap to call after anything that may have

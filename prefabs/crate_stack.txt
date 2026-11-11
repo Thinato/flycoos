@@ -1,0 +1,10 @@
+description: Stacked wooden crates, 2x2 and two high: cover too high to step or jump onto
+P = Planks
+D = DarkPlanks
+
+layer
+DP
+PD
+layer
+PD
+DP

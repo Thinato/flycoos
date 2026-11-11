@@ -1,0 +1,32 @@
+description: Arena gate set into a wall: a brick arch, an iron portcullis and a dark passage behind it; front toward +z
+B = Brick
+I = Iron
+
+layer
+B.....B
+B.....B
+BI.I.IB
+layer
+B.....B
+B.....B
+BIIIIIB
+layer
+B.....B
+B.....B
+BIIIIIB
+layer
+B.....B
+B.....B
+BI.I.IB
+layer
+B.....B
+B.....B
+BI.I.IB
+layer
+B.....B
+B.....B
+BIIIIIB
+layer
+BBBBBBB
+BBBBBBB
+BBBBBBB

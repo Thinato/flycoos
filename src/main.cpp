@@ -15,6 +15,7 @@
 #include <SDL3/SDL.h>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "arena.h"
 #include "audio.h"
 #include "commands.h"
 #include "debug_ui.h"
@@ -59,6 +60,7 @@ struct Speaker {
 struct Options {
     uint32_t seed = 1337;
     const char* world = nullptr;  // --world: load this file if it exists, else generate; the editor saves here
+    const char* buildArena = nullptr;  // --build-arena: build the arena (arena.h) into this world file and exit
     int frames = 0;  // > 0: benchmark mode, exit after N frames and print stats
     float timeOfDay = 0.3f;
     const char* screenshot = nullptr;
@@ -76,7 +78,8 @@ struct Options {
     std::println(stderr, "usage: flycoos [--world PATH] [--new-game] [--seed N] [--time 0..1] [--debug] [--view shaded|quads|chunks|ao|normals|light|wire]\n"
                          "               [--patches STRENGTH (colour patches, 0 flat palette, default 1)]\n"
                          "               [--port N | --no-serve]\n"
-                         "               [--frames N [--screenshot out.bmp] [--look YAW PITCH] [--fly BLOCKS_PER_SECOND]]");
+                         "               [--frames N [--screenshot out.bmp] [--look YAW PITCH] [--fly BLOCKS_PER_SECOND]]\n"
+                         "       flycoos --build-arena PATH   (build the combat test arena into world file PATH and exit)");
     std::exit(2);
 }
 
@@ -87,6 +90,7 @@ static Options parseArgs(int argc, char** argv) {
         bool hasValue = i + 1 < argc;
         if (a == "--seed" && hasValue) o.seed = uint32_t(std::strtoul(argv[++i], nullptr, 10));
         else if (a == "--world" && hasValue) o.world = argv[++i];
+        else if (a == "--build-arena" && hasValue) o.buildArena = argv[++i];
         else if (a == "--frames" && hasValue) o.frames = std::max(0, std::atoi(argv[++i]));
         else if (a == "--time" && hasValue) {
             float t = std::strtof(argv[++i], nullptr);
@@ -483,7 +487,10 @@ static int run(SDL_Window* window, const Options& opt) {
                         noticeAt = SDL_GetTicksNS();
                     }
                 } else if (e.key.key == SDLK_F6 && !benchmark && !defs().creatureIds.empty()) {  // the debug window's Entities tab picks what
-                    spawnAhead(session.entities, world, player, ui.spawnKind, SDL_rand_bits());
+                    if (spawnNpcs(session, ui.spawn, SDL_rand_bits()) < ui.spawn.count) {
+                        notice = std::format("Spawned {} of {}: no ground there", ui.spawn.made, ui.spawn.count);
+                        noticeAt = SDL_GetTicksNS();
+                    }
                 } else if (e.key.key == SDLK_F9 && !benchmark) {
                     actions.loadGame = true;
                 } else if (e.key.key == SDLK_F2 && opt.debug && !benchmark && !noteOpen) {
@@ -1116,6 +1123,18 @@ int main(int argc, char** argv) {
     }
     for (const std::string& warning : loaded.warnings) std::println(stderr, "warning: {}", warning);
     setDefs(std::move(loaded));
+    if (opt.buildArena) {  // no window: build, save, done (the arena's spawn markers need the defs)
+        Grid g(kWorldSize);
+        std::vector<Instance> instances;
+        std::vector<Marker> markers;
+        PrefabLibrary lib = loadPrefabs("prefabs");
+        for (const std::string& e : lib.errors) std::println(stderr, "prefab {}", e);
+        std::string error = buildArena(g, lib, instances, markers);
+        if (error.empty()) error = saveWorld(opt.buildArena, g, opt.seed, instances, markers);
+        if (!error.empty()) std::println(stderr, "cannot build the arena: {}", error);
+        else std::println("arena: {} prefab instances, {} markers, saved to {}", instances.size(), markers.size(), opt.buildArena);
+        return error.empty() ? 0 : 1;
+    }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         std::println(stderr, "SDL_Init failed: {}", SDL_GetError());
         return 1;

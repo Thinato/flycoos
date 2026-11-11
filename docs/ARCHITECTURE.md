@@ -2,7 +2,7 @@
 
 Milestone 0 is about 1,200 lines of C++ (including tests) and 160 lines of MSL. It has two layers:
 
-- **`flycoos_core`** (static library: `world`, `story`, `mesher`, `model`, `player`, `entity`, `item`, `defs`, `edit`, `prefab`, `commands`, `session`, `save`, `quest`): pure CPU
+- **`flycoos_core`** (static library: `world`, `story`, `mesher`, `model`, `player`, `entity`, `item`, `defs`, `edit`, `prefab`, `commands`, `session`, `save`, `quest`, `arena`): pure CPU
   code with no GPU or SDL dependency, unit-tested by `tests/core_test.cpp`.
 - **`flycoos`** (executable: `main`, `renderer` + `shaders/world.metal`, `server`): platform, input,
   camera, GPU and the command server.
@@ -35,6 +35,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/story.h/.cpp` | Story data: `EntityKind` save ids (and the string ids of the ones code names), `Marker` kinds and caps (`checkMarker`, `takesLines`, `regionAt`), their file sections (`MARK`, `LINE`, `OWNR`, `TIME`), `activeAt` and `saveWorld`/`loadWorld` (the container plus markers) |
 | `src/edit.h/.cpp` | World edits: `EditOp` → `applyEdit` → dirty `Box` + undo record; `undoEdit`/`redoEdit` (voxels, prefab instances and markers); `putMarker`/`removeMarker`; `raycast` (voxel DDA); `groundTop` |
 | `src/prefab.h/.cpp` | Prefabs: the generated ones, the structure file parser and loader (`prefabs/*.txt`), `placePrefab`/`removePrefab`/`movePrefab` of instances, `replantTrees` |
+| `src/arena.h/.cpp` | The combat test arena (ADR-054): `buildArena` draws it around `worldMiddle` (world.h: a world file's centre, the endless world's origin) into any grid, places its prefabs as instances and writes its markers; `flycoos --build-arena PATH` saves it (`worlds/arena.flyw`). Group spawns are `spawnGroup` (entity.h), at points from the middle in the debug window |
 | `src/commands.h/.cpp` | Remote commands: JSON request → `EditOp`s (one undo step), `path`, `heights`, `inspect`, `map` (PNG), `catalog` (NPC kinds and materials for the MCP bridge); returns what needs the game (remesh box, save, screenshot camera, goto) as data |
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |

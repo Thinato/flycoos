@@ -265,6 +265,10 @@ void generateChunkColumn(Grid& g, glm::ivec2 chunk, uint32_t seed);
 // `jitterOrigin` (terrain passes 0; a prefab instance passes `at`, so moving it keeps its shape).
 void growRock(Grid& g, glm::ivec3 at, bool spire, float radius, int height, uint32_t seed, glm::ivec3 jitterOrigin);
 
+// The world's middle (x, z): a world file's center column corner (512, 512), the endless world's origin.
+// The arena (arena.h) is built around it, and the debug window spawns at points relative to it.
+inline glm::ivec2 worldMiddle(const Grid& g) { return g.streaming() ? glm::ivec2(0) : glm::ivec2(g.lo.x, g.lo.z) + glm::ivec2(g.size.x, g.size.z) / 2; }
+
 // Feet position on the grass column nearest `near` (default: the world center).
 glm::vec3 findSpawn(const Grid& world);
 glm::vec3 findSpawn(const Grid& world, glm::ivec2 near);

@@ -23,6 +23,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "arena.h"
 #include "audio.h"
 #include "commands.h"
 #include "defs.h"
@@ -9401,6 +9402,146 @@ static void crossbows() {
 }
 
 // Throwables (ADR-053): a pouch per kind, a left-hand throw, knives that stick and bleed, bombs and pots that burst.
+// The combat test arena (ADR-054): built around the world's middle, its zones, prefabs and markers,
+// a rest by the start, and spawning groups at points from the middle.
+static void arena() {
+    namespace fs = std::filesystem;
+    CHECK(worldMiddle(Grid({64, 32, 64})) == glm::ivec2(32, 32) && worldMiddle(Grid({64, 32, 64}, {-32, 0, 10})) == glm::ivec2(0, 42));
+    CHECK(worldMiddle(Grid::streamed({256, 32, 256}, {-512, 0, 96})) == glm::ivec2(0));  // the endless world's origin, wherever it streams
+    PrefabLibrary lib = loadPrefabs(fs::path(FLYCOOS_SOURCE_DIR) / "prefabs");
+    CHECK(lib.errors.empty());
+    for (const char* name : {"arena_pillar", "brazier", "banner", "arena_gate", "archery_target", "crate_stack"}) CHECK(lib.find(name));
+    Session s{.world = Grid({192, 96, 192}), .seed = 1337};
+    Grid& g = s.world;
+    std::vector<Instance> instances;
+    CHECK(buildArena(g, PrefabLibrary{}, instances, s.markers).starts_with("no prefab"));
+    CHECK(buildArena(g, lib, instances, s.markers).empty());
+    constexpr int F = kArenaFloor, R = kArenaRadius;
+    const glm::ivec2 mid = worldMiddle(g);  // (96, 96)
+    auto top = [&](int x, int z) { return groundTop(g, mid.x + x, mid.y + z); };
+    auto at = [&](int x, int y, int z) { return g.get({mid.x + x, y, mid.y + z}); };
+    CHECK(instances.size() == 26);  // 2 gates, 5 pillars, 3 crates, 3 targets, 5 braziers, 8 banners
+    CHECK(s.markers.size() == 10);
+    for (size_t i = 0; i < s.markers.size(); ++i) {
+        CHECK(s.markers[i].id == i + 1 && !checkMarker(g, s.markers[i]));
+        if (const char* why = checkMarker(g, s.markers[i])) std::println(stderr, "  marker {}: {}", s.markers[i].name, why);
+    }
+    CHECK(std::ranges::count(s.markers, MarkerKind::Poi, &Marker::kind) == 7);
+    // The open middle: sand, the (0, 0) mark and the duel ring in clay, flat out to the zones.
+    CHECK(top(0, 0) == F && at(0, F, 0) == Clay && at(-1, F, -1) == Clay && at(1, F, 0) == Sand && at(0, F + 1, 0) == Air);
+    CHECK(at(11, F, 0) == Clay && at(-12, F, 0) == Clay && at(10, F, 0) == Sand);  // d 11.5..12.5 from the middle corner
+    for (int z = -16; z <= 16; ++z)
+        for (int x = -16; x <= 16; ++x) CHECK(top(x, z) == F);
+    // The wall (walkway on top) is too high to climb out of; outside, the grass plain.
+    CHECK(top(40, 40) == F + 7 && at(40, F + 7, 40) == Slate);
+    CHECK(top(-41, -41) == F + 7 && top(-48, -48) == F + 12);  // a tier of the stands
+    CHECK(top(90, 90) == F && at(90, F, 90) == Grass && at(90, F - 1, 90) == Dirt && at(90, 0, 90) == Stone);
+    // Nothing stands just inside the wall (the banners are all on the walkway), and every banner's
+    // pole and cloth are up there: eight poles on the walkway, none on the floor.
+    int poles = 0;
+    for (int z = -60; z < 60; ++z)
+        for (int x = -60; x < 60; ++x) {
+            float d = std::hypot(float(x) + 0.5f, float(z) + 0.5f);
+            if (d >= 54 && d < R) CHECK(top(x, z) == F);
+            for (int y = F + 1; y <= F + 14 && d >= 50; ++y) {  // (the targets' legs and centres are well inside)
+                if (at(x, y, z) == Wood && at(x, y - 1, z) != Wood) {
+                    CHECK(y == F + 8 && d >= R);
+                    poles += y == F + 8;
+                }
+                if (at(x, y, z) == Hood) CHECK(d >= R && d < R + 2);
+            }
+        }
+    CHECK(poles == 8);
+    // The gates: iron bars in the wall's face, the passage behind open.
+    CHECK(at(0, F + 1, -57) == Iron && at(1, F + 1, -57) == Air && at(1, F + 1, -58) == Air && at(-3, F + 1, -57) == Brick);
+    for (int x = -2; x <= 2; ++x) CHECK(at(x, F + 2, -57) == Iron);  // a cross bar: the gaps below are too low to walk in
+    CHECK(at(0, F + 1, 56) == Iron && at(1, F + 1, 56) == Air && at(0, F + 1, 57) == Air);
+    // The Hill: the plateau 5 up, the ramp a block every two, the stairs a block every one, a cliff.
+    CHECK(top(0, 40) == F + 5 && at(0, F + 5, 40) == Grass && top(0, 24) == F + 1 && top(0, 26) == F + 2 && top(0, 32) == F + 5);
+    CHECK(top(11, 40) == F + 4 && top(14, 40) == F + 1 && top(-11, 40) == F);
+    // The Pool: a shallow end a block deep, a deep end four deep, a bridge a block above the water.
+    CHECK(at(-28, F, -6) == Water && top(-28, -6) == F - 1 && at(-28, F - 1, -6) == Sand);
+    CHECK(at(-40, F - 3, -6) == Water && top(-40, -6) == F - 4);
+    CHECK(top(-40, 0) == F + 1 && at(-40, F + 1, 0) == DarkPlanks && at(-38, F - 2, 0) == Wood);
+    // The Pillars: a wall three high, a kerb one high, columns 7 high.
+    CHECK(top(29, 0) == F + 3 && top(42, 0) == F + 1 && top(34, 0) == F + 7);
+    // The Narrows: the corridor clear through between its walls.
+    for (int z = 19; z <= 35; ++z) CHECK(at(-28, F + 1, z) == Air && at(-27, F + 4, z) == Air);
+    for (int x = -28; x <= -18; ++x) CHECK(at(x, F + 2, 34) == Air);
+    CHECK(top(-29, 25) == F + 4 && top(-26, 25) == F + 4 && top(-22, 33) == F + 4 && top(-22, 36) == F + 4 && top(-23, 25) == F);
+    CHECK(top(-28, 18) == F && top(-17, 34) == F);  // the way in and the way out
+    // The Rough: bumps of 1 and 2 among the flat, never more.
+    int bumps[3] = {};
+    for (int z = 18; z <= 34; ++z)
+        for (int x = 18; x <= 34; ++x) {
+            CHECK(top(x, z) >= F && top(x, z) <= F + 2);
+            ++bumps[std::clamp(top(x, z) - F, 0, 2)];
+        }
+    CHECK(bumps[0] > 30 && bumps[1] > 30 && bumps[2] > 30);
+    // The start: the player spawns there, can rest by the brazier, three dummies stand by.
+    startSession(s);
+    const glm::vec3 start = s.player.pos;
+    CHECK(std::abs(start.x - float(mid.x) - 0.5f) < 0.01f && std::abs(start.z - float(mid.y) + 39.5f) < 0.01f && start.y == float(F + 1));
+    s.player.hitTime = 99;
+    CHECK(canRest(s));
+    CHECK(std::ranges::count(s.entities, EntityKind::TrainingDummy, &Entity::kind) == 3);
+    // The world file round trip keeps it all.
+    std::string path = (fs::temp_directory_path() / "flycoos_arena_test.flyw").string();
+    CHECK(saveWorld(path.c_str(), g, 1337, instances, s.markers).empty());
+    Grid back({192, 96, 192});
+    uint32_t seed = 0;
+    std::vector<Instance> list;
+    std::optional<std::vector<Marker>> marks;
+    CHECK(loadWorld(path.c_str(), back, seed, list, marks).empty());
+    CHECK(back.cells == g.cells && list.size() == instances.size() && seed == 1337);
+    CHECK(marks && *marks == s.markers);
+    fs::remove(path);
+
+    // Spawning groups: around a point from the middle, standing on the ground, apart, facing the player.
+    std::vector<Entity> group;
+    glm::vec2 m(mid);
+    CHECK(spawnGroup(group, g, EntityKind::Wolf, 3, {m.x, F + 1, m.y}, start, 5) == 3);
+    for (size_t i = 0; i < group.size(); ++i) {
+        CHECK(group[i].kind == EntityKind::Wolf && group[i].spawn.id == 0 && group[i].body.pos.y == float(F + 1));
+        for (size_t j = 0; j < i; ++j) CHECK(glm::distance(group[i].body.pos, group[j].body.pos) > 1.5f);
+        CHECK(glm::distance(glm::vec2(group[i].body.pos.x, group[i].body.pos.z), m) < 3);
+        glm::vec2 toPlayer = glm::normalize(glm::vec2(start.x, start.z) - glm::vec2(group[i].body.pos.x, group[i].body.pos.z));
+        CHECK(glm::dot(toPlayer, glm::vec2(std::sin(group[i].body.yaw), std::cos(group[i].body.yaw))) > 0.99f);
+    }
+    CHECK(glm::vec2(group[0].body.pos.x, group[0].body.pos.z) == m);  // the first right on the point
+    CHECK(spawnGroup(group, g, EntityKind::Bandit, 16, {m.x, F + 6, m.y + 40}, start, 6) == 16 && group.size() == 19);
+    for (size_t i = 3; i < group.size(); ++i) CHECK(group[i].kind == EntityKind::Bandit && group[i].body.pos.y == float(F + 6));  // on the hill
+    std::set<float> phases;  // each its own seed (its breathing, its rolls): not all the same bandit
+    for (size_t i = 3; i < group.size(); ++i) phases.insert(group[i].body.breathPhase);
+    CHECK(phases.size() == 16);
+    Grid empty({64, 32, 64});  // no ground (the endless world's unloaded columns): none
+    CHECK(spawnGroup(group, empty, EntityKind::Wolf, 4, {32, 10, 32}, start, 5) == 0 && group.size() == 19);
+    float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK(spawnGroup(group, g, EntityKind::Wolf, 4, {nan, F + 1, m.y}, start, 5) == 0 && spawnGroup(group, g, EntityKind::Wolf, 4, {1e10f, F + 1, 0}, start, 5) == 0);
+    CHECK(spawnGroup(group, g, EntityKind::Wolf, 0, {m.x, F + 1, m.y}, start, 5) == 0 && spawnGroup(group, g, EntityKind::Wolf, -3, {m.x, F + 1, m.y}, start, 5) == 0);
+    {  // Under a roof (a canopy, a house): on the ground at the height asked for, not on top of it; a
+       // height far from any ground: on the column's top. At most kMaxSpawnedNpcs.
+        std::vector<Entity> under;
+        for (int z = -26; z <= -14; ++z)
+            for (int x = -6; x <= 6; ++x) g.set({mid.x + x, F + 6, mid.y + z}, Leaves);
+        CHECK(spawnGroup(under, g, EntityKind::Bandit, 6, {m.x, F + 1, m.y - 20}, start, 8) == 6);
+        for (const Entity& e : under) CHECK(e.body.pos.y == float(F + 1));
+        under.clear();
+        CHECK(spawnGroup(under, g, EntityKind::Bandit, 6, {m.x, F + 7, m.y - 20}, start, 8) == 6);
+        for (const Entity& e : under) CHECK(e.body.pos.y == float(F + 7));  // asked on the canopy: on it
+        under.clear();
+        CHECK(spawnGroup(under, g, EntityKind::Bandit, 2, {m.x, F + 30, m.y}, start, 8) == 2 && under[0].body.pos.y == float(F + 1));
+        under.clear();
+        CHECK(spawnGroup(under, g, EntityKind::Bandit, 100000, {m.x, F + 1, m.y}, start, 8) == kMaxSpawnedNpcs);
+        for (int z = -26; z <= -14; ++z)
+            for (int x = -6; x <= 6; ++x) g.set({mid.x + x, F + 6, mid.y + z}, Air);
+    }
+    // Deterministic: the same seed, the same NPCs in the same places.
+    std::vector<Entity> again;
+    spawnGroup(again, g, EntityKind::Wolf, 3, {m.x, F + 1, m.y}, start, 5);
+    for (size_t i = 0; i < again.size(); ++i) CHECK(again[i].body.breathPhase == group[i].body.breathPhase && again[i].body.pos == group[i].body.pos);
+}
+
 static void throwables() {
     const Defs& d = defs();
     const ItemId knife = d.itemById.at("throwing_knife"), bomb = d.itemById.at("clay_bomb"), pot = d.itemById.at("poison_pot"),
@@ -9749,6 +9890,7 @@ int main() {
     archers();
     crossbows();
     throwables();
+    arena();
     sounds();
     combat();
     fighters();
