@@ -287,7 +287,7 @@ void answer(Entity& e, const Grid& g, const Player& target, glm::vec2 dir, float
     const EntityType& t = e.type();
     glm::vec2 fwd{std::sin(target.yaw), std::cos(target.yaw)};
     const WeaponClassDef& w = weaponClass(classOf(target.weapon()));  // a great weapon reaches farther and wider (ADR-049)
-    bool threat = target.alive() && target.punching() && target.hitPending && !codeMove(target.move) && target.move != Move::Reload &&  // (a reload hits nothing, ADR-052)
+    bool threat = target.alive() && target.punching() && target.hitPending && (!codeMove(target.move) || target.move == Move::Throw) && target.move != Move::Reload &&  // (a reload hits nothing, ADR-052)
                   dist < std::max(kPunchReach, w.reach) + 1.5f && glm::dot(-dir, fwd) > std::min(0.3f, w.arcCos) &&
                   std::abs(target.pos.y - e.body.pos.y) < kHeight;
     if (!threat) e.picked = false;
@@ -295,8 +295,8 @@ void answer(Entity& e, const Grid& g, const Player& target, glm::vec2 dir, float
         e.picked = true;
         float r = rand01(e.rng);
         e.answer = r < t.guard ? Answer::Guard : r < t.guard + t.parry ? Answer::Parry : r < t.guard + t.parry + t.dodge ? Answer::Dodge : Answer::None;
-        if (e.answer == Answer::Parry && (spec(target).heavy || target.move == Move::Riposte || target.move == Move::Shot))
-            e.answer = Answer::Guard;  // (an arrow can't be parried: ADR-050)
+        if (e.answer == Answer::Parry && (spec(target).heavy || target.move == Move::Riposte || target.move == Move::Shot || target.move == Move::Throw))
+            e.answer = Answer::Guard;  // (an arrow can't be parried: ADR-050, nor a throwable: ADR-053)
         e.react = gAi.reactFrom + (gAi.reactTo - gAi.reactFrom) * rand01(e.rng);
         e.aimOff = gAi.aimError * (2 * rand01(e.rng) - 1);
     }
@@ -840,13 +840,14 @@ int afflict(Player& b, Status s, std::string_view source) {
     return 0;
 }
 
-std::array<int, size_t(Status::Count)> buildUp(const Combatant& attacker, Player& b, float share, std::string_view source) {
+std::array<int, size_t(Status::Count)> buildUp(const Combatant& attacker, Player& b, float share, std::string_view source,
+                                               const std::array<float, size_t(Status::Count)>* own) {
     std::array<int, size_t(Status::Count)> burst{};
     if (share <= 0 || !b.alive()) return burst;
     StatSheet a = sheet(attacker, skillOf(attacker.swingWeapon)), d = sheet(b);
     for (size_t i = 0; i < burst.size(); ++i) {
         Status s = Status(i);
-        float add = a[buildupStat(s)] * share;
+        float add = (own ? (*own)[i] : a[buildupStat(s)]) * share;
         if (add <= 0 || (s != Status::Bleed && b.effect(s == Status::Poison ? Effect::Poisoned : Effect::Frostbitten))) continue;
         if ((b.buildup[i] += add) >= d[resistStat(s)]) burst[i] = afflict(b, s, source);
     }
@@ -865,6 +866,7 @@ void rest(Player& b) {
     StatSheet s = sheet(b);
     b.flasks = maxFlasks(s);
     b.arrows = std::max(b.arrows, kQuiver);  // the quiver full again (ADR-050)
+    fillPouch(b);                            // and the pouch (ADR-053)
     b.health = float(maxHealth(s));
     b.stamina = gMelee.staminaMax;
     b.effects.clear(), b.buildup = {};
@@ -974,7 +976,7 @@ void strike(Player& player, Entity& target, const Strike& s, std::mt19937& rng, 
     bool landed = damage(target, full, crit && !guard);  // a blocked crit is marked as the block
     if (landed || guard) {  // statuses build up by what a guard let through, a light hit's too (ADR-046)
         std::string_view with = player.swingWeapon ? itemType(player.swingWeapon).name : "Fists";
-        auto bursts = buildUp(player, b, guard ? 1 - guard->negation : 1, with);
+        auto bursts = buildUp(player, b, guard ? 1 - guard->negation : 1, with, s.buildup ? &*s.buildup : nullptr);
         for (size_t k = 0; k < bursts.size(); ++k) landed |= damage(target, bursts[k], false, Status(k));
     }
     if (!landed) return;
@@ -1049,6 +1051,7 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
     if (hurt(player, tick(player, dt), false, Status::Poison) && !player.alive()) player.noise(Noise::Death);
     bool strikes = lands(player);
     if (strikes && player.move == Move::Drink) strikes = false, drink(player);  // the flask's drink frame (ADR-047)
+    if (strikes && player.move == Move::Throw) strikes = false, player.hurled = true;  // let go: step() throws it (ADR-053)
     if (strikes && player.move == Move::Shot) {  // a bow's release: step() looses it (ADR-050)
         strikes = false, player.loosed = true;
         if (weaponClass(classOf(player.swingWeapon)).loads) player.want = Want::Light, player.wantAge = 0, player.reloadWant = true;  // a crossbow reloads next, like a press (ADR-052)

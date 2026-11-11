@@ -233,14 +233,14 @@ void loadWeaponClasses(const File& f, Defs& d) {
         if (!ms.is_object()) throw r.fail("moves", "must be an object of every attack move: {light_1: {...}, ...}");
         for (const auto& [k, v] : ms.items())
             if (auto m = std::ranges::find(kMoveIds, k); m == std::end(kMoveIds) || codeMove(Move(m - std::begin(kMoveIds))))
-                throw r.fail("moves." + k, "not an attack move (none, parry and drink are code's)");
+                throw r.fail("moves." + k, "not an attack move (none, parry, drink and throw are code's)");
             else if (Move mv = Move(m - std::begin(kMoveIds)); !has(mv))
                 throw r.fail("moves." + k, mv == Move::Reload ? "only a class that loads reloads (\"loads\": true)"
                                            : w.ranged         ? "a ranged class has only the shot (and the reload if it loads)"
                                                               : "only a ranged class shoots (\"ranged\": true)");
         for (size_t m = 0; m < size_t(Move::Count); ++m) {
             if (codeMove(Move(m))) {
-                w.moves[m] = Move(m) == Move::Parry ? kParrySpec : Move(m) == Move::Drink ? kDrinkSpec : MoveSpec{};
+                w.moves[m] = Move(m) == Move::Parry ? kParrySpec : Move(m) == Move::Drink ? kDrinkSpec : Move(m) == Move::Throw ? kThrowSpec : MoveSpec{};
                 continue;
             }
             if (!has(Move(m))) continue;  // a bow has only the shot (a crossbow the reload too), the rest only melee classes (empty)
@@ -319,9 +319,9 @@ void loadItems(const File& f, Defs& d) {
     SaveIds saves;
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
-        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods", "shield", "weight", "damage", "parry", "class", "scaling"});
+        r.allow({"id", "save_id", "copy_from", "name", "slot", "attack", "bag_slots", "armor", "mods", "shield", "weight", "damage", "parry", "class", "scaling", "throw"});
         size_t save = saves.claim(r);
-        ItemType t{nullptr, SlotNone, {0, 0, 0}, 0, 0, {}, {}};
+        ItemType t{nullptr, SlotNone, {0, 0, 0}, 0, 0, {}, {}, 0, DamageType::Slash, 0, WeaponClass::Fists, {}};
         std::string name = r.text("name");
         if (r.fields.contains("slot")) {
             const json& v = r.fields["slot"];
@@ -329,9 +329,32 @@ void loadItems(const File& f, Defs& d) {
             if (s == std::end(kSlotIds)) throw r.fail("slot", oneOf(kSlotIds));
             t.slot = EquipSlot(s - std::begin(kSlotIds));
         }
+        if (r.fields.contains("throw")) {  // ADR-053: thrown from a pouch, never worn
+            const json& th = r.fields["throw"];
+            if (t.slot != SlotNone) throw r.fail("throw", "a throwable isn't worn (no slot)");
+            if (!th.is_object()) throw r.fail("throw", "must be an object {look, speed, lob, radius, pouch, stance, bleed, poison, frost}");
+            for (const auto& [k, v] : th.items())
+                if (!std::set<std::string>{"look", "speed", "lob", "radius", "pouch", "stance", "bleed", "poison", "frost"}.contains(k))
+                    throw r.fail("throw." + k, "unknown field");
+            const json& look = th.contains("look") ? th["look"] : json();
+            auto at = std::ranges::find(kThrowLookIds, look.is_string() ? look.get<std::string>() : "");
+            if (at == std::end(kThrowLookIds) || at == std::begin(kThrowLookIds)) throw r.fail("throw.look", oneOf(std::span(kThrowLookIds).subspan(1)));
+            t.thrown.look = ThrowLook(at - std::begin(kThrowLookIds));
+            t.thrown.speed = float(r.number(th, "throw.speed", 5, 80, kRequired, false));
+            if (th.contains("lob") && !th["lob"].is_boolean()) throw r.fail("throw.lob", "must be true or false");
+            t.thrown.lob = th.value("lob", false);
+            t.thrown.radius = float(r.number(th, "throw.radius", 0, 8, 0, false));
+            if ((t.thrown.radius > 0) != (t.thrown.look != ThrowLook::Knife))
+                throw r.fail("throw.radius", "a knife sticks (no radius); a bomb or a pot bursts (a radius)");
+            t.thrown.pouch = int(r.number(th, "throw.pouch", 1, 99));
+            t.thrown.stance = float(r.number(th, "throw.stance", 0, 200, 0, false));
+            for (size_t k = 0; k < t.thrown.buildup.size(); ++k)
+                t.thrown.buildup[k] = float(r.number(th, std::string("throw.") + kStatusIds[k], 0, 1000, 0, false));
+            if (!r.fields.contains("attack")) throw r.fail("attack", "missing (a throwable has its hit's damage roll)");
+        }
         if (r.fields.contains("attack")) {
             const json& a = r.fields["attack"];
-            if (t.slot != SlotMainHand && t.slot != SlotOffHand) throw r.fail("attack", "only main_hand and off_hand items attack");
+            if (t.slot != SlotMainHand && t.slot != SlotOffHand && !throwable(t)) throw r.fail("attack", "only main_hand and off_hand items and throwables attack");
             if (!a.is_object()) throw r.fail("attack", "must be an object {min, max, speed}");
             for (const auto& [k, v] : a.items())
                 if (k != "min" && k != "max" && k != "speed") throw r.fail("attack." + k, "unknown field");

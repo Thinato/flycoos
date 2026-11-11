@@ -335,6 +335,7 @@ static int run(SDL_Window* window, const Options& opt) {
     bool heavyQueued = false;  // R2 likewise
     bool parryQueued = false;  // Q / L2 likewise (ADR-036)
     bool drinkQueued = false;  // R / D-pad down: the healing flask (ADR-047)
+    bool tossQueued = false;   // G / touchpad: throw the readied throwable (ADR-053)
     bool gripQueued = false;   // F / Triangle+R1: two-hand the weapon or let go (ADR-048)
     bool northUsed = false;    // R1 was pressed while Triangle was held: its release two-handed, it doesn't open the bags
     bool pressInGame = false;  // the left button went down while no window was open
@@ -395,7 +396,7 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.active = on;
         lock = {};
         editor.cursor = false;
-        punchQueued = heavyQueued = parryQueued = drinkQueued = gripQueued = false;  // a press queued mid-swing must not become an editor action, nor the reverse
+        punchQueued = heavyQueued = parryQueued = drinkQueued = gripQueued = tossQueued = false;  // a press queued mid-swing must not become an editor action, nor the reverse
         editor.corner.reset();
         if (on) {
             usedEditor = true;
@@ -497,6 +498,10 @@ static int run(SDL_Window* window, const Options& opt) {
                     drinkQueued = true;
                 } else if (e.key.key == SDLK_F && !editor.active && !benchmark && !menus()) {
                     gripQueued = true;
+                } else if (e.key.key == SDLK_G && !editor.active && !benchmark && !menus()) {
+                    tossQueued = true;
+                } else if (e.key.key == SDLK_X && !editor.active && !benchmark && !menus()) {
+                    cycleThrowable(player);  // the next throwable (ADR-053)
                 } else if (editor.active && e.key.key >= SDLK_1 && e.key.key <= SDLK_1 + int(Tool::Count) + 1) {
                     int tool = int(e.key.key - SDLK_1);  // the brushes, then Prefab, then Marker
                     editor.prefabTool = tool == int(Tool::Count);
@@ -569,6 +574,7 @@ static int run(SDL_Window* window, const Options& opt) {
                             if (!editor.active && !menus() && player.alive()) toggleLock();
                             break;
                         case SDL_GAMEPAD_BUTTON_DPAD_DOWN: drinkQueued = !menus() && !editor.active; break;  // the flask (ADR-047)
+                        case SDL_GAMEPAD_BUTTON_TOUCHPAD: tossQueued = !menus() && !editor.active; break;  // a throwable (ADR-053)
                         case SDL_GAMEPAD_BUTTON_DPAD_LEFT:  // locked on, the D-pad switches targets; otherwise it opens windows
                         case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
                         case SDL_GAMEPAD_BUTTON_DPAD_UP:
@@ -653,7 +659,7 @@ static int run(SDL_Window* window, const Options& opt) {
         // Left mouse / R1 attacks (a tap: a light, held: a heavy), R2 is a heavy, right mouse / L1 guards
         // (ADR-035), Q / L2 parries with a shield (ADR-036); they go the way you move, else face, or at
         // the lock-on target. A press that began in a window (e.g. a drag) doesn't attack once the window closes.
-        if (menus()) punchQueued = heavyQueued = parryQueued = drinkQueued = gripQueued = pressInGame = false;
+        if (menus()) punchQueued = heavyQueued = parryQueued = drinkQueued = gripQueued = tossQueued = pressInGame = false;
         if (noteOpen) interactQueued = rollQueued = false;
         uint32_t mouse = SDL_GetMouseState(nullptr, nullptr);
         bool punchHeld = (pressInGame && (mouse & SDL_BUTTON_LMASK)) || button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
@@ -703,10 +709,11 @@ static int run(SDL_Window* window, const Options& opt) {
             sim.parry = parryQueued;
             sim.drink = drinkQueued;
             sim.grip = gripQueued;
+            sim.toss = tossQueued;
             sim.interact = interactQueued;
             in.roll = rollQueued;
             StepResult stepped = step(session, sim, kTick);
-            if (!editor.active) punchQueued = heavyQueued = parryQueued = drinkQueued = gripQueued = false;  // the step buffers them (the editor takes its clicks below)
+            if (!editor.active) punchQueued = heavyQueued = parryQueued = drinkQueued = gripQueued = tossQueued = false;  // the step buffers them (the editor takes its clicks below)
             interactQueued = rollQueued = in.roll = false;
             respawned |= stepped.respawned;
             if (stepped.rested) notice = "Rested: health and flasks restored, you'll get back up here", noticeAt = SDL_GetTicksNS();
@@ -872,16 +879,26 @@ static int run(SDL_Window* window, const Options& opt) {
             };
             push(heldModel(body), held);
             push(shieldModel(body.inv.equipped[SlotOffHand]), shield);
-            push(body.flasks > 0 ? ModelFlask : ModelFlaskEmpty, flask);
+            push(body.move == Move::Throw ? throwableModel(body.throwing) : body.flasks > 0 ? ModelFlask : ModelFlaskEmpty, flask);  // or a throwable (ADR-053)
             push(loads(body) ? ModelBolt : ModelArrow, arrow);  // a crossbow's bolt (ADR-052)
         };
         pushModel(player, ModelPlayer);
         for (const Entity& npc : entities) pushModel(npc.body, npc.type().model);
         for (const Projectile& a : session.projectiles) {  // arrows in flight, and stuck a little way into what they hit (ADR-050)
-            glm::vec3 dir = glm::normalize(a.vel + glm::vec3(0, 1e-6f, 0));
+            glm::vec3 dir = glm::normalize(a.vel + glm::vec3(0, 1e-6f, 0)), at = a.stuck ? a.pos + dir * 0.2f : glm::mix(a.prevPos, a.pos, alpha);
             ModelInstance item;
-            item.parts.fill(weaponClass(classOf(a.weapon)).loads ? ModelBolt : ModelArrow);  // a crossbow's bolt (ADR-052)
-            item.pose.fill(arrowPose(a.stuck ? a.pos + dir * 0.2f : glm::mix(a.prevPos, a.pos, alpha), dir));
+            bool thrown = throwable(itemType(a.weapon));  // a throwable (ADR-053): a knife flies as an arrow, the rest tumble
+            Model m = thrown ? throwableModel(a.weapon) : weaponClass(classOf(a.weapon)).loads ? ModelBolt : ModelArrow;  // a crossbow's bolt (ADR-052)
+            item.parts.fill(m);
+            item.pose.fill(thrown && m != ModelThrowingKnife ? tumblePose(at, (a.age + alpha * kTick) * 9) : arrowPose(at, dir));
+            fp.models.push_back(item);
+        }
+        for (const Burst& b : session.bursts) {  // a bomb's or a pot's puff (ADR-053)
+            ModelInstance item;
+            item.parts.fill(burstModel(b.item));
+            item.glow = true;  // fire and a poison cloud glow
+            item.pose.fill(glm::translate(glm::mat4(1), b.pos));  // the empty parts at its middle: models are lit where their parts are
+            item.pose[Head] = burstPose(b.pos, b.radius, std::clamp((b.age + alpha * kTick) / gRanged.burstSeconds, 0.0f, 1.0f));  // (not under its corner, in the ground)
             fp.models.push_back(item);
         }
 

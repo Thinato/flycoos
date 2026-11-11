@@ -40,6 +40,9 @@
 //   Missing (older saves): full flasks, never rested.
 // "GRIP" (ADR-048): u8 1 if the player two-hands its weapon. Missing (older saves): one-handed.
 // "ARRW" (ADR-050): u8 arrows in the quiver (at most kQuiver). Missing (older saves): a full quiver.
+// "THRW" (ADR-053): u8 the readied throwable's item save id (0: none) | u8 count, each u8 item save id | u8 how
+//   many in the pouch. One the data doesn't know as a throwable is dropped; counts stop at its pouch. Missing
+//   (older saves): a full pouch.
 constexpr uint32_t kSaveFileVersion = 1;
 constexpr size_t kMaxSaveBytes = size_t(1) << 20;  // the biggest valid one is a few KB
 constexpr size_t kNpcBytes = 31;
@@ -119,6 +122,8 @@ struct SaveData {
     std::optional<glm::vec3> restPoint;
     bool twoHanded = false;
     std::optional<int> arrows;
+    std::optional<std::vector<std::pair<int, int>>> pouch;  // (item save id, count), as saved
+    int readied = 0;
     std::vector<std::string> notes;  // what parsing dropped (ids this build's data doesn't know)
 };
 
@@ -330,6 +335,17 @@ std::string readArrows(Reader r, SaveData& d) {
     return r.done("arrows");
 }
 
+std::string readPouch(Reader r, SaveData& d) {
+    d.readied = int(r.take(1));
+    uint64_t n = r.take(1);
+    d.pouch.emplace();
+    for (uint64_t i = 0; i < n; ++i) {
+        int id = int(r.take(1)), count = int(r.take(1));
+        d.pouch->emplace_back(id, count);
+    }
+    return r.done("pouch");
+}
+
 std::string parse(const char* path, SaveData& d) {
     std::error_code ec;
     uintmax_t fileBytes = std::filesystem::file_size(path, ec);
@@ -365,6 +381,7 @@ std::string parse(const char* path, SaveData& d) {
         else if (tag == "REST") error = readRest(r, d);
         else if (tag == "GRIP") error = readGrip(r, d);
         else if (tag == "ARRW") error = readArrows(r, d);
+        else if (tag == "THRW") error = readPouch(r, d);
         else continue;  // a later build's section
         if (!seen.insert(tag).second) return std::format("duplicate {} section", tag);
         if (!error.empty()) return error;
@@ -446,6 +463,16 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
     if (d.player) p.health = std::min(d.player->health, float(maxHealth(sheet(p))));  // after the gear and talents: they add health
     p.flasks = d.flasks ? std::min(*d.flasks, maxFlasks(sheet(p))) : maxFlasks(sheet(p));  // as health: what gear and talents allow
     p.arrows = d.arrows.value_or(kQuiver);
+    p.pouch = {}, p.readied = NoItem;  // (ADR-053)
+    if (d.pouch) {
+        for (auto [id, count] : *d.pouch)
+            if (knownItem(uint64_t(id)) && throwable(itemType(ItemId(id)))) p.pouch[size_t(id)] = uint8_t(std::min(count, itemType(ItemId(id)).thrown.pouch));
+            else r.notes.push_back(std::format("dropped {} of item {} from the pouch: the data has no such throwable", count, id));
+        if (knownItem(uint64_t(d.readied)) && throwable(itemType(ItemId(d.readied)))) p.readied = ItemId(d.readied);
+        else cycleThrowable(p);  // the first kind there is
+    } else {
+        fillPouch(p);
+    }
     if (d.restPoint) s.restPoint = inWorld(*d.restPoint);
     if (d.flags) s.flags = *d.flags;
     for (const SavedQuest& q : d.quests ? *d.quests : std::span<const SavedQuest>{}) {
@@ -596,6 +623,14 @@ std::string savePlayer(const char* path, const Session& s, const std::string& wo
     });
     section("GRIP", [&] { put(out, p.twoHanded ? 1 : 0, 1); });
     section("ARRW", [&] { put(out, uint32_t(std::clamp(p.arrows, 0, kQuiver)), 1); });
+    section("THRW", [&] {
+        std::vector<size_t> carried;
+        for (size_t i = 0; i < defs().items.size() && i < p.pouch.size(); ++i)
+            if (throwable(defs().items[i])) carried.push_back(i);
+        put(out, p.readied, 1);
+        put(out, carried.size(), 1);
+        for (size_t i : carried) put(out, i, 1), put(out, p.pouch[i], 1);
+    });
     section("PROG", [&] {
         const Progress& g = p.progress;
         put(out, uint32_t(g.xp), 4);

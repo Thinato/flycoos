@@ -36,13 +36,14 @@ Changes: trimmed to single calls, levelled, faded.
 | [Impact](https://opengameart.org/content/impact) | qubodup | arrow_flesh, arrow_hit |
 | [Wood Wobbling & Rattling](https://opengameart.org/content/wood-wobbling-rattling) | qubodup | arrow_hit |
 | [40 CC0 water / splash / slime SFX](https://opengameart.org/content/40-cc0-water-splash-slime-sfx) | rubberduck | swim, status_bleed, status_poison |
-| [75 CC0 breaking / falling / hit sfx](https://opengameart.org/content/75-cc0-breaking-falling-hit-sfx) | rubberduck | arrow_hit |
+| [75 CC0 breaking / falling / hit sfx](https://opengameart.org/content/75-cc0-breaking-falling-hit-sfx) | rubberduck | arrow_hit, pot_break |
 | [80 CC0 creature SFX](https://opengameart.org/content/80-cc0-creature-sfx) | rubberduck | wolf_attack |
 | [80 CC0 RPG SFX](https://opengameart.org/content/80-cc0-rpg-sfx) | rubberduck | charge, hit_blade, rest, status_frost |
 | [10 Impact/Shield Blocks](https://opengameart.org/content/10-impactshield-blocks) | StarNinjas | block_shield |
 | [20 Sword Sound Effects (Attacks and Clashes)](https://opengameart.org/content/20-sword-sound-effects-attacks-and-clashes) | StarNinjas | swing_light |
 | [20 Sword Sound Effects (Attacks and Clashes)](https://opengameart.org/content/20-sword-sound-effects-attacks-and-clashes) | StarNinjas | block_metal, parry |
 | [grunts of male death and pain](https://opengameart.org/content/grunts-male-death-and-pain) | thebardofblasphemy | human_death |
+| [Explosion](https://opengameart.org/content/explosion-0) | TinyWorlds | bomb_burst |
 | [Fantasy Weapons and Apparel SFX Library](https://opengameart.org/content/fantasy-weapons-and-apparel-sfx-library) | Vehicle (Jan Schupke) | bag_open, equip, jump |
 | [owl.wav](https://freesound.org/people/Anthousai/sounds/398734/) | Anthousai | owl |
 | [sfx_amb_forest_spring_afternoon-01.wav](https://freesound.org/people/bajko/sounds/385280/) | bajko | amb_birds |

@@ -2405,3 +2405,95 @@
     expires before it ends.
   - **Later:** an NPC crossbowman (keepDistance with a reload between shots); heavier crossbows;
     throwables on the same path.
+
+## ADR-053: Throwables: knives, bombs and poison pots
+
+- **Status:** accepted (2026-11-10)
+- **Context:**
+  - The roadmap's ranged section: "Throwables (knives, pots, bombs)". ADR-050 built projectiles and
+    the one hit path (`strike()`); ADR-052 the second ranged class. Throwables are the last ranged
+    item, and the first that isn't a weapon in hand: they're used beside whatever is held.
+  - Foundations (TALENTS.md): pressed actions share one path, no use-based skills. A throw must be
+    a move like the others, its hits the same strikes.
+- **Decision:**
+  - **Items with a `throw` record** (data, no slot, an `attack` required): `look` (knife, bomb or pot:
+    its model), `speed`, `lob`, `radius` (a knife none: it sticks; a bomb or pot some: it bursts),
+    `pouch` (how many it holds), `stance` and its own status build-up (`bleed`, `poison`, `frost`).
+    Three, appended: the **Throwing Knife** (21: 4–6 pierce, agility 0.6, 40 bleed, stance 6, flat
+    at 32 b/s, a pouch of 10), the **Clay Bomb** (22: 16–22 strike, no scaling, stance 40, lobbed at
+    14 b/s, 2.5 blocks, 3) and the **Poison Pot** (23: 1–2 strike, 110 poison, lobbed, 2.5 blocks, 3).
+  - **A pouch, not bag items** (as ADR-050's quiver): `Player::pouch` counts each by ItemId and
+    `readied` is the one the throw button throws; saved in a THRW section. A new game, a rest by a
+    fire and getting back up fill each to its pouch (never lowering one).
+  - **The throw is a move** (`Move::Throw`, appended; code's, `kThrowSpec`: 0.7 s, drawn back by 0.25
+    s, let go at 0.35 s, 8 stamina, chain at 75%, cut at 70%). G / the touchpad press (`Want::Throw`)
+    starts it once the body is free, on the ground, with stamina (it waits in the buffer for some)
+    and one of the readied kind left, not with a bow or crossbow in hand (both hands are full); else
+    the press does nothing at all (no draw let down, no reload or recovery cut). A press can cut an
+    attack's recovery like the flask's. NPCs answer a close throw's windup like an attack (guarding
+    instead of parrying: a throwable can't be parried). It walks
+    slowly and turns toward the aim until it lets go; a flinch before then keeps it in the pouch. X
+    readies the next kind that has any (or click one in the Bags window's pouch row).
+  - **Thrown:** at its impact frame updateCombat sets `hurled` and `step()` calls `hurl`: one out of
+    the pouch, a projectile whose weapon is the throwable, from the chest, at its speed: along the
+    facing (`hipPitch` up, or `gRanged.lobPitch` 0.4 rad if it lobs), or locked on in the low arc
+    onto the target (aim mode is a bow's: there's no throwing with one in hand).
+  - **A knife** hits like an arrow, through `strike()` with the knife's stats (the swing weapon swap)
+    and `Strike::buildup`: its own build-up, instead of the thrower's (buildUp's `own`: a Rusty
+    Knife in hand doesn't make a pot bleed). It sticks in
+    terrain and walking over it puts it back in the pouch (an arrow still goes to the quiver).
+  - **A bomb or pot bursts** on the first body or voxel in its way (a little short of it): `burst`
+    strikes every living, attackable NPC within the radius of the burst point and in sight of it
+    (a voxel ray to its middle; a dodge's i-frames let it through), its damage, stance and build-up
+    from 1 at the middle to `burstEdge` (0.5) at the radius, a guard facing the burst blocking it as
+    any hit (one right over it, from where it flew in). The dead are left alone; a kill is a kill. It never hurts the player (its own throw). A bomb shakes the camera by how near it was.
+  - **Look and sound:** a left-hand overhand throw (the arm up behind the shoulder, the body turned,
+    then whipped through; a shield or the two-handed grip let go meanwhile), the throwable in the
+    hand until it lets go (poseModel's `flask` output); in flight a knife points along its way, a
+    bomb or pot tumbles. A burst is a puff that swells and goes in 0.35 s, fire or a pale green
+    cloud, drawn **glowing** (unshaded: `ModelInstance::glow`, a spare bit of the shader's packed
+    `blockAndQuad`, the quad index now 15 bits for the debug view; no new vertex output). Sounds: the
+    throw a quick whoosh, a knife the arrow's, a bomb TinyWorlds' CC0 explosion over a heavy hit, a
+    pot rubberduck's CC0 breaking clay with the poison hiss.
+  - **UI:** the readied one's icon and count left of the flask; the Bags window's pouch row (click to
+    ready; tooltips); the debug Player tab's Throwables node (counts, readied, a fill, the knobs).
+- **Alternatives considered:**
+  - Throwables as bag items (stacks): the inventory has no stacking yet; a pouch count is ADR-050's
+    quiver again and can become items when stacks exist.
+  - A quick-item slot cycled with the flask's button: it would change the flask; the controls
+    refactor (deferred) can merge them. G / touchpad and X are free.
+  - The right hand throwing (the weapon put away): a stow and draw for every throw; the left hand is
+    the flask's already. With a bow or crossbow, both hands are full: no throws.
+  - Bursts hurting the player: a thrown bomb at your feet would be a trap with no upside yet; NPC
+    throwers, when they come, will hurt the player through `strikePlayer`.
+  - A lingering poison cloud: a burst is one strike; a cloud needs an area effect over time, later.
+- **Consequences:**
+  - **Balance:** with the starting stats a bomb averages 20 on a bandit at its middle and 13 near its
+    edge (12 seeds), about two sword swings each, to everything in reach, three a rest. A knife does
+    4–6 and three bleed a bandit (40 a hit, 100 to fill). A pot poisons anything without poison
+    resist at its middle (a ghoul shrugs it off). Melee, bows and the story fights are unchanged.
+  - **Tests:** `throwables` checks the data and its checks (no slot, a look, a speed and a pouch, a
+    knife without a radius, a bomb or pot with one, an attack), a new game's full pouch, a throw
+    (the move, its stamina, the timing of the release, one out of the pouch, the speed and way, the
+    whoosh), a knife sticking and picked back up (not past a full pouch; an arrow to the quiver),
+    nothing to throw or a bow in hand doing nothing (no draw let down, no recovery cut; also when it
+    changes while the press waits), waiting for stamina, a flinch keeping it, walking slowly and
+    turning to the aim, cutting a swing's recovery, a great weapon not slowing it, NPCs answering it
+    with a guard (never a parry), readying the next kind, a rest and a respawn filling it, a knife's
+    hit and its own bleed (not the weapon in hand's; a pot no bleed), the dead left alone and a kill
+    counted, a bomb's shake, a bomb lobbed with nothing to aim at bursting where it lands (the puff
+    and its sound, gone after), a pot landing on a lock-on target, a burst striking near and edge
+    bandits (less at the edge), none past it or behind a wall, never the player, a pot poisoning a
+    bandit and not a ghoul, a dodging bandit untouched, the models, the puff's size over time, and the
+    pose (drawn back up behind the shoulder with it in the hand, out in front and gone at the
+    release, back at rest after). Saves round-trip the pouch; an older save gets a full one; unknown
+    ids are dropped with a note and counts clamped. Mutation-checked: each of 44 rules broken alone
+    fails a test.
+  - **Limits:** throwables aren't bag items, can't be looted or bought yet (a rest refills them);
+    no NPC throws; bursts are instant (no lingering cloud) and don't hurt the player; no throws with
+    a bow or crossbow in hand; on a pad, readying another needs the Bags window, and the throw is the
+    touchpad press, which Xbox and Switch pads lack (the deferred controls refactor will rebind it). Line of sight is one
+    ray to a body's middle. A bomb that flies out of the loaded world or for 5 s is gone unburst. A
+    save made before a kind was added has none of it until the next rest.
+  - **Later:** NPC throwers (a bandit's fire pot, through `strikePlayer`); frost pots and other kinds
+    are data; elemental damage with magic; a lingering cloud; throwables as stackable items.

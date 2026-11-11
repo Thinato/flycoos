@@ -178,6 +178,10 @@ std::vector<Layer> layersOf(const Sound& s) {
             break;
         }
         if (s.move == Move::Shot || s.move == Move::Reload) break;  // the string lets go: Loose has it (ADR-050); a reload cranks (ADR-052)
+        if (s.move == Move::Throw) {  // the arm whips through (ADR-053)
+            add("swing_fast", 0.7f, 1.1f);
+            break;
+        }
         if (s.move == Move::Parry && s.with && defs().items[s.with].shield.size != ShieldSize::None) {
             add("swing_shield", 0.8f);
             break;
@@ -208,6 +212,11 @@ std::vector<Layer> layersOf(const Sound& s) {
         else add("bow_loose", 0.9f);
         break;
     case Noise::Thunk: {  // an arrow into terrain: brighter off stone, duller in earth
+        if (const Throwable& t = s.with ? defs().items[s.with].thrown : Throwable{}; t.radius > 0) {  // a throwable bursting (ADR-053)
+            if (t.look == ThrowLook::Bomb) add("bomb_burst", 1), add("hit_heavy", 0.6f, 0.7f);
+            else add("pot_break", 0.9f), add("status_poison", 0.6f, 0.8f, 0.05f);  // the clay, and what was in it
+            break;
+        }
         std::string_view on = surface(s.ground);
         add("arrow_hit", 0.8f, on == "stone" ? 1.2f : on == "wood" ? 1 : 0.85f);
         break;
@@ -215,7 +224,8 @@ std::vector<Layer> layersOf(const Sound& s) {
     case Noise::GuardUp: add("guard_up", 0.5f); break;
     case Noise::Hurt:
     case Noise::Death:
-        if (s.with && weaponClass(classOf(s.with)).ranged) add(type && type->wooden ? "arrow_hit" : "arrow_flesh");  // an arrow (ADR-050)
+        if (s.with && (weaponClass(classOf(s.with)).ranged || defs().items[s.with].thrown.look == ThrowLook::Knife))
+            add(type && type->wooden ? "arrow_hit" : "arrow_flesh");  // an arrow (ADR-050), a thrown knife (ADR-053)
         else add(type && type->wooden ? "hit_wood" : s.with && defs().items[s.with].damage != DamageType::Strike ? "hit_blade" : "hit_blunt");
         if (s.amount >= 20) add("hit_heavy", std::min(1.0f, s.amount / 40));
         if (s.what == Noise::Hurt) say("hurt", 0.9f);

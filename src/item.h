@@ -44,6 +44,22 @@ struct Shield {
     float parry = 0;                     // the parry's length (x its base timing); 0: can't parry
 };
 
+// A throwable (ADR-053): thrown from the left hand out of a pouch (a count per kind, like the quiver),
+// with its own `attack` and damage type; it flies as a projectile. A knife sticks where it lands, to be
+// picked back up; one with a `radius` bursts where it hits (a bomb, a pot), striking every body in reach.
+enum class ThrowLook : uint8_t { None, Knife, Bomb, Pot };  // its model; None: not a throwable
+inline constexpr const char* kThrowLookIds[] = {"none", "knife", "bomb", "pot"};  // in data files
+static_assert(std::size(kThrowLookIds) == size_t(ThrowLook::Pot) + 1);
+struct Throwable {
+    ThrowLook look = ThrowLook::None;
+    float speed = 0;     // blocks/s leaving the hand
+    bool lob = false;    // thrown up in an arc (with nothing to aim at: lobPitch up), else flat
+    float radius = 0;    // > 0: bursts where it hits, every body within it struck (less at the edge)
+    int pouch = 0;       // how many a pouch holds (a rest fills it)
+    float stance = 0;    // stance damage dealt
+    std::array<float, size_t(Status::Count)> buildup{};  // status build-up its hit adds, on top of the thrower's
+};
+
 struct ItemType {
     const char* name;
     EquipSlot slot;
@@ -56,7 +72,9 @@ struct ItemType {
     DamageType damage = DamageType::Slash;  // weapons: what their swings do (a blade's thrusts pierce)
     float parry = 0;             // main-hand weapons that parry (a knife: ADR-041): the parry's length; 0: can't
     WeaponClass weaponClass = WeaponClass::Fists;  // weapons: their class (ADR-044)
+    Throwable thrown;            // throwables (ADR-053): look None for everything else
 };
+inline bool throwable(const ItemType& t) { return t.thrown.look != ThrowLook::None; }
 const ItemType& itemType(ItemId id);  // from the loaded defs (defs.h); NoItem's row when out of range
 
 constexpr int kBackpackSlots = 12;  // always there, before any bag

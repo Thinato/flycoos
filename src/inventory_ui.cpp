@@ -24,6 +24,26 @@ void icon(ImDrawList* dl, ItemId id, ImVec2 lo, float s) {
     auto at = [&](float x, float y) { return ImVec2(lo.x + x * s, lo.y + y * s); };
     ImU32 steel = uiColor(0.78f, 0.80f, 0.84f), iron = uiColor(0.30f, 0.30f, 0.33f), leather = uiColor(0.35f, 0.22f, 0.12f);
     ImU32 plate = uiColor(0.50f, 0.52f, 0.56f), wood = uiColor(0.45f, 0.30f, 0.16f);
+    switch (itemType(id).thrown.look) {  // throwables (ADR-053), as their models
+    case ThrowLook::Knife:
+        dl->AddLine(at(0.40f, 0.60f), at(0.80f, 0.20f), steel, s * 0.08f);   // blade
+        dl->AddLine(at(0.32f, 0.52f), at(0.48f, 0.68f), iron, s * 0.06f);    // guard
+        dl->AddLine(at(0.40f, 0.60f), at(0.22f, 0.78f), leather, s * 0.07f); // wrapped grip
+        return;
+    case ThrowLook::Bomb:
+        dl->AddCircleFilled(at(0.46f, 0.58f), s * 0.28f, uiColor(0.22f, 0.23f, 0.26f));
+        dl->AddCircleFilled(at(0.38f, 0.50f), s * 0.06f, uiColor(1, 1, 1, 0.35f));  // a glint
+        dl->AddBezierQuadratic(at(0.62f, 0.34f), at(0.70f, 0.18f), at(0.82f, 0.18f), uiColor(0.85f, 0.75f, 0.45f), s * 0.05f);  // the fuse
+        dl->AddCircleFilled(at(0.84f, 0.17f), s * 0.07f, uiColor(1, 0.6f, 0.15f));  // lit
+        return;
+    case ThrowLook::Pot:
+        dl->AddCircleFilled(at(0.50f, 0.60f), s * 0.28f, uiColor(0.66f, 0.42f, 0.30f));  // clay
+        dl->AddRectFilled(at(0.22f, 0.56f), at(0.78f, 0.66f), uiColor(0.45f, 0.70f, 0.25f));  // the band
+        dl->AddRectFilled(at(0.42f, 0.18f), at(0.58f, 0.34f), uiColor(0.66f, 0.42f, 0.30f));  // the neck
+        dl->AddRectFilled(at(0.40f, 0.12f), at(0.60f, 0.20f), uiColor(0.55f, 0.80f, 0.35f));  // the stopper
+        return;
+    case ThrowLook::None: break;
+    }
     if (itemType(id).slot == SlotMainHand) {  // weapons by their class (ADR-044)
         switch (classOf(id)) {
         case WeaponClass::Dagger:
@@ -215,7 +235,16 @@ void tooltip(ItemId id, SlotRef where) {
     }
     ImGui::PopStyleColor();
     const Attack& a = t.attack;
-    if (a.speed > 0) {
+    if (const Throwable& th = t.thrown; throwable(t)) {  // ADR-053
+        ImGui::Text("%d - %d %s damage", a.minDamage, a.maxDamage, kDamageTypeNames[size_t(t.damage)]);
+        ImGui::Text("Scaling: %s", scalingText(a, nullptr).c_str());
+        if (th.radius > 0) ImGui::Text("Bursts where it lands: everything within %g blocks (less at the edge)", double(th.radius));
+        else ImGui::TextUnformatted("Sticks where it lands: walk over it to pick it back up");
+        for (size_t k = 0; k < th.buildup.size(); ++k)
+            if (th.buildup[k] > 0) ImGui::Text("Builds up %s: %g", kStatusIds[k], double(th.buildup[k]));
+        ImGui::TextDisabled("A pouch holds %d; a rest fills it", th.pouch);
+        ImGui::TextDisabled("Throw: G / touchpad    Next: X, or click it in the Bags");
+    } else if (a.speed > 0) {
         ImGui::Text("%d - %d damage    Speed %.2f", a.minDamage, a.maxDamage, a.speed);
         ImGui::Text("(%.1f damage per second)", float(a.minDamage + a.maxDamage) / 2 / a.speed);
         ImGui::Text("Scaling: %s", scalingText(a, nullptr).c_str());
@@ -229,6 +258,11 @@ void tooltip(ItemId id, SlotRef where) {
         }
     }
     if (t.weight > 0) ImGui::TextDisabled("Weight %g", double(t.weight));
+    if (where.index < 0) {  // the pouch's (ADR-053): nothing to equip or destroy
+        ImGui::TextDisabled("Click to ready it");
+        ImGui::EndTooltip();
+        return;
+    }
     if (t.slot != SlotNone) ImGui::TextDisabled(where.kind == SlotRef::Item ? "Right-click to equip" : "Right-click to unequip");
     ImGui::TextDisabled("Ctrl+right-click to destroy");
     ImGui::EndTooltip();
@@ -349,6 +383,8 @@ void attributes(const Player& p, float armorK) {
 
 }  // namespace
 
+void itemIcon(ImDrawList* dl, ItemId id, ImVec2 lo, float size) { icon(dl, id, lo, size); }
+
 void characterWindow(bool& open, Player& p, float armorK) {
     if (!open) return;
     ImGui::SetNextWindowPos({40, 140}, ImGuiCond_FirstUseEver);
@@ -392,6 +428,27 @@ void bagsWindow(bool& open, Player& p) {
             slot(inv, {SlotRef::Bag, b}, "Bag");
         }
         ImGui::TextDisabled("%d / %d slots free", freeSlots(inv), itemSlots(inv));
+        // The pouch (ADR-053): each throwable and how many; click one to ready it for the throw button.
+        ImGui::SeparatorText("Pouch");
+        int shown = 0;
+        for (size_t i = 0; i < defs().items.size(); ++i) {
+            if (!throwable(defs().items[i])) continue;
+            if (shown++) ImGui::SameLine();
+            ImGui::PushID(int(i));
+            ImVec2 lo = ImGui::GetCursorScreenPos(), hi(lo.x + kSlot, lo.y + kSlot);
+            if (ImGui::InvisibleButton("throwable", {kSlot, kSlot})) p.readied = ItemId(i);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            bool ready = p.readied == ItemId(i), none = p.pouch[i] == 0;
+            dl->AddRectFilled(lo, hi, ImGui::IsItemHovered() ? uiColor(0.25f, 0.25f, 0.28f) : uiColor(0.13f, 0.13f, 0.15f), 4);
+            icon(dl, ItemId(i), ImVec2(lo.x + 5, lo.y + 5), kSlot - 10);
+            if (none) dl->AddRectFilled(lo, hi, uiColor(0, 0, 0, 0.55f), 4);
+            dl->AddRect(lo, hi, ready ? uiColor(1, 0.85f, 0.4f) : uiColor(0.35f, 0.35f, 0.38f), 4, 0, ready ? 2.5f : 1);
+            char n[8];
+            std::snprintf(n, sizeof n, "%d", p.pouch[i]);
+            dl->AddText(ImVec2(hi.x - ImGui::CalcTextSize(n).x - 4, hi.y - ImGui::GetFontSize() - 2), none ? uiColor(0.6f, 0.6f, 0.6f) : uiColor(1, 1, 1), n);
+            if (ImGui::IsItemHovered()) tooltip(ItemId(i), {SlotRef::Item, -1});  // (index -1: the pouch)
+            ImGui::PopID();
+        }
         ImGui::PopStyleVar();
     }
     ImGui::End();

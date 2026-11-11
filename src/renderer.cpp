@@ -29,7 +29,7 @@ struct FrameUniforms {
 };
 struct DrawUniforms {
     glm::mat4 model;
-    glm::vec4 modelLight;  // x models: light + 1 (0: a chunk)
+    glm::vec4 modelLight;  // x models: light + 1 (0: a chunk); y > 0: it glows (ADR-053)
     glm::uvec4 firstQuad;  // x first quad; plants: y first instance, zw the world window's low corner x, z (int)
 };
 static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 3 * 128 * 16);
@@ -576,7 +576,7 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
             float lit = float(std::max(skyLight(a), skyLight(b)) << 4 | std::max(blockLight(a), blockLight(b))) + 1;
             for (size_t p = 0; p < PartCount; ++p) {
                 auto [first, count] = parts_[size_t(inst.parts[p])][p];
-                if (count) draw({inst.pose[p], glm::vec4(lit, 0, 0, 0), glm::uvec4(first, 0, 0, 0)}, count);
+                if (count) draw({inst.pose[p], glm::vec4(lit, inst.glow ? 1 : 0, 0, 0), glm::uvec4(first, 0, 0, 0)}, count);
             }
         }
     };

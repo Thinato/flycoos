@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include <optional>
 #include <array>
 #include <cstdint>
 #include <random>
@@ -246,14 +247,15 @@ inline StatusTuning gStatus;
 // already on is replaced, fresh. Returns the burst's damage, for the caller to deal with its number.
 int afflict(Player& b, Status s, std::string_view source);
 // A landed hit's status build-up on `b`: the attacker's Bleed, Poison and Frost (with its swing's
-// weapon skill) times `share` (what a guard let through), toward b's resists. One that fills takes
+// weapon skill), or with `own` a throwable's own instead (ADR-053: not the weapon in hand's), times `share` (what a guard let through), toward b's resists. One that fills takes
 // effect (afflict); poison and frost don't build while their effect is on. Returns each status's burst
 // damage due now, for the caller to deal.
-std::array<int, size_t(Status::Count)> buildUp(const Combatant& attacker, Player& b, float share, std::string_view source);
+std::array<int, size_t(Status::Count)> buildUp(const Combatant& attacker, Player& b, float share, std::string_view source,
+                                               const std::array<float, size_t(Status::Count)>* own = nullptr);
 // A flask's drink frame (ADR-047): a charge heals `b` its Flask healing share of max health; with none
 // left, nothing (the gesture's Noise::Empty). updateCombat calls it when a Drink move reaches its impact.
 void drink(Player& b);
-// Rests `b` (ADR-047): its flasks filled to the Flasks stat, its quiver to kQuiver (ADR-050), full health and
+// Rests `b` (ADR-047): its flasks filled to the Flasks stat, its quiver to kQuiver (ADR-050), its pouch (ADR-053), full health and
 // stamina, statuses gone.
 void rest(Player& b);
 
@@ -319,6 +321,7 @@ struct Strike {
     bool riposte = false;   // a riposte or backstab: always critical, past any guard, knocks it down
     bool canCrit = true;    // may be a random critical
     bool melee = true;      // a swing (an arrow: false)
+    std::optional<std::array<float, size_t(Status::Count)>> buildup{};  // a throwable's own build-up, instead of the attacker's (ADR-053)
 };
 void strike(Player& player, Entity& target, const Strike& s, std::mt19937& rng, float armorK = kArmorK,
             std::vector<GameEvent>* events = nullptr);

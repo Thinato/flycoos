@@ -55,6 +55,7 @@ struct Session {
     std::vector<Sound> sounds;  // noises since main last took them, oldest first
     std::optional<glm::vec3> restPoint;  // where the player last rested (ADR-047): it gets back up there
     std::vector<Projectile> projectiles;  // arrows in flight or stuck in terrain (ADR-050), oldest first; not saved
+    std::vector<Burst> bursts;            // throwables' bursts still showing (ADR-053); not saved
 };
 
 // What the player wants this step; main.cpp maps keys and mouse to it.
@@ -68,6 +69,7 @@ struct SimInput {
     bool parry = false;     // the parry button went down (ADR-036)
     bool drink = false;     // the flask button went down (ADR-047)
     bool grip = false;      // the two-hand button went down (ADR-048)
+    bool toss = false;      // the throw button went down (ADR-053)
     // What a bow's shot goes at (ADR-050): in aim mode the point under the crosshair (straight at it),
     // locked on the target's middle (lobbed onto it); none: along the facing.
     std::optional<glm::vec3> aimAt;

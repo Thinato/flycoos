@@ -142,6 +142,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     if (in.heavy) p.chargeByHeavy = true, wish(counter ? Want::Counter : Want::Heavy);
     if (in.parry && parryOf(p) > 0) wish(Want::Parry);  // with nothing that parries (a greatshield, a sword), Q does nothing
     if (in.drink) wish(Want::Drink);
+    if (in.toss && !bow && p.readied && p.pouch[p.readied] > 0) wish(Want::Throw);  // with nothing to throw, or a bow in hand, nothing
     if (in.grip) wish(Want::Grip);
     if (!p.weapon()) {  // bare hands have nothing to two-hand: let go (the next weapon starts one-handed; a swap keeps the grip)
         p.twoHanded = false;
@@ -184,7 +185,7 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
                     p.charged = true, p.noise(Noise::Charged);
             }
             if (jumpAttack(p.move)) p.holding = airborne(p);  // strikes on landing
-            bool wants = p.want == Want::Roll || p.want == Want::Parry || p.want == Want::Drink || p.want == Want::Grip;
+            bool wants = p.want == Want::Roll || p.want == Want::Parry || p.want == Want::Drink || p.want == Want::Grip || p.want == Want::Throw;
             bool cut = wants || in.guard || (glm::length(move.move) > 0.1f && p.want == Want::None && !p.pressing);
             // A draw can be let down any time (the arrow kept), a crossbow's raise or its reload cut (ADR-052: the bolt not yet in, it stays empty).
             bool letDown = (p.move == Move::Shot || p.move == Move::Reload) && p.hitPending && wants;
@@ -229,6 +230,18 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
             p.want = Want::None;
             started = true;
         }
+        // A throw (ADR-053) starts once the body is free, on the ground, with stamina; with none of the
+        // readied throwable left, or a bow or crossbow in hand, the press does nothing. It commits like an attack.
+        if (p.want == Want::Throw && !p.punching() && !p.rolling() && !airborne(p) && !p.inWater && p.stamina > 0) {
+            if (p.readied && p.pouch[p.readied] > 0 && !ranged(p)) {  // a bow or crossbow fills both hands
+                startMove(p, Move::Throw, glm::length(in.aim) > 1e-3f ? in.aim : aim);
+                p.moveScale = 1;  // weapon speed doesn't change it
+                p.throwing = p.readied;
+                spend(p, kThrowSpec.stamina);
+                started = true;
+            }
+            p.want = Want::None;
+        }
         // Two-handing (ADR-048) changes once the body is free; mid-roll it waits.
         if (p.want == Want::Grip && !p.punching() && !p.rolling()) {
             if (!weaponClass(classOf(p.weapon())).twoHanded)  // a great weapon swapped in mid-swing: nothing (ADR-049)
@@ -255,9 +268,10 @@ bool updateMelee(Player& p, const MeleeInput& in, Input& move, float dt) {
     // keeps the jump's way) and turns toward the aim through its windup; the guard walks.
     if (p.stagger > 0) {
         move = {};
-    } else if (p.move == Move::Drink) {  // walks slowly, may turn (a lock-on still faces its target)
+    } else if (p.move == Move::Drink || p.move == Move::Throw) {  // walks slowly, may turn (a lock-on still faces its target)
         move.speed = t.drinkSpeed;
         move.run = move.jump = false;
+        if (p.move == Move::Throw && p.hitPending) move.face = {}, turnTo(p, aim, 10, dt);  // a throw turns toward the aim until it lets go
     } else if (p.move == Move::Shot || p.move == Move::Reload || p.aiming) {  // drawing or aiming a bow, reloading a crossbow: walks slowly, facing the aim (ADR-050)
         move.speed = gRanged.aimWalk;
         move.run = false;

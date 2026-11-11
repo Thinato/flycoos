@@ -21,12 +21,13 @@ json vec(glm::vec3 v) { return {round2(v.x), round2(v.y), round2(v.z)}; }
 json itemId(ItemId id) { return id ? json(defs().itemIds[id]) : json(nullptr); }
 
 // What the body is doing, in one word: the first that holds of knocked_out, flying, swimming,
-// reeling, parrying, drinking, attacking, guarding, rolling, on_ground, falling, jumping.
+// reeling, parrying, drinking, throwing, attacking, guarding, rolling, on_ground, falling, jumping.
 const char* motion(const Player& p) {
     if (!p.alive()) return "knocked_out";
     if (p.stagger > 0) return p.broken ? "broken" : "flinching";
     if (p.move == Move::Parry) return "parrying";
     if (p.move == Move::Drink) return "drinking";
+    if (p.move == Move::Throw) return "throwing";  // ADR-053
     if (p.punching()) return "attacking";
     if (p.guarding) return "guarding";
     if (p.tuning.fly || p.tuning.noclip) return "flying";

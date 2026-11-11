@@ -39,7 +39,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/server.h/.cpp` | `CommandServer`: localhost TCP thread, newline-delimited JSON, one-slot mailbox to the main thread |
 | `src/light.h/.cpp` | Voxel light (ADR-019): sky and block light nibbles per voxel in lazily allocated 32³ chunk arrays (`Light`, wrapping like its grid), `fillLight` (whole world), `relight` (the columns around an edit; returns the box whose light changed), `lightColumns`/`clearColumn` (streaming), `lightCost`/`emission` per block |
 | `src/melee.h/.cpp` | Melee (ADR-035): `MoveSpec` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), the weapon classes' movesets (`WeaponClassDef`, `weaponClass`, `spec`; loaded from data/weapon_classes.json, ADR-044), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces`; `parryOf` (a knife or fists parry too) and `perfectGuard` (ADR-041); `damageOf` (ADR-040) |
-| `src/projectile.h/.cpp` | Projectiles (ADR-050): `Projectile` (an arrow: tip, velocity, the bow, power, stance, stuck), `RangedTuning gRanged` (gravity, speeds by draw, the draw time, expiry, pickup, the aim walk; the debug Player tab edits it), `drawOf`, `shotOrigin`, `shotVelocity` (straight at a point, lobbed onto it, or along the facing), `segmentBox`, `hitBox`, `loose` (the release: an arrow from the quiver, or a crossbow's loaded bolt at `boltSpeed`, ADR-052; an archer's, ADR-051: at the player along its facing, off by its aim error) and `updateProjectiles` (gravity, a swept voxel ray and body boxes, hits through `strike()`, or for an archer's arrow (`Projectile::owner`) only the player's box, through `strikePlayer()`; sticking, pickup, expiry) |
+| `src/projectile.h/.cpp` | Projectiles (ADR-050): `Projectile` (an arrow: tip, velocity, the bow, power, stance, stuck), `RangedTuning gRanged` (gravity, speeds by draw, the draw time, expiry, pickup, the aim walk; the debug Player tab edits it), `drawOf`, `shotOrigin`, `shotVelocity` (straight at a point, lobbed onto it, or along the facing), `segmentBox`, `hitBox`, `loose` (the release: an arrow from the quiver, or a crossbow's loaded bolt at `boltSpeed`, ADR-052; an archer's, ADR-051: at the player along its facing, off by its aim error), throwables (ADR-053: `fillPouch`, `cycleThrowable`, `hurl` at a throw's release, `burst` and the `Burst` puffs in `Session::bursts`) and `updateProjectiles` (gravity, a swept voxel ray and body boxes, hits through `strike()`, or for an archer's arrow (`Projectile::owner`) only the player's box, through `strikePlayer()`; a bomb or pot bursting on the first thing it meets; sticking, pickup into the quiver or the pouch, expiry) |
 | `src/audio.h/.cpp` | Sound (ADR-037): `Audio` (loads `data/sounds/*.ogg` with stb_vorbis into groups of takes; `play` picks a take never twice running with a little random pitch and volume; `mix` is the device thread's stereo mix: up to 48 resampled voices, three buses, a soft limiter), `place` (falloff and pan from the listener), `layersOf`/`hear` (what a `Sound` from the sim plays), `updateAmbience` (looping beds faded by what's around). No device here: main.cpp's `Speaker` feeds `mix` to SDL3's audio stream |
 | `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
@@ -570,8 +570,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - **Debug views:** `Frame.debug.x` selects shaded, greedy quads (color per merged quad), chunks
   (color per 32³ cell), AO only, normals, or light levels (sky blue-white, block orange;
   `--view light`). The branch is on a uniform, so it's coherent. The quad's light and index ride in
-  the existing flat `blockAndQuad` output (block id bits 0-6, light 7-14, quad index 15-30, bit 31
-  set for models) rather than new ones: on Apple's tile-based GPUs every extra vertex output costs
+  the existing flat `blockAndQuad` output (block id bits 0-6, light 7-14, quad index 15-29, bit 30
+  set for a glowing model, bit 31 set for models) rather than new ones: on Apple's tile-based GPUs every extra vertex output costs
   bandwidth, and two extra outputs measured ~15% slower frames.
 - **Color:** the swapchain is `SDR_LINEAR` (sRGB format), so all lighting is in linear space. The
   palette is sRGB in `kPalette` and converted at upload. Output goes through an ACES filmic tonemap.
@@ -651,7 +651,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   humanoid parts (helm with a face opening, cuirass, gauntlets, sabatons; plate is its own `Plate`
   palette color, since `Iron` reads black in shade) at the same sizes. Each `ModelInstance` names
   the model per part (`partModels`), so a worn piece swaps in the part it covers without changing
-  the pose. The rig has no legs, so greaves don't show.
+  the pose. The rig has no legs, so greaves don't show. A model is lit by the light where its parts'
+  origins average out; `ModelInstance::glow` (ADR-053, a burst's puff) draws it in its own colours,
+  unshaded (bit 30 of `blockAndQuad`).
 - **Tuning and flight:** walk/run/jump speed, gravity, fly and noclip live in `Body::tuning` (every `Player` and NPC body has one), so
   the debug UI edits them live. Flight ignores gravity (Space rises, Ctrl sinks, Shift is 2.5×) and
   still collides; noclip moves straight through terrain.
@@ -838,6 +840,21 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   slowly like the shot and is let down by a roll before its seat. model.cpp: `ModelCrossbow`,
   `ModelCrossbowSpanned`, `ModelBolt` and the pose (`span`: raised, tipped, the string hand), held in
   both hands; main.cpp draws bolts for crossbow projectiles.
+- **Throwables** (ADR-053): items with a `throw` record (`ItemType::thrown`: look, speed, lob,
+  radius, pouch, stance, status build-up) and no slot. `Player::pouch` counts each by ItemId and
+  `readied` is the one the throw button throws (saved in THRW; `fillPouch` on a new game, a rest and a
+  respawn). `Want::Throw` (SimInput::toss) starts the code move `Move::Throw` (kThrowSpec) once the
+  body is free, on the ground, with stamina and one left, not with a bow or crossbow in hand;
+  `throwing` is the one in hand. At its impact frame updateCombat sets `hurled` and `step()` calls
+  `hurl`: a projectile whose weapon is the throwable. A knife hits through `strike()` with
+  `Strike::buildup` (its own build-up instead of the thrower's) and sticks to be picked back up into
+  the pouch; a bomb or pot calls `burst` on the first body or voxel it meets: every living,
+  attackable, not dodging NPC within the radius and in sight takes a `strike()` from the burst point
+  (less toward the edge, `gRanged.burstEdge`), never the player. model.cpp: the left-hand throw
+  (`toss`), `ModelThrowingKnife`/`ModelBomb`/`ModelPoisonPot` (in the hand through poseModel's
+  `flask` output, in flight a knife by `arrowPose`, the rest `tumblePose`), `ModelBurst`/
+  `ModelPoisonBurst` (`burstPose`, drawn glowing). The Bags window's pouch row readies one; the HUD
+  shows it left of the flask; the debug Player tab's Throwables node edits the counts and knobs.
 - **Archers** (ADR-051): a creature whose `weapon` shoots has a range band (`keep_range`), an
   `aim_error` and maybe a `sidearm`. In `think()` its hands come first: the sidearm once the player is
   within `gAi.closeIn` in a fight (the bow back past the band's near end), never mid-move. With the bow
@@ -900,7 +917,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   (worn items, 0..100, the equip load: ADR-039), `damage` (weapons: slash, the default, strike or
   pierce, ADR-040), `parry` (main_hand weapons: they parry with the off hand empty, ADR-041),
   `mods` (worn items only: up to 8 stat modifiers such as `{"stat": "spirit", "flat": 2}`, each a
-  stat id of `kStatIds` and exactly one of `flat`, `increased` or `more`; ADR-022), and `copy_from` (another record's id: its fields but save_id, merge-patched with the record's own,
+  stat id of `kStatIds` and exactly one of `flat`, `increased` or `more`; ADR-022), `throw`
+  (throwables, ADR-053, no slot and an `attack` required: `{look: knife | bomb | pot, speed 5..80,
+  lob, radius 0..8 (a knife none, a bomb or pot some), pouch 1..99, stance, bleed, poison, frost}`), and `copy_from` (another record's id: its fields but save_id, merge-patched with the record's own,
   so objects merge and `null` removes; at most 16 deep). Any bad record stops the game with a
   message naming file, record and field. `data/` is read from the working folder, else from the
   source tree.
@@ -928,6 +947,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Iron Greatsword / Barrow Greataxe | Main Hand (both hands) | greatsword 9–13 (speed 1.45, strength A, agility D, weight 9) / greataxe 10–14 (speed 1.55, strength S, weight 10), ADR-049; rare drops of bandits (10% when the knife doesn't drop) / barrow ghouls (12% when the charm doesn't) |
   | Short Bow | Main Hand (both hands) | 5–8 pierce (speed 1.0, agility B 1.1, strength E 0.3, weight 2), shoots arrows from the quiver (ADR-050); dropped by bandit archers 25% (ADR-051) |
   | Light Crossbow | Main Hand (both hands) | 12–16 pierce (speed 1.0, no scaling, weight 3.5), fires bolts from the quiver and reloads after (ADR-052); dropped by guards 50% |
+  | Throwing Knife | – (the pouch, 10) | 4–6 pierce (agility 0.6), 40 bleed build-up, stance 6, flat at 32 b/s, sticks to be picked up (ADR-053) |
+  | Clay Bomb | – (the pouch, 3) | 16–22 strike (no scaling), stance 40, lobbed at 14 b/s, bursts 2.5 blocks (ADR-053) |
+  | Poison Pot | – (the pouch, 3) | 1–2 strike, 110 poison build-up, lobbed at 14 b/s, bursts 2.5 blocks (ADR-053) |
 
   Weapon classes (ADR-044, `data/weapon_classes.json`): one record per class (fists, dagger, sword,
   axe, mace, greatsword, greataxe), each with every attack move (`seconds`, `hold`, `hit`, `chain`, `cancel` in order,

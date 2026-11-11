@@ -3663,6 +3663,8 @@ static void playerSaves() {
     a.restPoint = glm::vec3(22.5f, 4, 14.5f);  // ADR-047
     p.twoHanded = true;  // ADR-048
     p.arrows = 7;        // ADR-050
+    const ItemId throwingKnife = defs().itemById.at("throwing_knife"), bomb = defs().itemById.at("clay_bomb");
+    p.pouch[throwingKnife] = 4, p.readied = bomb;  // ADR-053
     Entity *b0 = npc(a, 3, 0), *b1 = npc(a, 3, 1);
     CHECK(b0 && b1 && npc(a, 4, 0));
     b0->body.teleport({10.5f, 4, 50.5f});
@@ -3683,6 +3685,7 @@ static void playerSaves() {
     CHECK(b.player.health == 37 && b.player.level == 3 && b.player.stats.strength == 7 && b.player.stats.stamina == p.stats.stamina);
     CHECK(b.player.flasks == 1 && b.restPoint == glm::vec3(22.5f, 4, 14.5f));
     CHECK(b.player.arrows == 7);  // the quiver (ADR-050)
+    CHECK(b.player.pouch[throwingKnife] == 4 && b.player.pouch[bomb] == 3 && b.player.readied == bomb);  // the pouch (ADR-053)
     CHECK(b.player.twoHanded && twoHanding(b.player) && b.player.gripBlend == 1);  // already in both hands, not taking hold
     CHECK(b.player.inv.equipped == p.inv.equipped && b.player.inv.bags == p.inv.bags && b.player.inv.containers == p.inv.containers);
     Entity *c0 = npc(b, 3, 0), *c1 = npc(b, 3, 1);
@@ -3738,6 +3741,8 @@ static void playerSaves() {
         craft({{"HEAD", head}, {"ARRW", {uint8_t(kQuiver + 1)}}}),  // more than a quiver holds (ADR-050)
         craft({{"HEAD", head}, {"ARRW", {}}}),      // cut short
         craft({{"HEAD", head}, {"ARRW", {3, 0}}}),  // a byte too many
+        craft({{"HEAD", head}, {"THRW", {21, 2, 21}}}),  // cut short (ADR-053)
+        craft({{"HEAD", head}, {"THRW", {21, 0, 7}}}),   // a byte too many
         [&] {  // a rest point far past any world
             std::vector<uint8_t> rest{2, 1};
             for (float f : {1e30f, 40.0f, 0.0f}) le(rest, std::bit_cast<uint32_t>(f), 4);
@@ -3777,6 +3782,12 @@ static void playerSaves() {
         CHECK(t.elapsed == 10 && t.timeOfDay == 0.5f && t.player.pos == glm::vec3(24.5f, 4, 8.5f) && t.player.health == float(maxHealth(sheet(t.player))));
         CHECK(t.player.inv.containers[0][0] == Shortsword && t.player.inv.equipped[SlotTrinket] == NoItem && npc(t, 3, 1)->body.alive());
         CHECK(t.player.flasks == kBaseFlasks && !t.restPoint && t.player.arrows == kQuiver);  // an older save: full flasks and quiver, never rested
+        CHECK(t.player.pouch[throwingKnife] == 10 && t.player.pouch[bomb] == 3 && t.player.readied == throwingKnife);  // and a full pouch (ADR-053)
+        // A pouch with an item that isn't a throwable (the helm, 5), more knives than a pouch holds, a readied helm.
+        write(bad, craft({{"HEAD", head}, {"THRW", {5, 3, 5, 2, 21, 50, 22, 0}}}));
+        CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty() && t.player.pouch[5] == 0 && t.player.pouch[throwingKnife] == 10);
+        CHECK(t.player.pouch[bomb] == 0 && t.player.pouch[defs().itemById.at("poison_pot")] == 0 && t.player.readied == throwingKnife);  // (missing: none)
+        CHECK(r.notes.size() == 1 && r.notes[0].contains("no such throwable"));
         CHECK(!t.player.twoHanded && t.player.gripBlend == 0);  // and one-handed (t was a: two-handed)
         write(bad, craft({{"HEAD", head}, {"GRIP", {1}}}));  // two-handed with nothing in hand: not holding anything
         CHECK(loadPlayer(bad.c_str(), t, 0x1234abcd, r).empty() && t.player.twoHanded && !twoHanding(t.player) && t.player.gripBlend == 0);
@@ -4264,7 +4275,7 @@ static void dataFiles() {
                          R"("light_1": {"seconds": 0.7, "hold": 0.3, "hit": 0.4, "chain": 0.5, "cancel": 0.45,)"),
                   "record 0 'sword': field 'moves.light_1.cancel': 0.45 is out of range"},
                  {edited(R"("light_2": {"seconds": 0.65,)", R"("parry": {"seconds": 0.65,)"),
-                  "record 0 'sword': field 'moves.parry': not an attack move (none, parry and drink are code's)"},
+                  "record 0 'sword': field 'moves.parry': not an attack move (none, parry, drink and throw are code's)"},
                  {edited(R"("riposte": {"seconds": 1.4,)", R"("ripost": {"seconds": 1.4,)"),
                   "record 0 'sword': field 'moves.ripost': not an attack move"},
                  {edited(R"("light_1": {"seconds": 0.7, "hold": 0.3,)", R"("light_1": {"seconds": 0.7, "heavy": 1, "hold": 0.3,)"),
@@ -4336,9 +4347,22 @@ static void dataFiles() {
              {base + R"(,{"id": "a", "save_id": 12, "copy_from": 5, "name": "A"}])", "record 11 'a': field 'copy_from': must be a string id"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "armour": 3}])", "record 11 'a': field 'armour': unknown field"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "hat"}])", "field 'slot': must be one of"},
+             // Throwables (ADR-053): no slot, a look, a speed and a pouch; a knife sticks, a bomb or pot bursts.
+             {base + R"(,)" + R"({"id": "a", "save_id": 12, "name": "A", "attack": {"min": 1, "max": 2, "speed": 1}, "slot": "trinket", "throw": {"look": "knife", "speed": 30, "pouch": 5}}])", "field 'throw': a throwable isn't worn (no slot)"},
+             {base + R"(,)" + R"({"id": "a", "save_id": 12, "name": "A", "attack": {"min": 1, "max": 2, "speed": 1}, "throw": {"look": "rock", "speed": 30, "pouch": 5}}])", "field 'throw.look': must be one of"},
+             {base + R"(,)" + R"({"id": "a", "save_id": 12, "name": "A", "attack": {"min": 1, "max": 2, "speed": 1}, "throw": {"look": "knife", "speed": 30, "pouch": 5, "radius": 2}}])",
+              "field 'throw.radius': a knife sticks (no radius); a bomb or a pot bursts (a radius)"},
+             {base + R"(,)" + R"({"id": "a", "save_id": 12, "name": "A", "attack": {"min": 1, "max": 2, "speed": 1}, "throw": {"look": "bomb", "speed": 30, "pouch": 5}}])", "field 'throw.radius': a knife sticks"},
+             {base + R"(,)" + R"({"id": "a", "save_id": 12, "name": "A", "attack": {"min": 1, "max": 2, "speed": 1}, "throw": {"look": "knife", "speed": 30}}])", "field 'throw.pouch': missing"},
+             {base + R"(,)" + R"({"id": "a", "save_id": 12, "name": "A", "attack": {"min": 1, "max": 2, "speed": 1}, "throw": {"look": "knife", "pouch": 5}}])", "field 'throw.speed': missing"},
+             {base + R"(,)" + R"({"id": "a", "save_id": 12, "name": "A", "attack": {"min": 1, "max": 2, "speed": 1}, "throw": {"look": "knife", "speed": 30, "pouch": 5, "fuse": 1}}])", "field 'throw.fuse': unknown field"},
+             {base + R"(,)" + R"({"id": "a", "save_id": 12, "name": "A", "attack": {"min": 1, "max": 2, "speed": 1}, "throw": {"look": "pot", "speed": 30, "pouch": 5, "radius": 2, "lob": 1}}])", "field 'throw.lob': must be true or false"},
+             {base + R"(,)" + R"({"id": "a", "save_id": 12, "name": "A", "attack": {"min": 1, "max": 2, "speed": 1}, "throw": {"look": "knife", "speed": 30, "pouch": 5, "bleed": -1}}])", "field 'throw.bleed': -1 is out of range"},
+             {base + R"(,{"id": "a", "save_id": 12, "name": "A", "throw": {"look": "knife", "speed": 30, "pouch": 5}}])",
+              "field 'attack': missing (a throwable has its hit's damage roll)"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "main_hand"}])", "field 'attack': missing"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "head", "attack": {"min": 1, "max": 2, "speed": 1}}])",
-              "field 'attack': only main_hand and off_hand items attack"},
+              "field 'attack': only main_hand and off_hand items and throwables attack"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "slot": "bag"}])", "field 'bag_slots': missing"},
              {base + R"(,{"id": "a", "save_id": 12, "name": "A", "bag_slots": 4}])", "field 'bag_slots': only bag items"},
              {base + R"(,{"id": "a", "save_id": 12.5, "name": "A"}])", "field 'save_id': must be an integer"},
@@ -8090,6 +8114,7 @@ static void sounds() {
         return n;
     };
     const ItemId buckler = defs().itemById.at("oak_buckler"), tower = defs().itemById.at("tower_shield"), bow = defs().itemById.at("short_bow");
+    const ItemId bomb = defs().itemById.at("clay_bomb"), pot = defs().itemById.at("poison_pot"), throwingKnife = defs().itemById.at("throwing_knife");
     const int bandit = int(EntityKind::Bandit), boar = int(EntityKind::Boar), chief = int(EntityKind::BanditChief);
     CHECK(names({.what = Noise::Step, .ground = Sand}) == Names{"step_sand"} && names({.what = Noise::Step, .ground = Cobble}) == Names{"step_stone"});
     CHECK(names({.what = Noise::Step, .ground = Planks}) == Names{"step_wood"} && names({.what = Noise::Step, .ground = Dirt}) == Names{"step_dirt"});
@@ -8167,8 +8192,8 @@ static void sounds() {
     for (int n = 0; n < int(Noise::Count); ++n)
         for (int kind = -1; kind < int(defs().creatures.size()); ++kind)
             for (Block ground : grounds)
-                for (Move move : {Move::Light1, Move::Heavy1, Move::Parry, Move::Drink, Move::Shot})
-                    for (ItemId with : {NoItem, Shortsword, Knife, buckler, tower, bow})
+                for (Move move : {Move::Light1, Move::Heavy1, Move::Parry, Move::Drink, Move::Shot, Move::Throw})
+                    for (ItemId with : {NoItem, Shortsword, Knife, buckler, tower, bow, bomb, pot, throwingKnife})
                         for (float amount : {0.0f, 30.0f})
                             for (const Layer& l : layersOf({Noise(n), {}, kind, ground, move, with, amount}))
                                 if (!(kind < 0 && Noise(n) == Noise::Windup && move != Move::Shot))  // only NPCs telegraph (the player draws a bow)
@@ -8323,7 +8348,8 @@ static void bows() {
         CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
         fs::remove_all(dir);
         setDefs(std::move(test));
-        for (bool shooting : {false, true}) {
+        for (int mode : {0, 1, 2}) {  // a sword's swing, a bow's draw, a throw (ADR-053: a throwable can't be parried either)
+            bool shooting = mode == 1;
             Session s{.world = Grid({32, 16, 32}), .seed = 5};
             for (int z = 0; z < 32; ++z)
                 for (int x = 0; x < 32; ++x)
@@ -8335,8 +8361,12 @@ static void bows() {
             Entity& fencer = spawnAhead(s.entities, s.world, s.player, EntityKind(9), 3, 2.5f);
             setState(fencer, AiState::Chase, "test");
             fencer.body.swingTimer = 5;  // not about to swing itself
-            step(s, {.attack = true, .attackHeld = shooting}, kTick);  // a sword's tap is a light at once
-            CHECK(s.player.punching() && fencer.picked && fencer.answer == (shooting ? Answer::Guard : Answer::Parry));
+            if (mode == 2) {  // (on the ground first: a throw doesn't start in the air)
+                for (int i = 0; i < 10; ++i) step(s, {}, kTick);
+                step(s, {.toss = true}, kTick);
+            }
+            else step(s, {.attack = true, .attackHeld = shooting}, kTick);  // a sword's tap is a light at once
+            CHECK(s.player.punching() && fencer.picked && fencer.answer == (mode ? Answer::Guard : Answer::Parry));
         }
         setDefs(std::move(shipped));
     }
@@ -9370,6 +9400,314 @@ static void crossbows() {
     }
 }
 
+// Throwables (ADR-053): a pouch per kind, a left-hand throw, knives that stick and bleed, bombs and pots that burst.
+static void throwables() {
+    const Defs& d = defs();
+    const ItemId knife = d.itemById.at("throwing_knife"), bomb = d.itemById.at("clay_bomb"), pot = d.itemById.at("poison_pot"),
+                 bow = d.itemById.at("short_bow");
+    const ItemType &k = itemType(knife), &b = itemType(bomb), &o = itemType(pot);
+    CHECK(throwable(k) && throwable(b) && throwable(o) && !throwable(itemType(Shortsword)) && !throwable(itemType(bow)));
+    CHECK(k.thrown.look == ThrowLook::Knife && k.thrown.radius == 0 && !k.thrown.lob && k.damage == DamageType::Pierce && k.thrown.buildup[0] > 0);
+    CHECK(b.thrown.look == ThrowLook::Bomb && b.thrown.radius > 0 && b.thrown.lob && b.damage == DamageType::Strike && b.thrown.stance > k.thrown.stance);
+    CHECK(o.thrown.look == ThrowLook::Pot && o.thrown.radius > 0 && o.thrown.buildup[size_t(Status::Poison)] >= kBaseStatusResist);
+    CHECK(k.thrown.pouch > b.thrown.pouch && k.slot == SlotNone && b.weight == 0 && k.thrown.speed > b.thrown.speed);
+    CHECK(codeMove(Move::Throw) && spec(WeaponClass::Greatsword, Move::Throw).seconds == kThrowSpec.seconds && kThrowSpec.stamina > 0);
+    CHECK(throwableModel(knife) == ModelThrowingKnife && throwableModel(bomb) == ModelBomb && throwableModel(pot) == ModelPoisonPot);
+    CHECK(burstModel(bomb) == ModelBurst && burstModel(pot) == ModelPoisonBurst);
+
+    // A field: ground top at y 4, the player at x 8.5 facing +x with a sword, a full pouch, the knife readied.
+    auto field = [&] {
+        Session s{.world = Grid({128, 32, 32}), .seed = 5};
+        for (int z = 0; z < 32; ++z)
+            for (int x = 0; x < 128; ++x)
+                for (int y = 0; y < 4; ++y) s.world.set({x, y, z}, Stone);
+        startSession(s);
+        s.player.teleport({8.5f, 4, 16.5f});
+        s.player.yaw = std::numbers::pi_v<float> / 2;
+        s.player.inv.equipped[SlotMainHand] = Shortsword;
+        for (int i = 0; i < 10; ++i) step(s, {}, kTick);
+        s.sounds.clear();
+        return s;
+    };
+    auto until = [](Session& s, const std::function<bool()>& done, int most = 300, SimInput in = {}) {
+        for (int i = 1; i <= most; ++i) {
+            step(s, in, kTick);
+            if (done()) return i;
+        }
+        return most + 1;
+    };
+    SimInput toss{.toss = true};
+
+    {  // A new game: a full pouch of each, the knife (the first) readied.
+        Session s = field();
+        Player& p = s.player;
+        CHECK(p.pouch[knife] == k.thrown.pouch && p.pouch[bomb] == b.thrown.pouch && p.pouch[pot] == o.thrown.pouch && p.readied == knife);
+        // A press throws: the move, its stamina, the whoosh; at its impact frame one knife out of the pouch, along the facing.
+        step(s, toss, kTick);
+        CHECK(p.move == Move::Throw && p.throwing == knife && p.stamina < gMelee.staminaMax && p.moveScale == 1);
+        int out = until(s, [&] { return !s.projectiles.empty(); }, 60);
+        CHECK(std::abs(float(out + 1) * kTick - kThrowSpec.impact * kThrowSpec.seconds) < 2.5f * kTick);
+        const Projectile& a = s.projectiles[0];
+        CHECK(a.weapon == knife && a.owner == 0 && std::abs(glm::length(a.vel) - k.thrown.speed) < 0.01f && a.vel.x > 0.95f * glm::length(a.vel));
+        CHECK(a.stance == k.thrown.stance && p.pouch[knife] == k.thrown.pouch - 1 && p.throwing == NoItem && p.pouch[bomb] == b.thrown.pouch);
+        CHECK(std::ranges::any_of(s.sounds, [](const Sound& h) { return h.what == Noise::Swing && h.kind < 0 && h.move == Move::Throw; }));
+        // It sticks where it lands; walked over, it's back in the pouch (and not past a full one).
+        until(s, [&] { return s.projectiles[0].stuck; }, 120);
+        glm::vec3 at = s.projectiles[0].pos;
+        CHECK(at.x > 12 && std::abs(at.y - 4) < 0.6f);
+        until(s, [&] { return !p.punching(); }, 60);
+        p.teleport({at.x, 4, at.z});
+        step(s, {}, kTick);
+        CHECK(s.projectiles.empty() && p.pouch[knife] == k.thrown.pouch && p.arrows == kQuiver);
+        Session t = field();
+        t.player.pouch[knife] = uint8_t(k.thrown.pouch - 1);
+        t.projectiles.push_back({{9, 4.2f, 16.5f}, {9, 4.2f, 16.5f}, {1, 0, 0}, knife, 1, 0, 0, true});
+        step(t, {}, kTick);
+        CHECK(t.projectiles.empty() && t.player.pouch[knife] == k.thrown.pouch);
+        t.projectiles.push_back({{9, 4.2f, 16.5f}, {9, 4.2f, 16.5f}, {1, 0, 0}, knife, 1, 0, 0, true});
+        step(t, {}, kTick);
+        CHECK(t.projectiles.size() == 1 && t.player.pouch[knife] == k.thrown.pouch);  // full: left there
+        // An arrow walked over still goes to the quiver, not the pouch.
+        t.projectiles.clear(), t.player.arrows = 3;
+        t.projectiles.push_back({{9, 4.2f, 16.5f}, {9, 4.2f, 16.5f}, {1, 0, 0}, bow, 1, 0, 0, true});
+        step(t, {}, kTick);
+        CHECK(t.projectiles.empty() && t.player.arrows == 4);
+    }
+    {  // Nothing left of the readied kind, or a bow in hand (both hands full): the press does nothing.
+        Session s = field();
+        Player& p = s.player;
+        p.pouch[knife] = 0;
+        for (int i = 0; i < 30; ++i) step(s, i ? SimInput{} : toss, kTick);
+        CHECK(p.move == Move::None && s.projectiles.empty() && p.want == Want::None);
+        p.pouch[knife] = 2, p.inv.equipped[SlotMainHand] = bow;
+        for (int i = 0; i < 30; ++i) step(s, i ? SimInput{} : toss, kTick);
+        CHECK(p.move == Move::None && s.projectiles.empty() && p.pouch[knife] == 2);
+        // With no stamina it waits (the buffer) and goes once there's some.
+        p.inv.equipped[SlotMainHand] = Shortsword, p.stamina = 0, p.staminaWait = 0.05f;
+        step(s, toss, kTick);
+        CHECK(p.move == Move::None && p.want == Want::Throw);
+        CHECK(until(s, [&] { return p.move == Move::Throw; }, 30) <= 30);
+        // A flinch before it lets go keeps it in the pouch.
+        Session t = field();
+        step(t, toss, kTick);
+        step(t, {}, kTick);
+        interrupt(t.player, 0.3f, false);
+        for (int i = 0; i < 60; ++i) step(t, {}, kTick);
+        CHECK(t.projectiles.empty() && t.player.pouch[knife] == k.thrown.pouch && t.player.move == Move::None);
+        // It walks slowly while throwing, and turns toward the aim until it lets go.
+        Session u = field();
+        SimInput walk;
+        walk.move.move = {0, 1};
+        step(u, toss, kTick);
+        for (int i = 0; i < 12; ++i) step(u, walk, kTick);
+        float walked = glm::length(glm::vec2(u.player.vel.x, u.player.vel.z));
+        CHECK(u.player.move == Move::Throw && walked > 0.5f && walked <= gMelee.drinkSpeed + 0.01f);
+        // A press with nothing to throw, or a bow in hand, changes nothing: a draw goes on, a recovery isn't cut.
+        Session n = field();
+        n.player.inv.equipped[SlotMainHand] = bow;
+        step(n, {.attack = true, .attackHeld = true}, kTick);
+        for (int i = 0; i < 20; ++i) step(n, {.attackHeld = true}, kTick);
+        step(n, {.attackHeld = true, .toss = true}, kTick);
+        CHECK(n.player.move == Move::Shot && n.player.hitPending && n.player.want == Want::None);
+        Session z = field();
+        z.player.pouch[knife] = 0;
+        step(z, {.attack = true}, kTick);
+        until(z, [&] { return moveProgress(z.player) > spec(z.player).cancel + 0.02f; }, 120);
+        step(z, toss, kTick);
+        CHECK(z.player.move == Move::Light1);
+        // A throw cuts an attack's recovery (like the flask), and a great weapon's slowness doesn't slow it.
+        Session w = field();
+        step(w, {.attack = true}, kTick);
+        until(w, [&] { return w.player.move == Move::Light1 && moveProgress(w.player) > spec(w.player).cancel + 0.02f; }, 120);
+        step(w, toss, kTick);
+        CHECK(w.player.move == Move::Throw);
+        Session g = field();
+        g.player.inv.equipped[SlotMainHand] = d.itemById.at("iron_greatsword");
+        step(g, toss, kTick);
+        CHECK(g.player.move == Move::Throw && g.player.moveScale == 1);
+        // A bandit up close answers a throw's windup as an attack.
+        Session h = field();
+        Entity& e = spawnAhead(h.entities, h.world, h.player, EntityKind::Bandit, 3, 2.5f);
+        setState(e, AiState::Chase, "test");
+        e.body.swingTimer = 5;
+        step(h, toss, kTick);
+        bool answered = false;
+        for (int i = 0; i < 20 && h.player.move == Move::Throw; ++i) step(h, {}, kTick), answered |= e.picked;
+        CHECK(answered);
+        Session v = field();
+        SimInput turn{.aim = {0, 1}};
+        step(v, toss, kTick);  // thrown facing +x, then aimed at +z: it turns before it lets go
+        for (int i = 0; i < 12; ++i) step(v, turn, kTick);
+        CHECK(v.player.move == Move::Throw && v.player.hitPending && std::abs(v.player.yaw) < 0.5f);  // (facing +z: yaw 0)
+        // What changed while the press waited counts: nothing left, or a bow in hand by then, and it isn't thrown.
+        for (int k = 0; k < 2; ++k) {
+            Session b = field();
+            step(b, {.attack = true}, kTick);
+            step(b, toss, kTick);  // buffered behind the swing's windup
+            CHECK(b.player.move == Move::Light1 && b.player.want == Want::Throw);
+            if (k == 0) b.player.pouch[knife] = 0;
+            else b.player.inv.equipped[SlotMainHand] = bow;
+            for (int i = 0; i < 60; ++i) step(b, {}, kTick);
+            CHECK(b.player.move != Move::Throw && b.projectiles.empty() && b.player.want == Want::None);
+        }
+    }
+    {  // The next kind: knife, bomb, pot, round again; ones with none left skipped, unless none has any.
+        Player p;
+        fillPouch(p);
+        CHECK(p.readied == knife);
+        cycleThrowable(p);
+        CHECK(p.readied == bomb);
+        cycleThrowable(p);
+        CHECK(p.readied == pot);
+        cycleThrowable(p);
+        CHECK(p.readied == knife);
+        p.pouch[bomb] = 0;
+        cycleThrowable(p);
+        CHECK(p.readied == pot);
+        p.pouch = {};
+        cycleThrowable(p);
+        CHECK(p.readied == knife);
+        // A rest fills the pouch, as does getting back up; never lowers one over (a debug fill).
+        p.pouch[bomb] = 1, p.pouch[knife] = 40;
+        rest(p);
+        CHECK(p.pouch[bomb] == b.thrown.pouch && p.pouch[pot] == o.thrown.pouch && p.pouch[knife] == 40);
+        Session s = field();
+        s.player.pouch = {};
+        s.player.health = 0;
+        respawnPlayer(s);
+        CHECK(s.player.pouch[knife] == k.thrown.pouch && s.player.pouch[pot] == o.thrown.pouch);
+    }
+    {  // A knife into a bandit: the hit, and its own bleed build-up.
+        Session s = field();
+        s.rng.seed(7);
+        Entity& e = spawnAhead(s.entities, s.world, s.player, EntityKind::Bandit, 3, 6);
+        float before = e.body.health;
+        s.player.throwing = knife;
+        hurl(s, std::nullopt);
+        for (int i = 0; i < 60 && !s.projectiles.empty(); ++i) updateProjectiles(s, kTick);
+        CHECK(s.projectiles.empty() && e.body.health < before && e.body.buildup[size_t(Status::Bleed)] == k.thrown.buildup[0]);
+        // Its build-up is its own, not the weapon in hand's (a Rusty Knife's bleed): a knife the same, a pot no bleed.
+        for (ItemId what : {knife, pot}) {
+            Session r = field();
+            r.player.inv.equipped[SlotMainHand] = Knife;
+            Entity& t = spawnAhead(r.entities, r.world, r.player, EntityKind::Bandit, 3, 6);
+            r.player.throwing = what;
+            hurl(r, lockPoint(t));
+            for (int i = 0; i < 120 && !r.projectiles.empty(); ++i) updateProjectiles(r, kTick);
+            CHECK(t.body.buildup[size_t(Status::Bleed)] == (what == knife ? k.thrown.buildup[0] : 0) && t.body.hitTime < 1);
+        }
+        CHECK(e.body.hitWith == knife && s.player.swingWeapon == NoItem);
+        // A bomb or pot thrown at nothing goes up (lobPitch) and bursts where it comes down, short of any stuck one.
+        Session t = field();
+        t.player.throwing = bomb;
+        hurl(t, std::nullopt);
+        CHECK(t.projectiles.size() == 1 && t.projectiles[0].vel.y > 0.3f * b.thrown.speed && t.player.pouch[bomb] == b.thrown.pouch - 1);
+        for (int i = 0; i < 300 && !t.projectiles.empty(); ++i) updateProjectiles(t, kTick);
+        CHECK(t.projectiles.empty() && t.bursts.size() == 1 && t.bursts[0].item == bomb && t.bursts[0].radius == b.thrown.radius);
+        CHECK(t.bursts[0].pos.x > 15 && t.bursts[0].pos.y > 3.9f && t.bursts[0].pos.y < 4.2f);
+        CHECK(std::ranges::any_of(t.sounds, [&](const Sound& h) { return h.what == Noise::Thunk && h.with == bomb; }));
+        for (int i = 0; i < int(gRanged.burstSeconds / kTick) + 2; ++i) updateProjectiles(t, kTick);
+        CHECK(t.bursts.empty());  // the puff is gone
+        // Locked on (aimAt), it comes down on the target.
+        Session u = field();
+        u.player.throwing = pot;
+        glm::vec3 target{20.5f, 4.1f, 18.5f};
+        hurl(u, target);
+        for (int i = 0; i < 300 && !u.projectiles.empty(); ++i) updateProjectiles(u, kTick);
+        CHECK(u.bursts.size() == 1 && glm::distance(u.bursts[0].pos, target) < 0.8f);
+    }
+    {  // A burst strikes every bandit within its radius (less at the edge), none past it or behind a wall, never the player.
+        auto blast = [&](uint32_t seed, std::vector<std::pair<EntityKind, float>> where, bool wall, ItemId what) {
+            Session s = field();
+            s.rng.seed(seed);
+            glm::vec3 at{20.5f, 4.05f, 16.5f};
+            for (auto [kind, dx] : where) spawnAhead(s.entities, s.world, s.player, kind, 3, 5).body.teleport({at.x + dx, 4, at.z});
+            if (wall)
+                for (int y = 4; y < 8; ++y)
+                    for (int z = 10; z < 23; ++z) s.world.set({21, y, z}, Stone);
+            s.player.teleport({at.x, 4, at.z});
+            float hp = s.player.health;
+            burst(s, at, what, at - glm::vec3(3, 0, 0));
+            CHECK(s.player.health == hp && s.bursts.size() == 1 && s.bursts[0].pos == at);
+            CHECK((s.player.trauma > 0.3f) == (what == bomb));  // a bomb going off at your feet shakes the camera; a pot doesn't
+            return s;
+        };
+        auto lost = [](const Entity& e) { return float(maxHealth(sheet(e.body))) - e.body.health; };
+        float middle = 0, edge = 0, past = 0, walled = 0;
+        for (uint32_t seed = 1; seed <= 12; ++seed) {
+            Session s = blast(seed, {{EntityKind::Bandit, 0}, {EntityKind::Bandit, 2.2f}, {EntityKind::Bandit, 3.5f}}, false, bomb);
+            middle += lost(s.entities[0]), edge += lost(s.entities[1]), past += lost(s.entities[2]);
+            CHECK(s.entities[0].body.hitWith == bomb && s.player.swingWeapon == NoItem);
+            walled += lost(blast(seed, {{EntityKind::Bandit, 2.2f}}, true, bomb).entities[0]);
+        }
+        CHECK(edge > 0 && middle > 1.3f * edge && past == 0 && walled == 0);
+        std::println("level band: a clay bomb into bandits: {:.1f} in the middle, {:.1f} near its edge (the starting stats)", middle / 12, edge / 12);
+        // A poison pot poisons a bandit at its middle; a ghoul shrugs it off (its poison resist).
+        Session s = blast(3, {{EntityKind::Bandit, 0}, {EntityKind::Ghoul, 0.5f}}, false, pot);
+        CHECK(s.entities[0].body.effect(Effect::Poisoned) && !s.entities[1].body.effect(Effect::Poisoned) && s.entities[1].body.buildup[1] > 0);
+        CHECK(lost(s.entities[0]) > 0);
+        // A dodge's i-frames let a burst through.
+        Session r = field();
+        Entity& e = spawnAhead(r.entities, r.world, r.player, EntityKind::Bandit, 3, 5);
+        e.body.rollTime = gMelee.iframeFrom + 0.01f, e.body.rollLength = 1;
+        CHECK(invulnerable(e.body));
+        float hp = e.body.health;
+        burst(r, e.body.pos + glm::vec3(0, 0.5f, 0), bomb, r.player.pos);
+        CHECK(e.body.health == hp);
+        // The dead are left alone; one it kills is a kill (the quest event).
+        Session q = field();
+        Entity& dead = spawnAhead(q.entities, q.world, q.player, EntityKind::Bandit, 3, 5);
+        Entity& weak = spawnAhead(q.entities, q.world, q.player, EntityKind::Bandit, 4, 5);
+        Entity& d0 = q.entities[0];
+        d0.body.health = 0, weak.body.health = 1;
+        (void)dead;
+        q.events.clear();
+        burst(q, q.entities[1].body.pos + glm::vec3(0, 0.5f, 0), bomb, q.player.pos);
+        CHECK(q.entities[0].body.health == 0 && q.entities[0].body.hitWith == NoItem && !q.entities[1].body.alive());
+        CHECK(std::ranges::count_if(q.events, [](const GameEvent& ev) { return std::holds_alternative<Killed>(ev); }) == 1);
+    }
+    {  // The models: a knife in the arrow's grid, tipped where an arrow is; a lit fuse, a green stopper; puffs.
+        auto count = [](Model m) {
+            Grid g = buildPart(m, Head);
+            int n = 0;
+            for (int z = 0; z < g.size.z; ++z)
+                for (int y = 0; y < g.size.y; ++y)
+                    for (int x = 0; x < g.size.x; ++x) n += g.get({x, y, z}) != Air;
+            return n;
+        };
+        Grid kn = buildPart(ModelThrowingKnife, Head), bm = buildPart(ModelBomb, Head), pt = buildPart(ModelPoisonPot, Head);
+        CHECK(kn.size == buildPart(ModelArrow, Head).size && kn.get({1, 9, 0}) == Steel && kn.get({1, 0, 0}) == Leather);
+        CHECK(bm.get({2, 7, 2}) == Ember && bm.get({2, 2, 2}) == Slate && pt.get({2, 6, 2}) == OakLeaves3 && pt.get({0, 2, 2}) == Blade);
+        CHECK(count(ModelBurst) > 400 && count(ModelPoisonBurst) > 400 && buildPart(ModelBurst, Torso).size == glm::ivec3(1));
+        // The puff swells most of the way at once, is full by 70% of its time, gone at its end.
+        auto across = [](float u) { return glm::length(glm::vec3(burstPose({0, 0, 0}, 2, u) * glm::vec4(1, 0, 0, 0))) * 12; };
+        CHECK(across(0) > 0.6f * 4 && std::abs(across(0.7f) - 4) < 1e-3f && across(1) < 1e-3f);
+    }
+    {  // The pose: drawn back up behind the shoulder by the hold point, the throwable in the left hand; out in front at the release.
+        Session s = field();
+        Player& p = s.player;
+        auto at = [](const glm::mat4& m, glm::vec3 v) { return glm::vec3(m * glm::vec4(v, 1)); };
+        auto hand = [&](const std::array<glm::mat4, PartCount>& parts) { return at(parts[HandL], glm::vec3(1.5f)); };
+        glm::vec3 rest = hand(poseModel(p, ModelPlayer));
+        p.readied = bomb;
+        step(s, toss, kTick);
+        until(s, [&] { return p.moveTime >= 0.5f * holdTime(p); }, 60);
+        CHECK(hand(poseModel(p, ModelPlayer)).y > rest.y + 0.3f);  // on its way up by halfway to the hold point
+        until(s, [&] { return p.moveTime >= holdTime(p); }, 60);
+        glm::mat4 held(0), inHand(0);
+        auto parts = poseModel(p, ModelPlayer, &held, 1, nullptr, &inHand);
+        glm::vec3 back = hand(parts);
+        CHECK(back.x < rest.x - 0.3f && back.y > rest.y + 0.7f && inHand != glm::mat4(0));  // facing +x: behind is -x
+        CHECK(glm::length(at(inHand, {2.5f, 2.5f, 2.5f}) - back) < 0.25f);  // the bomb's middle at the hand
+        until(s, [&] { return !p.hitPending; }, 60);
+        inHand = glm::mat4(0);
+        parts = poseModel(p, ModelPlayer, &held, 1, nullptr, &inHand);
+        CHECK(hand(parts).x > rest.x + 0.5f && inHand == glm::mat4(0) && s.projectiles.size() == 1);  // let go: out in front, gone from the hand
+        until(s, [&] { return !p.punching(); }, 60);
+        CHECK(glm::length(hand(poseModel(p, ModelPlayer)) - rest) < 0.05f);
+    }
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -9410,6 +9748,7 @@ int main() {
     bows();
     archers();
     crossbows();
+    throwables();
     sounds();
     combat();
     fighters();

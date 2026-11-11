@@ -31,7 +31,7 @@ struct Frame {
 };
 struct Draw {
     float4x4 model;
-    float4 modelLight;    // x models: light + 1 (0: a chunk)
+    float4 modelLight;    // x models: light + 1 (0: a chunk); y > 0: it glows (ADR-053)
     uint4 firstQuad;      // x: index of this draw's first quad in the storage buffer; plants: y first instance, zw window low x, z (int)
 };
 
@@ -41,7 +41,8 @@ struct VOut {
     float3 normal;
     float ao;  // aoCurve value: 1 open, lower in corners
     // block id in bits 0-6, the quad's light (sky << 4 | block) in bits 7-14, quad index in bits
-    // 15-30 (for the greedy-quads debug view), bit 31 set for models (flat colour). Packed into one
+    // 15-29 (for the greedy-quads debug view), bit 30 set for a glowing model (unshaded: a burst's
+    // fire, ADR-053), bit 31 set for models (flat colour). Packed into one
     // output because every extra vertex output costs bandwidth on tile-based GPUs (~15% here).
     uint blockAndQuad [[flat]];
 };
@@ -96,7 +97,8 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     out.worldPos = world.xyz;
     out.normal = normalize((d.model * float4(kNormals[face], 0.0)).xyz);
     out.ao = v.ao;
-    out.blockAndQuad = block | lit << 7 | ((d.firstQuad.x + vid / 6) & 0xFFFFu) << 15 | uint(model) << 31;  // ponytail: quad index wraps past 64K quads (debug color only)
+    bool glow = model && d.modelLight.y > 0.0;
+    out.blockAndQuad = block | lit << 7 | ((d.firstQuad.x + vid / 6) & 0x7FFFu) << 15 | uint(glow) << 30 | uint(model) << 31;  // ponytail: quad index wraps past 32K quads (debug color only)
     return out;
 }
 
@@ -238,12 +240,13 @@ static float4 shade(constant Frame& f, VOut in, float3 albedo) {
     if (mode == 4) return float4(pow(normalize(in.normal) * 0.5 + 0.5, 2.2), 1.0);  // normals as color
     if (mode == 5) return float4(lightLevels(in), 1.0);
     if (mode == 1) {  // greedy quads
-        albedo = idColor((in.blockAndQuad >> 15) & 0xFFFFu);
+        albedo = idColor((in.blockAndQuad >> 15) & 0x7FFFu);
     } else if (mode == 2) {  // chunks: 32^3 cell containing the surface (nudged inside along the normal)
         uint3 cell = uint3(int3(floor((in.worldPos - in.normal * 0.01) / 32.0)));
         albedo = idColor(cell.x * 73856093u ^ cell.y * 19349663u ^ cell.z * 83492791u);
     }
-    return float4(tonemap(applyFog(f, light(f, in, albedo), in.worldPos)), 1.0);
+    bool glows = (in.blockAndQuad >> 30 & 1u) != 0u;  // its own colour, unshaded
+    return float4(tonemap(applyFog(f, glows ? albedo * 1.3 : light(f, in, albedo), in.worldPos)), 1.0);
 }
 
 fragment float4 voxel_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
@@ -316,7 +319,7 @@ vertex PlantOut plant_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
     out.position = f.viewProj * float4(out.worldPos, 1.0);
     out.normal = n;
     out.ao = v.ao * mix(0.75, 1.0, saturate(v.local.y / 4.0));  // a little darker near the ground
-    out.blockAndQuad = v.block | (p.y & 255u) << 7 | ((d.firstQuad.x + vid / 6) & 0xFFFFu) << 15;
+    out.blockAndQuad = v.block | (p.y & 255u) << 7 | ((d.firstQuad.x + vid / 6) & 0x7FFFu) << 15;
     out.cell = cell;
     return out;
 }

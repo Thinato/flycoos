@@ -529,6 +529,34 @@ static void playerTab(Session& session, float& armorK, DebugActions& actions, co
         if (ImGui::Button("Reset bows")) r = RangedTuning{};
         ImGui::TreePop();
     }
+    if (ImGui::TreeNode("Throwables (ADR-053)")) {
+        RangedTuning& r = gRanged;
+        for (size_t i = 0; i < defs().items.size(); ++i) {
+            const ItemType& it = defs().items[i];
+            if (!throwable(it)) continue;
+            ImGui::PushID(int(i));
+            if (ImGui::RadioButton("##ready", p.readied == ItemId(i))) p.readied = ItemId(i);
+            ImGui::SetItemTooltip("Ready it (X readies the next, G / touchpad throws)");
+            ImGui::SameLine();
+            int n = p.pouch[i];
+            if (ImGui::SliderInt(it.name, &n, 0, it.thrown.pouch, std::format("%d of {}", it.thrown.pouch).c_str())) p.pouch[i] = uint8_t(n);
+            ImGui::PopID();
+        }
+        if (p.move == Move::Throw)
+            ImGui::ProgressBar(moveProgress(p), {-FLT_MIN, 0}, p.hitPending ? std::format("throwing a {}", itemType(p.throwing).name).c_str() : "thrown");
+        else
+            ImGui::TextDisabled("%s", ranged(p) ? "A bow or crossbow in hand: no throws" : "Not throwing");
+        ImGui::Text("Bursts showing: %d", int(session.bursts.size()));
+        ImGui::SliderFloat("Lob pitch", &r.lobPitch, 0, 1.2f, "%.2f rad (nothing to aim at)");
+        ImGui::SliderFloat("Burst at its edge", &r.burstEdge, 0, 1, "x %.2f damage, stance, build-up");
+        ImGui::SliderFloat("Burst puff", &r.burstSeconds, 0.05f, 2, "%.2f s");
+        if (ImGui::Button("Fill the pouch")) fillPouch(p);
+        ImGui::SameLine();
+        if (ImGui::Button("Empty it")) p.pouch = {};
+        ImGui::SameLine();
+        if (ImGui::Button("Reset throwables")) r.lobPitch = RangedTuning{}.lobPitch, r.burstEdge = RangedTuning{}.burstEdge, r.burstSeconds = RangedTuning{}.burstSeconds;
+        ImGui::TreePop();
+    }
 
     ImGui::SeparatorText("Flight");
     ImGui::Checkbox("Fly", &t.fly);

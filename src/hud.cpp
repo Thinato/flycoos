@@ -8,6 +8,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 
+#include "inventory_ui.h"
 #include "lockon.h"
 #include "melee.h"
 #include "projectile.h"
@@ -202,6 +203,15 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
     ImVec2 hs = ImGui::CalcTextSize(hp);
     shadowText(dl, ImVec2(center.x - hs.x / 2, center.y - hs.y / 2), uiColor(1, 1, 1), 1, hp);
     flaskIcon(dl, ImVec2(center.x - 140 - 34, center.y + 4), player.flasks);  // left of the bars
+    if (player.readied) {  // the readied throwable (ADR-053), left of the flask, and how many
+        ImVec2 c(center.x - 140 - 84, center.y + 4);
+        int n = player.pouch[player.readied];
+        itemIcon(dl, player.readied, ImVec2(c.x - 12, c.y - 12), 24);
+        if (n == 0) dl->AddRectFilled(ImVec2(c.x - 12, c.y - 12), ImVec2(c.x + 12, c.y + 12), uiColor(0, 0, 0, 0.5f), 3);
+        char t[8];
+        std::snprintf(t, sizeof t, "%d", n);
+        shadowText(dl, ImVec2(c.x + 13, c.y - ImGui::GetFontSize() / 2 + 3), n > 0 ? uiColor(1, 1, 1) : uiColor(0.6f, 0.6f, 0.6f), 1, t);
+    }
     if (ranged(player)) {  // a bow (ADR-050): right of the bars, an arrow and the quiver's count
         ImVec2 c(center.x + 140 + 16, center.y + 4);
         ImU32 shaft = uiColor(0.75f, 0.6f, 0.4f), ink = uiColor(0, 0, 0, 0.9f), head = uiColor(0.8f, 0.82f, 0.85f);

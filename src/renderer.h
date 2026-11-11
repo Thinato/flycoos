@@ -18,6 +18,7 @@ struct ImDrawData;
 struct ModelInstance {
     std::array<Model, PartCount> parts;  // the model each part is drawn from (worn armor swaps some)
     std::array<glm::mat4, PartCount> pose;
+    bool glow = false;                   // drawn in its own colours, unshaded (a burst's fire, ADR-053)
 };
 
 struct FrameParams {

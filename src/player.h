@@ -77,9 +77,10 @@ struct Body {
 // and the attacks that depend on what the body was doing; the parry, and a drink from the healing
 // flask (ADR-047), which commit like attacks but strike nothing. A bow's shot (ADR-050) draws to its
 // hold point, holds while the button is down and looses an arrow at its impact frame. A crossbow's (ADR-052)
-// shot doesn't hold: it fires at its impact frame, and its reload seats a bolt at its own.
+// shot doesn't hold: it fires at its impact frame, and its reload seats a bolt at its own. A throw (ADR-053)
+// lets the readied throwable go from the left hand at its impact frame.
 enum class Move : uint8_t { None, Light1, Light2, Light3, Light4, Heavy1, Heavy2, Running, Rolling, JumpLight, JumpHeavy,
-                            GuardCounter, Riposte, Parry, Backstep, Drink, Shot, Reload, Count };
+                            GuardCounter, Riposte, Parry, Backstep, Drink, Shot, Reload, Throw, Count };
 // What a body did this tick that can be heard (ADR-037): bits of Combatant::noises, set where it
 // happens and gathered by step() into Session::sounds. Steps and swim strokes come from the gait.
 enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup, Charged, GuardUp, Hurt, Crit, Death,
@@ -91,7 +92,7 @@ enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup
                              Count };
 static_assert(size_t(Noise::Count) <= 32, "Combatant::noises is 32 bits");
 // What the player's attack buttons asked for and is still waiting to happen (melee.cpp).
-enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry, Drink, Grip };
+enum class Want : uint8_t { None, Light, Heavy, Roll, Counter, Parry, Drink, Grip, Throw };
 
 // A timed effect (ADR-046; TALENTS.md foundation 4): poison, frostbite, and later buffs, enchants and
 // the like. Its modifiers count in the stat pipeline (collect) while it lasts; the clock runs in updateCombat.
@@ -179,6 +180,10 @@ struct Combatant {
     float aimBlend = 0;                    // 0 .. 1: how far the bow is raised to aim (the pose, the camera)
     bool loosed = false;                   // the shot under way reached its release this tick: step() looses the arrow
     ItemId loaded = NoItem;                // the crossbow with a bolt in it (ADR-052; a reload seats one, the shot spends it); not saved
+    std::array<uint8_t, 256> pouch{};      // throwables carried, by ItemId (ADR-053); a rest fills each to its kind's pouch
+    ItemId readied = NoItem;               // the throwable the throw button throws (ADR-053)
+    ItemId throwing = NoItem;              // the one in the hand during a throw (taken out at its release)
+    bool hurled = false;                   // the throw under way reached its release this tick: step() throws it
     float deadTime = 0;                    // seconds spent at 0 health
     Inventory inv;                         // equipment and bags
     Progress progress;                     // skills, XP and talents: the player's (NPCs' stay at the start)

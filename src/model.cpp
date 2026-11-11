@@ -226,6 +226,43 @@ static Grid buildBolt() {
 constexpr glm::vec3 kCrossbowGrip{6.5f, 0.5f, 3.5f}, kCrossbowFore{6.5f, 0.5f, 8.5f}, kStringSlack{6.5f, 2.5f, 8.5f},
     kStringLatch{6.5f, 2.5f, 4.5f}, kBoltTip{6.5f, 2.5f, 11};
 
+// Throwables (ADR-053). A throwing knife up along +y in the arrow's grid, its tip where an arrow's is: a
+// wrapped grip, a crossguard, a steel blade. A bomb: a dark round shell with a fuse and its spark. A pot:
+// clay, a green band, a neck and a green stopper. Both held and tumbled about their middle (kRoundMiddle).
+static Grid buildThrowingKnife() {
+    Grid g({3, 10, 1});
+    for (int y = 0; y <= 2; ++y) g.set({1, y, 0}, Leather);
+    g.set({0, 3, 0}, Iron), g.set({1, 3, 0}, Iron), g.set({2, 3, 0}, Iron);
+    for (int y = 4; y <= 9; ++y) g.set({1, y, 0}, Steel);
+    return g;
+}
+static Grid buildRound(bool bomb) {
+    Grid g({5, 8, 5});
+    for (int y = 0; y < 5; ++y)
+        for (int z = 0; z < 5; ++z)
+            for (int x = 0; x < 5; ++x)
+                if (glm::length(glm::vec3(x, y, z) - 2.0f) < 2.3f) g.set({x, y, z}, bomb ? Slate : y == 2 ? Blade : Clay);
+    if (bomb) g.set({2, 5, 2}, Straw), g.set({2, 6, 2}, Straw), g.set({2, 7, 2}, Ember);  // the fuse, lit
+    else g.set({2, 5, 2}, Clay), g.set({2, 6, 2}, OakLeaves3);                          // the neck, the stopper
+    return g;
+}
+constexpr glm::vec3 kRoundMiddle{2.5f, 2.5f, 2.5f};
+// A burst's puff: a lumpy ball, fire and smoke or a green cloud, the same every time; 13 voxels across.
+static Grid buildBurst(bool poison) {
+    Grid g({13, 13, 13});
+    for (int z = 0; z < 13; ++z)
+        for (int y = 0; y < 13; ++y)
+            for (int x = 0; x < 13; ++x) {
+                uint32_t h = uint32_t(x * 73856093 ^ y * 19349663 ^ z * 83492791) * 2654435761u >> 16;
+                float d = glm::length(glm::vec3(x, y, z) - 6.0f), lump = float(h % 9) / 8;
+                if (d > 5 + lump * 1.4f) continue;
+                Block fire[] = {Lantern, PetalYellow, Ember, PetalYellow, Ember, Ember}, cloud[] = {PetalWhite, BirchLeaves3, BirchLeaves3, OakLeaves3};  // a pale mist over the grass
+                bool skin = d > 4.6f;  // the outside: wisps of smoke round the fire, darker green round the cloud
+                g.set({x, y, z}, poison ? cloud[skin ? 2 + h % 2 : h % 2] : skin && h % 6 == 0 ? Slate : fire[(d < 3 ? 0 : skin ? 3 : 2) + h % 2]);
+            }
+    return g;
+}
+
 static glm::vec3 heldGrip(Model m) {
     switch (m) {
     case ModelMace: return {2.5f, 2.5f, 2.5f};
@@ -380,6 +417,9 @@ Grid buildPart(Model model, Part part) {
     if (model == ModelArrow) return part != Head ? Grid({1, 1, 1}) : buildArrow();
     if (model == ModelCrossbow || model == ModelCrossbowSpanned) return part != Head ? Grid({1, 1, 1}) : buildCrossbow(model == ModelCrossbowSpanned);
     if (model == ModelBolt) return part != Head ? Grid({1, 1, 1}) : buildBolt();
+    if (model == ModelThrowingKnife) return part != Head ? Grid({1, 1, 1}) : buildThrowingKnife();
+    if (model == ModelBomb || model == ModelPoisonPot) return part != Head ? Grid({1, 1, 1}) : buildRound(model == ModelBomb);
+    if (model == ModelBurst || model == ModelPoisonBurst) return part != Head ? Grid({1, 1, 1}) : buildBurst(model == ModelPoisonBurst);
     glm::ivec3 s = specs(model)[part].size;
     Grid g(s);
     Block tunic = model == ModelVillager ? Robe : model == ModelBandit ? Leather : Tunic;
@@ -465,6 +505,7 @@ static const Swings kSwordSwings = rows({
     {},  // drink: its own pose (sip)
     {},  // shot: a bow's own pose (ADR-050)
     {},  // reload: a crossbow's own pose (ADR-052)
+    {},  // throw: its own pose (ADR-053)
 });
 // Daggers: tight slashes close in, and stabs (thrusts) for most of the rest; ice-pick stabs from above.
 static const Swings kDaggerSwings = rows({
@@ -486,6 +527,7 @@ static const Swings kDaggerSwings = rows({
     {},  // drink
     {},  // shot: a bow's own pose (ADR-050)
     {},  // reload: a crossbow's own pose (ADR-052)
+    {},  // throw: its own pose (ADR-053)
 });
 // Axes: chops from high, the head turned to lead (roll), a sweeping cleave, no thrusts.
 constexpr float kChop = -1.57f;  // the head ahead of a downward chop
@@ -508,6 +550,7 @@ static const Swings kAxeSwings = rows({
     {},  // drink
     {},  // shot: a bow's own pose (ADR-050)
     {},  // reload: a crossbow's own pose (ADR-052)
+    {},  // throw: its own pose (ADR-053)
 });
 // Maces: the axe's chops as smashes, the chain's last one a big overhead smash.
 static const Swings kMaceSwings = [] {
@@ -536,6 +579,7 @@ static const Swings kGreatswordSwings = rows({
     {},  // drink
     {},  // shot: a bow's own pose (ADR-050)
     {},  // reload: a crossbow's own pose (ADR-052)
+    {},  // throw: its own pose (ADR-053)
 });
 // Greataxes (ADR-049): the axe's chops, bigger, the chain's last one a wide horizontal cleave.
 static const Swings kGreataxeSwings = rows({
@@ -557,6 +601,7 @@ static const Swings kGreataxeSwings = rows({
     {},  // drink
     {},  // shot: a bow's own pose (ADR-050)
     {},  // reload: a crossbow's own pose (ADR-052)
+    {},  // throw: its own pose (ADR-053)
 });
 static const Swings& swings(WeaponClass c) {
     switch (c) {
@@ -582,7 +627,7 @@ constexpr glm::vec3 kShieldBack{0, 1, -1.5f};
 // The swing pose now and how far it has taken over from the idle grip (0 .. 1): it winds up until
 // the hold point, strikes through the hit to the follow-through, then settles back.
 static std::pair<Grip, float> swingPose(WeaponClass c, Move move, float u) {
-    if (move == Move::None || move == Move::Drink || move == Move::Shot || move == Move::Reload) return {{}, 0};
+    if (move == Move::None || move == Move::Drink || move == Move::Shot || move == Move::Reload || move == Move::Throw) return {{}, 0};
     const MoveSpec& m = spec(c, move);
     const Swing& sw = swings(c)[size_t(move)];
     float through = std::min(m.impact + 0.6f * (m.impact - m.holdAt), m.chain);
@@ -597,7 +642,7 @@ static std::pair<Grip, float> swingPose(const Player& p, bool armed) {
     auto [g, w] = swingPose(c, p.move, moveProgress(p));
     const MoveSpec& m = spec(c, p.move);
     if (!armed || p.fromMove == Move::None || !p.punching() || moveProgress(p) > m.holdAt) return {g, w};
-    if (p.move == Move::Shot || p.move == Move::Reload || p.move == Move::Drink) return {{}, 0};  // their own poses: no swing to blend from
+    if (p.move == Move::Shot || p.move == Move::Reload || p.move == Move::Drink || p.move == Move::Throw) return {{}, 0};  // their own poses: no swing to blend from
     auto [from, fromW] = swingPose(p.fromClass, p.fromMove, p.fromU);  // with the weapon it swung
     float k = smooth(moveProgress(p) / m.holdAt);
     return {mix(fromW > 0 ? from : g, g, k), fromW + (1 - fromW) * k};
@@ -612,6 +657,18 @@ static Sip sip(const Player& p) {
     return {smooth(u / hold) * down, smooth((u - hold * 0.5f) / (at - hold * 0.5f)) * down};
 }
 constexpr glm::vec3 kSipHand{1.2f, 12.5f, 9};  // the left hand out in front of the face, the neck at the lips
+
+// A throw (ADR-053): how far the left arm is drawn back (by the hold point, gone again at the release) and how
+// far it's whipped through (out at the release, down again over the recovery).
+struct Toss { float back = 0, through = 0; };
+static Toss toss(const Player& p) {
+    if (p.move != Move::Throw) return {};
+    float u = moveProgress(p), hold = kThrowSpec.holdAt, at = kThrowSpec.impact;
+    if (u < hold) return {smooth(u / hold), 0};
+    if (u < at) return {1 - smooth((u - hold) / (at - hold)), smooth((u - hold) / (at - hold))};
+    return {0, 1 - smooth((u - at) / (1 - at))};
+}
+constexpr glm::vec3 kTossBack{6.5f, 14.5f, -3.5f}, kTossOut{2, 10.5f, 9.5f};  // the left hand up behind the shoulder; out in front
 
 // A bow (ADR-050): how far it's raised in front (aiming, or a shot: up by the hold point, lowered over
 // the last of the recovery), how far the string is drawn (most of the way by the hold point, the rest
@@ -673,6 +730,26 @@ glm::mat4 arrowPose(glm::vec3 tip, glm::vec3 dir) {
     glm::vec3 z = glm::cross(x, y);
     glm::mat4 m(glm::vec4(x, 0), glm::vec4(y, 0), glm::vec4(z, 0), glm::vec4(tip, 1));
     return glm::translate(glm::scale(m, glm::vec3(kVoxel)), -kArrowTip);
+}
+
+Model throwableModel(ItemId item) {
+    switch (itemType(item).thrown.look) {
+    case ThrowLook::Bomb: return ModelBomb;
+    case ThrowLook::Pot: return ModelPoisonPot;
+    default: return ModelThrowingKnife;
+    }
+}
+Model burstModel(ItemId item) { return itemType(item).thrown.look == ThrowLook::Pot ? ModelPoisonBurst : ModelBurst; }
+
+glm::mat4 tumblePose(glm::vec3 at, float spin) {
+    glm::mat4 m = glm::rotate(glm::translate(glm::mat4(1), at), spin, glm::normalize(glm::vec3(1, 0, 0.4f)));
+    return glm::translate(glm::scale(m, glm::vec3(kVoxel)), -kRoundMiddle);
+}
+
+glm::mat4 burstPose(glm::vec3 at, float radius, float u) {
+    float grow = u < 0.7f ? smooth(u / 0.7f) * 0.3f + 0.7f : 1 - smooth((u - 0.7f) / 0.3f);  // out fast, then gone
+    glm::mat4 m = glm::scale(glm::translate(glm::mat4(1), at), glm::vec3(2 * radius * grow / 12));  // 12 voxels across, about
+    return glm::translate(m, -glm::vec3(6.5f));
 }
 
 // How hard the body reels now (0 .. 1): in fast, held, out over the last of it.
@@ -803,6 +880,11 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
         off[Head].z -= 0.5f * d.tip;
         rot[Torso].x -= 0.08f * d.tip;
     }
+    if (Toss t = toss(p); t.back + t.through > 0) {  // a throw: the arm drawn back, the body turned with it, then whipped through
+        off[HandL] = glm::mix(off[HandL], kTossBack - kHumanoid[HandL].center, t.back);
+        off[HandL] = glm::mix(off[HandL], kTossOut - kHumanoid[HandL].center, t.through);
+        posture(0.35f * t.back - 0.25f * t.through, -0.05f * t.back + 0.12f * t.through, 0);
+    }
     if (float r = reel(p); r > 0) {
         if (p.broken) {  // stance broken: sunk to a knee, hunched, arms hanging
             posture(0, 0.6f * r, 4 * r);
@@ -913,7 +995,8 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         off[HandR] = glm::mix(off[HandR], glm::vec3(crossbowAt * glm::vec4(right, 1)) - parts[HandR].center, k);
         off[HandL] = glm::mix(off[HandL], glm::vec3(crossbowAt * glm::vec4(kCrossbowFore, 1)) - parts[HandL].center, k);
     }
-    if (float k = armed && !shoots ? p.gripBlend * (1 - sip(p).raise) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {
+    Toss thrown = toss(p);
+    if (float k = armed && !shoots ? p.gripBlend * (1 - sip(p).raise) * (1 - std::max(thrown.back, thrown.through)) * (1 - roll(p).tuck) * (1 - p.swimAmount) : 0; k > 0) {
         // Two-handing (ADR-048): the left hand below the right on the hilt, down the weapon's length.
         glm::vec3 along(std::sin(pitch) * std::sin(yaw), std::cos(pitch), std::sin(pitch) * std::cos(yaw));
         glm::vec3 at = parts[HandR].center + off[HandR] - pommel(heldModel(p.weapon())) * along;
@@ -972,6 +1055,7 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         if (p.move == Move::Parry) yaw += (-g.arc - yaw) * w;
         glm::vec3 hand = parts[HandL].center + off[HandL];
         if (Sip d = sip(p); d.raise > 0) hand = glm::mix(hand, parts[HandL].center + glm::vec3(0.5f, 1, 1), d.raise);  // let down at the side to drink
+        if (float t = std::max(thrown.back, thrown.through); t > 0) hand = glm::mix(hand, parts[HandL].center + glm::vec3(0.5f, 1, 1), t);  // and to throw
         glm::mat4 m = glm::translate(base * tilt, hand);
         m = glm::rotate(m, yaw, {0, 1, 0});
         *shieldPose = glm::translate(m, -shieldGrid(shieldModel(p.inv.equipped[SlotOffHand])).grip);
@@ -988,6 +1072,13 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
         glm::mat4 m = glm::translate(base * tilt, parts[HandL].center + off[HandL] + glm::vec3(0, 1, 0));
         m = glm::rotate(m, -2.0f * d.tip, {1, 0, 0});
         *flask = glm::translate(m, -kFlaskGrip);
+    }
+    if (flask && p.move == Move::Throw && p.throwing && model != ModelDummy && !quadruped(model)) {  // in the hand until it lets go
+        glm::mat4 m = glm::translate(base * tilt, parts[HandL].center + off[HandL] + glm::vec3(0, 1, 0.5f));
+        if (throwableModel(p.throwing) == ModelThrowingKnife)  // held by the grip, the blade up behind, swung over to point ahead
+            *flask = glm::translate(glm::rotate(m, -0.4f - 1.2f * thrown.through, {1, 0, 0}), -glm::vec3(1.5f, 1.5f, 0.5f));
+        else
+            *flask = glm::translate(m, -kRoundMiddle);
     }
     return out;
 }

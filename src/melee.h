@@ -44,8 +44,8 @@
 // it stays empty: the next press reloads first.
 
 // A move's timing and what it does. Every weapon class has its own (ADR-044): data/weapon_classes.json
-// gives each class every attack move; None, Parry and Drink are code's (kParrySpec: the parry is the off
-// hand's, or a knife's or the fists', and the same for every class; kDrinkSpec, the flask's).
+// gives each class every attack move; None, Parry, Drink and Throw are code's (kParrySpec: the parry is the off
+// hand's, or a knife's or the fists', and the same for every class; kDrinkSpec, the flask's; kThrowSpec, ADR-053).
 struct MoveSpec {
     float seconds = 0;          // its length at the weapon's speed 1
     float holdAt = 0, impact = 0;  // fractions of it: the windup pose (a charge or a telegraph holds there), the hit
@@ -56,17 +56,21 @@ struct MoveSpec {
     bool heavy = false;         // can't be made to flinch before its hit (hyperarmor; heavy 1 and 2 also charge)
     bool thrust = false;        // a blade's thrust pierces (its swings slash; ADR-040)
 };
-// Ids in data files (none, parry and drink aren't: code has them) and names in the UI, by Move.
+// Ids in data files (none, parry, drink and throw aren't: code has them) and names in the UI, by Move.
 inline constexpr const char* kMoveIds[] = {"none", "light_1", "light_2", "light_3", "light_4", "heavy_1", "heavy_2", "running", "rolling",
-                                           "jump_light", "jump_heavy", "guard_counter", "riposte", "parry", "backstep", "drink", "shot", "reload"};
+                                           "jump_light", "jump_heavy", "guard_counter", "riposte", "parry", "backstep", "drink", "shot", "reload", "throw"};
 inline constexpr const char* kMoveNames[] = {"none", "light 1", "light 2", "light 3", "light 4", "heavy 1", "heavy 2", "running",
-                                             "rolling", "jump light", "jump heavy", "guard counter", "riposte", "parry", "backstep", "drink", "shot", "reload"};
+                                             "rolling", "jump light", "jump heavy", "guard counter", "riposte", "parry", "backstep", "drink", "shot", "reload", "throw"};
 static_assert(std::size(kMoveIds) == size_t(Move::Count) && std::size(kMoveNames) == size_t(Move::Count));
-constexpr bool codeMove(Move m) { return m == Move::None || m == Move::Parry || m == Move::Drink; }  // not in data files
+constexpr bool codeMove(Move m) { return m == Move::None || m == Move::Parry || m == Move::Drink || m == Move::Throw; }  // not in data files
 inline constexpr MoveSpec kParrySpec{0.75f, 0.14f, 0.44f, 1.00f, 1.00f, 0, 0, 10, 0};  // a swipe (no hit; scaled by its parry length)
 // The flask to the lips by its hold point, the drink frame (impact: the heal), lowered after; a roll or
 // the guard can cut its last quarter. Weapon speed doesn't change it.
 inline constexpr MoveSpec kDrinkSpec{1.3f, 0.3f, 0.5f, 1.00f, 0.78f, 0, 0, 0, 0};
+// A throw (ADR-053): the left arm drawn back by the hold point, let go at the impact frame, followed
+// through; an attack can chain from late in it, a roll or the guard cut its last part. Weapon speed
+// doesn't change it. Its damage and stance are the throwable's.
+inline constexpr MoveSpec kThrowSpec{0.7f, 0.35f, 0.5f, 0.75f, 0.7f, 1, 0, 8, 0};
 
 // A weapon class (ADR-044): its moveset, and how its hits feel.
 struct WeaponClassDef {
@@ -146,6 +150,7 @@ struct MeleeInput {
     bool grip = false;                        // F / Triangle+R1: two-hand or let go, pressed since the last tick (ADR-048)
     glm::vec2 aim{};                          // nonzero: attack this way (a lock-on); else the way it moves, else faces
     bool riposte = false;                     // an enemy open to a critical is in reach in front (criticalTarget): a riposte or backstab
+    bool toss = false;                        // G / touchpad: throw the readied throwable, pressed since the last tick (ADR-053)
 };
 
 // The move's length, its impact frame and its hold point, in seconds.

@@ -55,6 +55,8 @@ GPU debug layer.
 | Right mouse | Guard: blocks hits from the front for stamina (the green bar); too little stamina and the guard breaks. A shield in the off hand guards better; a tower shield makes weak attacks bounce off. Raised just as a hit lands it's a perfect guard (ADR-041): no damage, half the stamina, a bright clink. With a bow it aims instead (ADR-050): over the shoulder, a crosshair, walking slowly |
 | Q | Parry (ADR-036) with a buckler or heater shield, or with the off hand empty a knife or bare fists (ADR-041): timed just before a hit lands, it deflects the attack and leaves the attacker open to a riposte (left mouse); mistimed, it's a weak guard |
 | R | Drink from the healing flask (ADR-047): a slow walk for a second, then 40% of your health back; a hit that staggers you first cancels it, the charge kept. The red flask by the health bar counts the charges (3); empty, you just shake it |
+| G | Throw the readied throwable (ADR-053): a throwing knife, a clay bomb or a poison pot, from the left hand, the way you face or onto your lock-on target. Its icon and count sit left of the flask; not with a bow or crossbow in hand |
+| X | Ready the next throwable (or click one in the Bags window's pouch) |
 | F | Two-hand the weapon, or let go (ADR-048): strength counts 1.5x and the weapon guards better, but the shield goes on your back and nothing parries. A 2H tag shows right of the health bar. Great weapons are always two-handed (ADR-049) |
 | E | Loot a nearby corpse, otherwise talk to a nearby villager or guard, otherwise rest by a fire (ADR-047) |
 | C | Character: equipment, attributes and armor |
@@ -87,6 +89,7 @@ A controller works too (SDL's gamepad layout; PlayStation names here, an Xbox pa
 | Triangle | Bags (on release) |
 | Triangle + R1 | Two-hand the weapon, or let go (like F) |
 | D-pad down | Drink from the healing flask (like R) |
+| Touchpad (press) | Throw the readied throwable (like G); ready another in the Bags window |
 | D-pad left / up / right | Character / Journal / Progress; locked on, they switch to the next enemy that way |
 | Options | Close the windows |
 | Create | Open/close the debug window (its Camera tab: stick look speed and deadzone, live stick values) |
@@ -316,6 +319,16 @@ as the bolt goes in). Roll out of the reload and it stays empty: your next press
 press near the end of the reload fires as it ends. Bolts come from the same quiver as arrows; a bar under
 the quiver lights while it's loaded. Aim with the guard button as with a bow. Guards drop it half
 the time.
+
+**Throwables** (ADR-053): a pouch of **Throwing Knives** (10), **Clay Bombs** (3) and **Poison
+Pots** (3), filled whenever you rest by a fire. G throws the readied one from the left hand (a
+quick overhand throw that turns you toward your aim; you walk slowly and can't roll until it's
+gone), the way you face or, locked on, lobbed onto the target. A knife flies flat and fast, builds
+up bleeding and sticks where it lands: walk over it to pick it up. A bomb or a pot is lobbed in an
+arc and bursts where it lands, striking everything within 2.5 blocks (less toward the edge, nothing
+behind a wall, never you): the bomb hits hard and breaks stances, the pot poisons. An enemy's
+shield facing the burst blocks it; its dodge goes through. X readies the next kind, or click one in
+the Bags window.
 
 **Archers** (ADR-051): the **Bandit Archer** (at the bandit camp near the start, or F6) keeps 7 to
 16 blocks from you and shoots. Watch for the tell: it raises its bow and holds the draw, creaking,

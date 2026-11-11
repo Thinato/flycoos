@@ -7,6 +7,7 @@
 
 #include "item.h"
 
+struct Combatant;
 struct Entity;
 struct Player;
 struct Session;
@@ -39,18 +40,29 @@ struct RangedTuning {
     float pickupReach = 1.3f;            // blocks from the player's middle a stuck arrow is picked up within
     float aimWalk = 2.5f;                // blocks/s walking while aiming or drawing
     float hitRadius = 0.4f;              // half the width of the box a body is hit in
+    float lobPitch = 0.4f;               // radians up a lobbed throwable goes with nothing to aim at (ADR-053)
+    float burstEdge = 0.5f;              // x a burst's damage, stance and build-up at the edge of its radius (1 at its middle)
+    float burstSeconds = 0.35f;          // how long a burst's puff shows
 };
 inline RangedTuning gRanged;
 constexpr size_t kMaxProjectiles = 64;  // past it the oldest stuck arrow goes (else the oldest)
+
+// A throwable bursting (ADR-053): where, how far it reaches, which one; shown as a puff for burstSeconds.
+struct Burst {
+    glm::vec3 pos{};
+    float radius = 0;
+    ItemId item = NoItem;
+    float age = 0;
+};
 
 // How far the shot under way is drawn, 0 .. 1: its seconds at the hold pose over drawSeconds.
 float drawOf(const Player& p);
 // Where an arrow leaves the bow: in front of the chest, the way the body faces.
 glm::vec3 shotOrigin(const Player& p);
-// A shot of `speed` from `from`: with no `at`, along `yaw` (hipPitch up); else straight at `at` (aim
+// A shot of `speed` from `from`: with no `at`, along `yaw` (`pitch` up); else straight at `at` (aim
 // mode: the crosshair's point), or with `lob` the low arc that comes down on it (a lock-on), the
 // farthest one (45 degrees) when it's out of reach.
-glm::vec3 shotVelocity(glm::vec3 from, float yaw, std::optional<glm::vec3> at, bool lob, float speed);
+glm::vec3 shotVelocity(glm::vec3 from, float yaw, std::optional<glm::vec3> at, bool lob, float speed, float pitch = gRanged.hipPitch);
 // Where the segment a..b first meets the box lo..hi, as a fraction of the way (0 when it starts inside).
 std::optional<float> segmentBox(glm::vec3 a, glm::vec3 b, glm::vec3 lo, glm::vec3 hi);
 // The box a body is hit in (feet-centred): hitRadius wide, as tall as its model.
@@ -65,7 +77,23 @@ void loose(Session& s, std::optional<glm::vec3> aimAt);
 // away as the player is, along e's facing (it stops turning just before, so a sidestep can beat it), off by up
 // to its kind's aimError either way and up or down. Its quiver never runs out.
 void loose(Session& s, Entity& e);
+// Fills each throwable's count in `c`'s pouch to its kind's pouch (ADR-053; a rest, a respawn, a new game), and
+// readies the first kind if none is.
+void fillPouch(Combatant& c);
+// Readies the next throwable kind after the readied one (by item id, round), skipping those with none left
+// unless none has any.
+void cycleThrowable(Combatant& c);
+// Throws the player's throwable at its throw's release (step() calls it): one from the pouch, from the left
+// hand, at `aimAt` (SimInput's: lobbed onto a lock-on's target; no aim mode, a bow's), else along the facing
+// (lobPitch up if it lobs, hipPitch if not), at its speed.
+void hurl(Session& s, std::optional<glm::vec3> aimAt);
+// A burst at `at` (ADR-053) from the player's throwable `item`: every living, attackable NPC within its radius
+// and in sight of `at` struck through strike() (its damage, stance and its own build-up less toward the edge,
+// burstEdge), guards facing `at` blocking it (right over one: facing `from`, where it flew in from); the player is
+// never hurt by its own. Adds the puff to s.bursts and a Thunk.
+void burst(Session& s, glm::vec3 at, ItemId item, glm::vec3 from);
 // A tick of every projectile: flight, the first body or voxel on its way (an NPC's arrow: the player's, never
 // another NPC's; its shooter gone, it flies through), sticking, expiry, and stuck arrows the player walks over
-// back into its quiver (an archer's too).
+// back into its quiver (an archer's too). A throwable (ADR-053) that bursts does on the first body or voxel it
+// meets; a thrown knife sticks like an arrow and goes back into the pouch. Ages the bursts' puffs.
 void updateProjectiles(Session& s, float dt);

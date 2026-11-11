@@ -15,11 +15,12 @@ void startSession(Session& s) {
     s.regionId = 0;
     s.regionSince = 0;
     s.restPoint.reset();
-    s.projectiles.clear();
+    s.projectiles.clear(), s.bursts.clear();
     s.player.teleport(playerSpawn(s.world, s.markers));
     giveItem(s.player.inv, Shortsword);
     giveItem(s.player.inv, Satchel);
     s.player.flasks = maxFlasks(sheet(s.player));
+    fillPouch(s.player);  // a full pouch of each throwable (ADR-053)
     syncSpawns(s.entities, s.world, s.markers, s.seed, s.player.pos, s.timeOfDay);
     s.rng.seed(s.seed);
     resetQuests(s);
@@ -32,6 +33,7 @@ void respawnPlayer(Session& s) {
     p.health = float(maxHealth(sheet(p)));
     p.flasks = maxFlasks(sheet(p));
     p.arrows = std::max(p.arrows, kQuiver);
+    fillPouch(p);
     p.deadTime = 0;
     p.combatTimer = 0;
 }
@@ -111,6 +113,7 @@ StepResult step(Session& s, const SimInput& in, float dt) {
     if (in.editing) p.pressing = false, p.want = Want::None;  // nothing half-pressed swings on leaving the editor
     else {  // attacks, the guard and stamina (ADR-035); they shape this tick's movement
         MeleeInput melee{in.attack, in.attackHeld, in.heavy, in.heavyHeld, in.guard, in.parry, in.drink, in.grip, in.aim};
+        melee.toss = in.toss;
         // At an NPC open to a critical (ADR-045) an attack is the riposte move, aimed at it; once under way,
         // still aimed at the one it caught.
         if (const Entity* e = ranged(p) ? nullptr : criticalTarget(s.entities, p, p.move == Move::Riposte && p.hitPending))
@@ -126,6 +129,7 @@ StepResult step(Session& s, const SimInput& in, float dt) {
         auto skills = p.progress.skills;
         updateCombat(p, s.entities, dt, s.rng, s.armorK, &s.events);
         if (p.loosed) p.loosed = false, loose(s, in.aimAt);  // a bow's release (ADR-050)
+        if (p.hurled) p.hurled = false, hurl(s, in.aimAt);  // a throw's (ADR-053)
         for (Entity& e : s.entities)  // an archer's (ADR-051)
             if (e.body.loosed) e.body.loosed = false, loose(s, e);
         updateProjectiles(s, dt);

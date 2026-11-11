@@ -16,7 +16,7 @@
 // never strings. Move-only: the ItemType and EntityType names point into `itemNames` and `creatureNames`.
 struct Defs {
     std::array<WeaponClassDef, size_t(WeaponClass::Count)> weaponClasses;  // by WeaponClass (ADR-044)
-    std::vector<ItemType> items{ItemType{"", SlotNone, {0, 0, 0}, 0, 0, {}, {}}};  // by save id; 0 is NoItem
+    std::vector<ItemType> items{ItemType{"", SlotNone, {0, 0, 0}, 0, 0, {}, {}, 0, DamageType::Slash, 0, WeaponClass::Fists, {}}};  // by save id; 0 is NoItem
     std::vector<std::string> itemIds{""}, itemNames{""};                     // parallel to `items`
     std::map<std::string, ItemId, std::less<>> itemById;                     // string id -> save id, for references
     std::vector<EntityType> creatures;                     // by save id (EntityKind), from 0
