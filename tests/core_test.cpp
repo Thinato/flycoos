@@ -706,10 +706,11 @@ static void fighters() {
     CHECK(bandit.body.inv.equipped[SlotMainHand] == Knife);
     const Attack &knife = itemType(Knife).attack, &sword = itemType(Shortsword).attack;
     CHECK(knife.speed < sword.speed && knife.maxDamage < sword.maxDamage && knife.minDamage < sword.minDamage);
-    // Its camp is out of sight of the spawn: even at the edge of its wandering it can't see it,
-    // and the spawn is outside its territory.
-    float campDist = glm::distance(flat(bandit.home), flat(player.pos));
-    CHECK(campDist - bandit.type().wanderRadius > bandit.type().aggroRange && campDist > bandit.type().leashRadius);
+    // Its camp is out of sight of the spawn: even at the edge of its wandering the spawn is out of its aggro
+    // range (its archer's too, ADR-055).
+    float campDist = glm::distance(flat(bandit.home), flat(player.pos)), archerDist = glm::distance(flat(es[4].home), flat(player.pos));
+    CHECK(campDist - bandit.type().wanderRadius > bandit.type().aggroRange);
+    CHECK(es[4].kind == EntityKind::BanditArcher && archerDist - es[4].type().wanderRadius > es[4].type().aggroRange);
 
     // A minute at the spawn: nobody starts a fight.
     sim(60);
@@ -737,8 +738,8 @@ static void fighters() {
     CHECK(player.health < 100 && player.lastDamage >= 5 && player.lastDamage <= 8);  // 3-6 + (strength 3 x 0.3 + agility 2 x 1.2) x speed 0.75
     CHECK(glm::distance(flat(bandit.body.pos), flat(player.pos)) < kPunchReach);
 
-    // Leash: once the player is out of its territory it gives up (after the swing under way) and walks home.
-    player.pos = bandit.home + glm::vec3(-bandit.type().leashRadius - 1, 0, 0);
+    // Out of its chase range (from it: no leash from home, ADR-055) it gives up (after the swing under way) and walks home.
+    player.pos = bandit.body.pos + glm::vec3(-bandit.type().chaseRange - 1, 0, 0);
     sim(1);
     CHECK(!bandit.angry());
     sim(30);
@@ -2592,7 +2593,7 @@ static void storyNpcs() {
         CHECK(t.name && t.level == r.level && t.temper == r.temper && t.talks == r.talks && t.model == r.model);
         CHECK(t.weapon == r.weapon && t.loot == r.loot && t.attackable && t.wanders && t.respawnSeconds > 0);
         CHECK((t.loot == NoItem) == (t.lootChance == 0) && t.lootChance <= 1);
-        if (r.temper == Temper::Aggressive) CHECK(t.aggroRange > 0 && t.aggroRange < t.reaggroRadius && t.chaseSpeed > 0);
+        if (r.temper == Temper::Aggressive) CHECK(t.aggroRange > 0 && t.aggroRange < t.chaseRange && t.chaseSpeed > 0);
     }
     CHECK(typeOf(EntityKind::Wolf).chaseSpeed > 5 && typeOf(EntityKind::Ghoul).chaseSpeed < 5);  // the player walks 5, runs 9
     CHECK(typeOf(EntityKind::BanditChief).lootChance == 1);
@@ -2769,7 +2770,7 @@ static void storyNpcs() {
     // Hit from outside its territory it can't stay angry: one shout, not one per hit, and it doesn't
     // stand frozen under the balloon.
     Player far;
-    far.pos = guard.home + glm::vec3(guard.type().leashRadius + 2, 0, 0);
+    far.pos = guard.body.pos + glm::vec3(guard.type().chaseRange + 2, 0, 0);
     setState(guard, AiState::Wander, "test");
     guard.shoutTimer = 0, guard.speechTimer = 0;
     int shouts = 0;
@@ -3075,7 +3076,7 @@ static void tables() {
     };
     constexpr WantType kWantTypes[] = {
         // name            lvl  sta str agi int spi   attackable wanders talks model
-        //                 temper              aggro wander chase weapon      loot       chance respawn
+        //                 temper              aggro wander chase weapon      loot       chance respawn   (aggro: ADR-055's, in sight)
         {"Training Dummy", 1, {10, 0, 0, 0, 10}, true,  false, false, ModelDummy,
                            Temper::Harmless,   0,    0,     0,    NoItem,     NoItem,    0,     5},
         {nullptr,          5, {25, 5, 5, 5, 5},  false, true,  true,  ModelVillager,
@@ -3083,17 +3084,17 @@ static void tables() {
         {"Boar",           1, {10, 2, 2, 2, 2},  true,  true,  false, ModelBoar,
                            Temper::Passive,    0,    10,    6,    NoItem,     BoarSkin,  0.75f, 30},
         {"Bandit",         2, {12, 3, 2, 2, 2},  true,  true,  false, ModelBandit,
-                           Temper::Aggressive, 10,   5,     5.5f, Knife,      Knife,     0.4f,  30},
+                           Temper::Aggressive, 24,   5,     5.5f, Knife,      Knife,     0.4f,  30},
         {"Wolf",           1, {8, 6, 70, 2, 2},   true,  true,  false, ModelWolf,
-                           Temper::Aggressive, 12,   10,    7.5f, NoItem,     WolfPelt,  0.6f,  30},
+                           Temper::Aggressive, 28,   10,    7.5f, NoItem,     WolfPelt,  0.6f,  30},
         {"Guard",          4, {16, 5, 3, 2, 4},  true,  true,  true,  ModelGuard,
                            Temper::Passive,    0,    6,     6,    Shortsword, ItemId(20), 0.5f, 60},  // loot: the light crossbow (save id 20, ADR-052; the short bow before)
         {"Bandit Chief",   3, {11, 3, 2, 2, 2},  true,  true,  false, ModelChief,
-                           Temper::Aggressive, 10,   6,     5.5f, Shortsword, IronHelm,  1,     120},
+                           Temper::Aggressive, 24,   6,     5.5f, Shortsword, IronHelm,  1,     120},
         {"Barrow Ghoul",   3, {7, 4, 2, 2, 2},   true,  true,  false, ModelGhoul,
-                           Temper::Aggressive, 8,    4,     4,    NoItem,     BoneCharm, 0.3f,  45},
+                           Temper::Aggressive, 16,   4,     4,    NoItem,     BoneCharm, 0.3f,  45},
         {"Bandit Archer",  2, {9, 2, 4, 2, 2},   true,  true,  false, ModelBandit,  // ADR-051: the short bow (19) in hand and as loot
-                           Temper::Aggressive, 14,   5,     5,    ItemId(19), ItemId(19), 0.25f, 30},
+                           Temper::Aggressive, 30,   5,     5,    ItemId(19), ItemId(19), 0.25f, 30},
     };
     static_assert(std::size(kWantTypes) == size_t(EntityKind::Count));
     for (int k = 0; k < int(EntityKind::Count); ++k) {
@@ -3219,11 +3220,11 @@ static void fightReplay() {
     }
 }
 
-// Characterization of the passive temper and the leash, pinned before the AI became a state machine
+// Characterization of the passive temper and giving up, pinned before the AI became a state machine
 // (ADR-020) and re-pinned only where that changed it on purpose (noted at the value). A
 // bare-handed player stands by a boar (seed 2, fixed 60 fps): it ignores them until punched once, then
-// chases and fights back; the player doesn't swing again. Then the player steps beyond the leash: the
-// boar calms down and walks home.
+// chases and fights back; the player doesn't swing again. Then the player steps beyond its chase range
+// (was its leash from home, ADR-055): the boar calms down and walks home.
 static void boarReplay() {
     Grid g = meadow();
     Player player;
@@ -3266,7 +3267,7 @@ static void boarReplay() {
     // 13.65, before the windup telegraphed (ADR-035).
     if (!near(glm::distance(boar.body.pos, boar.home), 12.47f))
         same("boarReplay", "chase distance from home", glm::distance(boar.body.pos, boar.home), 12.47f);
-    player.pos = boar.home + glm::vec3(0, 0, boar.type().leashRadius + 5);  // out of its territory: gives up at once
+    player.pos = boar.body.pos + glm::vec3(0, 0, boar.type().chaseRange + 5);  // out of its chase range: gives up at once
     run(1, false);
     CHECK(!boar.angry());
     run(10 * 60, false);  // walks back home, both heal out of combat
@@ -3283,7 +3284,7 @@ static void boarReplay() {
         for (auto [f, who, amount] : hits) std::println(stderr, "  got {{{}, '{}', {}}}", f, who, amount);
 }
 
-// The AI state machine (ADR-020): leash hysteresis, the committed windup, passive until hit, giving
+// The AI state machine (ADR-020): giving up past the chase range, the committed windup, passive until hit, giving
 // up, Return, fleeing, and the transition log.
 static void npcAi() {
     namespace fs = std::filesystem;
@@ -3292,10 +3293,11 @@ static void npcAi() {
         return e.history[(e.transitions - 1 - back) % e.history.size()];
     };
     auto reason = [&](const Entity& e, uint32_t back = 0) { return std::string_view(newest(e, back).reason); };
-    // The shipped kinds: the old global leash, nobody flees; a readable windup (ADR-035); only an archer's
+    // The shipped kinds: the default chase range (ADR-055), nobody flees; a readable windup (ADR-035); only an archer's
     // shots have a cooldown (ADR-051: it strafes between them).
     for (const EntityType& t : defs().creatures)
-        CHECK(t.leashRadius == 20 && t.reaggroRadius == 16 && t.windup >= 0.28f && (t.cooldown == 0 || t.keepMax > 0) && t.fleeHealth == 0);
+        CHECK(t.chaseRange == std::max(32.0f, 2 * t.aggroRange) && t.reaggroCooldown == 3 && t.windup >= 0.28f &&
+              (t.cooldown == 0 || t.keepMax > 0) && t.fleeHealth == 0);
     CHECK(typeOf(EntityKind::Bandit).windup == kDefaultWindup && typeOf(EntityKind::Bandit).recover == kDefaultRecover);
     // The state machine on its own: the bandit here has no tactics (strings, answers, backing off:
     // ADR-042, ADR-043; the enemies test has those). A test-only kind joins it below.
@@ -3345,27 +3347,27 @@ static void npcAi() {
     };
     auto none = [](int) {};
 
-    // Leash hysteresis: a bandit chases the player to the edge of its territory, where the player
-    // stands for 10 s stepping back and forth across it every tick. It gives up once and walks home;
-    // the player, still within its aggro range of the bandit's path but outside the re-aggro radius,
-    // doesn't pull it back (before the state machine it flipped angry every tick).
+    // Giving up: a bandit chases the player, who then stands past its chase range (from the bandit, not
+    // its home: ADR-055), stepping back and forth across it every tick for 10 s. It gives up once and walks
+    // home, and the player out there doesn't pull it back (the aggro range is well inside the chase range).
     player.pos = home + glm::vec3(-8, 0, 0);
     Entity* bandit = spawn(EntityKind::Bandit);
     sim(1, none);
     CHECK(bandit->state == AiState::Chase && reason(*bandit) == "saw_target");
     uint32_t before = bandit->transitions;
-    float leash = bandit->type().leashRadius;
+    float chase = bandit->type().chaseRange;
+    glm::vec3 edge = bandit->body.pos + glm::vec3(-chase, 0, 0);
     sim(10 * 60, [&](int i) {
-        player.pos = home + glm::vec3(-leash + (i % 2 ? 0.05f : -0.05f), 0, 0);
+        player.pos = edge + glm::vec3(i % 2 ? 0.05f : -0.05f, 0, 0);
         player.health = 100;
     });
-    CHECK(bandit->transitions - before <= 3 && !bandit->angry());  // Return, then Wander at home
+    CHECK(bandit->transitions - before <= 3 && !bandit->angry() && reason(*bandit, 1) == "target_far");  // Return, then Wander at home
     CHECK(glm::distance(flat(bandit->body.pos), flat(home)) < 3 + 1);
-    // Height counts: the same spot 20 blocks up (a cliff, another floor) is out of its aggro range.
-    player.pos = bandit->body.pos + glm::vec3(-6, 20, 0);
+    // Height counts: the same spot 30 blocks up (a cliff, another floor) is out of its aggro range.
+    player.pos = bandit->body.pos + glm::vec3(-6, 30, 0);
     sim(1, none);
     CHECK(!bandit->angry());
-    // Re-aggro: inside the re-aggro radius and its aggro range it attacks again.
+    // Re-aggro: within its aggro range (in sight) it attacks again.
     player.pos = bandit->body.pos + glm::vec3(-6, 0, 0);
     sim(1, none);
     CHECK(bandit->state == AiState::Chase && reason(*bandit) == "saw_target");
@@ -3402,18 +3404,25 @@ static void npcAi() {
     });
     CHECK(hits > 3 && std::abs(hits - windups) <= 1);
 
-    // Return ignores the player: hit from close by on the way home it keeps going, then heals and
-    // stays calm for its re-aggro cooldown even with the player beside it.
+    // Return ignores the player beside it, then heals and stays calm for its re-aggro cooldown even with
+    // the player beside it. A hit on the way brings it back (ADR-055: no leash to flap at any more).
     sim(60, [&](int) { player.pos = home + glm::vec3(-12, 0, 0); });  // draws it away from home
-    player.pos = home + glm::vec3(-leash - 2, 0, 0);
+    damage(*bandit, 20);  // (read as it gives up: entering Return drops it)
+    player.pos = bandit->body.pos + glm::vec3(-chase - 2, 0, 0);
     for (ticks = 0; bandit->state != AiState::Return && ticks < 60; ++ticks) sim(1, none);  // finishes a windup it started
-    CHECK(bandit->state == AiState::Return && reason(*bandit) == "target_left_leash");
+    CHECK(bandit->state == AiState::Return && reason(*bandit) == "target_far");
     sim(30, none);
-    damage(*bandit, 20);
     player.pos = bandit->body.pos + glm::vec3(-2, 0, 0);  // behind it: it walks toward home, +x
     float hurtHealth = bandit->body.health;
     sim(1, none);
     CHECK(bandit->state == AiState::Return && hurtHealth < float(maxHealth(bandit->body.stats)));
+    {
+        Entity probe = *bandit;  // a hit on the way home: it turns on the player
+        std::vector<Entity> one{probe};
+        damage(one[0], 1);
+        updateEntities(one, g, player, kTick);
+        CHECK(one[0].state == AiState::Chase && reason(one[0]) == "damaged");
+    }
     for (ticks = 0; bandit->state == AiState::Return && ticks < 20 * 60; ++ticks) {
         player.pos = bandit->body.pos + glm::vec3(-2, 0, 0);  // tags along behind
         player.health = 100;
@@ -3426,34 +3435,55 @@ static void npcAi() {
     sim(5, none);
     CHECK(bandit->state == AiState::Chase && reason(*bandit) == "saw_target");
 
-    // Giving up: a player behind a wall (no pathfinding) inside its territory.
+    // A player behind a wall (no pathfinding) is out of sight: it searches where it last saw them (it
+    // can't get there), then gives up (ADR-055; the pursuit test has the rest).
     for (int z = 20; z < 45; ++z)
         for (int y = 4; y < 7; ++y) g.set({20, y, z}, Stone);
     bandit->body.teleport(home);
     player.pos = home + glm::vec3(-9, 0, 0);
     setState(*bandit, AiState::Chase, "test");
-    sim(int(bandit->type().giveUpSeconds * 60) + 120, none);
-    CHECK(bandit->state != AiState::Chase && reason(*bandit, bandit->state == AiState::Return ? 0 : 1) == "lost_target");
+    bandit->lastSeen = player.pos;
+    sim(int((gAi.sightGrace + gAi.searchSeconds) * 60) + 120, none);
+    CHECK(bandit->state != AiState::Chase && bandit->state != AiState::Search);
+    CHECK(reason(*bandit, bandit->state == AiState::Return ? 0 : 1) == "gave_up_search");
     g = meadow();
 
-    // Up a pillar beside it the player is out of reach (a body height above): it doesn't swing, and gives up.
+    // Up a pillar beside it the player is out of reach (a body height above): it doesn't swing, and gives up,
+    // though it walks round the pillar for a way up (ADR-055's detours): a free step only winds the clock back.
     bandit->body.teleport(home);
     for (int y = 4; y < 7; ++y) g.set({24, y, 32}, Stone);
     player.pos = {24.5f, 7, 32.5f};
     player.health = 100;
     setState(*bandit, AiState::Chase, "test");
-    sim(int(bandit->type().giveUpSeconds * 60) + 60, [&](int) { player.pos = {24.5f, 7, 32.5f}; });
-    CHECK(player.health == 100 && bandit->state == AiState::Wander && reason(*bandit, 1) == "lost_target");
+    for (ticks = 0; bandit->state == AiState::Chase && ticks < 30 * 60; ++ticks) sim(1, [&](int) { player.pos = {24.5f, 7, 32.5f}; });
+    CHECK(player.health == 100 && bandit->state != AiState::Chase && reason(*bandit, bandit->state == AiState::Return ? 0 : 1) == "lost_target");
+    {  // given up for want of a way to the player, a hit (an arrow from up there) doesn't bring it back: no cheese;
+       // but a hit from the player come down beside it does
+        Entity probe = *bandit;
+        probe.body.teleport(home + glm::vec3(8, 0, 0));
+        setState(probe, AiState::Chase, "test");
+        setState(probe, AiState::Return, "lost_target");
+        std::vector<Entity> one{probe}, two{probe};
+        damage(one[0], 1);
+        updateEntities(one, g, player, kTick);
+        CHECK(one[0].state == AiState::Return);
+        Player beside;
+        beside.pos = two[0].body.pos + glm::vec3(1.2f, 0, 0);
+        damage(two[0], 1);
+        updateEntities(two, g, beside, kTick);
+        CHECK(two[0].state != AiState::Return && reason(two[0], two[0].state == AiState::Chase ? 0 : 1) == "damaged");
+    }
+    CHECK(ticks >= int(bandit->type().giveUpSeconds * 60) && ticks < 20 * 60);
     g = meadow();
 
-    // A hit while chasing, then the player leaves the leash: home already, it turns back once and
+    // A hit while chasing, then the player leaves its chase range: home already, it turns back once and
     // stays calm (the hit is dropped on entering Return), and only a Return that walked heals.
     player.pos = home + glm::vec3(-2, 0, 0);
     bandit->body.teleport(home);
     bandit->body.swingTimer = 1;  // no swing this time
     setState(*bandit, AiState::Chase, "test");
     damage(*bandit, 10);
-    player.pos = home + glm::vec3(-leash - 2, 0, 0);
+    player.pos = home + glm::vec3(-chase - 2, 0, 0);
     before = bandit->transitions;
     updateEntities(es, g, player, kTick);
     CHECK(bandit->state == AiState::Wander && bandit->transitions == before + 2 && reason(*bandit) == "home");
@@ -3510,6 +3540,229 @@ static void npcAi() {
     sim(30 * 60, none);
     CHECK(coward->state == AiState::Wander && coward->body.health == 100);
     setDefs(std::move(shipped));
+}
+
+// Pursuit (ADR-055): seen from afar but only in sight, chased as far as the player goes while it sees
+// them (no leash from home), given up past its chase range; out of sight it searches where it last saw
+// them, finds them again or gives up and goes home. On a flat field 160 blocks across.
+static void pursuit() {
+    auto flat = [](glm::vec3 v) { return glm::vec2(v.x, v.z); };
+    auto field = [] {
+        Grid g({160, 16, 160});
+        for (int z = 0; z < 160; ++z)
+            for (int x = 0; x < 160; ++x) {
+                for (int y = 0; y < 3; ++y) g.set({x, y, z}, Dirt);
+                g.set({x, 3, z}, Grass);
+            }
+        return g;
+    };
+    Grid g = field();
+    auto wall = [&](int x, int z0, int z1) {  // 4 high across z0..z1 at x
+        for (int z = z0; z <= z1; ++z)
+            for (int y = 4; y < 8; ++y) g.set({x, y, z}, Stone);
+    };
+    Player player;
+    std::mt19937 rng(5);
+    std::vector<Entity> es;
+    const glm::vec3 home{80.5f, 4, 80.5f};
+    auto spawn = [&](EntityKind kind) {
+        es.clear();
+        syncSpawns(es, g, {{.id = 1, .kind = MarkerKind::Spawn, .pos = home, .radius = 3, .entity = kind}}, 1, player.pos, 0.5f);
+        CHECK(es.size() == 1);
+        return &es[0];
+    };
+    auto reason = [](const Entity& e, uint32_t back = 0) {
+        return std::string_view(e.history[(e.transitions - 1 - back) % e.history.size()].reason);
+    };
+    auto sim = [&](int ticks, auto&& each) {
+        for (int i = 0; i < ticks; ++i) {
+            each(i);
+            player.health = 100;  // (its hits aside)
+            updateEntities(es, g, player, kTick);
+            separate(player, g, es);
+            updateCombat(player, es, kTick, rng);
+        }
+    };
+    auto none = [](int) {};
+    const EntityType& bt = typeOf(EntityKind::Bandit);
+    CHECK(bt.aggroRange >= 20 && bt.chaseRange >= 2 * bt.aggroRange);  // was 10, with a leash 20 from home
+
+    // Seen from afar: 20 blocks off in the open (twice the old aggro range), it comes.
+    player.pos = home + glm::vec3(-20, 0, 0);
+    Entity* b = spawn(EntityKind::Bandit);
+    CHECK(canSee(g, b->body, player));
+    sim(1, none);
+    CHECK(b->state == AiState::Chase && reason(*b) == "saw_target" && b->lastSeen == player.pos && b->unseen == 0);
+    // Not through a wall: the same spot behind one, for a minute.
+    wall(70, 60, 100);
+    b = spawn(EntityKind::Bandit);
+    CHECK(!canSee(g, b->body, player));
+    sim(60 * 60, [&](int) { player.pos = b->body.pos + glm::vec3(-20, 0, 0); });
+    CHECK(!b->angry() && b->transitions <= 1);  // (wanders)
+    // Nor beyond its aggro range in the open.
+    g = field();
+    b = spawn(EntityKind::Bandit);
+    sim(60 * 60, [&](int) { player.pos = b->body.pos + glm::vec3(-bt.aggroRange - 0.5f, 0, 0); });
+    CHECK(!b->angry());
+
+    // Kiting: the player runs off 6 blocks a second (the bandit runs 5.5) for 10 s, 60 blocks past its home;
+    // it chases all the way without turning back (the old leash gave up 20 from home).
+    b = spawn(EntityKind::Bandit);
+    player.pos = home + glm::vec3(-10, 0, 0);
+    sim(1, none);
+    CHECK(b->state == AiState::Chase);
+    bool gaveUp = false;
+    sim(10 * 60, [&](int) {
+        player.pos.x -= 6 * kTick;
+        gaveUp |= b->state == AiState::Return || b->state == AiState::Search;
+    });
+    CHECK(!gaveUp && b->angry() && glm::distance(flat(b->body.pos), flat(home)) > 40);
+    // Outrun past its chase range it gives up, walks home and heals there.
+    damage(*b, 10);
+    player.pos = b->body.pos + glm::vec3(0, 0, bt.chaseRange + 1);
+    sim(1, none);
+    CHECK(b->state == AiState::Return && reason(*b) == "target_far");
+    sim(30 * 60, none);
+    CHECK(b->state == AiState::Wander && reason(*b) == "home" && b->body.health == float(maxHealth(sheet(b->body))));
+
+    // Out of sight: the player ducks behind a wall. A moment later (round a corner) it's still a chase,
+    // then it searches: runs to where it last saw them and looks round there, then gives up and goes home.
+    g = field();
+    wall(70, 60, 100);
+    b = spawn(EntityKind::Bandit);
+    player.pos = home + glm::vec3(-6, 0, 0);
+    sim(1, none);
+    CHECK(b->state == AiState::Chase);
+    glm::vec3 seenAt = player.pos;
+    player.pos = {66.5f, 4, 80.5f};  // behind the wall
+    sim(int(gAi.sightGrace * 60) - 2, none);
+    CHECK(b->state == AiState::Chase && b->lastSeen == seenAt && b->unseen > 0);
+    sim(3, none);
+    CHECK(b->state == AiState::Search && reason(*b) == "lost_sight");
+    sim(3 * 60, none);
+    CHECK(b->state == AiState::Search && glm::distance(flat(b->body.pos), flat(seenAt)) < 1.5f);
+    float yaw = b->body.yaw;
+    sim(60, none);
+    CHECK(b->state == AiState::Search && std::abs(std::remainder(b->body.yaw - yaw, 2 * std::numbers::pi_v<float>)) > 0.5f);  // looks round
+    int ticks = 0;
+    while (b->state == AiState::Search && ticks++ < 30 * 60) sim(1, none);
+    CHECK(b->state == AiState::Return && reason(*b) == "gave_up_search");
+    CHECK(std::abs(b->history[(b->transitions - 1) % b->history.size()].after - gAi.searchSeconds) < 2 * kTick);
+    sim(30 * 60, none);
+    CHECK(b->state == AiState::Wander && reason(*b) == "home");
+
+    // Searching, it finds the player again when they step back into view, and a hit sends it back too.
+    b->body.teleport(seenAt);
+    player.pos = seenAt + glm::vec3(-3, 0, 0);  // (out of reach: no swing in the same update)
+    setState(*b, AiState::Search, "test");
+    b->lastSeen = seenAt;
+    b->unseen = 1;
+    b->spawn.lines = {"There you are!"};  // a marker's lines: shouted on a new fight, not on finding the player again
+    sim(1, none);
+    CHECK(b->state == AiState::Chase && reason(*b) == "found_target" && b->speech() == nullptr);
+    player.pos = {66.5f, 4, 80.5f};
+    for (int i = 0; i < 120 && b->state != AiState::Search; ++i) sim(1, none);
+    CHECK(b->state == AiState::Search);
+    damage(*b, 1);
+    sim(1, none);
+    CHECK(b->state == AiState::Chase && reason(*b) == "damaged" && b->lastSeen == player.pos);
+    // Searching, a player in sight but past its chase range isn't found: it searches on, then gives up.
+    player.pos = {66.5f, 4, 80.5f};
+    for (int i = 0; i < 120 && b->state != AiState::Search; ++i) sim(1, none);
+    CHECK(b->state == AiState::Search);
+    player.pos = b->body.pos + glm::vec3(0, 0, bt.chaseRange + 2);
+    CHECK(canSee(g, b->body, player));
+    sim(60, none);
+    CHECK(b->state == AiState::Search);
+
+    // A grace of 0 (the debug window's slider) doesn't flap between chasing and searching while it sees the player.
+    gAi.sightGrace = 0;
+    b->body.teleport(home);
+    setState(*b, AiState::Wander, "test");
+    player.pos = home + glm::vec3(-6, 0, 0);
+    sim(30, none);
+    CHECK(b->angry());
+    gAi.sightGrace = AiTuning{}.sightGrace;
+    // A search forced from the debug window starts where it stands, not at a stale spot.
+    setState(*b, AiState::Wander, "test");
+    b->lastSeen = {};
+    setState(*b, AiState::Search, "forced");
+    CHECK(b->lastSeen == b->body.pos);
+
+    // No flapping at a wall's end: seen every other tick for 3 s (in front of the wall, then behind it), it
+    // never turns to searching.
+    b->body.teleport(home);
+    setState(*b, AiState::Wander, "test");
+    player.pos = home + glm::vec3(-6, 0, 0);
+    sim(1, none);
+    bool searched = false;
+    sim(3 * 60, [&](int i) {
+        player.pos = i % 2 ? glm::vec3(66.5f, 4, 80.5f) : home + glm::vec3(-4, 0, 0);
+        searched |= b->state == AiState::Search;
+    });
+    CHECK(!searched && b->angry());
+
+    // A crate stack in the way (2 by 2, 2 high: no step, no sight over it): it goes round, not stuck on it.
+    g = field();
+    for (int x = 70; x < 72; ++x)
+        for (int z = 80; z < 82; ++z)
+            for (int y = 4; y < 6; ++y) g.set({x, y, z}, Planks);
+    player.pos = {62.5f, 4, 80.5f};
+    b = spawn(EntityKind::Bandit);
+    CHECK(!canSee(g, b->body, player));
+    damage(*b, 1);  // (it can't see the player behind the crates, but knows where the hit came from...)
+    staggerHit(*b, 20, false);  // (...even one it reels from: every hit, for a bandit)
+    sim(1, none);
+    CHECK(b->state == AiState::Stagger && b->lastSeen == player.pos && b->unseen == 0);
+    int reached = -1;
+    sim(8 * 60, [&](int i) {
+        if (reached < 0 && glm::distance(flat(b->body.pos), flat(player.pos)) < kPunchReach) reached = i;
+    });
+    CHECK(reached > 0 && reached < 5 * 60 && b->state != AiState::Return);
+
+    // A doorway a body just fits (1 wide) in a long wall, come at slantwise: the width check doesn't keep it out.
+    g = field();
+    wall(70, 40, 120);
+    g.set({70, 4, 80}, Air), g.set({70, 5, 80}, Air);  // the doorway, 2 high
+    player.pos = {66.5f, 4, 77.5f};
+    b = spawn(EntityKind::Bandit);
+    b->body.teleport({73.5f, 4, 83.5f});
+    damage(*b, 1);  // (the doorway's edge hides the player at that slant: it searches where the hit came from)
+    reached = -1;
+    sim(8 * 60, [&](int i) {
+        if (reached < 0 && glm::distance(flat(b->body.pos), flat(player.pos)) < kPunchReach) reached = i;
+    });
+    CHECK(reached > 0 && reached < 6 * 60);
+
+    // A night-time marker's NPC searching for the player when the night ends stays till the search is
+    // over (as one still fighting does); then it leaves.
+    {
+        Marker night{.id = 1, .kind = MarkerKind::Spawn, .pos = home, .radius = 3, .entity = EntityKind::Bandit, .count = 1,
+                     .activeFrom = 0.8f, .activeTo = 0.2f};
+        std::vector<Entity> ns;
+        syncSpawns(ns, g, {night}, 1, player.pos, 0.9f);
+        CHECK(ns.size() == 1);
+        setState(ns[0], AiState::Search, "test");
+        syncSpawns(ns, g, {night}, 1, player.pos, 0.5f);
+        CHECK(ns.size() == 1);
+        setState(ns[0], AiState::Return, "test");
+        syncSpawns(ns, g, {night}, 1, player.pos, 0.5f);
+        CHECK(ns.empty());
+    }
+
+    // A passive boar hit once chases too, 40 blocks from its home and on.
+    g = field();
+    player.pos = home + glm::vec3(-3, 0, 0);
+    Entity* boar = spawn(EntityKind::Boar);
+    damage(*boar, 1);
+    sim(1, none);
+    CHECK(boar->state == AiState::Chase);
+    gaveUp = false;
+    sim(8 * 60, [&](int) {
+        player.pos.x -= 6 * kTick;
+        gaveUp |= !boar->angry();
+    });
+    CHECK(!gaveUp && glm::distance(flat(boar->body.pos), flat(home)) > 30);
 }
 
 // Session and step(): what main.cpp's loop did inline before, now drivable headless.
@@ -3981,7 +4234,7 @@ static void timedSpawns() {
     CHECK(s.entities.size() == 2 && kept && fresh && kept->angry() && kept->body.health < 34 && kept->transitions >= fighterTransitions);
     CHECK(fresh && fresh->body.health == float(maxHealth(sheet(fresh->body))) && glm::distance(fresh->home, night.pos) < 4);
     s.timeOfDay = 0.5f;
-    s.player.teleport({5.5f, 4, 5.5f});  // beyond its leash: it gives up, and goes
+    s.player.teleport({5.5f, 4, 5.5f});  // beyond its chase range: it gives up, and goes
     int ticks = 0;
     for (; ticks < 120 && !s.entities.empty(); ++ticks) step(s, {}, kTick);
     CHECK(s.entities.empty() && ticks < 120);
@@ -4483,7 +4736,7 @@ static void dataFiles() {
     scarecrow.replace(scarecrow.find(R"("id": "dummy")"), std::string_view(R"("id": "dummy")").size(), R"("id": "scarecrow")");
     CHECK(shipped.creatures.size() == size_t(EntityKind::Count) && shipped.creatureById.at("ghoul") == EntityKind::Ghoul &&
           shipped.creatures[1].name == nullptr && shipped.creatureIds[1] == "villager");
-    writeCreatures(creatures + R"(,{"id": "townsfolk", "save_id": 9, "copy_from": "villager", "leash_radius": null}])");
+    writeCreatures(creatures + R"(,{"id": "townsfolk", "save_id": 9, "copy_from": "villager", "chase_range": null}])");
     CHECK(loadDefs(dir, grown, error));  // null is no AI number: fine on a harmless kind
     if (!error.empty()) std::println(stderr, "FAIL null AI key: {}", error);
     writeCreatures(creatures + R"(,{"id": "boar_sow", "save_id": 9, "copy_from": "boar", "name": null, "stats": {"stamina": 14}, "loot": "wolf_pelt"}])");
@@ -4527,12 +4780,13 @@ static void dataFiles() {
              {creatures + R"(,{"id": "a", "save_id": 9, "model": "boar", "temper": "passive", "respawn_seconds": 5}])", "field 'level': missing"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "respawn_seconds": null}])", "field 'respawn_seconds': missing"},
              {creatures + R"(,{"id": "wolf", "save_id": 9, "copy_from": "boar"}])", "record 9 'wolf': field 'id': duplicate of record 4"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "leash_radius": 10, "reaggro_radius": 10}])",
-              "field 'reaggro_radius': must be less than leash_radius"},
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "chase_range": 24}])",
+              "field 'chase_range': must be more than aggro_range"},
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "leash_radius": 20}])", "field 'leash_radius': unknown field"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "flee_health": 1}])", "field 'flee_health': 1 is out of range 0..0.95"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "attack_windup": 0}])", "field 'attack_windup': 0 is out of range"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "leash_radius": 10}])",
-              "field 'leash_radius': harmless creatures don't fight"},
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "chase_range": 40}])",
+              "field 'chase_range': harmless creatures don't fight"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "give_up_seconds": "soon"}])", "field 'give_up_seconds': must be a number"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "stance": 10}])",
               "field 'stance': only attackable creatures are hit"},
@@ -7295,6 +7549,8 @@ static void flasks() {
     Entity& wolf = spawnAhead(s.entities, s.world, s.player, EntityKind::Wolf, 9);
     setState(wolf, AiState::Chase, "test");
     CHECK(!canRest(s));  // something angry near
+    setState(wolf, AiState::Search, "test");
+    CHECK(!canRest(s));  // or searching for the player (ADR-055): ducking out of sight isn't a rest
     s.entities.clear();
     Player& p = s.player;
     p.health = 30, p.flasks = 0, p.stamina = 10;
@@ -9914,6 +10170,7 @@ int main() {
     fightReplay();
     boarReplay();
     npcAi();
+    pursuit();
     session();
     timedSpawns();
     ticks();

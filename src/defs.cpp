@@ -441,8 +441,8 @@ void loadCreatures(const File& f, Defs& d) {
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
         r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
-                 "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "rare_loot", "rare_loot_chance", "respawn_seconds", "leash_radius",
-                 "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
+                 "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "rare_loot", "rare_loot_chance", "respawn_seconds", "chase_range",
+                 "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
                  "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "damage",
                  "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield", "mods", "keep_range", "aim_error", "sidearm"});
         size_t save = saves.claim(r);
@@ -497,13 +497,13 @@ void loadCreatures(const File& f, Defs& d) {
         if (t.rareLoot && t.lootChance >= 1) throw r.fail("rare_loot", "never dropped: loot_chance is 1");
         t.respawnSeconds = float(r.number(r.fields, "respawn_seconds", 0, 3600, kRequired, false));
         // The AI's numbers (ADR-020): only for creatures that fight; the defaults are the AI before them.
-        for (const char* key : {"leash_radius", "reaggro_radius", "reaggro_cooldown", "give_up_seconds", "attack_windup",
+        for (const char* key : {"chase_range", "reaggro_cooldown", "give_up_seconds", "attack_windup",
                                 "attack_recover", "attack_cooldown", "flee_health"})
             if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");
         if (t.temper != Temper::Harmless && !t.wanders) throw r.fail("wanders", "must be true for a creature that fights (the AI moves it)");
-        t.leashRadius = float(r.number(r.fields, "leash_radius", 2, 64, 20, false));
-        t.reaggroRadius = float(r.number(r.fields, "reaggro_radius", 0, 64, 0.8 * t.leashRadius, false));
-        if (t.reaggroRadius >= t.leashRadius) throw r.fail("reaggro_radius", "must be less than leash_radius (or it flaps at the edge)");
+        // Pursuit (ADR-055): no leash from home; a chase ends past chase_range (from the NPC), out of sight or stuck.
+        t.chaseRange = float(r.number(r.fields, "chase_range", 8, 128, std::max(32.0f, 2 * t.aggroRange), false));
+        if (t.chaseRange <= t.aggroRange) throw r.fail("chase_range", "must be more than aggro_range (or it flaps at the edge)");
         t.reaggroCooldown = float(r.number(r.fields, "reaggro_cooldown", 0, 60, 3, false));
         t.giveUpSeconds = float(r.number(r.fields, "give_up_seconds", 0.5, 60, 5, false));
         // A swing holds its windup pose until the hit is due (ADR-035): long enough to see coming.

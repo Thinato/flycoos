@@ -27,7 +27,7 @@ struct EntityType {
     bool talks;        // E shows a speech balloon
     Model model;
     Temper temper;
-    float aggroRange;     // aggressive: attacks a player this close (blocks)
+    float aggroRange;     // aggressive: attacks a player this close (blocks) that it can see (ADR-055)
     float wanderRadius;   // stays this close to home while not fighting
     float chaseSpeed;     // blocks/s while chasing
     ItemId weapon;        // held in the main hand
@@ -37,8 +37,7 @@ struct EntityType {
     float rareChance;
     float respawnSeconds; // dead this long, then back at home fully healed
     // The AI's numbers (ADR-020); fighters only.
-    float leashRadius;     // a chase ends once the player is this far from home
-    float reaggroRadius;   // aggressive: attacks on sight only a player this close to home (< leashRadius)
+    float chaseRange;      // a chase ends once the player is this far from it, seen or not (> aggroRange; ADR-055)
     float reaggroCooldown; // seconds after getting home before it attacks on sight again
     float giveUpSeconds;   // can't step toward the player (out of reach) this long: goes home
     float windup;          // seconds from starting a swing to its hit, standing committed
@@ -78,15 +77,16 @@ const EntityType& typeOf(EntityKind kind);
 // The NPC AI's states (ADR-020). Idle: stands where it was put (kinds that don't wander). Talk:
 // stands facing the player while its balloon is up. Chase, Windup, Recover: fighting. Return: walks
 // home ignoring the player, then heals. Flee: runs from the player for a while, then returns.
-// Stagger: reels from a hit (a flinch, or a stance break), then fights on (ADR-035).
-enum class AiState : uint8_t { Idle, Wander, Talk, Chase, Windup, Recover, Return, Flee, Dead, Stagger, Count };
-inline constexpr const char* kAiStateNames[] = {"idle", "wander", "talk", "chase", "windup", "recover", "return", "flee", "dead", "stagger"};
+// Stagger: reels from a hit (a flinch, or a stance break), then fights on (ADR-035). Search: lost sight
+// of the player mid-chase, goes to where it last saw them and looks around, then gives up (ADR-055).
+enum class AiState : uint8_t { Idle, Wander, Talk, Chase, Windup, Recover, Return, Flee, Dead, Stagger, Search, Count };
+inline constexpr const char* kAiStateNames[] = {"idle", "wander", "talk", "chase", "windup", "recover", "return", "flee", "dead", "stagger", "search"};
 static_assert(std::size(kAiStateNames) == size_t(AiState::Count));
 // What happened to an entity since its last AI update (bits of Entity::events).
 enum AiEvent : uint8_t { EventDamaged = 1 };
 struct AiTransition {
     AiState from = AiState::Idle, to = AiState::Idle;
-    const char* reason = "";  // a static string, e.g. "target_left_leash"
+    const char* reason = "";  // a static string, e.g. "lost_sight"
     float after = 0;          // seconds it had spent in `from`
 };
 
@@ -111,6 +111,8 @@ struct AiTuning {
     float backOffSeconds = 0.9f;  // an NPC backing off walks away facing the player this long
     float drawHold = 0.8f;      // an archer holds its draw this long before it looses (x 0.85 .. 1.15): the tell (ADR-051)
     float closeIn = 3;          // an archer with a sidearm takes it out once the player is this close (the bow back past keepMin)
+    float sightGrace = 0.5f;    // a chase goes on this long out of sight (round a corner) before it turns into a search (ADR-055)
+    float searchSeconds = 8;    // a search lasts this long (going to where it last saw the player, looking round) before it gives up
 };
 inline AiTuning gAi;
 
@@ -156,12 +158,15 @@ struct Entity {
     float counterTimer = 0;  // > 0: it just blocked or parried: its next swing comes fast
     float backOff = 0;     // > 0: backing off after its string
     bool sight = false;    // an archer: it saw the player's chest from its bow at its last look (ADR-051)
+    glm::vec3 lastSeen{};  // where it last saw the player (or was hit from), fighting or searching (ADR-055)
+    float unseen = 0;      // seconds it hasn't seen the player, fighting or searching
     std::mt19937 rng;
 
     const EntityType& type() const { return typeOf(kind); }
     bool angry() const {
         return state == AiState::Chase || state == AiState::Windup || state == AiState::Recover || state == AiState::Stagger;
     }
+    bool hunting() const { return angry() || state == AiState::Search; }  // fighting, or searching for the player (ADR-055)
     const char* speech() const;  // current balloon text, null when silent
     // Its name on the nameplate: the spawn marker's name for a lone NPC with lines, else `name`.
     const std::string& displayName() const;
@@ -215,6 +220,9 @@ void setState(Entity& e, AiState to, const char* reason);
 // NPCs where `loaded` says no (the endless world's part that isn't in) wait where they are.
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt,
                     const std::function<bool(glm::vec3)>& loaded = {});
+// Whether nothing solid stands between `from`'s eyes (1.5 above its feet) and `target`'s chest (1.1): how an NPC
+// sees the player (ADR-055). ponytail: one ray, no field of view; a sliver of cover hides the whole body.
+bool canSee(const Grid& world, const Player& from, const Player& target);
 // Keeps the player from walking through entities (never pushes into terrain).
 void separate(Player& player, const Grid& world, const std::vector<Entity>& entities);
 // Nearest living entity within talk range that can talk, or null.

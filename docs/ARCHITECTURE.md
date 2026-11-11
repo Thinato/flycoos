@@ -376,7 +376,7 @@ and for spawns an entity kind, a count, dialogue lines and an active window. Kin
   many of their NPCs are out.
 - **Lines** (ADR-016): talkers say the marker's next line on each E (cycling) instead of a random phrase;
   anyone that fights (guards too) says the next one when it enters `Chase` from calm (`setState`), at most every
-  8 s, so hits from outside its territory (where it gives up at once) don't make it shout per hit;
+  8 s, so hits from beyond its chase range (where it gives up at once) don't make it shout per hit;
   a shout's balloon doesn't hold a calm NPC still. Only the living talk. A balloon stays up 5 s,
   longer for long lines. With lines and count 1 the NPC's `displayName()` is the marker's name (nameplate,
   debug window), so a story character is one marker. Caps: 8 × 160 bytes per marker, ~5 MB for
@@ -1003,7 +1003,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   table indexed by save id (= `EntityKind`, from 0). A record:
   `{"id": "wolf", "save_id": 4, "name": "Wolf", "level": 1, "stats": {"stamina": 8, "strength": 2,
   "agility": 4, "intellect": 2, "spirit": 2}, "attackable": true, "wanders": true, "model": "wolf",
-  "temper": "aggressive", "aggro_range": 12, "wander_radius": 10, "chase_speed": 7.5, "loot":
+  "temper": "aggressive", "aggro_range": 28, "wander_radius": 10, "chase_speed": 7.5, "loot":
   "wolf_pelt", "loot_chance": 0.6, "respawn_seconds": 30}`. Required: `level`, all five `stats`,
   `model` (a body model: player, villager, dummy, boar, bandit, wolf, guard, chief, ghoul),
   `temper` (harmless, passive, aggressive) and `respawn_seconds`. `name` null or absent gives each
@@ -1015,8 +1015,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   their drop roll as before.
   `xp` (0–100000, ADR-027) is the character XP for a kill: by default 10 × level for hostile,
   attackable kinds and 0 for the rest; one that can't be hurt can't have any.
-  The AI's numbers (ADR-020) are optional and only for kinds that fight: `leash_radius` (2..64,
-  default 20), `reaggro_radius` (default 0.8 × leash, must be smaller), `reaggro_cooldown` (3 s),
+  The AI's numbers (ADR-020) are optional and only for kinds that fight: `chase_range` (8..128,
+  default the larger of 32 and twice `aggro_range`, must be more than it; ADR-055), `reaggro_cooldown` (3 s),
   `give_up_seconds` (5), `attack_windup` (0.05..2, default 0.5 s: the swing holds its windup pose
   until then), `attack_recover` (0.5 s), `hit_stance` (15: the stance damage of its hits, ADR-035),
   `attack_cooldown` (0) and `flee_health` (a health fraction 0..0.95, default 0: never flees). A
@@ -1054,12 +1054,12 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Training Dummy | "Training Dummy" | 1 | 10/0/0/0/10 | 100 | harmless (attackable, static) | – | – | no |
   | Villager | random from a name list (seeded) | 5 | 25/5/5/5/5 | 250 | harmless (not attackable) | – | – | yes (E) |
   | Boar | "Boar" | 1 | 10/2/2/2/2 (the player's) | 100 | passive | tusks (= punch, 3–6) | Boar Skin 75% | no |
-  | Bandit | "Bandit" | 2 | 12/3/2/2/2 | 120 | aggressive, aggro 10 | Rusty Knife (5–8) | Rusty Knife 40% | no |
-  | Wolf | "Wolf" | 1 | 8/6/70/2/2 | 80 | aggressive, aggro 12 | bite (= punch, 7–10, quick) | Wolf Pelt 60% | no |
+  | Bandit | "Bandit" | 2 | 12/3/2/2/2 | 120 | aggressive, aggro 24 | Rusty Knife (5–8) | Rusty Knife 40% | no |
+  | Wolf | "Wolf" | 1 | 8/6/70/2/2 | 80 | aggressive, aggro 28 | bite (= punch, 7–10, quick) | Wolf Pelt 60% | no |
   | Guard | "Guard" | 4 | 16/5/3/2/4 | 160 | passive | Iron Shortsword (11–15) | Short Bow 50% | yes (E) |
-  | Bandit Chief | "Bandit Chief" | 3 | 11/3/2/2/2 | 110 | aggressive, aggro 10 | Iron Shortsword (9–13) | Iron Helm 100% | no |
-  | Barrow Ghoul | "Barrow Ghoul" | 3 | 7/4/2/2/2 | 70 | aggressive, aggro 8 | claws (= punch, 5–8) | Bone Charm 30% | no |
-  | Bandit Archer | "Bandit Archer" | 2 | 9/2/4/2/2 | 90 | aggressive, aggro 14 | Short Bow (keeps 7–16 blocks, aim ±0.07 rad, a shot every 3.2 s), Rusty Knife within 3 | Short Bow 25% | no |
+  | Bandit Chief | "Bandit Chief" | 3 | 11/3/2/2/2 | 110 | aggressive, aggro 24 | Iron Shortsword (9–13) | Iron Helm 100% | no |
+  | Barrow Ghoul | "Barrow Ghoul" | 3 | 7/4/2/2/2 | 70 | aggressive, aggro 16 | claws (= punch, 5–8) | Bone Charm 30% | no |
+  | Bandit Archer | "Bandit Archer" | 2 | 9/2/4/2/2 | 90 | aggressive, aggro 30 | Short Bow (keeps 7–16 blocks, aim ±0.07 rad, a shot every 3.2 s), Rusty Knife within 3 | Short Bow 25% | no |
 
   The story's foes are tuned for a level-1 player (there's no leveling yet): in the whole Iron set
   with the sword, played the Elden Ring way (guarding a foe about to strike, attacking when its
@@ -1090,12 +1090,12 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   Beyond its wander radius it heads home. NPC bodies use the same `updatePlayer` physics as the
   player, driven by AI input.
 - **Temper and AI** (ADR-020): one state machine for every kind, `Idle` (kinds that don't wander) /
-  `Wander` / `Talk` / `Chase` / `Windup` / `Recover` / `Return` / `Flee` / `Dead` / `Stagger`, in `think()`; every
+  `Wander` / `Talk` / `Chase` / `Windup` / `Recover` / `Return` / `Flee` / `Dead` / `Stagger` / `Search`, in `think()`; every
   transition goes through `setState` with a reason, kept in an 8-entry ring per entity. Harmless
   kinds never fight. Passive ones chase when damaged (`damage()` sets `EventDamaged`, read on the
-  entity's next update); aggressive ones also when a living player is within their aggro range and
-  within `reaggro_radius` (16) of their home, unless they got home in the last `reaggro_cooldown`
-  (3 s). A chasing NPC runs at the player; within reach it winds up (`startPunch`: the next of the
+  entity's next update); aggressive ones also when they see a living player within their aggro range
+  (in 3D, and in line of sight: `canSee`, nothing solid from 1.5 above its feet to 1.1 above the
+  player's; ADR-055), unless they got home in the last `reaggro_cooldown` (3 s). A chasing NPC runs at the player; within reach it winds up (`startPunch`: the next of the
   first three lights, holding its windup pose until `attack_windup` x 0.85..1.35 has passed, turning
   after the player until 0.12 s before the strike, then committed), the hit lands once at the impact
   frame if the player is still in reach and in front, then it stands `attack_recover` and chases
@@ -1103,13 +1103,22 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   gates the cadence (the boar's swing is a head-down gore: drawn back, then lunging). A hit that
   makes it reel (ADR-035) puts it in `Stagger` (reason `flinched` or `stance_broken`) until it
   steadies, cancelling its windup; then it fights on. It gives
-  up (`Return`) when the player is `leash_radius` (20) from its home or knocked out, or after
+  up (`Return`) when the player is `chase_range` from it (not from home: no leash) or knocked out, or after
   `give_up_seconds` (5) unable to step toward a player out of reach (too far, or a body height above
-  or below; no pathfinding). `Return` walks home ignoring the player and hits (pending ones are
-  dropped), then heals fully if it had to walk. A state forced in the debug window skips the enter
+  or below; no pathfinding). `Return` walks home ignoring the player (pending hits are dropped), then
+  heals fully if it had to walk; a hit on the way brings it back to `Chase` unless it gave up for want
+  of a way to the player (`lost_target`) and the player is still out of reach (ADR-055). A state forced in the debug window skips the enter
   actions (no shout). Below `flee_health` of its health (0 for
-  every shipped kind: never) it runs from the player for 4 s, then returns. No line-of-sight or
-  FOV check yet. The Entities tab shows the state, time in it, the transitions and a force-state combo.
+  every shipped kind: never) it runs from the player for 4 s, then returns. No field of view yet.
+  **Pursuit** (ADR-055): fighting, it notes where it last saw the player (`lastSeen`, `unseen`); out
+  of sight for `gAi.sightGrace` (0.5 s: round a corner) a chase turns into `Search` (reason
+  `lost_sight`): it runs to where it last saw them, then turns one way and the other, looking; it
+  chases again on seeing them (`found_target`, no shout) or when hit, and after `gAi.searchSeconds`
+  (8) gives up (`gave_up_search`) and returns. A hit, even one it reels from, sets `lastSeen` too;
+  searching counts as in a fight (`Entity::hunting()`: no resting near it, its health bar shows). Chasing, searching or going home, a blocked step tries
+  45 then 90 degrees to either side (`detour`, checking the body's width: `roomy`); a detour counts
+  toward `give_up_seconds` and a free step only winds it back. The Entities tab shows the state, time in it, the
+  transitions, whether it sees the player and when it last did, and a force-state combo.
   For trying out fights it also spawns a picked kind 5 blocks in front of the player (`spawnAhead`,
   F6 too): not from a marker, so marker syncs and the player save leave it alone.
 - **Packs** (ADR-034): `updateEntities` first gives every fighter on the player (`Chase`, `Windup`,
@@ -1142,9 +1151,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   respawns; E within 3.5 blocks moves the loot into the bags, else into its empty equip slot (it
   stays on the corpse if neither has room, and E talks instead).
 - **Default spawns:** dummy and villager just in front of the spawn, the boar about 14 blocks out, the
-  bandit's camp about 22 blocks out: outside its leash from the spawn, and even at the edge of its
-  wander radius more than its aggro range away. A bandit archer (ADR-051) stands a few blocks behind
-  the bandit, about 27 blocks out (aggro 14).
+  bandit's camp about 34 blocks out: even at the edge of its wander radius more than its aggro range
+  (24) away. A bandit archer (ADR-051) stands a few blocks behind the bandit, about 41 blocks out (aggro 30).
 - **Talking:** E picks the nearest talker within 3.5 blocks. It shows its spawn marker's next line,
   or else a random phrase (never the same twice in a row), for 5 s, while it stops and turns to
   face the player.

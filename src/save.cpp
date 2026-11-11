@@ -510,7 +510,7 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
         }
         // Where it was, unless its home moved away since (the marker did): then it starts at home.
         e->body.yaw = n.yaw;
-        float range = std::max({e->wanderRadius, e->type().leashRadius, 8.0f});
+        float range = std::max({e->wanderRadius, e->type().chaseRange, 8.0f});
         e->body.teleport(glm::distance(glm::vec2(n.pos.x, n.pos.z), glm::vec2(e->home.x, e->home.z)) <= range
                              ? inWorld(n.pos) : e->body.pos);
         e->body.health = std::min(n.health, float(maxHealth(sheet(e->body))));

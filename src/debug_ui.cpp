@@ -484,7 +484,7 @@ static void playerTab(Session& session, float& armorK, DebugActions& actions, co
         if (p.move == Move::Drink)
             ImGui::ProgressBar(moveProgress(p), {-FLT_MIN, 0}, p.hitPending ? "drinking: before the drink frame" : "drinking: drunk");
         ImGui::SliderFloat("Walk while drinking", &m.drinkSpeed, 0.1f, 5, "%.1f b/s");
-        ImGui::Text("Can rest here: %s", canRest(session) ? "yes" : "no (alive, not hit for 5 s, nothing angry near, by an Ember)");
+        ImGui::Text("Can rest here: %s", canRest(session) ? "yes" : "no (alive, not hit for 5 s, nothing fighting or searching near, by an Ember)");
         if (session.restPoint) ImGui::Text("Rest point: %.1f %.1f %.1f", double(session.restPoint->x), double(session.restPoint->y), double(session.restPoint->z));
         else ImGui::TextDisabled("Rest point: none yet (the player spawn)");
         if (ImGui::Button("Rest now")) rest(p), session.restPoint = p.pos;
@@ -656,6 +656,10 @@ static void entitiesTab(Session& session, DebugActions& actions, SpawnSettings& 
         ImGui::SetItemTooltip("An archer holds its full draw this long (x 0.85 .. 1.15) before it looses: the tell (ADR-051).");
         ImGui::SliderFloat("Archer's sidearm within", &a.closeIn, 0, 8, "%.1f blocks");
         ImGui::SetItemTooltip("An archer with a sidearm takes it out once you're this close; the bow comes back past its range band's near end.");
+        ImGui::SliderFloat("Chases out of sight", &a.sightGrace, 0, 3, "%.2f s");
+        ImGui::SetItemTooltip("Pursuit (ADR-055): a chase goes on this long after it loses sight of you (round a corner), then it searches.");
+        ImGui::SliderFloat("Searches for", &a.searchSeconds, 0, 30, "%.1f s");
+        ImGui::SetItemTooltip("A search: it runs to where it last saw you and looks round, this long, then gives up and walks home.");
         if (ImGui::Button("Reset AI")) a = AiTuning{};
         ImGui::TreePop();
     }
@@ -680,8 +684,13 @@ static void entitiesTab(Session& session, DebugActions& actions, SpawnSettings& 
             ImGui::SetItemTooltip("Fighters on the player together spread evenly around it and circle to their side before closing in (ADR-034).");
         }
         if (t.temper != Temper::Harmless) {
-            ImGui::Text("aggro %.0f   leash %.0f   re-aggro %.0f (after %.0f s)   chase %.1f b/s", t.aggroRange, t.leashRadius,
-                        t.reaggroRadius, t.reaggroCooldown, t.chaseSpeed);
+            ImGui::Text("aggro %.0f (in sight)   chases to %.0f   calm %.0f s after home   chase %.1f b/s", t.aggroRange, t.chaseRange,
+                        t.reaggroCooldown, t.chaseSpeed);
+            ImGui::SetItemTooltip("Pursuit (ADR-055): it attacks you on sight within its aggro range, and chases while it sees you\n"
+                                  "until you're past its chase range (from it, not from home). Out of sight it searches, then gives up.");
+            bool sees = glm::distance(e.body.pos, player.pos) < t.chaseRange && canSee(session.world, e.body, player);  // as the AI counts it
+            ImGui::Text("%s   unseen %.1f s   last seen %.1f away", sees ? "SEES you" : "can't see you", double(e.unseen),
+                        double(glm::distance(e.lastSeen, e.body.pos)));
             ImGui::Text("windup %.2f s   recover %.2f s   cooldown %.2f s", t.windup, t.recover, t.cooldown);
             ImGui::Text("stance %.0f / %.0f   poise %.0f   %s %.2f s", double(e.body.stance), double(t.stance), double(t.poise),
                         e.body.broken ? "BROKEN" : "reeling", double(e.body.stagger));

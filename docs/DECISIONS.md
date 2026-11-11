@@ -2565,3 +2565,82 @@
     their names.
   - **Later:** a `spawn` command for the MCP bridge; saved spawn presets ("3 wolves at the centre");
     sides (NPCs against NPCs); more zones as mechanics need them (ice, a ledge over a drop, doors).
+
+## ADR-055: Pursuit: seen from afar, chased while in sight, searched for when lost
+
+- **Status:** accepted (2026-11-11); supersedes ADR-020's leash (`leash_radius`, `reaggro_radius`)
+- **Context:**
+  - An enemy noticed the player within 8 to 14 blocks, and only if the player was within 16 of its
+    home; it gave up the moment the player was 20 from its home, wherever the fight was. Kiting one a
+    little way meant it turned round mid-fight and walked home. The user: "It's frustrating kiting an
+    enemy and taking so much effort avoiding his attacks only to them stop following you."
+  - Aggro had no line of sight: through a wall counted the same as in the open.
+- **Decision:**
+  - **Sight** (`canSee`, entity.h): nothing solid (an opaque voxel) on the line from 1.5 above an
+    NPC's feet to 1.1 above the player's (the chest). One ray, all round (no field of view yet).
+  - **A much larger aggro range, in sight only:** bandit 24 (was 10), wolf 28 (12), chief 24 (10),
+    ghoul 16 (8), archer 30 (14). Measured in 3D as before (a cliff, another floor). No gate on the
+    player's distance from its home any more; the cooldown after getting home (`reaggro_cooldown`)
+    stays.
+  - **No leash:** a chase goes on while the NPC sees the player, wherever that takes it. It ends
+    when the player is `chase_range` from the NPC (not from its home: by default the larger of 32
+    and twice the aggro range, must be more than it; 48 to 60 for the shipped aggressive kinds but
+    the ghoul's 32, 32 for the passive ones), when the player is down, or after `give_up_seconds` unable to make
+    headway (a player up a pillar), as before.
+  - **Losing sight:** fighting, an NPC notes where it last saw the player (`lastSeen`; a hit tells
+    it too, even one it reels from). Out of sight for `gAi.sightGrace` (0.5 s, round a corner, or the every-other-tick
+    peek at a wall's end) the chase becomes a new state, `Search` (reason `lost_sight`): it runs to
+    where it last saw them, then turns one way and the other, looking. Seeing them again
+    (`found_target`, no shout: it's the same fight) or a hit puts it back in `Chase`; after
+    `gAi.searchSeconds` (8) it gives up (`gave_up_search`) and walks home (`Return`: ignoring the
+    player, healing on arrival). A searching NPC counts as in a fight: no resting by a fire near it.
+  - **Walking home, a hit brings it back** (it used to ignore hits all the way): with no leash the
+    walk can be long, and free hits on it were an exploit. Not when it gave up for want of a way to
+    the player (`lost_target`, a player up a pillar) and the player is still out of reach: then it
+    keeps walking, so arrows from up there don't keep it pinned below, but a player come down to stab
+    its back gets a fight. A searching NPC of a timed marker stays past its window till it's done.
+  - **Going round things:** chasing, searching or going home, a blocked step tries 45 degrees to
+    one side, the other, then 90 (`detour`), checking the body's width (`roomy`: the ground ahead of
+    both its edges, so it doesn't catch a corner; a slanted doorway a body just fits still works). A
+    detour counts toward giving up and a free step only winds that clock back, so it can't circle a
+    pillar with the player on top forever (an archer keeping its distance still resets it, as before).
+  - The debug window: two knobs in Fighting AI (chases out of sight, searches for); per NPC its
+    aggro and chase ranges, whether it sees the player, how long it hasn't, and how far off it last
+    did. `leash_radius` and `reaggro_radius` are gone from `creatures.json` (no shipped kind set
+    them); `chase_range` is new.
+- **Alternatives considered:**
+  - Keeping a leash, just longer: the user asked for the opposite, and any leash turns back a fight
+    the player is still in.
+  - Searching by wandering about the last place seen, or tracking the player's trail: more to
+    tune, and a search that finds a hidden player through walls feels unfair. One spot and a look
+    round is readable; a trail can come with stealth.
+  - Pathfinding (A* on the voxel grid): the right fix for walls and ramps, and a bigger change
+    (cost per NPC, a navigation grid that follows edits). Detours handle crates, pillars, a pool's
+    edge and corridor corners; an enemy still can't find the ramp up a hill.
+  - A field of view (no sight behind it): goes with stealth (crouching, noise), later.
+- **Consequences:**
+  - Enemies notice from across a clearing, follow a kited player across the map while they see
+    them, lose them behind cover and come looking. More fights find the player; the default camp
+    spawns (`spawnEntities`) moved out to 34 and 40 blocks so the starting area stays quiet.
+  - The story fights' balance numbers are unchanged (the fights start in reach). In the story world
+    every aggressive spawn marker is 94 blocks or more from the player spawn, so the start stays quiet.
+  - One ray per fighting or searching NPC per tick within its chase range (and per calm aggressive
+    one within its aggro range): a few dozen voxel steps each.
+  - A save made mid-chase far from home (beyond the chase range) loads the NPC at home.
+  - **Tested:** `pursuit()` in core_test, on a flat field 160 blocks across: seen from 20 blocks in
+    the open (twice the old range), not through a wall nor past its aggro range in a minute;
+    kited 60 blocks past its home at 6 blocks a second it chases all the way; outrun past its chase
+    range it gives up, walks home and heals; behind a wall it chases on for the grace, then searches,
+    reaches where it last saw the player, looks round, gives up after the search time and goes home;
+    searching, it finds the player stepping back into view (without a shout), not one past its chase
+    range, and a hit sends it back; a hit from out of sight, even one it reels from, tells it where
+    the player is; seen every other tick it never turns to searching; it goes round a crate stack it
+    can't see over, and through a slanted doorway a body just fits, to reach the player; a passive
+    boar hit once chases 40 blocks from home. No rest near a searching NPC (`flasks()`); a hit on
+    the way home brings it back, after `lost_target` only from in reach; a grace of 0 doesn't flap; a
+    forced search starts where the NPC stands; a timed marker's searcher stays past its window
+    (`pursuit()`). Mutation-checked: each of 28 rules
+    broken alone fails a test. `npcAi()` and `fighters()` re-pinned
+    for the chase range (giving up past it, height, Return, the pillar: a player up a pillar is still given up on
+    though it walks round), the data table and validation (`chase_range` above `aggro_range`,
+    fighters only; `leash_radius` unknown).

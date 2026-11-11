@@ -166,7 +166,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         ImU32 healthColor = uiColor(hc.r, hc.g, hc.b, alpha);
         shadowText(dl, ImVec2(p.x - size.x / 2, p.y - line - 6), nameColor, alpha, label);
         // Health: always for the aggressive, for the rest (friendly, passive) only in combat.
-        if (t.temper == Temper::Aggressive || e.angry() || e.body.combatTimer > 0)
+        if (t.temper == Temper::Aggressive || e.hunting() || e.body.combatTimer > 0)
             bar(dl, p, ImVec2(90, 7), e.body.health / float(maxHealth(sheet(e.body))), healthColor, alpha);
         statusBars(dl, ImVec2(p.x, p.y + 8), ImVec2(90, 4), 6, e.body, alpha, false);  // under it
         if (!speech && &e == target) hint(dl, p, alpha, e);

@@ -43,7 +43,7 @@ bool canRest(const Session& s) {
     // Hit lately is what counts, not the combat timer: poison's ticks keep that running, and a rest cures them.
     if (!p.alive() || p.hitTime < kCombatSeconds || p.punching() || p.rolling() || p.stagger > 0) return false;
     for (const Entity& e : s.entities)
-        if (e.angry() && e.body.alive() && glm::distance(e.body.pos, p.pos) < 24) return false;
+        if (e.hunting() && e.body.alive() && glm::distance(e.body.pos, p.pos) < 24) return false;  // (searching counts: ADR-055)
     glm::ivec3 at(glm::floor(p.pos));
     int r = int(kRestReach);
     for (int dy = -2; dy <= 1; ++dy)

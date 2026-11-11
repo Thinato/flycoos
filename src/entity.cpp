@@ -58,6 +58,23 @@ bool walkable(const Grid& g, glm::vec3 feet, glm::vec2 dir, glm::vec3 player) {
     return !wall && !water && !cliff && !blocked;
 }
 
+// A way round whatever is in the way of `dir` (a crate, a pillar, a pool's edge; ADR-055): 45 degrees to one side,
+// the other, then 90 (each checked for the body's width: a slanted doorway a body just fits still works); zero if none. Always that order, so it keeps to one side. ponytail: no pathfinding; a
+// detour counts toward giving up (lostTime) and a free step only winds it back, so it can't circle a pillar
+// with the player on top forever.
+// walkable() for the body's width: its middle, and the terrain ahead of both its edges (a corner it would catch on).
+bool roomy(const Grid& g, glm::vec3 feet, glm::vec2 dir, glm::vec3 player) {
+    glm::vec3 side = glm::vec3(-dir.y, 0, dir.x) * kHalfWidth, nobody(1e9f);
+    return walkable(g, feet, dir, player) && walkable(g, feet + side, dir, nobody) && walkable(g, feet - side, dir, nobody);
+}
+glm::vec2 detour(const Grid& g, glm::vec3 feet, glm::vec2 dir, glm::vec3 player) {
+    for (float a : {0.785f, -0.785f, 1.571f, -1.571f}) {
+        glm::vec2 d(dir.x * std::cos(a) - dir.y * std::sin(a), dir.x * std::sin(a) + dir.y * std::cos(a));
+        if (roomy(g, feet, d, player)) return d;
+    }
+    return {};
+}
+
 void turnToward(Player& body, glm::vec2 dir, float dt) {
     float diff = std::remainder(std::atan2(dir.x, dir.y) - body.yaw, kTau);
     body.yaw = std::remainder(body.yaw + diff * (1 - std::exp(-8 * dt)), kTau);
@@ -178,13 +195,13 @@ std::vector<Entity> spawnEntities(const Grid& world, glm::vec3 near, uint32_t se
         }
         out.push_back(makeEntity(kind, seed * 2654435761u + uint32_t(out.size()), pos, near));
     };
-    // In front of the starting camera, which looks toward +Z. The bandit's camp (its archer's too) is over 20
-    // blocks out: beyond their leash from the spawn, and even wandering they stay out of aggro range.
+    // In front of the starting camera, which looks toward +Z. The bandit's camp (its archer's too) is far enough
+    // out that even at the edge of their wandering the spawn is out of their aggro range (ADR-055).
     add(EntityKind::TrainingDummy, {3, 6});
     add(EntityKind::Villager, {-4, 7});
     add(EntityKind::Boar, {9, 11});
-    add(EntityKind::Bandit, {-5, 22});
-    add(EntityKind::BanditArcher, {-9, 25});  // (ADR-051) at the bandit's camp, behind it
+    add(EntityKind::Bandit, {-5, 34});
+    add(EntityKind::BanditArcher, {-9, 40});  // (ADR-051) at the bandit's camp, behind it
     return out;
 }
 
@@ -224,7 +241,7 @@ void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vec
     // kCorpseLinger, so a kill shows) or back up.
     std::erase_if(entities, [&](const Entity& e) {
         ptrdiff_t i = spawnOf(e.spawn.id);
-        return i >= 0 && !activeAt(markers[size_t(i)], timeOfDay) && !e.angry() &&
+        return i >= 0 && !activeAt(markers[size_t(i)], timeOfDay) && !e.hunting() &&
                (e.body.alive() || (e.loot == NoItem && e.body.deadTime >= kCorpseLinger));
     });
     // A marker respawns all of its entities when any is out of date, and spawns the slots it misses
@@ -289,14 +306,19 @@ void setState(Entity& e, AiState to, const char* reason) {
     e.stateTime = 0;
     e.lostTime = 0;
     if (to != AiState::Windup) e.string = 0;  // a string ends with its windups (ADR-042)
-    if (to == AiState::Stagger || to == AiState::Dead || to == AiState::Return || to == AiState::Flee)
+    if (to == AiState::Stagger || to == AiState::Dead || to == AiState::Return || to == AiState::Flee || to == AiState::Search)
         e.counterTimer = e.backOff = e.guardTimer = 0;  // a counter or a plan doesn't outlast a hit or the fight
-    if (std::string_view(reason) == "forced") return;  // from the debug window: no enter actions
+    if (std::string_view(reason) == "forced") {  // from the debug window: no enter actions; a forced chase or search starts where it stands
+        bool fresh = from != AiState::Chase && from != AiState::Windup && from != AiState::Recover && from != AiState::Stagger && from != AiState::Search;
+        if ((to == AiState::Chase || to == AiState::Search) && fresh) e.lastSeen = e.body.pos, e.unseen = 0;
+        return;
+    }
     // Enter Return: it ignores whatever happened before it turned back, too.
     if (to == AiState::Return) e.events = 0;
     // Enter Chase from calm: one with spawn marker lines shouts the next one, not more often than every
     // kShoutSeconds (e.g. when hit from outside its territory, where it can't stay in Chase).
-    bool calm = from != AiState::Windup && from != AiState::Recover && from != AiState::Chase && from != AiState::Stagger;
+    bool calm = from != AiState::Windup && from != AiState::Recover && from != AiState::Chase && from != AiState::Stagger &&
+                from != AiState::Search;  // (finding the player again isn't a new fight)
     if (to == AiState::Chase && calm && e.body.alive() && !e.spawn.lines.empty() && e.shoutTimer <= 0) {
         talk(e);
         e.shoutTimer = std::max(kShoutSeconds, e.speechTimer);
@@ -408,22 +430,32 @@ bool keepDistance(Entity& e, const Grid& g, const Player& target, glm::vec2 dir,
 }
 
 // One AI update of a wanderer: transitions (as many as the situation calls for, so e.g. a hit from
-// beyond the leash is Chase and back to Return in one update), then the input of the state it ends in.
+// beyond its chase range is Chase and back to Return in one update), then the input of the state it ends in.
 Input think(Entity& e, const Grid& g, const Player& target, float dt) {
     const EntityType& t = e.type();
     glm::vec2 toTarget = xz(target.pos - e.body.pos), toHome = xz(e.home - e.body.pos);
-    float dist = glm::length(toTarget);
+    float dist = glm::length(toTarget), range = glm::distance(target.pos, e.body.pos);  // range: in 3D (a cliff, another floor)
     glm::vec2 dir = dist > 1e-3f ? toTarget / dist : glm::vec2(0, 1);
-    float targetFromHome = glm::distance(xz(target.pos), xz(e.home));
     // In reach as inReach() counts it (about level), so a player up a pillar counts toward giving up.
     bool fighter = t.temper != Temper::Harmless, inReach = dist < kPunchReach - 0.2f && std::abs(target.pos.y - e.body.pos.y) < kHeight;
+    // Sight (ADR-055): nothing solid from its eyes to the player's chest. Looked up once per update, and only when asked.
+    int seen = -1;
+    auto sees = [&] {
+        if (seen < 0) seen = target.alive() && canSee(g, e.body, target);
+        return seen == 1;
+    };
+    if (fighter && (e.events & EventDamaged)) e.lastSeen = target.pos, e.unseen = 0;  // a hit tells it where the player is, even one it reels from
+    if (fighter && e.hunting()) {  // fighting or searching: where it last saw the player
+        if (range < t.chaseRange && sees()) e.lastSeen = target.pos, e.unseen = 0;
+        else e.unseen += dt;
+    }
     Input in;
     // An archer's hands (ADR-051): its sidearm once the player is close in a fight, the bow back past its keepMin
     // (or closeIn, if that's farther: no flip-flopping between the two).
     if (ItemId& hand = e.body.inv.equipped[SlotMainHand]; t.sidearm && !e.body.punching())
         hand = e.angry() && dist < (hand == t.sidearm ? std::max(t.keepMin, gAi.closeIn) : gAi.closeIn) ? t.sidearm : t.weapon;
     if (fighter) answer(e, g, target, dir, dist, dt, in);
-    constexpr int kMaxHops = 8;  // the longest chain is 3 transitions (e.g. Recover, Chase, Return, Wander), then the input
+    constexpr int kMaxHops = 8;  // the longest chain is 4 transitions (e.g. Return, Chase, Return, Wander), then the input
     for (int hops = 0; hops < kMaxHops; ++hops) {
         if (!e.body.alive() && e.state != AiState::Dead) setState(e, AiState::Dead, "died");
         else if (e.body.alive() && e.body.stagger > 0 && e.state != AiState::Stagger && e.state != AiState::Return && e.state != AiState::Flee)
@@ -441,10 +473,10 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                 setState(e, AiState::Chase, "damaged");
                 continue;
             }
-            // Aggro range is in 3D: a player high above (or a floor below) isn't seen.
-            // ponytail: range only, no line of sight; add a ray test when dungeons put enemies behind walls.
-            if (t.temper == Temper::Aggressive && target.alive() && e.calmTimer <= 0 && targetFromHome < t.reaggroRadius &&
-                glm::distance(target.pos, e.body.pos) < t.aggroRange) {
+            // Aggro range is in 3D (a player high above, or a floor below, is out of it) and needs sight (ADR-055).
+            // ponytail: no field of view; it sees all round (add one with stealth).
+            if (t.temper == Temper::Aggressive && target.alive() && e.calmTimer <= 0 && range < t.aggroRange && sees()) {
+                e.lastSeen = target.pos, e.unseen = 0;  // (not a fight yet: nothing above noted it)
                 setState(e, AiState::Chase, "saw_target");
                 continue;
             }
@@ -460,7 +492,8 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
         case AiState::Chase:  // runs at the target (around it to its side, with others) until in reach, then winds up a swing
             if (!fighter) setState(e, AiState::Wander, "harmless");  // forced from the debug window
             else if (!target.alive()) setState(e, AiState::Return, "target_down");
-            else if (targetFromHome >= t.leashRadius) setState(e, AiState::Return, "target_left_leash");
+            else if (range >= t.chaseRange) setState(e, AiState::Return, "target_far");  // no leash from home (ADR-055)
+            else if (e.unseen > 0 && e.unseen >= gAi.sightGrace) setState(e, AiState::Search, "lost_sight");  // (> 0: a grace of 0 can't flap)
             else if (e.lostTime >= t.giveUpSeconds) setState(e, AiState::Return, "lost_target");
             else if (e.body.health < t.fleeHealth * float(maxHealth(sheet(e.body)))) setState(e, AiState::Flee, "low_health");
             else if (in.roll || e.body.move == Move::Parry || e.body.rolling()) return in;  // dodging, or in a parry
@@ -509,11 +542,14 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                     glm::vec2 to = xz(target.pos) + glm::vec2(std::sin(a), std::cos(a)) * r - xz(e.body.pos);
                     if (glm::length(to) > 0.05f) go = glm::normalize(to);
                 }
-                if (walkable(g, e.body.pos, go, target.pos)) {
+                if (inReach ? walkable(g, e.body.pos, go, target.pos) : roomy(g, e.body.pos, go, target.pos)) {
                     in.move = go;
                     in.run = true;
-                    e.lostTime = 0;
-                } else {  // ponytail: no pathfinding; it waits, and gives up after giveUpSeconds
+                    e.lostTime = std::max(0.0f, e.lostTime - dt);
+                } else if (glm::vec2 d = inReach ? glm::vec2(0) : detour(g, e.body.pos, go, target.pos); d != glm::vec2(0)) {
+                    in.move = d, in.run = true;  // round it (ADR-055)
+                    e.lostTime += dt;
+                } else {  // it waits, and gives up after giveUpSeconds
                     turnToward(e.body, dir, dt);
                     if (!inReach) e.lostTime += dt;
                 }
@@ -555,9 +591,35 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                 in.run = true;
             }
             return in;
-        case AiState::Return:  // ignores the player (and hits) until home
+        case AiState::Search:  // goes to where it last saw the target and looks round there, then gives up (ADR-055)
+            if (!fighter) setState(e, AiState::Wander, "harmless");  // forced from the debug window
+            else if (e.events & EventDamaged) {
+                e.events = 0;
+                setState(e, AiState::Chase, "damaged");
+            } else if (!target.alive()) setState(e, AiState::Return, "target_down");
+            else if (e.unseen == 0) setState(e, AiState::Chase, "found_target");
+            else if (e.stateTime >= gAi.searchSeconds) setState(e, AiState::Return, "gave_up_search");
+            else {
+                glm::vec2 to = xz(e.lastSeen - e.body.pos);
+                if (glm::length(to) > 1 && e.lostTime < t.giveUpSeconds) {  // runs there
+                    glm::vec2 d = glm::normalize(to);
+                    if (roomy(g, e.body.pos, d, target.pos)) e.lostTime = std::max(0.0f, e.lostTime - dt);
+                    else d = detour(g, e.body.pos, d, target.pos), e.lostTime += dt;
+                    in.move = d, in.run = true;
+                } else  // there (or stuck): turns one way and the other, looking
+                    e.body.yaw = std::remainder(e.body.yaw + dt * 1.6f * (std::fmod(e.stateTime, 4.0f) < 2 ? 1.0f : -1.0f), kTau);
+                return in;
+            }
+            continue;
+        case AiState::Return:  // walks home, ignoring the player; a hit brings it back (ADR-055), unless it gave up for want of a way to them and still has none
+            if (fighter && (e.events & EventDamaged) &&
+                (inReach || std::string_view(e.history[(e.transitions - 1) % e.history.size()].reason) != "lost_target")) {
+                e.events = 0;
+                setState(e, AiState::Chase, "damaged");
+                continue;
+            }
             if (glm::length(toHome) <= std::max(e.wanderRadius, 1.0f)) {
-                // Heals only after walking back: one that gives up at home (hit from beyond the leash)
+                // Heals only after walking back: one that gives up at home (hit from beyond its chase range)
                 // arrives in the same update, with stateTime still 0, and keeps its wounds.
                 if (e.stateTime > 0) e.body.health = float(maxHealth(sheet(e.body)));
                 e.calmTimer = t.reaggroCooldown;
@@ -568,10 +630,13 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                 setState(e, AiState::Wander, "cannot_get_home");
                 continue;
             }
-            if (glm::vec2 d = glm::normalize(toHome); walkable(g, e.body.pos, d, target.pos)) {
+            if (glm::vec2 d = glm::normalize(toHome); roomy(g, e.body.pos, d, target.pos)) {
                 in.move = d;
-                e.lostTime = 0;
-            } else e.lostTime += dt;
+                e.lostTime = std::max(0.0f, e.lostTime - dt);
+            } else {
+                in.move = detour(g, e.body.pos, d, target.pos);  // round it, if it can (ADR-055)
+                e.lostTime += dt;
+            }
             return in;
         case AiState::Count:
             break;
@@ -583,6 +648,10 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
 }
 
 }  // namespace
+
+bool canSee(const Grid& world, const Player& from, const Player& target) {
+    return clearLine(world, from.pos + glm::vec3(0, 1.5f, 0), target.pos + glm::vec3(0, 1.1f, 0));
+}
 
 // Sides for the fighters on the player: evenly spaced around it, in the order they stand, turned to
 // fit where they are (the mean of their offsets), so none has to cross the others to get there.
