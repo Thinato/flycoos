@@ -444,7 +444,8 @@ void loadCreatures(const File& f, Defs& d) {
                  "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "rare_loot", "rare_loot_chance", "immortal", "chase_range",
                  "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
                  "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "blood", "damage",
-                 "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield", "mods", "keep_range", "aim_error", "sidearm"});
+                 "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield", "mods", "keep_range", "aim_error", "sidearm",
+                 "attacks"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
         auto flag = [&](const char* key) {
@@ -583,6 +584,59 @@ void loadCreatures(const File& f, Defs& d) {
         t.sidearm = item("sidearm");
         if (t.sidearm && (d.items[t.sidearm].slot != SlotMainHand || d.weaponClasses[size_t(d.items[t.sidearm].weaponClass)].ranged))
             throw r.fail("sidearm", std::format("'{}' is not a main_hand weapon that swings", d.itemIds[t.sidearm]));
+        // Its attacks beyond its swings (ADR-057): each a type (code) and its numbers.
+        if (given("attacks")) {
+            const json& list = r.fields["attacks"];
+            if (t.temper == Temper::Harmless) throw r.fail("attacks", "harmless creatures don't fight");
+            if (!list.is_array() || list.size() > kMaxAttacks) throw r.fail("attacks", std::format("must be a list of at most {} attacks", kMaxAttacks));
+            for (size_t i = 0; i < list.size(); ++i) {
+                const json& v = list[i];
+                std::string f = std::format("attacks[{}]", i);
+                if (!v.is_object()) throw r.fail(f, "must be an object {type, range, ...}");
+                const json* ty = v.contains("type") && v["type"].is_string() ? &v["type"] : nullptr;
+                auto type = std::ranges::find(kAttackTypeIds, ty ? ty->get<std::string>() : "");
+                if (type == std::end(kAttackTypeIds)) throw r.fail(f + ".type", "must be one of charge, leap, area, grab");
+                CreatureAttack a;
+                a.type = AttackType(type - std::begin(kAttackTypeIds));
+                std::vector<std::string_view> fields{"type", "range", "cooldown", "chance", "windup", "recover", "power", "stance", "hyperarmor"};
+                switch (a.type) {
+                case AttackType::Charge: fields.insert(fields.end(), {"block_stamina", "speed", "seconds"}); break;
+                case AttackType::Leap: fields.insert(fields.end(), {"block_stamina", "height", "reach"}); break;
+                case AttackType::Area: fields.insert(fields.end(), {"block_stamina", "radius"}); break;
+                case AttackType::Grab: fields.insert(fields.end(), {"reach", "hits", "interval"}); break;  // (no guard takes it)
+                case AttackType::Count: break;
+                }
+                for (const auto& [k, x] : v.items())
+                    if (std::ranges::find(fields, std::string_view(k)) == fields.end())
+                        throw r.fail(f + "." + k, std::format("unknown field (for a {})", kAttackTypeIds[size_t(a.type)]));
+                const json* range = v.contains("range") ? &v["range"] : nullptr;
+                if (!range || !range->is_array() || range->size() != 2 || !(*range)[0].is_number() || !(*range)[1].is_number())
+                    throw r.fail(f + ".range", "must be [min, max] blocks");
+                a.rangeMin = (*range)[0].get<float>(), a.rangeMax = (*range)[1].get<float>();
+                if (!(a.rangeMin >= 0 && a.rangeMin < a.rangeMax && a.rangeMax <= 40)) throw r.fail(f + ".range", "must be 0 <= min < max <= 40");
+                auto num = [&](const char* key, double lo, double hi, double def) { return float(r.number(v, f + "." + key, lo, hi, def, false)); };
+                a.cooldown = num("cooldown", 0, 120, 6);
+                a.chance = num("chance", 0, 1, 1);
+                a.windup = num("windup", 0.1, 3, 0.8);
+                a.recover = num("recover", 0, 3, 0.8);
+                a.power = num("power", 0, 10, 1);
+                a.stance = num("stance", 0, 1000, 20);
+                a.blockStamina = num("block_stamina", 0, 10, 1);
+                if (v.contains("hyperarmor") && !v["hyperarmor"].is_boolean()) throw r.fail(f + ".hyperarmor", "must be true or false");
+                a.hyperarmor = v.value("hyperarmor", false);
+                switch (a.type) {
+                case AttackType::Charge: a.speed = num("speed", 1, 40, kRequired), a.seconds = num("seconds", 0.1, 5, kRequired); break;
+                case AttackType::Leap: a.height = num("height", 2, 20, 8), a.reach = num("reach", 0.5, 6, 1.8); break;
+                case AttackType::Area: a.radius = num("radius", 0.5, 10, kRequired); break;
+                case AttackType::Grab:
+                    a.reach = num("reach", 0.5, 4, 1.6), a.interval = num("interval", 0.1, 2, 0.45);
+                    a.hits = int(r.number(v, f + ".hits", 1, 10, 3));
+                    break;
+                case AttackType::Count: break;
+                }
+                t.attacks.push_back(a);
+            }
+        }
         if (d.creatures.size() <= save) d.creatures.resize(save + 1), d.creatureIds.resize(save + 1), d.creatureNames.resize(save + 1);
         d.creatures[save] = t;
         d.creatureIds[save] = r.id();
@@ -989,6 +1043,7 @@ bool loadDefs(const std::filesystem::path& dir, Defs& out, std::string& err) {
 }
 
 const Defs& defs() { return gDefs; }
+Defs& tuneDefs() { return gDefs; }
 void setDefs(Defs&& d) { gDefs = std::move(d); }
 
 bool reloadDefs(const std::filesystem::path& dir, std::string& err) {

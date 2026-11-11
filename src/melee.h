@@ -43,26 +43,17 @@
 // a press, so a roll replaces it), seating a bolt from the quiver at its impact frame. Cut before then,
 // it stays empty: the next press reloads first.
 
-// A move's timing and what it does. Every weapon class has its own (ADR-044): data/weapon_classes.json
-// gives each class every attack move; None, Parry, Drink and Throw are code's (kParrySpec: the parry is the off
-// hand's, or a knife's or the fists', and the same for every class; kDrinkSpec, the flask's; kThrowSpec, ADR-053).
-struct MoveSpec {
-    float seconds = 0;          // its length at the weapon's speed 1
-    float holdAt = 0, impact = 0;  // fractions of it: the windup pose (a charge or a telegraph holds there), the hit
-    float chain = 0, cancel = 0;   // fractions: from here the next attack can start; a roll, the guard or walking can cut it
-    float damage = 0, stance = 0;  // x the weapon's damage roll; stance damage dealt
-    float stamina = 0;          // stamina it costs
-    float lunge = 0;            // blocks/s it steps forward at its start, easing to 0 at the hit
-    bool heavy = false;         // can't be made to flinch before its hit (hyperarmor; heavy 1 and 2 also charge)
-    bool thrust = false;        // a blade's thrust pierces (its swings slash; ADR-040)
-};
 // Ids in data files (none, parry, drink and throw aren't: code has them) and names in the UI, by Move.
 inline constexpr const char* kMoveIds[] = {"none", "light_1", "light_2", "light_3", "light_4", "heavy_1", "heavy_2", "running", "rolling",
-                                           "jump_light", "jump_heavy", "guard_counter", "riposte", "parry", "backstep", "drink", "shot", "reload", "throw"};
+                                           "jump_light", "jump_heavy", "guard_counter", "riposte", "parry", "backstep", "drink", "shot", "reload", "throw",
+                                           "charge", "leap", "area", "grab"};
 inline constexpr const char* kMoveNames[] = {"none", "light 1", "light 2", "light 3", "light 4", "heavy 1", "heavy 2", "running",
-                                             "rolling", "jump light", "jump heavy", "guard counter", "riposte", "parry", "backstep", "drink", "shot", "reload", "throw"};
+                                             "rolling", "jump light", "jump heavy", "guard counter", "riposte", "parry", "backstep", "drink", "shot", "reload", "throw",
+                                             "charge", "leap", "area attack", "grab"};
 static_assert(std::size(kMoveIds) == size_t(Move::Count) && std::size(kMoveNames) == size_t(Move::Count));
-constexpr bool codeMove(Move m) { return m == Move::None || m == Move::Parry || m == Move::Drink || m == Move::Throw; }  // not in data files
+// A creature attack's move (ADR-057): its timing is the body's `special`, built from its kind's data, not a weapon class's.
+constexpr bool attackMove(Move m) { return m >= Move::Charge && m <= Move::Grab; }
+constexpr bool codeMove(Move m) { return m == Move::None || m == Move::Parry || m == Move::Drink || m == Move::Throw || attackMove(m); }  // not in data files
 inline constexpr MoveSpec kParrySpec{0.75f, 0.14f, 0.44f, 1.00f, 1.00f, 0, 0, 10, 0};  // a swipe (no hit; scaled by its parry length)
 // The flask to the lips by its hold point, the drink frame (impact: the heal), lowered after; a roll or
 // the guard can cut its last quarter. Weapon speed doesn't change it.
@@ -88,7 +79,8 @@ struct WeaponClassDef {
 const WeaponClassDef& weaponClass(WeaponClass c);  // from the loaded defs
 inline const MoveSpec& spec(WeaponClass c, Move m) { return weaponClass(c).moves[size_t(m)]; }
 // The move `m` of the weapon `c` swings (its swing weapon's class), by default the one under way.
-inline const MoveSpec& spec(const Combatant& c, Move m) { return spec(classOf(c.swingWeapon), m); }
+// A creature attack's (ADR-057) is the body's own.
+inline const MoveSpec& spec(const Combatant& c, Move m) { return attackMove(m) ? c.special : spec(classOf(c.swingWeapon), m); }
 inline const MoveSpec& spec(const Combatant& c) { return spec(c, c.move); }
 
 // The knobs, live from the debug window's Player tab.

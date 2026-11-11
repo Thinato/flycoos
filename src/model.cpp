@@ -522,6 +522,7 @@ static const Swings kSwordSwings = rows({
     {},  // shot: a bow's own pose (ADR-050)
     {},  // reload: a crossbow's own pose (ADR-052)
     {},  // throw: its own pose (ADR-053)
+    {}, {}, {}, {},  // a creature's charge, leap, area attack and grab: their own poses (ADR-057)
 });
 // Daggers: tight slashes close in, and stabs (thrusts) for most of the rest; ice-pick stabs from above.
 static const Swings kDaggerSwings = rows({
@@ -544,6 +545,7 @@ static const Swings kDaggerSwings = rows({
     {},  // shot: a bow's own pose (ADR-050)
     {},  // reload: a crossbow's own pose (ADR-052)
     {},  // throw: its own pose (ADR-053)
+    {}, {}, {}, {},  // a creature's charge, leap, area attack and grab: their own poses (ADR-057)
 });
 // Axes: chops from high, the head turned to lead (roll), a sweeping cleave, no thrusts.
 constexpr float kChop = -1.57f;  // the head ahead of a downward chop
@@ -567,6 +569,7 @@ static const Swings kAxeSwings = rows({
     {},  // shot: a bow's own pose (ADR-050)
     {},  // reload: a crossbow's own pose (ADR-052)
     {},  // throw: its own pose (ADR-053)
+    {}, {}, {}, {},  // a creature's charge, leap, area attack and grab: their own poses (ADR-057)
 });
 // Maces: the axe's chops as smashes, the chain's last one a big overhead smash.
 static const Swings kMaceSwings = [] {
@@ -596,6 +599,7 @@ static const Swings kGreatswordSwings = rows({
     {},  // shot: a bow's own pose (ADR-050)
     {},  // reload: a crossbow's own pose (ADR-052)
     {},  // throw: its own pose (ADR-053)
+    {}, {}, {}, {},  // a creature's charge, leap, area attack and grab: their own poses (ADR-057)
 });
 // Greataxes (ADR-049): the axe's chops, bigger, the chain's last one a wide horizontal cleave.
 static const Swings kGreataxeSwings = rows({
@@ -618,6 +622,7 @@ static const Swings kGreataxeSwings = rows({
     {},  // shot: a bow's own pose (ADR-050)
     {},  // reload: a crossbow's own pose (ADR-052)
     {},  // throw: its own pose (ADR-053)
+    {}, {}, {}, {},  // a creature's charge, leap, area attack and grab: their own poses (ADR-057)
 });
 static const Swings& swings(WeaponClass c) {
     switch (c) {
@@ -640,21 +645,31 @@ static const Grip kTwoHandIdle{0.7f, 7.5f, 3.5f, 0.75f, -0.55f, 0.2f, 0.05f, 0.3
 // Where a shield hangs on the back while two-handing: its grip this far from the torso's middle.
 constexpr glm::vec3 kShieldBack{0, 1, -1.5f};
 
+// A creature's sweep all around (ADR-057): the blade drawn back low, then held out at the side while the body
+// turns a full circle (poseModel turns it).
+constexpr Swing kAreaSwing{{-2.0f, 6, 5, 1.5f, 0, -0.9f, 0.15f, 1.5f}, {-1.57f, 8, 7.5f, 1.57f, 0, 0, 0.1f, 1}};
+
 // The swing pose now and how far it has taken over from the idle grip (0 .. 1): it winds up until
 // the hold point, strikes through the hit to the follow-through, then settles back.
-static std::pair<Grip, float> swingPose(WeaponClass c, Move move, float u) {
-    if (move == Move::None || move == Move::Drink || move == Move::Shot || move == Move::Reload || move == Move::Throw) return {{}, 0};
-    const MoveSpec& m = spec(c, move);
-    const Swing& sw = swings(c)[size_t(move)];
+static std::pair<Grip, float> swingAlong(const Swing& sw, const MoveSpec& m, float u) {
     float through = std::min(m.impact + 0.6f * (m.impact - m.holdAt), m.chain);
     if (u <= m.holdAt) return {sw.wind, smooth(u / m.holdAt)};
     if (u < through) return {mix(sw.wind, sw.through, smooth((u - m.holdAt) / (through - m.holdAt))), 1};
     return {sw.through, 1 - smooth((u - through) / (1 - through))};
 }
+static std::pair<Grip, float> swingPose(WeaponClass c, Move move, float u) {
+    if (move == Move::None || move == Move::Drink || move == Move::Shot || move == Move::Reload || move == Move::Throw || attackMove(move))
+        return {{}, 0};
+    return swingAlong(swings(c)[size_t(move)], spec(c, move), u);
+}
 // The same for the body: a chained swing winds up from where the one it cut short was (with a sword:
 // fists change hands).
 static std::pair<Grip, float> swingPose(const Player& p, bool armed) {
     WeaponClass c = classOf(p.swingWeapon);
+    if (attackMove(p.move)) {  // a creature's own (ADR-057): a leap chops as a jump attack, a sweep goes round; a charge or grab, no swing
+        if (!armed || (p.move != Move::Leap && p.move != Move::Area)) return {{}, 0};
+        return swingAlong(p.move == Move::Leap ? swings(c)[size_t(Move::JumpLight)] : kAreaSwing, spec(p), moveProgress(p));
+    }
     auto [g, w] = swingPose(c, p.move, moveProgress(p));
     const MoveSpec& m = spec(c, p.move);
     if (!armed || p.fromMove == Move::None || !p.punching() || moveProgress(p) > m.holdAt) return {g, w};
@@ -901,6 +916,22 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
         off[HandL] = glm::mix(off[HandL], kTossOut - kHumanoid[HandL].center, t.through);
         posture(0.35f * t.back - 0.25f * t.through, -0.05f * t.back + 0.12f * t.through, 0);
     }
+    if (p.move == Move::Grab) {  // a grab (ADR-057): both arms raised wide through the windup, thrust out at the catch, held out biting
+        const MoveSpec& m = spec(p);
+        float u = moveProgress(p), out = smooth((u - m.holdAt) / (m.impact - m.holdAt)), up = smooth(u / m.holdAt) * (1 - out);
+        float k = std::max(up, out) * smooth((1 - u) / 0.12f);
+        for (auto [h, side] : {std::pair{HandL, 1.0f}, std::pair{HandR, -1.0f}}) {
+            glm::vec3 to = glm::mix(glm::vec3(6.5f * side, 21, -1), glm::vec3(3.5f * side, 9.5f, 8), out);  // (up over the head, then out in front)
+            off[h] = glm::mix(off[h], to - kHumanoid[h].center, k);
+        }
+        posture(0, (0.35f * out - 0.15f * up) * k, 0);
+        if (u > m.impact) off[Head].z += 1.2f * k * std::max(0.0f, std::sin((u - m.impact) * m.seconds * 14));  // the bites
+    }
+    if (p.move == Move::Leap && p.hitPending && (moveProgress(p) < spec(p).holdAt || p.hold > 0)) {  // crouched to spring (ADR-057)
+        float k = smooth(moveProgress(p) / spec(p).holdAt);
+        posture(0, 0.3f * k, 2 * k);
+        off[FootL].z += k, off[FootR].z -= k;
+    }
     if (float r = reel(p); r > 0) {
         if (p.broken) {  // stance broken: sunk to a knee, hunched, arms hanging
             posture(0, 0.6f * r, 4 * r);
@@ -936,9 +967,34 @@ static void animateBoar(const Player& p, glm::vec3 (&off)[PartCount], glm::vec3 
         rot[leg].x = -sign * s * 0.4f * a;
     }
     float g = gore(p);  // head down and forward, then tusks up at impact
+    float low = 0, paw = 0, crouch = 0, stretch = 0;  // a creature attack's (ADR-057)
+    if (attackMove(p.move)) {
+        const MoveSpec& m = spec(p);
+        float u = moveProgress(p), wind = smooth(u / m.holdAt);
+        bool telegraph = p.hitPending && (u < m.holdAt || p.hold > 0);
+        if (p.move == Move::Charge) {  // head down, a forefoot pawing the ground through the telegraph; head low through the run
+            g = 0;
+            low = u < m.impact ? wind : smooth((1 - u) / (1 - m.impact));
+            paw = telegraph ? wind : 0;
+        } else if (p.move == Move::Leap && telegraph) {  // crouched to spring, then stretched out in the air
+            crouch = wind, g = 0;
+        } else if (p.move == Move::Leap && p.holding) {
+            stretch = 1, g = 0.6f;
+        }
+    }
     off[Head] += glm::vec3(0, -0.8f, 3.0f) * g;
     rot[Head].x = -0.35f * g;
     off[Torso].z += 1.0f * g;
+    off[Head] += glm::vec3(0, -1.4f, 1.2f) * low;
+    rot[Head].x += 0.35f * low;
+    off[Torso].y -= 0.4f * low;
+    float scrape = std::sin(p.hold * 16);  // (the move's clock stands still while it holds)
+    off[HandL] += glm::vec3(0, std::max(0.0f, scrape) * 1.2f, scrape * 1.5f) * paw;
+    for (int i : {Head, Torso}) off[i].y -= 1.5f * crouch;
+    off[FootL].z -= 0.8f * crouch, off[FootR].z -= 0.8f * crouch;
+    for (int i : {HandL, HandR}) off[i].z += 2.5f * stretch;
+    for (int i : {FootL, FootR}) off[i].z -= 2.5f * stretch;
+    rot[Torso].x -= 0.15f * stretch;
     if (float r = reel(p); r > 0) {  // a flinch throws the head up; a stance break drops the body low
         if (p.broken) {
             for (int i : {Head, Torso}) off[i].y -= 2.5f * r;
@@ -979,6 +1035,11 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
             tilt = glm::translate(glm::mat4(1), pivot);
             tilt = glm::rotate(tilt, r.turn, {1, 0, 0});
             tilt = glm::translate(tilt, -pivot);
+        }
+        if (p.move == Move::Area) {  // a sweep all around (ADR-057): the body turns a full circle through it
+            const MoveSpec& m = spec(p);
+            float u = moveProgress(p), through = std::min(m.impact + 0.6f * (m.impact - m.holdAt), 1.0f);
+            tilt = tilt * glm::rotate(glm::mat4(1), 2 * std::numbers::pi_v<float> * smooth((u - m.holdAt) / (through - m.holdAt)), {0, 1, 0});
         }
         if (!p.alive()) {  // falls over onto its side
             float fall = std::min(p.deadTime / 0.5f, 1.0f);

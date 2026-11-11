@@ -727,7 +727,8 @@ static void fighters() {
     updateEntities(es, g, player, 1 / 60.0f);
     CHECK(boar.angry());
     sim(5);
-    CHECK(player.health < 100 && player.lastDamage >= 3 && player.lastDamage <= 6);  // a punch, like the player's
+    // A punch, like the player's, or (re-pinned for ADR-057) its charge's x1.6: it had wandered 5 blocks off.
+    CHECK(player.health < 100 && player.lastDamage >= 3 && player.lastDamage <= 10);
     CHECK(!bandit.angry());
     setState(boar, AiState::Wander, "test");
 
@@ -2683,8 +2684,27 @@ static void storyNpcs() {
             bool safe = std::ranges::none_of(alive, [&](const Entity& e) { return due(e) < first; });  // a light lands first
             melee.attack = safe && glm::length(flat(*foe)) < reach && player.stamina > 15;
             if (Entity* broken = criticalTarget(es, player)) melee.riposte = true, melee.aim = flat(*broken);
+            // A foe's own attack about to land that a guard can't take (a grab) or barely can (a charge, a sweep: ADR-057):
+            // a careful player rolls through it, sideways, instead of guarding or attacking.
+            auto incoming = [&](const Entity& e) {
+                const Player& b = e.body;
+                if (e.attack < 0 || !attackMove(b.move) || !b.hitPending) return false;
+                const CreatureAttack& a = e.type().attacks[size_t(e.attack)];
+                float go = b.hold + std::max(0.0f, holdTime(b) - b.moveTime), dist = glm::length(flat(e));
+                switch (a.type) {
+                case AttackType::Charge: return go <= 0 && (dist - gAi.chargeContact) / a.speed < 0.2f;
+                case AttackType::Grab: return go <= 0.05f && dist < a.reach + 1;
+                default: return false;  // a guard takes a leap or a sweep (as a swing: guarded above when in reach)
+                }
+            };
             Input still;
+            if (auto it = std::ranges::find_if(alive, incoming); it != alive.end()) {
+                glm::vec2 from = glm::normalize(flat(*it));
+                still.roll = true, still.move = {from.y, -from.x};
+                melee.attack = melee.guard = false;
+            }
             updateMelee(player, melee, still, 1 / 60.0f);
+            if (still.roll || player.rollTime < player.rollLength + 0.5f) updatePlayer(player, g, still, 1 / 60.0f);  // a roll moves it (else no physics, as before)
             updateCombat(player, es, 1 / 60.0f, rng);
             if (!player.alive()) return -std::ranges::fold_left(es, 0.0f, [](float n, const Entity& e) { return n + e.body.health; });
         }
@@ -3271,24 +3291,28 @@ static void boarReplay() {
     same("boarReplay", "boar health", boar.body.health, 95.0f);
     same("boarReplay", "player health", player.health, 73.0f);  // was 71, then 76: its windup telegraphs now (ADR-035)
     player.pos = boar.home + glm::vec3(0, 0, 15);  // backs off, still in its territory
-    run(3 * 60, false);  // it runs after them and keeps biting
+    run(3 * 60, false);  // it runs after them and keeps biting (and charges: ADR-057)
     CHECK(boar.angry());
+    for (int i = 0; i < 5 * 60 && boar.attack >= 0; ++i) run(1, false);  // not mid-charge: one goes on to its end (ADR-057)
+    CHECK(boar.attack < 0);
     auto near = [](float got, float want) { return std::abs(got - want) < 0.01f; };
     // Was 13.75: the boar used to keep running through a swing; a windup now stands committed. Then
-    // 13.65, before the windup telegraphed (ADR-035).
-    if (!near(glm::distance(boar.body.pos, boar.home), 12.47f))
-        same("boarReplay", "chase distance from home", glm::distance(boar.body.pos, boar.home), 12.47f);
-    player.pos = boar.body.pos + glm::vec3(0, 0, boar.type().chaseRange + 5);  // out of its chase range: gives up at once
-    run(1, false);
+    // 13.65, before the windup telegraphed (ADR-035). Then 12.47, before it charged (ADR-057): it charges the player
+    // backing off, stops on the hit and fights on from there.
+    if (!near(glm::distance(boar.body.pos, boar.home), 15.06f))
+        same("boarReplay", "chase distance from home", glm::distance(boar.body.pos, boar.home), 15.06f);
+    player.pos = boar.body.pos + glm::vec3(0, 0, boar.type().chaseRange + 5);  // out of its chase range: gives up once its swing is done
+    for (int i = 0; i < 90 && boar.angry(); ++i) run(1, false);
     CHECK(!boar.angry());
     run(10 * 60, false);  // walks back home, both heal out of combat
     CHECK(!boar.angry());
     if (!near(glm::distance(boar.body.pos, boar.home), 0.067f))
         same("boarReplay", "distance from home", glm::distance(boar.body.pos, boar.home), 0.067f);
     same("boarReplay", "boar health", boar.body.health, 100.0f);
-    if (!near(player.health, 81.84f)) same("boarReplay", "player health", player.health, 81.84f);  // 84.84 before ADR-045
+    if (!near(player.health, 70.82f)) same("boarReplay", "player health", player.health, 70.82f);  // 84.84 before ADR-045, 81.84 before its charge (ADR-057)
     const std::vector<std::tuple<int, char, int>> want{  // fewer, later gores since ADR-035's telegraphed windup; rolls shifted by ADR-045
         {132, 'b', 5}, {180, 'p', 5}, {241, 'p', 6}, {299, 'p', 6}, {370, 'p', 6}, {431, 'p', 4},
+        {661, 'p', 10},  // its charge as the player backs off (ADR-057): x1.6
     };
     CHECK(hits == want);
     if (hits != want)
@@ -3311,7 +3335,7 @@ static void npcAi() {
               (t.cooldown == 0 || t.keepMax > 0) && t.fleeHealth == 0);
     CHECK(typeOf(EntityKind::Bandit).windup == kDefaultWindup && typeOf(EntityKind::Bandit).recover == kDefaultRecover);
     // The state machine on its own: the bandit here has no tactics (strings, answers, backing off:
-    // ADR-042, ADR-043; the enemies test has those). A test-only kind joins it below.
+    // ADR-042, ADR-043; the enemies test has those) and no leap (ADR-057; the creatureAttacks test). A test-only kind joins it below.
     fs::path dir = fs::temp_directory_path() / "flycoos_ai_test";
     fs::create_directories(dir);
     copyWeaponClasses(dir);
@@ -3322,7 +3346,7 @@ static void npcAi() {
     size_t tactics = creatures.find(R"("combo")", creatures.find(R"("id": "bandit",)"));
     CHECK(tactics < creatures.find(R"("id": "wolf")"));
     size_t from = creatures.rfind(',', tactics);
-    creatures.erase(from, creatures.find('}', tactics) - from);
+    creatures.erase(from, creatures.rfind('}', creatures.find(R"("id": "wolf")")) - from);  // its tactics and its leap (ADR-057), to the record's end
     creatures.erase(creatures.rfind(']'));
     Defs plain, shipped;
     std::string error;
@@ -4243,9 +4267,9 @@ static void timedSpawns() {
     CHECK(fresh && fresh->body.health == float(maxHealth(sheet(fresh->body))) && glm::distance(fresh->home, night.pos) < 4);
     s.timeOfDay = 0.5f;
     s.player.teleport({5.5f, 4, 5.5f});  // beyond its chase range: it gives up, and goes
-    int ticks = 0;
-    for (; ticks < 120 && !s.entities.empty(); ++ticks) step(s, {}, kTick);
-    CHECK(s.entities.empty() && ticks < 120);
+    int ticks = 0;  // (re-pinned for ADR-057: within 4 s, not 2: a grab under way plays out and recovers first)
+    for (; ticks < 240 && !s.entities.empty(); ++ticks) step(s, {}, kTick);
+    CHECK(s.entities.empty() && ticks < 240);
 
     // Player saves (.flys, ADR-025): a save made at night keeps a wounded ghoul; one loaded where the
     // window no longer covers the save's time (the clock comes from the save) says why it's dropped.
@@ -10748,6 +10772,601 @@ static void lastingDeaths() {
     }
 }
 
+// Creature attacks (ADR-057): the boar's charge, the wolf's and bandit's leap, the chief's sweep, the ghoul's grab.
+// Each telegraphs and hits through strikePlayer, so the guard, the parry, roll i-frames, hyperarmor and poise meet
+// it as designed; the AI picks one by its range band, token, sight, room, cooldown and chance.
+static void creatureAttacks() {
+    namespace fs = std::filesystem;
+    constexpr float kT = 1 / 60.0f;
+    {  // The shipped kinds: who has which, and its numbers.
+        auto only = [](EntityKind k) -> const CreatureAttack* {
+            const std::vector<CreatureAttack>& a = typeOf(k).attacks;
+            return a.size() == 1 ? &a[0] : nullptr;
+        };
+        const CreatureAttack *boar = only(EntityKind::Boar), *wolf = only(EntityKind::Wolf), *bandit = only(EntityKind::Bandit),
+                             *chief = only(EntityKind::BanditChief), *ghoul = only(EntityKind::Ghoul);
+        CHECK(boar && boar->type == AttackType::Charge && boar->rangeMin == 5 && boar->rangeMax == 14 && boar->speed == 14 &&
+              boar->seconds == 1.2f && boar->hyperarmor && boar->blockStamina == 2 && boar->power == 1.6f && boar->chance == 0.7f);
+        CHECK(wolf && wolf->type == AttackType::Leap && wolf->rangeMin == 7 && wolf->rangeMax == 12 && wolf->height == 7 && wolf->reach == 1.8f &&
+              wolf->hyperarmor);
+        CHECK(bandit && bandit->type == AttackType::Leap && bandit->rangeMin == 4 && bandit->rangeMax == 7 && !bandit->hyperarmor && bandit->reach == 2);
+        CHECK(chief && chief->type == AttackType::Area && chief->radius == 3.2f && chief->blockStamina == 2.5f && !chief->hyperarmor);
+        CHECK(ghoul && ghoul->type == AttackType::Grab && ghoul->hits == 3 && ghoul->interval == 0.45f && ghoul->reach == 1.7f && ghoul->stance == 0);
+        for (EntityKind k : {EntityKind::TrainingDummy, EntityKind::Villager, EntityKind::Guard, EntityKind::BanditArcher})
+            CHECK(typeOf(k).attacks.empty());
+        CHECK(attackMove(Move::Charge) && attackMove(Move::Grab) && codeMove(Move::Leap) && !attackMove(Move::Throw) && !attackMove(Move::Count));
+    }
+    fs::path dir = fs::temp_directory_path() / "flycoos_attacks_test";
+    fs::create_directories(dir);
+    copyWeaponClasses(dir);
+    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json", dir / "items.json", fs::copy_options::overwrite_existing);
+    std::ostringstream text;
+    text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
+    std::string creatures = text.str();
+    creatures.erase(creatures.rfind(']'));
+    std::string error;
+    {  // The data's checks: file, record and field in every message.
+        std::string five = R"([{"type": "area", "range": [0, 2], "radius": 2})";
+        for (int i = 0; i < 4; ++i) five += R"(, {"type": "area", "range": [0, 2], "radius": 2})";
+        five += "]";
+        for (auto [extra, want] : {
+                 std::pair<std::string, std::string>{R"("copy_from": "bandit", "attacks": [{"type": "kick", "range": [1, 2]}])",
+                                                     "field 'attacks[0].type': must be one of charge, leap, area, grab"},
+                 {R"("copy_from": "bandit", "attacks": {"type": "leap"})", "field 'attacks': must be a list of at most 4 attacks"},
+                 {R"("copy_from": "bandit", "attacks": )" + five, "field 'attacks': must be a list of at most 4 attacks"},
+                 {R"("copy_from": "bandit", "attacks": [3])", "field 'attacks[0]': must be an object"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "leap"}])", "field 'attacks[0].range': must be [min, max] blocks"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "leap", "range": [5]}])", "field 'attacks[0].range': must be [min, max] blocks"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "leap", "range": [5, 4]}])", "field 'attacks[0].range': must be 0 <= min < max <= 40"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "leap", "range": [-1, 4]}])", "field 'attacks[0].range': must be 0 <= min < max <= 40"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "leap", "range": [1, 41]}])", "field 'attacks[0].range': must be 0 <= min < max <= 40"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "charge", "range": [1, 9]}])", "field 'attacks[0].speed': missing"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "charge", "range": [1, 9], "speed": 10}])", "field 'attacks[0].seconds': missing"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "area", "range": [0, 2]}])", "field 'attacks[0].radius': missing"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "charge", "range": [1, 9], "speed": 10, "seconds": 1, "radius": 2}])",
+                  "field 'attacks[0].radius': unknown field (for a charge)"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "grab", "range": [0, 2], "block_stamina": 2}])",
+                  "field 'attacks[0].block_stamina': unknown field (for a grab)"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "leap", "range": [1, 5], "hits": 2}])", "field 'attacks[0].hits': unknown field (for a leap)"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "grab", "range": [0, 2], "hits": 1.5}])", "field 'attacks[0].hits': must be an integer"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "grab", "range": [0, 2], "chance": 2}])", "field 'attacks[0].chance': 2 is out of range 0..1"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "leap", "range": [1, 5], "windup": 0}])", "field 'attacks[0].windup': 0 is out of range"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "leap", "range": [1, 5], "hyperarmor": 1}])", "field 'attacks[0].hyperarmor': must be true or false"},
+                 {R"("copy_from": "villager", "attacks": [{"type": "leap", "range": [1, 5]}])", "field 'attacks': harmless creatures don't fight"},
+                 {R"("copy_from": "bandit", "attacks": [{"type": "grab", "range": [0, 2]}])", ""}}) {
+            std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,{"id": "brute", "save_id": 9, )" << extra << "}]";
+            Defs t;
+            error.clear();
+            bool loaded = loadDefs(dir, t, error);
+            bool ok = want.empty() ? loaded && t.creatures[9].attacks.size() == 1 : !loaded && error.contains(want) && error.contains("record 9 'brute'");
+            CHECK(ok);
+            if (!ok) std::println(stderr, "FAIL attack data '{}': {}", extra, error);
+            if (loaded && want.empty()) {  // the defaults
+                const CreatureAttack& a = t.creatures[9].attacks[0];
+                CHECK(a.type == AttackType::Grab && a.reach == 1.6f && a.hits == 3 && a.interval == 0.45f && a.cooldown == 6 && a.chance == 1 &&
+                      a.windup == 0.8f && a.recover == 0.8f && a.power == 1 && a.stance == 20 && a.blockStamina == 1 && !a.hyperarmor);
+            }
+        }
+    }
+    // Test-only kinds that always attack (chance 1) once (a long cooldown); `sometimes` attacks half the time.
+    std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,
+        {"id": "charger", "save_id": 9, "copy_from": "boar", "attacks": [{"type": "charge", "range": [5, 14], "cooldown": 30, "windup": 0.6,
+         "recover": 1, "power": 4, "stance": 35, "block_stamina": 2, "hyperarmor": true, "speed": 14, "seconds": 1.2}]},
+        {"id": "leaper", "save_id": 10, "copy_from": "wolf", "dodge": null, "back_off": null, "attacks": [{"type": "leap", "range": [4, 12],
+         "cooldown": 30, "windup": 0.5, "recover": 0.6, "power": 1.5, "stance": 18, "hyperarmor": true, "height": 7, "reach": 1.8}]},
+        {"id": "sweeper", "save_id": 11, "copy_from": "bandit_chief", "guard": null, "back_off": null, "combo": null, "delay": null,
+         "attacks": [{"type": "area", "range": [0, 3], "cooldown": 30, "windup": 0.8, "recover": 1, "power": 1.5, "stance": 30,
+         "block_stamina": 2.5, "radius": 3.2}]},
+        {"id": "grabber", "save_id": 12, "copy_from": "ghoul", "combo": null, "delay": null, "attacks": [{"type": "grab", "range": [0, 2.2],
+         "cooldown": 30, "windup": 0.8, "recover": 1, "power": 0.6, "stance": 0, "reach": 1.7, "hits": 3, "interval": 0.45}]},
+        {"id": "sometimes", "save_id": 13, "copy_from": "bandit", "parry": null, "dodge": null, "back_off": null, "combo": null,
+         "attacks": [{"type": "leap", "range": [4, 9], "chance": 0.5, "cooldown": 5, "windup": 0.5, "height": 7}]}])";
+    Defs test, shipped;
+    CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
+    if (!error.empty()) std::println(stderr, "FAIL attacks data: {}", error);
+    fs::remove_all(dir);
+    setDefs(std::move(test));
+    const EntityKind kCharger = EntityKind(9), kLeaper = EntityKind(10), kSweeper = EntityKind(11), kGrabber = EntityKind(12), kSometimes = EntityKind(13);
+    const ItemId heater = defs().itemById.at("heater_shield");
+
+    Grid g({64, 16, 64});
+    for (int z = 0; z < 64; ++z)
+        for (int x = 0; x < 64; ++x)
+            for (int y = 0; y < 4; ++y) g.set({x, y, z}, Stone);
+    std::mt19937 rng(9);
+    Player player;
+    std::vector<Entity> es;
+    es.reserve(8);
+    MeleeInput melee;  // the player's buttons and stick this tick (a roll and a parry are taps)
+    Input move;
+    int hurts = 0;  // hits the player took
+    std::vector<int> hurtTicks;
+    int ticks = 0;
+    auto reset = [&] {
+        player = Player{};
+        player.teleport({32.5f, 4, 20.5f});
+        player.onGround = true, player.offGround = 0;
+        giveItem(player.inv, Shortsword);
+        quickMove(player.inv, {SlotRef::Item, 0, 0});
+        player.innate = {{Stat::BleedResist, ModKind::Flat, 1e5f}, {Stat::PoisonResist, ModKind::Flat, 1e5f}};  // the hits alone
+        es.clear();
+        melee = {}, move = {};
+        hurts = ticks = 0, hurtTicks.clear();
+    };
+    auto spawn = [&](EntityKind k, float distance) -> Entity& {  // in front of the player (+z), facing it, fighting
+        Entity& e = spawnAhead(es, g, player, k, 5, distance);
+        e.body.onGround = true;
+        setState(e, AiState::Chase, "forced");
+        return e;
+    };
+    auto tick = [&] {
+        float before = player.health;
+        Input mv = move;
+        updateMelee(player, melee, mv, kT);
+        updatePlayer(player, g, mv, kT);
+        updateEntities(es, g, player, kT);
+        separate(player, g, es);
+        updateCombat(player, es, kT, rng);
+        if (player.health < before) ++hurts, hurtTicks.push_back(ticks);
+        ++ticks;
+        move.roll = false, melee.parry = false;
+    };
+    auto until = [&](auto pred, int most) {
+        for (int n = 0; n < most; ++n) {
+            if (pred()) return true;
+            tick();
+        }
+        return bool(pred());
+    };
+    auto newest = [](const Entity& e) { return std::string_view(e.history[(e.transitions - 1) % e.history.size()].reason); };
+    auto gone = [](const Entity& e) { return e.body.punching() && e.body.moveTime >= holdTime(e.body) && e.body.hold <= 0; };  // past its telegraph
+    auto flat = [&](const Entity& e) { return glm::distance(glm::vec2(e.body.pos.x, e.body.pos.z), glm::vec2(player.pos.x, player.pos.z)); };
+    auto face = [&](const Entity& e) { player.yaw = std::atan2(e.body.pos.x - player.pos.x, e.body.pos.z - player.pos.z); };
+    auto parryNow = [&](const Entity& e) {  // the player's parry, in its window now
+        player.inv.equipped[SlotOffHand] = heater;
+        startMove(player, Move::Parry, {e.body.pos.x - player.pos.x, e.body.pos.z - player.pos.z});
+        player.moveScale = parryOf(player);
+        player.hitPending = false;
+        player.moveTime = 0.15f * player.moveScale;
+    };
+    auto why = [&](const Entity& e, size_t i = 0) {
+        const char* r = attackBlocked(e, g, player, i);
+        return std::string(r ? r : "");
+    };
+    int plainMax = 0;  // the boar's hardest plain hit on the bare player (no crit)
+    {
+        std::mt19937 r(1);
+        Player boarBody;
+        boarBody.stats = typeOf(kCharger).stats, boarBody.level = typeOf(kCharger).level;
+        for (int i = 0; i < 400; ++i) plainMax = std::max(plainMax, resolveHit(boarBody, Player{}, weaponAttack(NoItem), {r}));
+    }
+
+    {  // A charge: a held telegraph standing still, then a straight run that hits on contact, by its power, and the player
+       // flinches; it stops there (no shoving along), in its recovery: the opening.
+        reset();
+        Entity& boar = spawn(kCharger, 10);
+        CHECK(until([&] { return boar.attack >= 0; }, 5));
+        CHECK(boar.state == AiState::Windup && newest(boar) == "charge" && boar.body.move == Move::Charge && boar.body.made(Noise::Windup));
+        float hold = boar.body.hold + holdTime(boar.body);  // the telegraph: 0.6 x 0.85 .. 1.35
+        CHECK(hold >= 0.6f * 0.85f - 1e-3f && hold <= 0.6f * 1.35f + 1e-3f && boar.attackWait[0] == 30);
+        glm::vec3 at = boar.body.pos;
+        CHECK(until([&] { return gone(boar); }, 90) && glm::distance(boar.body.pos, at) < 0.05f);  // stood through it
+        CHECK(until([&] { return hurts > 0; }, 60));
+        CHECK(player.lastDamage > plainMax && player.stagger > 0);  // x4, and 35 stance on no armor
+        CHECK(flat(boar) < gAi.chargeContact + 0.3f);  // it stops on the hit
+        CHECK(until([&] { return !boar.body.punching(); }, 120) && hurts == 1 && flat(boar) < gAi.chargeContact + 0.5f);
+        CHECK(until([&] { return boar.state == AiState::Recover; }, 3) && newest(boar) == "charge");
+        CHECK(until([&] { return boar.state != AiState::Recover; }, 120) && boar.attack == -1);
+        float recovered = 0;
+        for (uint32_t k = 0; k < 8; ++k)
+            if (const AiTransition& h = boar.history[k]; h.from == AiState::Recover && std::string_view(h.reason) == "recovered") recovered = h.after;
+        CHECK(recovered >= 1 - 1e-3f && recovered < 1.05f);  // its attack's 1 s, not its kind's
+        CHECK(boar.attackWait[0] < 30 - 2 && boar.attackWait[0] > 0);  // its cooldown runs down
+    }
+    {  // Moved out of its line once it stopped turning (gMelee.trackSeconds before it goes): it runs past. Moved early, it turns and hits.
+        for (bool early : {false, true}) {
+            reset();
+            Entity& boar = spawn(kCharger, 10);
+            CHECK(until([&] { return boar.attack >= 0; }, 5));
+            if (!early) CHECK(until([&] { return boar.body.hold <= gMelee.trackSeconds - 1e-3f; }, 90));
+            player.teleport(player.pos + glm::vec3(2.5f, 0, 0));
+            CHECK(until([&] { return !boar.body.punching(); }, 200));
+            CHECK(hurts == (early ? 1 : 0));
+        }
+    }
+    {  // Behind it as it runs: no hit (only what's in front of it).
+        reset();
+        Entity& boar = spawn(kCharger, 12);
+        CHECK(until([&] { return gone(boar) && flat(boar) < 9; }, 200));
+        glm::vec3 fwd(std::sin(boar.body.yaw), 0, std::cos(boar.body.yaw));
+        player.teleport(boar.body.pos - fwd * 0.9f);
+        for (int i = 0; i < 20; ++i) tick();
+        CHECK(hurts == 0);
+    }
+    {  // A roll through it: its i-frames let it pass.
+        reset();
+        Entity& boar = spawn(kCharger, 10);
+        CHECK(until([&] { return gone(boar) && flat(boar) < gAi.chargeContact + 2.5f; }, 200));
+        move.roll = true, move.move = {0, 1};  // into it
+        CHECK(until([&] { return !boar.body.punching(); }, 120));
+        CHECK(hurts == 0 && boar.body.pos.z < player.pos.z);
+    }
+    {  // Guarded from the front: a block (part of the damage); a charge can't be parried (its kind): a parry is a weak guard.
+        reset();
+        melee.guard = true;
+        spawn(kCharger, 10);
+        CHECK(until([&] { return hurts > 0 || player.made(Noise::Block); }, 200) && player.made(Noise::Block) && !player.made(Noise::Parry));
+        reset();
+        Entity& boar2 = spawn(kCharger, 10);
+        CHECK(until([&] { return gone(boar2) && flat(boar2) < gAi.chargeContact + 0.7f; }, 200));
+        parryNow(boar2);
+        CHECK(until([&] { return !boar2.body.hitPending; }, 30) && player.made(Noise::Block) && !player.made(Noise::Parry) && boar2.body.stagger == 0);
+    }
+    {  // Hyperarmor once it goes (data): a hit doesn't make it flinch, a stance break still stops it. In its telegraph it flinches.
+        reset();
+        Entity& boar = spawn(kCharger, 12);
+        CHECK(until([&] { return boar.attack >= 0; }, 5) && boar.body.hold > 0);
+        staggerHit(boar, 5, false);
+        CHECK(boar.body.stagger > 0 && !boar.body.punching());
+        tick();
+        CHECK(boar.state == AiState::Stagger && newest(boar) == "flinched" && boar.attack == -1);
+        reset();
+        Entity& boar2 = spawn(kCharger, 12);
+        CHECK(until([&] { return gone(boar2); }, 120));
+        staggerHit(boar2, 5, false);
+        CHECK(boar2.body.stagger == 0 && boar2.body.move == Move::Charge && boar2.body.stance == boar2.type().stance - 5);
+        staggerHit(boar2, 100, false);
+        CHECK(boar2.body.stagger > 0 && boar2.body.broken && !boar2.body.punching());
+    }
+    {  // Into a wall it crashes and reels (an opening, with a thud); at a drop it pulls up instead.
+        for (bool wall : {true, false}) {
+            reset();
+            for (int x = 26; x < 40; ++x)  // behind the player: a wall, or a drop
+                for (int y = 1; y < 7; ++y) g.set({x, y, 17}, wall ? Stone : Air);
+            Entity& boar = spawn(kCharger, 10);
+            CHECK(until([&] { return gone(boar); }, 120));
+            player.teleport(player.pos + glm::vec3(2.5f, 0, 0));  // out of its line
+            bool crashed = until([&] { return boar.state == AiState::Stagger; }, 240);
+            CHECK(crashed == wall);
+            if (wall) CHECK(newest(boar) == "crashed" && boar.body.stagger > gAi.crashSeconds - 0.05f && boar.body.made(Noise::Land) && boar.body.landSpeed == 12);
+            else CHECK(boar.body.pos.y > 3.9f && boar.body.pos.z > 17.9f);
+            for (int x = 26; x < 40; ++x)
+                for (int y = 1; y < 7; ++y) g.set({x, y, 17}, y < 4 ? Stone : Air);
+        }
+    }
+    {  // A leap: a crouch, then off the ground for where the player stood, landing with a hit within its reach.
+        reset();
+        Entity& wolf = spawn(kLeaper, 8);
+        CHECK(until([&] { return wolf.attack >= 0; }, 5) && newest(wolf) == "leap" && wolf.body.move == Move::Leap);
+        CHECK(until([&] { return wolf.leapt; }, 90) && wolf.body.made(Noise::Jump) && wolf.body.holding && !wolf.body.onGround);
+        float high = 0;
+        CHECK(until([&] { return high = std::max(high, wolf.body.pos.y), hurts > 0; }, 120));
+        CHECK(high > 4.6f && wolf.body.onGround && flat(wolf) < 1.8f && player.stagger > 0);  // flinched: 18 stance
+        CHECK(until([&] { return wolf.state == AiState::Recover; }, 60) && newest(wolf) == "leap");
+    }
+    {  // In the air its hyperarmor holds; a step aside after takeoff and it lands short.
+        reset();
+        Entity& wolf = spawn(kLeaper, 8);
+        CHECK(until([&] { return wolf.leapt; }, 120));
+        tick();
+        staggerHit(wolf, 50, false);
+        CHECK(wolf.body.stagger == 0 && wolf.body.holding);
+        player.teleport(player.pos + glm::vec3(4, 0, 0));
+        CHECK(until([&] { return !wolf.body.punching(); }, 120) && hurts == 0);
+    }
+    {  // Its kind loses the attack mid-leap (Reload defs): it's dropped, the move ended, nothing held in the air.
+        reset();
+        Entity& wolf = spawn(kLeaper, 8);
+        CHECK(until([&] { return wolf.leapt; }, 120));
+        tick();
+        std::vector<CreatureAttack> kept = std::exchange(tuneDefs().creatures[size_t(kLeaper)].attacks, {});
+        tick();
+        CHECK(wolf.attack == -1 && !wolf.body.punching() && !wolf.body.holding);
+        tuneDefs().creatures[size_t(kLeaper)].attacks = kept;
+        setState(wolf, AiState::Chase, "forced");
+        CHECK(until([&] { return wolf.body.onGround; }, 120) && hurts == 0);
+    }
+    {  // Forced out of its attack (the debug window) mid-grab: the move ends with it.
+        reset();
+        Entity& ghoul = spawn(kGrabber, 1.5f);
+        CHECK(until([&] { return player.heldBy == ghoul.id; }, 200));
+        setState(ghoul, AiState::Chase, "forced");
+        CHECK(ghoul.attack == -1 && !ghoul.body.punching());
+        tick();
+        CHECK(player.heldBy == 0);
+    }
+    {  // Guarded, it's a block; parried as it lands, it's deflected and reels (a wolf can be parried); rolled through, it misses.
+        reset();
+        melee.guard = true;
+        Entity& wolf = spawn(kLeaper, 8);
+        CHECK(until([&] { return player.made(Noise::Block); }, 200) && !wolf.body.hitPending);
+        reset();
+        Entity& w2 = spawn(kLeaper, 8);
+        CHECK(until([&] { return w2.leapt && w2.body.onGround; }, 200) && w2.body.hitPending);
+        parryNow(w2);
+        CHECK(until([&] { return !w2.body.hitPending; }, 30) && player.made(Noise::Parry) && hurts == 0 && w2.body.stagger > 0);
+        reset();
+        Entity& w3 = spawn(kLeaper, 8);
+        CHECK(until([&] { return w3.leapt && w3.body.vel.y < 0 && w3.body.pos.y < 4.5f; }, 200));
+        move.roll = true, move.move = {1, 0};
+        CHECK(until([&] { return !w3.body.punching(); }, 90) && hurts == 0);
+    }
+    {  // The sweep hits all around: behind it as well, within its radius; not farther.
+        for (float off : {-2.5f, -4.0f}) {
+            reset();
+            Entity& chief = spawn(kSweeper, 2.5f);
+            CHECK(until([&] { return chief.attack >= 0; }, 10) && newest(chief) == "area" && chief.body.move == Move::Area);
+            CHECK(until([&] { return gone(chief); }, 120));
+            glm::vec3 fwd(std::sin(chief.body.yaw), 0, std::cos(chief.body.yaw));
+            player.teleport(chief.body.pos + fwd * off);  // behind it
+            CHECK(until([&] { return !chief.body.hitPending; }, 30));
+            CHECK(hurts == (off > -3 ? 1 : 0));
+            if (off > -3) CHECK(player.stagger > 0);
+        }
+    }
+    {  // A guard takes it from the front, at its heavy stamina cost; from behind it doesn't; a parry is a weak guard, not a deflection; a roll passes.
+        for (int mode : {0, 1, 2, 3}) {  // guard facing it, guard facing away, parry, roll
+            reset();
+            Entity& chief = spawn(kSweeper, 2.5f);
+            face(chief);
+            if (mode == 1) player.yaw += 3.14159f;
+            melee.guard = mode < 2;
+            CHECK(until([&] { return gone(chief); }, 120));
+            if (mode == 2) {  // in its window at the hit
+                CHECK(until([&] { return chief.body.moveTime >= impactTime(chief.body) - 2 * kT; }, 30));
+                parryNow(chief);
+            }
+            if (mode == 3) move.roll = true, move.move = {1, 0};
+            CHECK(until([&] { return !chief.body.hitPending; }, 30));
+            if (mode == 0) CHECK(player.made(Noise::Block) && player.stamina < gMelee.staminaMax - 2.5f * gMelee.blockStamina * (1 - gMelee.guardBoost));
+            if (mode == 1) CHECK(!player.made(Noise::Block) && hurts == 1);
+            if (mode == 2) CHECK(player.made(Noise::Block) && !player.made(Noise::Parry) && chief.parried == 0 && chief.body.stagger == 0);
+            if (mode == 3) CHECK(hurts == 0);
+        }
+    }
+    {  // Hit in its telegraph by its poise or more, it flinches: no sweep.
+        reset();
+        Entity& chief = spawn(kSweeper, 2.5f);
+        CHECK(until([&] { return chief.attack >= 0; }, 10) && !gone(chief));
+        staggerHit(chief, chief.type().poise, false);
+        CHECK(until([&] { return chief.state == AiState::Stagger; }, 2));
+        CHECK(chief.attack == -1 && chief.body.move != Move::Area && !chief.body.hitPending && hurts == 0);
+    }
+    {  // A grab: caught in front, held (no guard, kept in front of it), bitten 3 times 0.45 s apart, then thrown down.
+        reset();
+        Entity& ghoul = spawn(kGrabber, 1.5f);
+        CHECK(until([&] { return ghoul.attack >= 0; }, 10) && newest(ghoul) == "grab" && ghoul.body.move == Move::Grab);
+        CHECK(until([&] { return player.heldBy == ghoul.id; }, 120) && hurts == 0);
+        melee.guard = true;
+        tick();
+        CHECK(!player.guarding && player.stagger > 1 && std::abs(flat(ghoul) - gAi.grabGap) < 0.1f);
+        CHECK(attackBlocked(ghoul, g, player, 0) != nullptr);
+        CHECK(until([&] { return player.heldBy == 0; }, 200));
+        CHECK(hurts == 3 && ghoul.bites == 3 && std::abs(player.stagger - gAi.grabThrow) < 0.05f && !player.made(Noise::Block));
+        CHECK(hurtTicks.size() == 3 && std::abs(hurtTicks[1] - hurtTicks[0] - 27) <= 1 && std::abs(hurtTicks[2] - hurtTicks[1] - 27) <= 1);
+        CHECK(until([&] { return ghoul.state == AiState::Recover; }, 60) && newest(ghoul) == "grab");
+    }
+    {  // Nothing stops it but a roll or distance: a guard and a parry are caught too.
+        for (int mode : {0, 1, 2, 3, 4}) {  // guard, parry, roll, step back, step behind it
+            reset();
+            melee.guard = mode == 0;
+            Entity& ghoul = spawn(kGrabber, 1.5f);
+            face(ghoul);
+            CHECK(until([&] { return gone(ghoul); }, 120));
+            if (mode == 1) parryNow(ghoul);
+            if (mode == 2) move.roll = true, move.move = {1, 0};
+            if (mode == 3) player.teleport(player.pos - glm::vec3(0, 0, 3));
+            if (mode == 4) player.teleport(ghoul.body.pos - glm::vec3(std::sin(ghoul.body.yaw), 0, std::cos(ghoul.body.yaw)) * 1.2f);
+            CHECK(until([&] { return !ghoul.body.hitPending; }, 30));
+            CHECK((player.heldBy == ghoul.id) == (mode < 2));
+            if (mode < 2) CHECK(!player.made(Noise::Parry));
+            if (mode >= 3) CHECK(until([&] { return ghoul.state == AiState::Recover; }, 22));  // a miss stumbles out in 0.3 s
+        }
+    }
+    {  // It lets go when it flinches, dies, or the player is put elsewhere: no more bites.
+        for (int mode : {0, 1, 2}) {
+            reset();
+            Entity& ghoul = spawn(kGrabber, 1.5f);
+            CHECK(until([&] { return player.heldBy == ghoul.id; }, 200));
+            if (mode == 0) staggerHit(ghoul, 50, false);
+            if (mode == 1) damage(ghoul, 100000);
+            if (mode == 2) player.teleport(player.pos + glm::vec3(10, 0, 0));
+            tick();
+            CHECK(player.heldBy == 0 && player.stagger <= 0.2f);
+            for (int i = 0; i < 30; ++i) tick();  // (a bite was due within 0.45 s)
+            CHECK(hurts == 0);
+        }
+    }
+    {  // The others wait while one holds the player: a bandit beside starts nothing and lands nothing.
+        reset();
+        int attackers = std::exchange(gAi.attackers, 6);  // tokens for all: only the hold keeps them from swinging
+        Entity& ghoul = spawn(kGrabber, 1.5f);
+        Entity& bandit = spawnAhead(es, g, player, kSometimes, 6, -1.5f);  // (a bandit that doesn't back off or dodge)
+        bandit.body.onGround = true;
+        setState(bandit, AiState::Chase, "forced");
+        CHECK(until([&] { return player.heldBy == ghoul.id; }, 200));
+        tick();  // (kept in front of it now)
+        glm::vec3 side(std::cos(ghoul.body.yaw), 0, -std::sin(ghoul.body.yaw));
+        bandit.body.teleport(player.pos + side * 1.3f);  // in reach of the held player, its swing (the first of a string) on its way
+        glm::vec2 at(player.pos.x - bandit.body.pos.x, player.pos.z - bandit.body.pos.z);
+        bandit.body.yaw = std::atan2(at.x, at.y), bandit.body.swingTimer = 0, bandit.body.onGround = true;
+        setState(bandit, AiState::Windup, "test");
+        CHECK(startPunch(bandit.body, at));
+        bandit.string = 2;
+        Entity& chief = spawnAhead(es, g, player, kSweeper, 8, 1.8f);  // a sweep on its way too, started anyway
+        chief.body.teleport(player.pos - side * 1.8f);
+        startAttack(chief, 0, {});
+        chief.body.hold = 0;  // (no telegraph: it lands while the player is held)
+        Entity& archer = spawnAhead(es, g, player, EntityKind::BanditArcher, 9, -10);  // an archer in its band, and one mid-draw
+        archer.body.onGround = true;
+        setState(archer, AiState::Chase, "forced");
+        Entity& drawn = spawnAhead(es, g, player, EntityKind::BanditArcher, 10, -9);
+        drawn.body.onGround = true;
+        setState(drawn, AiState::Windup, "test");
+        startMove(drawn.body, Move::Shot, {0, 1}, 0.1f);
+        bool loosed = false;
+        hurts = 0;
+        uint32_t starts = 0, shots = 0;
+        while (player.heldBy) {
+            uint32_t before = bandit.transitions;
+            tick();
+            for (uint32_t k = before; k < bandit.transitions; ++k)
+                starts += bandit.history[k % 8].to == AiState::Windup;
+            shots += archer.state == AiState::Windup;
+            loosed |= drawn.body.loosed;
+            if (player.heldBy && bandit.state == AiState::Chase) CHECK(why(bandit) == "player held");
+        }
+        CHECK(hurts == 3 && starts == 0 && shots == 0 && !loosed && !drawn.body.hitPending);
+        gAi.attackers = attackers;
+        for (int i = 0; i < 120 && starts == 0; ++i) {  // let go, the bandit swings again
+            uint32_t before = bandit.transitions;
+            tick();
+            for (uint32_t k = before; k < bandit.transitions; ++k) starts += bandit.history[k % 8].to == AiState::Windup;
+        }
+        CHECK(starts > 0);
+    }
+    {  // Why it may not start one (the AI and the debug window read the same).
+        reset();
+        Entity& wolf = spawn(kLeaper, 8);
+        wolf.token = true;
+        CHECK(why(wolf) == "" && why(wolf, 1) == "none");
+        wolf.token = false;
+        CHECK(why(wolf) == "no token");
+        wolf.token = true;
+        wolf.attackWait[0] = 1;
+        CHECK(why(wolf) == "cooling down");
+        wolf.attackWait[0] = 0;
+        wolf.body.stagger = 0.5f;
+        CHECK(why(wolf) == "busy");
+        wolf.body.stagger = 0;
+        wolf.body.onGround = false;
+        CHECK(why(wolf) == "busy");
+        wolf.body.onGround = true;
+        player.heldBy = 9999;
+        CHECK(why(wolf) == "player held");
+        player.heldBy = 0;
+        wolf.body.teleport(player.pos + glm::vec3(0, 0, 3));
+        CHECK(why(wolf) == "out of range");
+        wolf.body.teleport(player.pos + glm::vec3(0, 0, 13));
+        CHECK(why(wolf) == "out of range");
+        wolf.body.teleport(player.pos + glm::vec3(0, 2, 8));
+        CHECK(why(wolf) == "out of range");  // not about level
+        wolf.body.teleport(player.pos + glm::vec3(0, 0, 8));
+        for (int x = 26; x < 40; ++x)
+            for (int y = 4; y < 7; ++y) g.set({x, y, 24}, Stone);  // a wall between
+        CHECK(why(wolf) == "can't see");
+        for (int x = 26; x < 40; ++x)
+            for (int y = 4; y < 7; ++y) g.set({x, y, 24}, Air);
+        for (int x = 26; x < 40; ++x)
+            for (int y = 1; y < 4; ++y) g.set({x, y, 27}, Air);  // a drop right in front of it
+        CHECK(why(wolf) == "no room");
+        for (int x = 26; x < 40; ++x)
+            for (int y = 1; y < 4; ++y) g.set({x, y, 27}, Stone);
+        setState(wolf, AiState::Recover, "test");
+        CHECK(why(wolf) == "not fighting");
+        Entity& chief = spawn(kSweeper, 2.5f);  // a sweep needs no sight
+        chief.token = true;
+        for (int x = 26; x < 40; ++x)
+            for (int y = 4; y < 7; ++y) g.set({x, y, 22}, Stone);
+        CHECK(!canSee(g, chief.body, player) && why(chief) == "");
+
+        for (int x = 26; x < 40; ++x)
+            for (int y = 4; y < 7; ++y) g.set({x, y, 22}, Air), g.set({x, y, 21}, Stone);
+        Entity& ghoul = spawn(kGrabber, 1.9f);  // a grab doesn't reach through a wall
+        ghoul.token = true;
+        CHECK(why(ghoul) == "can't see");
+        for (int x = 26; x < 40; ++x)
+            for (int y = 4; y < 7; ++y) g.set({x, y, 21}, Air);
+        CHECK(why(ghoul) == "");
+    }
+    {  // By its chance: of 40 openings about half start it (its cooldown then), the rest wait attackRetry; no draw changes `rng`.
+        int picked = 0, missed = 0;
+        for (uint32_t seed = 0; seed < 40; ++seed) {
+            reset();
+            Entity& e = spawnAhead(es, g, player, kSometimes, seed, 6);
+            e.body.onGround = true;
+            setState(e, AiState::Chase, "forced");
+            updateEntities(es, g, player, kT);
+            if (e.attack >= 0) {
+                ++picked;
+                CHECK(e.attackWait[0] == 5 && newest(e) == "leap");
+            } else {
+                ++missed;
+                CHECK(std::abs(e.attackWait[0] - gAi.attackRetry) < 1e-4f);
+            }
+        }
+        CHECK(picked > 8 && missed > 8 && picked + missed == 40);
+    }
+    {  // Before a swing: in reach of both, its own attack comes first.
+        reset();
+        Entity& chief = spawn(kSweeper, 1.5f);
+        CHECK(until([&] { return chief.state == AiState::Windup; }, 10) && newest(chief) == "area");
+    }
+    {  // The same fight twice is the same fight.
+        auto fight = [&] {
+            reset();
+            rng.seed(3);
+            spawn(kCharger, 10);
+            spawn(kLeaper, 9);
+            for (int i = 0; i < 6 * 60; ++i) tick(), player.health = std::max(player.health, 50.0f);
+            return std::pair{hurtTicks, es[0].body.pos};
+        };
+        auto a = fight(), b = fight();
+        CHECK(a.first == b.first && a.second == b.second && !a.first.empty());
+    }
+    {  // An archer's arrow already flying passes a player another holds (a held player isn't shot), and hits one it doesn't.
+        for (bool held : {true, false}) {
+            Session s{.world = Grid({32, 16, 32}), .seed = 5};
+            for (int z = 0; z < 32; ++z)
+                for (int x = 0; x < 32; ++x)
+                    for (int y = 0; y < 4; ++y) s.world.set({x, y, z}, Stone);
+            s.player.teleport({16.5f, 4, 16.5f});
+            s.player.innate = {{Stat::BleedResist, ModKind::Flat, 1e5f}};
+            Entity& archer = spawnAhead(s.entities, s.world, s.player, EntityKind::BanditArcher, 3, 10);
+            s.player.heldBy = held ? archer.id + 1000 : 0;  // (some other NPC's grab)
+            s.projectiles.push_back({{16.5f, 5.1f, 22.5f}, {}, {0, 0, -40}, archer.type().weapon, 1, 0, 0, false, archer.id});
+            float before = s.player.health;
+            for (int i = 0; i < 30; ++i) updateProjectiles(s, kT);
+            CHECK((s.player.health < before) == !held);
+        }
+    }
+    {  // strikePlayer's flags: an unguardable hit goes past a guard; only a parryable one is deflected; a block costs x blockStamina.
+        reset();
+        Entity& bandit = spawn(EntityKind::Bandit, 1.5f);
+        face(bandit);
+        player.inv.equipped[SlotOffHand] = heater;
+        auto hit = [&](Strike s, int mode) {  // 0 open, 1 guarding, 2 parrying in the window
+            Player p = player;
+            Entity e = bandit;
+            std::mt19937 r(5);
+            if (mode == 1) p.guarding = true, p.guardTime = 1;
+            if (mode == 2) {
+                startMove(p, Move::Parry, {0, 1});
+                p.moveScale = parryOf(p), p.hitPending = false, p.moveTime = 0.15f * p.moveScale;
+            }
+            strikePlayer(e, p, s, r);
+            return std::pair{p, e.body.stagger};
+        };
+        Strike plain{1, 0, bandit.body.pos, DamageType::Slash};
+        Strike unguardable = plain, unparryable = plain, heavy = plain, twice = plain;
+        unguardable.guardable = false, unparryable.parryable = false, heavy.blockStamina = 2, twice.power = 2;
+        float full = player.health - hit(plain, 0).first.health;
+        auto [guarded, s1] = hit(plain, 1);
+        auto [past, s2] = hit(unguardable, 1);
+        auto [blocked2, s3] = hit(heavy, 1);
+        auto [parried, s4] = hit(plain, 2);
+        auto [weak, s5] = hit(unparryable, 2);
+        float doubled = player.health - hit(twice, 0).first.health;
+        CHECK(full > 0 && guarded.made(Noise::Block) && player.health - guarded.health < full);
+        CHECK(!past.made(Noise::Block) && player.health - past.health == full);
+        CHECK(std::abs((gMelee.staminaMax - blocked2.stamina) - 2 * (gMelee.staminaMax - guarded.stamina)) < 1e-3f);
+        CHECK(parried.made(Noise::Parry) && parried.health == player.health && s4 > 0);
+        CHECK(!weak.made(Noise::Parry) && weak.made(Noise::Block) && weak.health < player.health && s5 == 0);
+        CHECK(doubled >= 2 * full - 1 && doubled <= 2 * full + 1);
+    }
+    setDefs(std::move(shipped));
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -10816,6 +11435,7 @@ int main() {
     npcAi();
     pursuit();
     lastingDeaths();
+    creatureAttacks();
     session();
     timedSpawns();
     ticks();

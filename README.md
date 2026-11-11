@@ -296,6 +296,18 @@ two or three hits, some of them delayed to catch an early roll. Some also answer
 
 An enemy that blocks or parries you hits back quickly. Some step back after a string.
 
+Some have an attack of their own (ADR-057), each with a clear windup:
+- **Boars charge** from 5 to 14 blocks: head down, a hoof scraping, then a straight run that stops
+  when it hits you. Step aside late or roll through it. Blocking it costs a lot of stamina, and it
+  can't be parried. A boar that runs into a wall reels for a moment.
+- **Wolves leap** from 7 to 12 blocks, and **bandits** from 4 to 7: a crouch, a jump at where you
+  stood, a bite or a chop on landing. Guard it, parry it, or step out from under it.
+- **The chief sweeps** all round: blade drawn back low, then a full turn. Your guard takes it only
+  from the front, and it eats your stamina; it can't be parried. Roll through it or get out of reach.
+- **Ghouls grab**: arms raised wide, then a lunge. A guard or a parry doesn't help, only a roll or
+  distance. Caught, you're held and bitten three times, then thrown down. Hitting it hard enough to
+  make it flinch lets you go. While one holds you, the others wait.
+
 Each weapon swings by its class (ADR-044): **daggers** slash and stab quickly but barely shake a
 foe's stance; the **sword** is the all-rounder; **axes** chop hard; **maces** smash, wear down
 stance the fastest and strike (ghouls are weak to it). The Iron Hand Axe and Iron Mace have no
@@ -406,7 +418,7 @@ unless a text field has focus.
 | Player | The region you're in, health, the five attributes and what derives from them (max health, regen, attack damage and speed, combat state), armor K (damage reduction = armor / (armor + K x attacker level)) with the current armor and its reduction vs level 1 and 2, position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
 | Items | Give any item or the whole Iron armor set, see what's equipped and in the bag slots, empty the inventory |
 | Data | The loaded item definitions (save id, id, slot, attack, bag size, armor); Reload defs re-reads data/ and keeps the old ones on an error |
-| Entities | Spawn (ADR-054): how many of which kind, 5 blocks ahead or at x, z from the world's middle (the arena's centre), with a button per named point (the arena's zones), and remove them again. Every NPC: health and attributes, traits and temper, aggro and chase ranges, whether it sees you and when it last did (ADR-055), angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers (the dead too). Lasting deaths (ADR-056): how far off a corpse goes, how many lie, every marker's dead, and per corpse whether it stays and why |
+| Entities | Spawn (ADR-054): how many of which kind, 5 blocks ahead or at x, z from the world's middle (the arena's centre), with a button per named point (the arena's zones), and remove them again. Every NPC: health and attributes, traits and temper, aggro and chase ranges, whether it sees you and when it last did (ADR-055), angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers (the dead too). Lasting deaths (ADR-056): how far off a corpse goes, how many lie, every marker's dead, and per corpse whether it stays and why. Creature attacks (ADR-057): their knobs, every kind's attack numbers live (until Reload defs), and per NPC each attack's readiness or why not, a "now" button and the one under way |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | In the endless world, streaming: the window, columns at each stage, what the last frame installed and lit (and how long that took), a worker's time per column, the light budget per frame, the player's column's stage. Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
 | Audio | Mute, volume (all and per bus: effects, ambience, interface), random pitch and volume spread, hearing distance, the voices playing, the ambience's readings (water, trees, fire around) and its loops' volumes, the latest sounds, sounds with no takes, and a button per sound to play it (ADR-037) |

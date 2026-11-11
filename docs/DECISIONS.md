@@ -2733,6 +2733,169 @@
     Mutation-checked: 36 of 37 rules broken alone fail a test (the survivor, hitting a corpse, is
     equivalent: `hurt()` refuses a dead body, and an immortal one never dies).
 
+## ADR-057: Enemy attack variety: charges, leaps, sweeps and grabs
+
+- **Status:** accepted (2026-11-11)
+- **Context:**
+  - The roadmap's enemies section: "Grabs, area attacks, charges, jumping attacks". Every enemy only
+    swung strings of lights (ADR-042) or shot (ADR-051), so guarding answered almost everything.
+  - Foundations (docs/TALENTS.md): numbers live in the data, and every hit goes through the stat
+    pipeline and `resolveHit`. Bosses, the next roadmap item, will need these attacks too.
+- **Decision** (the user's calls: a grab can't be escaped, but flinching, breaking the stance of or
+  killing the grabber lets go; the sweep is blocked from the front only, at a heavy stamina cost, and
+  is never parried; the others wait while one holds the player; a charge into a wall makes the boar
+  reel; the cast below):
+  - **Attacks are data.** A creature may list up to 4 `attacks` in creatures.json. Each has a `type`
+    (charge, leap, area or grab: the types are code) and its numbers:
+    - all: `range` (`[min, max]` blocks it starts from), `cooldown`, `chance`, `windup` (the
+      telegraph), `recover` (the opening after), `power` (x the hit before armor, through
+      `resolveHit`), `stance` and `hyperarmor`;
+    - a charge, leap or sweep: `block_stamina` (x what a block of it costs);
+    - a charge: `speed` and `seconds`; a leap: `height` (its jump speed) and `reach`; a sweep:
+      `radius`; a grab: `reach`, `hits` and `interval`.
+    A boss will list its own.
+  - **The cast:**
+
+    | Kind | Attack | From (blocks) | Chance, cooldown | Telegraph, recovery | Power, stance |
+    |---|---|---|---|---|---|
+    | Boar | charge: 14 b/s for up to 1.2 s; blocking costs x2; hyperarmor | 5–14 | 70%, 8 s | 0.9 s, 1.2 s | x1.6, 35 |
+    | Wolf | leap: reach 1.8; hyperarmor | 7–12 | 60%, 6 s | 0.55 s, 0.6 s | x1.3, 18 |
+    | Bandit | leap: reach 2 | 4–7 | 30%, 10 s | 0.7 s, 0.8 s | x1.2, 22 |
+    | Bandit Chief | area sweep: radius 3.2; blocking costs x2.5 | 0–2.6 | 30%, 7 s | 0.95 s, 0.5 s | x1.4, 30 |
+    | Barrow Ghoul | grab: reach 1.7, 3 bites 0.45 s apart | 0–2.2 | 35%, 9 s | 0.9 s, 0.6 s | x0.6 a bite, 0 |
+
+  - **Telegraphs** (ADR-035's rules): each starts with its voice's windup sound and holds its
+    windup pose for `windup` x 0.85–1.35, so it can't be counted. It turns after the player until
+    0.12 s before it goes (`gMelee.trackSeconds`). Each has its own pose: the boar lowers its head
+    and scrapes a hoof; the wolf crouches, then stretches out in the air; the bandit crouches and
+    chops as it lands; the chief draws his blade back low, then turns a full circle; the ghoul
+    raises both arms wide, then thrusts them out.
+  - **Charge:** it runs straight along its facing at `speed` for up to `seconds`. It hits the first
+    time the player is within `gAi.chargeContact` (1.2) in front of it, and stops there: it doesn't
+    shove the player along. Until then it runs through bodies, so a roll's i-frames or a late step
+    aside let it pass. A wall ahead makes it crash and reel for `gAi.crashSeconds` (0.9 s, with a
+    thud): an opening. At a drop or water it pulls up.
+  - **Leap:** it jumps at `height` blocks a second toward where the player is at takeoff, along its
+    facing, so a late step aside beats it. It holds the move in the air (at most 3 s from takeoff) and hits
+    on landing, within `reach`.
+  - **Area attack:** it hits all around within `radius` at its impact, if the player is about level.
+  - **Grab:** it steps in (`gAi.grabLunge`) and catches a player in front within `reach`. A guard,
+    a parry, hyperarmor and poise don't help; only a roll's i-frames or distance do. The held player
+    (`Player::heldBy`) reels, can't act and is kept `gAi.grabGap` in front of it. It bites `hits`
+    times, `interval` apart. Each bite is a hit through `strikePlayer`, so the ghoul's poison builds
+    up. The last throws the player down (`gAi.grabThrow`, 0.8 s). It lets go when it flinches, its
+    stance breaks, it dies, or the player is moved away. A missed grab stumbles out in 0.3 s, then
+    recovers.
+  - **Guard, parry, i-frames and poise:** every hit goes through `strikePlayer` with a `Strike`,
+    which gained three fields:
+    - `guardable`: false for a grab's bites;
+    - `parryable`: false for a sweep or a grab, and the kind's `parryable` still counts, so the
+      boar's charge can't be parried either (a parry meeting it is a weak guard);
+    - `blockStamina`: x the stamina a block costs.
+    A roll's i-frames let any of them through. The hit's `stance` against the player's poise decides
+    a flinch, as for swings.
+  - **Hyperarmor for NPCs:** an attack with `hyperarmor` doesn't flinch from the moment it goes
+    until it lands (the charge's run, the leap in the air). A stance break still stops it. In its
+    telegraph, a hit of its poise or more cancels it. Plain swings are unchanged.
+  - **Choosing one:** in `Chase`, before a swing, `pickAttack` takes the first attack that
+    `attackBlocked` allows. That needs:
+    - an attack token (ADR-042);
+    - not swinging, rolling, reeling, in the air, backing off or answering an attack;
+    - its cooldown passed (`Entity::attackWait`);
+    - the player inside its range band, about level (within 1.5), and not held by another;
+    - sight of the player (not for a sweep, which goes round a corner), and for a charge or a leap
+      room for its first step.
+    Then it rolls its `chance`. A miss waits `gAi.attackRetry` (1.5 s), so the chance is rolled once
+    per opening. The rolls come from the NPC's own random stream (`Entity::attackRng`), so a fight in
+    which no attack starts goes exactly as before. The attack telegraphs and goes in `Windup` (reason:
+    its type), then stands in `Recover` for its own `recover`.
+  - **The others wait:** while one holds the player, the other fighters start no swing, string or
+    attack, and swings or attacks already on their way don't land. Archers start no shot, one mid-draw
+    lets it down, and arrows already flying pass the held player.
+  - **Sounds:** only existing ones. The voice's windup; the boar's squeal and the wolf's snarl as it
+    goes; a heavy whoosh for the sweep and the bandit's chop, a quick one for the grab; the jump and
+    landing sounds; the crash is the landing thud.
+  - **Debug window:** the Entities tab's "Creature attacks" node has the `gAi` knobs and every kind's
+    attack numbers, live until Data > Reload defs (`tuneDefs()`). Per NPC it shows each attack's
+    range and chance, whether it's ready or why not, its cooldown, a "now" button, and the attack
+    under way (telegraph, going, landed, in the air, bites).
+- **Alternatives considered:**
+  - A new AI state per attack, or a data-driven graph: `Windup` and `Recover` already cancel on a
+    flinch and keep the token. One state machine stays readable (ADR-020).
+  - The attacks as moves in weapon_classes.json: their timing is per creature, not per weapon class.
+    The body's `special` move spec holds it.
+  - A grab you can escape (mashing, or a timed roll): the user chose none. Instead the grab has the
+    slowest, clearest telegraph, and a miss leaves the ghoul open.
+  - A sweep that can't be blocked: the user chose a guard from the front at a heavy cost.
+  - Rolling the chance from the AI's main random stream: every pinned fight would have moved
+    whenever an attack was merely possible, even if none started.
+  - Wolves leaping from close range (3.5 blocks): their back-offs set up leap after leap, and the
+    story fights swung out of their bands both ways. From 7–12 blocks the leap closes a gap.
+- **Consequences:**
+  - Guarding alone stops working: the chief's sweep and the boar's charge break guards, and grabs
+    ignore them. Rolls and spacing matter more, and the recoveries are openings.
+  - **Balance:** the story-fight test's player now rolls sideways through grabs and charges, and
+    guards leaps and sweeps as it guards swings. The bands hold: on average a careful player keeps
+    32 health against the chief, 31 against two wolves and 33 against two ghouls (32, 31 and 21
+    before). The archer band is unchanged (9 of 12 won, 22 left).
+  - **Re-pinned:**
+    - `boarReplay`: it charges the player who backs off (one more hit, for 10). The chase distance
+      is 15.06 and the player's health 70.82. It gives up once its swing is done, not at once.
+    - `fighters`: the boar's last hit may be its charge (up to 10).
+    - `timedSpawns`: a ghoul gives up within 4 s, not 2, since a grab under way plays out first.
+    - `fightReplay` and every other pinned number stayed the same.
+  - **Data and state:** creatures gained `attacks`. `Entity` gained `attack`, `attackWait`, `leapt`,
+    `bites` and `attackRng`. `Combatant` gained `special` and `heldBy`. `Move` gained Charge, Leap,
+    Area and Grab (code moves, not saved), and `MoveSpec` moved to player.h. None of it is saved.
+  - Being held is a reel, so the camera and the HUD need nothing new. A held player moved more than 3
+    blocks away (a teleport, noclip) is let go. An attack dropped by a forced state or a defs reload
+    ends its move, so nothing hangs in the air.
+  - **Limits:**
+    - A charge or a leap reads the player's position, not a path (no pathfinding). A leap can't
+      reach a player on a ledge 1.5 or more above.
+    - A charge runs through other NPCs.
+    - The bandit's leap borrows its jump attack's chop pose.
+    - A freshly spawned NPC is "in the air" for its first tick, so its first opening comes one tick
+      later.
+  - **Later:** bosses list these with their own numbers. Knockback and launch (Feel) could add to
+    the charge and the sweep.
+  - **Tested:** `creatureAttacks()` in core_test, on a flat field with test-only kinds that always
+    attack:
+    - the shipped kinds' attacks and numbers, and the data's checks (a bad type, more than 4, not
+      an object, a bad or missing range, a charge without speed or seconds, a sweep without a
+      radius, a field of another type, a fraction of a bite, a chance or telegraph out of range, a
+      hyperarmor that isn't true or false, a harmless kind with attacks) and the defaults;
+    - the charge: a telegraph of 0.85–1.35 x its windup, standing still; its hit harder than any
+      plain gore (power), a flinch, a stop on the hit, its own 1 s recovery and its cooldown; a step
+      aside once it stopped turning makes it miss, one early in the telegraph doesn't; a roll
+      through it; a guard blocks it, a parry is only a weak guard; hyperarmor once it goes (a stance
+      break still stops it) but not in the telegraph; a wall makes it crash and reel with a thud, a
+      drop makes it pull up; nothing behind it is hit as it runs;
+    - the leap: a crouch, a takeoff, up and down, a hit on landing within its reach and a flinch;
+      hyperarmor in the air; a step aside after takeoff, a guard, a parry (deflected: the wolf
+      reels) and a roll;
+    - the sweep: it hits behind it within its radius and not beyond; a guard from the front blocks
+      it at x2.5 stamina, from behind it doesn't; a parry in its window is only a weak guard (no
+      deflection); a roll; a flinch in its telegraph cancels it;
+    - the grab: caught, held (no guard), kept in front, three bites 0.45 s apart, then thrown down
+      for 0.8 s, never blocked; a guard or a parry is caught too, a roll, a step back or a step
+      behind it isn't, and a miss is in its recovery within 0.37 s; a flinch, the grabber's death or
+      a teleport lets go with no more bites; while the player is held, a bandit beside it starts
+      nothing and its swing on the way doesn't land, a sweep on its way doesn't land, an archer in
+      its band doesn't shoot and one mid-draw lets it down, and an archer's arrow already flying
+      passes the held player (and hits one nobody holds);
+    - why one can't start, reason by reason (none, token, cooldown, reeling, in the air, the player
+      held, too near, too far, not level, a wall, a drop, not chasing; a sweep needs no sight, a
+      grab does);
+      40 openings at a 50% chance (both outcomes, the retry wait, the cooldown); the cooldown runs
+      down; its own attack before a swing; the same fight twice is the same fight;
+    - an attack its kind loses mid-leap (Reload defs) is dropped with its move; a state forced
+      mid-grab ends the move and lets go;
+    - `strikePlayer`'s flags: an unguardable hit goes past a guard, only a parryable one is
+      deflected, a block costs x `blockStamina`, and power doubles the hit.
+  - **Mutation-checked:** 71 of 72 rules broken alone fail a test. The survivor, guardable bites, is
+    equivalent: a held player is reeling for the whole hold, and a reeling player can't guard.
+
 ## ADR-058: Hit feedback: sparks, blood, chips and a white smear on the blade
 
 - **Status:** accepted (2026-11-11)

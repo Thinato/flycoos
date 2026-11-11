@@ -47,6 +47,9 @@ bool loadDefs(const std::filesystem::path& dir, Defs& out, std::string& err);
 // The registry itemType() and typeOf() read; empty (NoItem only, no creatures) until set. Swap it only between ticks.
 const Defs& defs();
 void setDefs(Defs&& d);
+// The same registry to change in place: only the debug window's live tuning (creature attacks, ADR-057), between
+// ticks; Data > Reload defs puts the files' numbers back.
+Defs& tuneDefs();
 // Loads `dir` and swaps it in, unless it fails or would change what live ids mean: every loaded
 // item and creature save id must keep its string id, every quest and talent handle that stays its quest
 // or talent (Session::quests and Progress::talents are by handle; both may be added or dropped at the end). On a refusal the current defs stay and `err` says why.

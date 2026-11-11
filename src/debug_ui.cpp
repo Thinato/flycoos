@@ -722,6 +722,55 @@ static void entitiesTab(Session& session, DebugActions& actions, SpawnSettings& 
         if (ImGui::Button("Reset AI")) a = AiTuning{};
         ImGui::TreePop();
     }
+    if (ImGui::TreeNode("Creature attacks: charges, leaps, sweeps, grabs (ADR-057)")) {
+        AiTuning& a = gAi;
+        ImGui::SliderFloat("Retry after a failed chance", &a.attackRetry, 0.1f, 5, "%.2f s");
+        ImGui::SliderFloat("Charge hits within", &a.chargeContact, 0.5f, 3, "%.2f blocks");
+        ImGui::SliderFloat("Charge into a wall: reels", &a.crashSeconds, 0, 3, "%.2f s");
+        ImGui::SliderFloat("Grab steps in at", &a.grabLunge, 0, 8, "%.1f b/s");
+        ImGui::SliderFloat("Held in front at", &a.grabGap, 0.5f, 2, "%.2f blocks");
+        ImGui::SliderFloat("Thrown down for", &a.grabThrow, 0, 3, "%.2f s");
+        if (ImGui::Button("Reset these")) {
+            AiTuning d;
+            a.attackRetry = d.attackRetry, a.chargeContact = d.chargeContact, a.crashSeconds = d.crashSeconds;
+            a.grabLunge = d.grabLunge, a.grabGap = d.grabGap, a.grabThrow = d.grabThrow;
+        }
+        ImGui::TextDisabled("Each kind's numbers, live (Data > Reload defs puts the files' back):");
+        Defs& defsNow = tuneDefs();
+        for (size_t k = 0; k < defsNow.creatures.size(); ++k) {
+            EntityType& t = defsNow.creatures[k];
+            for (size_t i = 0; i < t.attacks.size(); ++i) {
+                CreatureAttack& c = t.attacks[i];
+                ImGui::PushID(int(k * kMaxAttacks + i));
+                if (ImGui::TreeNode("kind", "%s: %s", defsNow.creatureIds[k].c_str(), kAttackTypeIds[size_t(c.type)])) {
+                    ImGui::DragFloatRange2("Range", &c.rangeMin, &c.rangeMax, 0.1f, 0, 40, "%.1f", "%.1f blocks");
+                    ImGui::SliderFloat("Chance", &c.chance, 0, 1, "%.2f");
+                    ImGui::SliderFloat("Cooldown", &c.cooldown, 0, 30, "%.1f s");
+                    ImGui::SliderFloat("Telegraph", &c.windup, 0.1f, 3, "%.2f s");
+                    ImGui::SliderFloat("Recovery", &c.recover, 0, 3, "%.2f s");
+                    ImGui::SliderFloat("Power", &c.power, 0, 5, "x%.2f");
+                    ImGui::SliderFloat("Stance", &c.stance, 0, 100, "%.0f");
+                    ImGui::Checkbox("Hyperarmor once it goes", &c.hyperarmor);
+                    if (c.type != AttackType::Grab) ImGui::SliderFloat("Block stamina", &c.blockStamina, 0, 5, "x%.2f");
+                    if (c.type == AttackType::Charge) {
+                        ImGui::SliderFloat("Speed", &c.speed, 1, 40, "%.1f b/s");
+                        ImGui::SliderFloat("Runs at most", &c.seconds, 0.1f, 5, "%.2f s");
+                    }
+                    if (c.type == AttackType::Leap) ImGui::SliderFloat("Jump speed", &c.height, 2, 20, "%.1f b/s");
+                    if (c.type == AttackType::Leap || c.type == AttackType::Grab) ImGui::SliderFloat("Reach", &c.reach, 0.5f, 6, "%.2f blocks");
+                    if (c.type == AttackType::Area) ImGui::SliderFloat("Radius", &c.radius, 0.5f, 10, "%.2f blocks");
+                    if (c.type == AttackType::Grab) {
+                        ImGui::SliderInt("Bites", &c.hits, 1, 10);
+                        ImGui::SliderFloat("Apart", &c.interval, 0.1f, 2, "%.2f s");
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::Text("You are %s", player.heldBy ? "HELD by a grab" : "free");
+        ImGui::TreePop();
+    }
     for (size_t i = 0; i < entities.size(); ++i) {
         Entity& e = entities[i];
         const EntityType& t = e.type();
@@ -771,6 +820,24 @@ static void entitiesTab(Session& session, DebugActions& actions, SpawnSettings& 
                         e.body.guarding ? "UP" : "down", double(e.body.stamina), e.counterTimer > 0 ? "   counter ready" : "");
             ImGui::SetItemTooltip("Your attack can hit it: it answers with a guard, a parry or a dodge, by its kind's chances (ADR-043).");
             ImGui::Text("gives up after %.0f s stuck   flees below %.0f%% health", t.giveUpSeconds, t.fleeHealth * 100);
+            for (size_t k = 0; k < t.attacks.size(); ++k) {  // its own attacks (ADR-057): ready or why not, and "now"
+                const CreatureAttack& c = t.attacks[k];
+                const char* why = attackBlocked(e, session.world, player, k);
+                ImGui::PushID(int(k) + 100);
+                if (ImGui::SmallButton("now")) startAttack(e, k, glm::vec2(player.pos.x - e.body.pos.x, player.pos.z - e.body.pos.z));
+                ImGui::SameLine();
+                ImGui::Text("%s %.1f..%.1f   %.0f%%   %s   waits %.1f s", kAttackTypeIds[size_t(c.type)], double(c.rangeMin), double(c.rangeMax),
+                            double(c.chance * 100), why ? why : "READY", double(e.attackWait[k]));
+                ImGui::PopID();
+            }
+            if (e.attack >= 0 && size_t(e.attack) < t.attacks.size()) {
+                const Player& b = e.body;
+                bool gone = b.moveTime >= holdTime(b) && b.hold <= 0;
+                ImGui::Text("%s under way: %s%s%s", kAttackTypeIds[size_t(t.attacks[size_t(e.attack)].type)],
+                            !b.punching() ? "recovering" : b.hitPending ? (gone ? "going" : "telegraph") : "landed",
+                            e.leapt ? (b.onGround ? "   landed" : "   in the air") : "", e.bites ? std::format("   bites {}", e.bites).c_str() : "");
+                ImGui::SetItemTooltip("Telegraph: its windup held (x 0.85..1.35). Going: the run, the flight, the reach. Then its recovery: the opening.");
+            }
             if (t.keepMax > 0) {  // an archer (ADR-051)
                 ImGui::Text("archer: keeps %.0f..%.0f blocks   aim +-%.1f deg   %s   %s", double(t.keepMin), double(t.keepMax),
                             double(glm::degrees(t.aimError)), ranged(e.body) ? "bow out" : "SIDEARM out", e.sight ? "SEES you" : "no line to you");

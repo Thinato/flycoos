@@ -18,6 +18,33 @@
 enum class Temper { Harmless, Passive, Aggressive };  // passive: fights back once hit; aggressive: attacks on sight
 inline constexpr const char* kTemperNames[] = {"harmless", "passive", "aggressive"};  // their ids in data/creatures.json
 
+// A creature's attacks beyond its swings (ADR-057): a charge across a distance, a leap that lands with a hit, a
+// sweep all around, a grab that holds and bites. The types are code, every number is data (creatures.json
+// "attacks"), so a boss lists its own. Each telegraphs (a held windup, its voice's windup sound, its own pose) and
+// hits through strikePlayer, so resolveHit, the guard, the parry, i-frames and poise all apply to it.
+enum class AttackType : uint8_t { Charge, Leap, Area, Grab, Count };
+inline constexpr const char* kAttackTypeIds[] = {"charge", "leap", "area", "grab"};  // in data files, and the AI's reasons
+static_assert(std::size(kAttackTypeIds) == size_t(AttackType::Count));
+constexpr size_t kMaxAttacks = 4;  // per kind
+struct CreatureAttack {
+    AttackType type = AttackType::Charge;
+    float rangeMin = 0, rangeMax = 0;  // it starts from this far from the player (blocks between feet)
+    float cooldown = 6;      // seconds after one starts before it may again
+    float chance = 1;        // each time it could, the chance it does (else it tries again after gAi.attackRetry)
+    float windup = 0.8f;     // seconds of telegraph before it goes (x 0.85 .. 1.35, so it can't be counted)
+    float recover = 0.8f;    // seconds it stands after: the opening
+    float power = 1;         // x the hit before armor (resolveHit), each bite of a grab's
+    float stance = 20;       // its stance damage: the player flinches if at least its poise
+    float blockStamina = 1;  // x the stamina a guard spends on it (a charge's, a sweep's: heavy)
+    bool hyperarmor = false; // once it has gone, a hit doesn't make it flinch before it lands (a stance break still does)
+    float speed = 0, seconds = 0;  // a charge: runs this fast, at most this long
+    float height = 0;        // a leap: its speed up at takeoff (blocks/s)
+    float reach = 0;         // a leap: lands its hit within this; a grab: catches within this (in front)
+    float radius = 0;        // an area attack: hits all around within this
+    int hits = 0;            // a grab: bites...
+    float interval = 0;      // ...this far apart, the last throwing the player down
+};
+
 // Fixed traits per kind, from data/creatures.json (ADR-018).
 // What a hit on a creature throws out (ADR-058, fx.h): red drops, wood splinters, grave dust and bone chips.
 enum class Blood : uint8_t { Red, Splinters, Dust };
@@ -75,6 +102,7 @@ struct EntityType {
     float keepMin = 0, keepMax = 0;
     float aimError = 0;
     ItemId sidearm;
+    std::vector<CreatureAttack> attacks;  // its attacks beyond its swings (ADR-057), at most kMaxAttacks
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);
@@ -122,6 +150,13 @@ struct AiTuning {
     float sightGrace = 0.5f;    // a chase goes on this long out of sight (round a corner) before it turns into a search (ADR-055)
     float searchSeconds = 8;    // a search lasts this long (going to where it last saw the player, looking round) before it gives up
     float corpseGone = 64;      // a corpse with nothing on it goes once the player is this far (blocks) and can't see it (ADR-056)
+    // Creature attacks (ADR-057):
+    float attackRetry = 1.5f;   // one whose chance failed is tried again after this long
+    float chargeContact = 1.2f; // a charge hits a player this close (blocks between feet), in front of it
+    float crashSeconds = 0.9f;  // a charge that runs into a wall: it reels this long (an opening)
+    float grabLunge = 3;        // a grab steps in this fast (blocks/s) between its windup and its catch
+    float grabGap = 0.9f;       // the player it holds is kept this far in front of it
+    float grabThrow = 0.8f;     // its last bite throws the player down: reeling this long
 };
 inline AiTuning gAi;
 
@@ -169,7 +204,13 @@ struct Entity {
     bool sight = false;    // an archer: it saw the player's chest from its bow at its last look (ADR-051)
     glm::vec3 lastSeen{};  // where it last saw the player (or was hit from), fighting or searching (ADR-055)
     float unseen = 0;      // seconds it hasn't seen the player, fighting or searching
+    int attack = -1;       // its kind's attack under way (ADR-057), winding up, going or recovering; -1: none (a swing, or nothing)
+    std::array<float, kMaxAttacks> attackWait{};  // seconds before each of its attacks may start (its cooldown, a failed chance's retry)
+    bool leapt = false;    // its leap has left the ground...
+    float leapAt = 0;      // ...this far into its Windup
+    int bites = 0;         // its grab's bites on the player it holds so far
     std::mt19937 rng;
+    std::mt19937 attackRng;  // its own attacks' chances and telegraphs (ADR-057), apart from `rng`
 
     const EntityType& type() const { return typeOf(kind); }
     bool angry() const {
@@ -238,6 +279,13 @@ void setState(Entity& e, AiState to, const char* reason);
 // NPCs where `loaded` says no (the endless world's part that isn't in) wait where they are.
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt,
                     const std::function<bool(glm::vec3)>& loaded = {});
+// Why `e` can't start its kind's attack `i` now (ADR-057), or null if it can: it must be chasing with an attack token,
+// free (not swinging, rolling, reeling, backing off or answering an attack), off its cooldown, and the player within
+// the attack's range band, about level, not held by another; a charge or leap also needs to see the player and room
+// to go. The AI picks the first one free, by its chance; the debug window shows the reasons.
+const char* attackBlocked(const Entity& e, const Grid& world, const Player& target, size_t i);
+// Starts `e`'s attack `i` toward `aim` (XZ), whether or not it may (the debug window's "now"): its Windup, telegraphed.
+void startAttack(Entity& e, size_t i, glm::vec2 aim);
 // Whether nothing solid stands between `from`'s eyes (1.5 above its feet) and `target`'s chest (1.1): how an NPC
 // sees the player (ADR-055). ponytail: one ray, no field of view; a sliver of cover hides the whole body.
 bool canSee(const Grid& world, const Player& from, const Player& target);
@@ -356,6 +404,9 @@ struct Strike {
     bool canCrit = true;    // may be a random critical
     bool melee = true;      // a swing (an arrow: false)
     std::optional<std::array<float, size_t(Status::Count)>> buildup{};  // a throwable's own build-up, instead of the attacker's (ADR-053)
+    bool guardable = true;  // a guard takes it (ADR-057: a grab, no)
+    bool parryable = true;  // a parry can deflect it (a sweep or a grab, no); its kind's `parryable` counts too
+    float blockStamina = 1; // x the stamina a guard spends on it (a charge, a sweep: heavy)
 };
 void strike(Player& player, Entity& target, const Strike& s, std::mt19937& rng, float armorK = kArmorK,
             std::vector<GameEvent>* events = nullptr);

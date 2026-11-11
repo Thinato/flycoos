@@ -190,7 +190,7 @@ void updateProjectiles(Session& s, float dt) {
             auto owner = a.owner ? std::ranges::find(s.entities, a.owner, &Entity::id) : s.entities.end();
             Entity* shooter = owner != s.entities.end() ? &*owner : nullptr;  // an archer's arrow (ADR-051): at the player
             bool player = false;
-            if (shooter && p.alive() && !invulnerable(p)) {  // (a roll's i-frames let it through)
+            if (shooter && p.alive() && !invulnerable(p) && (!p.heldBy || p.heldBy == shooter->id)) {  // (a roll's i-frames let it through; one held by a grab, ADR-057, isn't shot)
                 glm::vec3 r(gRanged.hitRadius, 0, gRanged.hitRadius);
                 if (std::optional<float> t = segmentBox(from, from + step, p.pos - r, p.pos + r + glm::vec3(0, kHeight, 0)); t && *t * length < best)
                     best = *t * length, player = true;

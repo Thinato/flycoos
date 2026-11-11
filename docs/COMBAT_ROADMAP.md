@@ -79,7 +79,8 @@ system is summarized in ADR-035.
 - [x] Enemies that guard, parry, dodge and back off (ADR-043)
 - [x] Ranged enemies keeping their distance: the bandit archer, its arrows hit only the player (ADR-051)
 - [x] Attack tokens: only a few in a pack swing at once, the rest circle (ADR-042)
-- [ ] Grabs, area attacks, charges, jumping attacks
+- [x] Grabs, area attacks, charges, jumping attacks: the boar charges, wolves and bandits leap, the chief
+  sweeps all round, ghouls grab (ADR-057)
 - [ ] Bosses: phases, unique movesets, stance bars shown
 - [x] Enemy weakness and resistance per damage type (ADR-040)
 - [x] **No permanent NPCs: lasting deaths.** Nothing respawns (an immortal training dummy instead),

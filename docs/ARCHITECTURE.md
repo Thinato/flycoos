@@ -50,7 +50,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch`; `Skill` and the progression formulas (skill XP per use and per level, character XP and level costs, default kill XP; ADR-027) |
 | `src/progress.h/.cpp` | Progression (ADR-027): `SkillDef`/`TalentDef` (filled by the loader), `Progress` (character XP, skill levels, talent ranks), `addSkillXp`/`addCharacterXp`, `canLearn`/`learn`/`respec`, `talentPoints`, `progressModifiers` (what `collect` adds) |
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel` by weapon class, `partModels`), procedural animation (`poseModel`; swing poses per weapon class, ADR-044). Core (no GPU), since NPC traits name their `Model` |
-| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), lasting deaths (`DeadSlots`, `buryDead`; ADR-056), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), lasting deaths (`DeadSlots`, `buryDead`; ADR-056), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043), creature attacks (`CreatureAttack`, `attackBlocked`, `startAttack`, `pickAttack`, `attackStep`, `attackLands`: charges, leaps, sweeps, grabs; ADR-057) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the dead recorded and far corpses buried (`buryDead`), the quest drain, the knocked-out player's respawn, skill and level-up toasts) |
 | `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`, `WEAR`, `REST`, `GRIP`, `ARRW`, `THRW`, `DEAD`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
 | `src/quest.h/.cpp` | Quests (ADR-026): `GameEvent` (`Killed`, `ItemCountChanged`, `TalkedTo`, `RegionEntered`), the quest data types the loader fills (`QuestDef`, `Stage`, `Trigger`, `Action`, `Condition`, `QuestLine`), `QuestState`; `updateQuests` (the once-per-tick drain, then failing quests whose needs died), `setQuestStage`/`resetQuest(s)`, the condition evaluator (`passes`, `passesAll`, `pickLine`), `npcDead`/`deadNeed` (ADR-056), `countItem`, `checkQuestMarkers` |
@@ -1042,6 +1042,21 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   weapon that swings, for up close); all three only with one, and no `guard` or `parry` (a bow does
   neither, and it holds no `shield`). Its `attack_cooldown` is the time from one shot's start to the
   next, and spaces its sidearm's swings too.
+  Creature attacks (kinds that fight; ADR-057): `attacks`, a list of at most 4, each `{type: charge |
+  leap | area | grab, range: [min, max] (0 <= min < max <= 40 blocks), cooldown (0..120 s, 6), chance
+  (0..1, 1), windup (0.1..3 s, 0.8), recover (0..3 s, 0.8), power (0..10, 1), stance (0..1000, 20),
+  hyperarmor (false)}`; a charge, leap or area attack also `block_stamina` (0..10, 1); a charge `speed`
+  (1..40) and `seconds` (0.1..5), both required; a leap `height` (2..20, 8) and `reach` (0.5..6, 1.8);
+  an area attack `radius` (0.5..10, required); a grab `reach` (0.5..4, 1.6), `hits` (1..10, 3) and
+  `interval` (0.1..2 s, 0.45). Any other field fails, naming the type.
+
+  | Kind | Attack | From | Chance, cooldown | Telegraph, recovery | Power, stance | Other |
+  |---|---|---|---|---|---|---|
+  | Boar | charge | 5–14 | 70%, 8 s | 0.9 s, 1.2 s | x1.6, 35 | 14 b/s for 1.2 s, blocks x2, hyperarmor |
+  | Bandit | leap | 4–7 | 30%, 10 s | 0.7 s, 0.8 s | x1.2, 22 | jump 8 b/s, reach 2 |
+  | Wolf | leap | 7–12 | 60%, 6 s | 0.55 s, 0.6 s | x1.3, 18 | jump 7 b/s, reach 1.8, hyperarmor |
+  | Bandit Chief | area | 0–2.6 | 30%, 7 s | 0.95 s, 0.5 s | x1.4, 30 | radius 3.2, blocks x2.5 |
+  | Barrow Ghoul | grab | 0–2.2 | 35%, 9 s | 0.9 s, 0.6 s | x0.6 a bite, 0 | reach 1.7, 3 bites 0.45 s apart |
 
   | Kind | Combo (delay) | Guard / parry / dodge | Backs off | Shield |
   |---|---|---|---|---|
@@ -1149,6 +1164,32 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   parry deflects lights (the player reels 1 s); its roll's i-frames let the hit pass through. After
   a block or a parry its next swing comes within 1 s with a 0.3 s windup (a counter). After its
   string it may back off (`back_off`) for 0.9 s, walking away facing the player.
+- **Creature attacks** (ADR-057): in `Chase`, before a swing, `pickAttack` takes the first of its kind's
+  `attacks` that `attackBlocked` allows (chasing with a token; not swinging, rolling, reeling, in the
+  air, backing off or answering; off its `attackWait`; the player in its range band, about level, not
+  held by another; all but a sweep see the player, and a charge or leap has room for a step), by its `chance`
+  (a miss waits `gAi.attackRetry`; the draws are `Entity::attackRng`'s, apart from `rng`).
+  `startAttack` puts it in `Windup` (reason: the type) with a code move (`Move::Charge`, `Leap`,
+  `Area`, `Grab`) whose timing is `Combatant::special`, built from the data (`spec()` returns it), held
+  in its windup pose `windup` x 0.85..1.35 (the telegraph, with its voice's windup sound).
+  `attackStep` (think's Windup) tracks the player until `gMelee.trackSeconds` before it goes, then runs
+  a charge straight on (a wall: it reels, reason `crashed`; a drop: it pulls up), takes a leap off
+  for where the player is (holding the move in the air until it lands), steps a grab in.
+  `attackLands` (updateCombat) hits through `strikePlayer`: a charge on first contact in front
+  (`gAi.chargeContact`; it stops there, and runs through bodies until then: `separate` skips it), a leap
+  on landing within `reach`, an area attack all round within `radius`, a grab catches in front within
+  `reach` (`Player::heldBy`: the player reels, is kept `gAi.grabGap` in front, bitten `hits` times
+  `interval` apart past any guard, then thrown down for `gAi.grabThrow`; let go if the grabber stops
+  or the player is moved more than 3 blocks away; a miss stumbles out in 0.3 s). `Strike` gained `guardable`,
+  `parryable` (with the kind's) and `blockStamina`. With `hyperarmor`, `staggerHit` doesn't flinch it
+  once it has gone until it lands (`armored`); a stance break still does. Then `Recover` for the
+  attack's `recover`. While one holds the player, the others start nothing, swings and attacks on
+  their way don't land, a drawn bow is let down and arrows pass the held player (projectile.cpp).
+  `dropAttack` ends an attack's move when the attack is dropped (a forced state, a defs reload). model.cpp: the boar's head-down pawing and run, the wolf's crouch
+  and stretch, the chief's low draw and full turn (`kAreaSwing`, a turn of the whole body), the
+  ghoul's raised arms and reach, the bandit's crouch and chop. The Entities tab's "Creature attacks"
+  node edits `gAi` and every kind's numbers live (`tuneDefs()`); per NPC it shows each attack's
+  readiness or why not, a "now" button and the one under way.
 - **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell (ADR-056:
   until the player is `gAi.corpseGone`, 64 blocks, away and can't see it, and never while it holds
   loot); E within 3.5 blocks moves the loot into the bags, else into its empty equip slot (it

@@ -190,6 +190,10 @@ std::vector<Layer> layersOf(const Sound& s) {
             say("attack");
             break;
         }
+        if (attackMove(s.move)) {  // a creature's own attack (ADR-057): a sweep or a leap's chop whooshes heavy, a grab's lunge quick
+            add(s.move == Move::Grab ? "swing_fast" : "swing_heavy", 0.9f, s.move == Move::Grab ? 0.8f : 0.9f);
+            break;
+        }
         bool heavy = spec(classOf(s.with), s.move).heavy || s.move == Move::Riposte, small = classOf(s.with) <= WeaponClass::Dagger;  // fists, daggers
         bool great = weaponClass(classOf(s.with)).twoHanded;  // a great weapon's every swing whooshes heavy, deeper (ADR-049)
         add(heavy || great ? "swing_heavy" : small ? "swing_fast" : "swing_light", heavy ? 1 : great ? 0.9f : 0.8f,

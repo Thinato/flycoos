@@ -80,7 +80,9 @@ struct Body {
 // shot doesn't hold: it fires at its impact frame, and its reload seats a bolt at its own. A throw (ADR-053)
 // lets the readied throwable go from the left hand at its impact frame.
 enum class Move : uint8_t { None, Light1, Light2, Light3, Light4, Heavy1, Heavy2, Running, Rolling, JumpLight, JumpHeavy,
-                            GuardCounter, Riposte, Parry, Backstep, Drink, Shot, Reload, Throw, Count };
+                            GuardCounter, Riposte, Parry, Backstep, Drink, Shot, Reload, Throw,
+                            Charge, Leap, Area, Grab,  // a creature's own attacks (ADR-057): timed by its data
+                            Count };
 // What a body did this tick that can be heard (ADR-037): bits of Combatant::noises, set where it
 // happens and gathered by step() into Session::sounds. Steps and swim strokes come from the gait.
 enum class Noise : uint8_t { Step, Swim, Jump, Land, Roll, Splash, Swing, Windup, Charged, GuardUp, Hurt, Crit, Death,
@@ -117,6 +119,21 @@ struct DamageNumber {
 
 constexpr int kQuiver = 30;  // arrows a quiver holds (ADR-050): a rest fills it, picking arrows up tops it up
 
+// A move's timing and what it does. Every weapon class has its own (ADR-044): data/weapon_classes.json
+// gives each class every attack move; None, Parry, Drink and Throw are code's (melee.h: kParrySpec: the parry is the off
+// hand's, or a knife's or the fists', and the same for every class; kDrinkSpec, the flask's; kThrowSpec, ADR-053),
+// and a creature attack's (ADR-057) is built from its kind's data into Combatant::special.
+struct MoveSpec {
+    float seconds = 0;          // its length at the weapon's speed 1
+    float holdAt = 0, impact = 0;  // fractions of it: the windup pose (a charge or a telegraph holds there), the hit
+    float chain = 0, cancel = 0;   // fractions: from here the next attack can start; a roll, the guard or walking can cut it
+    float damage = 0, stance = 0;  // x the weapon's damage roll; stance damage dealt
+    float stamina = 0;          // stamina it costs
+    float lunge = 0;            // blocks/s it steps forward at its start, easing to 0 at the hit
+    bool heavy = false;         // can't be made to flinch before its hit (hyperarmor; heavy 1 and 2 also charge)
+    bool thrust = false;        // a blade's thrust pierces (its swings slash; ADR-040)
+};
+
 // What fights: attributes, health, the swing and damage timers, and the gear it wears and carries.
 struct Combatant {
     Stats stats;                           // base attributes; sheet() adds gear on top
@@ -128,6 +145,7 @@ struct Combatant {
     float moveTime = 0;                    // seconds into it (stops while it holds its windup pose or freezes)
     float moveScale = 1;                   // its seconds per second of the move's own timing (weapon speed, haste)
     float hold = 0;                        // seconds more it holds the windup pose: an NPC's telegraph
+    MoveSpec special{};                    // a creature attack's timing (ADR-057), from its kind's data: spec() of Charge, Leap, Area and Grab
     bool holding = false;                  // the player holds it there: charging a heavy, or a jump attack in the air
     float charge = 0;                      // seconds a heavy has charged
     bool charged = false;                  // fully: it hits harder
@@ -186,6 +204,7 @@ struct Combatant {
     ItemId throwing = NoItem;              // the one in the hand during a throw (taken out at its release)
     bool hurled = false;                   // the throw under way reached its release this tick: step() throws it
     float deadTime = 0;                    // seconds spent at 0 health
+    uint32_t heldBy = 0;                   // the player held by a grab (ADR-057): the grabbing NPC's id; 0: free
     Inventory inv;                         // equipment and bags
     Progress progress;                     // skills, XP and talents: the player's (NPCs' stay at the start)
 
