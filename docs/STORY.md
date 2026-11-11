@@ -62,14 +62,16 @@ in the world (the game warns on load if one isn't).
 | 0 | Not started; talking to Maren starts it at 10, talking to Torvald at 20 (holding an Iron Helm already: straight to 40) | — |
 | 10 | Maren sent you to the smith | Shows "Speak with Torvald at his forge in Ravensford". Talking to Torvald → 20 (holding the helm: 40) |
 | 20 | Torvald asks for the helm Hakon wears | Completes the talk; shows "Take the helm Hakon the Red wears". Holding an Iron Helm → 30; killing Hakon → 25 |
-| 25 | Hakon is dead; take the helm from his body (he always drops it; if he respawned first, kill him again) | Looting it (any Iron Helm) → 30 |
+| 25 | Hakon is dead for good (ADR-056); take the helm from his body (he always drops it, and his corpse lies until it's taken) | Looting it (any Iron Helm) → 30 |
 | 30 | You have the helm | Completes "Take the helm"; shows "Bring the helm back to Torvald". Talking to Torvald while holding (or wearing) it → 40 |
 | 40 | Torvald takes the helm and gives the **Iron Cuirass** (armor 12) he hid from the raiders | Completes the return; flag `ravensford_friend` = 1; quest complete. With no room for the cuirass (bags full and a chest piece worn) he waits until there is |
 
 Dialogue reacting to it (quest lines, first passing wins, taking turns with the markers' own lines; with none passing those cycle):
 - **Maren:** at 0 "start with Torvald" (the talk that starts the quest); at 10 where the forge is; from 20 where Greyfang Rise is; from 30 "take it to him"; done: Torvald sings at his anvil again.
 - **Torvald:** at 0 the helm Hakon wears; at 10 "Maren sent you?"; at 20 where Hakon stands; at 25 "bring me my helm"; with the helm at 0, 10 or 30 "That's my mark on the brow!" (the hand-over), at 30 without it "find it"; done: wear the cuirass well.
-- **Captain Brenna:** from 20 until done, the road to Hakon; while Hakon lies dead, word of his fall; with `ravensford_friend`, the gate is open to you.
+- **Captain Brenna:** from 20 until done, the road to Hakon; once Hakon is dead, word of his fall; with `ravensford_friend`, the gate is open to you.
+
+The quest needs Torvald (`needs`, ADR-056): villagers can be hit, and if Torvald dies the quest fails, started or not (the journal says so). Maren only points the way: with her dead it starts from Torvald.
 
 The reward is the cuirass rather than gold (there's no currency) or the helm itself (that is
 Torvald's): it is a piece of the Iron set the balance assumes, and nothing else in play drops one.

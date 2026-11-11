@@ -35,6 +35,7 @@ struct Session {
     std::vector<Marker> markers;      // story markers (spawns, places), saved with the world
     Player player;
     std::vector<Entity> entities;
+    DeadSlots dead;                         // marker NPCs dead for good (ADR-056): their slots never spawn again; saved
     std::mt19937 rng{};                     // damage rolls; seeded by startSession
     double elapsed = 0;                     // simulated seconds
     float timeOfDay = 0.3f, timeScale = 1;  // see FrameParams::timeOfDay; timeScale 0 = time paused
@@ -96,7 +97,8 @@ void respawnPlayer(Session& s);
 bool canRest(const Session& s);
 // Advances the simulation by `dt` seconds (the game always passes kTick): the NPCs' quest lines,
 // interaction, the player's swing and movement, NPCs and combat (paused while editing), the time of
-// day, which region the player is in, a bow's arrow loosed and every projectile's tick (ADR-050), item count changes, then the quests drain the tick's events,
+// day, which region the player is in, a bow's arrow loosed and every projectile's tick (ADR-050), item count changes,
+// the dead recorded and far corpses buried (buryDead, ADR-056), then the quests drain the tick's events,
 // and what everyone did that can be heard joins `sounds`.
 // A player knocked out for kPlayerRespawnSeconds gets back up first.
 StepResult step(Session& s, const SimInput& in, float dt);

@@ -109,8 +109,8 @@ taking hits in armor Armor; each skill level makes you a little better at it. Ki
 levels give character XP; every level up is a talent point to spend in the Progress window (K).
 
 The game loads its world's player save on start, if there is one (`--new-game` starts fresh). The
-save holds the player, the inventory, the quests and world flags, and every NPC (health, dead or alive and its respawn timer,
-loot, position); the world file stays as the editor saved it. A save from before the world was
+save holds the player, the inventory, the quests and world flags, and every NPC (health, dead or alive,
+loot, position), and who died for good (nothing respawns, ADR-056); the world file stays as the editor saved it. A save from before the world was
 edited loads what still matches and lists what it dropped in the debug window's Save tab.
 Quitting doesn't save after a save failed to load (F5 neither: save over it or delete it in the
 Save tab), after Delete (until the next F5), or once the editor was opened (F5 still saves).
@@ -272,17 +272,19 @@ Markers are authored places, saved with the world:
 | Kind | What it does |
 |---|---|
 | `player_spawn` | Where you start and get back up after being knocked out (one per world) |
-| `spawn` | `count` (1–8) NPCs of one kind that wander within its radius and respawn there; editing it respawns them (a new name or new lines don't) |
+| `spawn` | `count` (1–8) NPCs of one kind that wander within its radius; one killed stays dead in your save (ADR-056); editing it respawns the living (a new name or new lines don't) |
 | `poi` | A named point, e.g. "Old Well"; its name shows while you're within its radius |
 | `region` | A named circle; walking into it shows its name for a few seconds (the innermost wins) |
 
 A world from before markers (or a new one) gets the training dummy, villager, boar and bandit as
 four spawn markers, so its NPCs stay where they were and can be moved or removed like any other.
-NPC kinds: `dummy`, `villager` (talks), `boar` (Lv 1, fights back), `bandit` (Lv 2, attacks on
+NPC kinds: `dummy` (can't die: hits show and take nothing), `villager` (talks, runs from a hit), `boar` (Lv 1, fights back), `bandit` (Lv 2, attacks on
 sight), `wolf` (Lv 1, fast, attacks; drops Wolf Pelt), `guard` (Lv 4, talks, fights back, iron
 helm and sword), `bandit_chief` (Lv 3, attacks, always drops an Iron Helm) and `ghoul` (a Lv 3
 barrow ghoul, slow, attacks; may drop a Bone Charm). With the Iron set and a sword you beat the
 chief alone, or a pair of wolves or ghouls; a pack of three is too much.
+Nothing comes back (ADR-056): the dead stay dead in your save, and a corpse goes once you're 64
+blocks off and can't see it (never while it holds loot). A quest whose needed NPC dies fails.
 
 Enemies fight back in more ways (ADR-042, ADR-043). In a pack only two swing at once; the others
 circle a few blocks out and wait their turn. Bandits, guards, the chief and ghouls swing strings of
@@ -396,7 +398,7 @@ unless a text field has focus.
 | Player | The region you're in, health, the five attributes and what derives from them (max health, regen, attack damage and speed, combat state), armor K (damage reduction = armor / (armor + K x attacker level)) with the current armor and its reduction vs level 1 and 2, position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
 | Items | Give any item or the whole Iron armor set, see what's equipped and in the bag slots, empty the inventory |
 | Data | The loaded item definitions (save id, id, slot, attack, bag size, armor); Reload defs re-reads data/ and keeps the old ones on an error |
-| Entities | Spawn (ADR-054): how many of which kind, 5 blocks ahead or at x, z from the world's middle (the arena's centre), with a button per named point (the arena's zones), and remove them again. Every NPC: health and attributes, traits and temper, aggro and chase ranges, whether it sees you and when it last did (ADR-055), angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers |
+| Entities | Spawn (ADR-054): how many of which kind, 5 blocks ahead or at x, z from the world's middle (the arena's centre), with a button per named point (the arena's zones), and remove them again. Every NPC: health and attributes, traits and temper, aggro and chase ranges, whether it sees you and when it last did (ADR-055), angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers (the dead too). Lasting deaths (ADR-056): how far off a corpse goes, how many lie, every marker's dead, and per corpse whether it stays and why |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | In the endless world, streaming: the window, columns at each stage, what the last frame installed and lit (and how long that took), a worker's time per column, the light budget per frame, the player's column's stage. Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
 | Audio | Mute, volume (all and per bus: effects, ambience, interface), random pitch and volume spread, hearing distance, the voices playing, the ambience's readings (water, trees, fire around) and its loops' volumes, the latest sounds, sounds with no takes, and a button per sound to play it (ADR-037) |

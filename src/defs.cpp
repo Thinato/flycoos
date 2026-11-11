@@ -441,7 +441,7 @@ void loadCreatures(const File& f, Defs& d) {
     for (size_t i = 0; i < f.records.size(); ++i) {
         Record r{f, i, flatten(f, i, i)};
         r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
-                 "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "rare_loot", "rare_loot_chance", "respawn_seconds", "chase_range",
+                 "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "rare_loot", "rare_loot_chance", "immortal", "chase_range",
                  "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
                  "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "damage",
                  "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield", "mods", "keep_range", "aim_error", "sidearm"});
@@ -495,7 +495,9 @@ void loadCreatures(const File& f, Defs& d) {
         if (t.rareChance > 0 && !t.rareLoot) throw r.fail("rare_loot_chance", "no 'rare_loot' to drop");
         if (t.rareLoot && t.rareChance == 0) throw r.fail("rare_loot", "needs a rare_loot_chance");
         if (t.rareLoot && t.lootChance >= 1) throw r.fail("rare_loot", "never dropped: loot_chance is 1");
-        t.respawnSeconds = float(r.number(r.fields, "respawn_seconds", 0, 3600, kRequired, false));
+        t.immortal = flag("immortal");  // nothing respawns (ADR-056): a training dummy takes hits and no damage instead
+        if (t.immortal && !t.attackable) throw r.fail("immortal", "only attackable creatures are hit");
+        if (t.immortal && (t.loot || t.rareLoot)) throw r.fail("immortal", "it never dies to drop its loot");
         // The AI's numbers (ADR-020): only for creatures that fight; the defaults are the AI before them.
         for (const char* key : {"chase_range", "reaggro_cooldown", "give_up_seconds", "attack_windup",
                                 "attack_recover", "attack_cooldown", "flee_health"})
@@ -864,7 +866,7 @@ void loadQuests(const std::vector<File>& files, Defs& d) {
     for (const File& f : files)
         for (size_t i = 0; i < f.records.size(); ++i) {
             Record r{f, i, f.records[i].second};
-            r.allow({"id", "title", "stages", "objectives", "lines"});
+            r.allow({"id", "title", "stages", "objectives", "lines", "needs"});
             if (d.questById.contains(r.id())) throw r.fail("id", "another quest file has this id");
             if (records.size() >= 65535) throw r.fail("id", "more than 65535 quests");
             d.questById.emplace(r.id(), uint16_t(records.size()));
@@ -894,7 +896,7 @@ void loadQuests(const std::vector<File>& files, Defs& d) {
     for (size_t h = 0; h < records.size(); ++h) {
         Record r{*records[h].first, records[h].second, records[h].first->records[records[h].second].second};
         QuestReader q{r, d, uint16_t(h), objectiveIds};
-        QuestDef def{r.id(), r.text("title"), {}, {}};
+        QuestDef def{r.id(), r.text("title"), {}, {}, {}};
         json ss = r.fields["stages"];
         for (size_t k = 0; k < ss.size(); ++k) {
             std::string field = std::format("stages[{}]", k);
@@ -914,6 +916,13 @@ void loadQuests(const std::vector<File>& files, Defs& d) {
             std::string field = std::format("objectives[{}]", k);
             q.only(os[k], field, {"id", "text"});
             def.objectives.push_back({objectiveIds[h][k], q.text(os[k].contains("text") ? os[k]["text"] : json(), field + ".text", kMaxMarkerLine)});
+        }
+        // Who it can't do without (ADR-056): spawn marker names; once all of one's NPCs are dead the quest fails.
+        json ns = q.list(r.fields, "needs", "needs", false);
+        for (size_t k = 0; k < ns.size(); ++k) {
+            std::string name = q.text(ns[k], std::format("needs[{}]", k), kMaxMarkerName);
+            if (std::ranges::find(def.needs, name) != def.needs.end()) throw r.fail(std::format("needs[{}]", k), std::format("'{}' is listed twice", name));
+            def.needs.push_back(std::move(name));
         }
         json ls = q.list(r.fields, "lines", "lines", false, kMaxQuestLines);
         for (size_t k = 0; k < ls.size(); ++k) {

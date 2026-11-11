@@ -2644,3 +2644,89 @@
     for the chase range (giving up past it, height, Return, the pillar: a player up a pillar is still given up on
     though it walks round), the data table and validation (`chase_range` above `aggro_range`,
     fighters only; `leash_radius` unknown).
+
+## ADR-056: Lasting deaths: nothing respawns, and quests need their people
+
+- **Status:** accepted (2026-11-11); supersedes ADR-018's and ADR-023's respawning (`respawn_seconds`).
+  The roadmap item's other half, a spawner for random populations out of view, is ADR-057's (next).
+- **Context:**
+  - Every NPC came back at its home, healed, 5 to 120 seconds after it died. Hakon the Red, the
+    story's one named enemy, rose again after two minutes; the quest text said so ("from Hakon
+    himself if he rises again").
+  - Villagers couldn't be hit at all, so a quest giver could never die.
+  - The roadmap: "The dead near the player stay dead (corpses and all, until they despawn far away
+    and unseen). Friendly NPCs die for good too: a quest giver who dies takes their quest with them."
+- **Decision** (the user's calls: villagers attackable and flee; nothing respawns, the dummy is
+  immortal instead; corpses go far and unseen, keeping their loot until taken; Hakon dead for good):
+  - **Nothing respawns.** `respawn_seconds` is gone from `creatures.json`; updateCombat no longer brings
+    the dead back. The **training dummy** is `immortal` (a new creature flag, attackable kinds without
+    loot only): hits, statuses and poison show their numbers, count as hits (XP, sounds, the stagger)
+    and take no health, so it never topples.
+  - **Villagers can be hit** (`attackable`), and **run from a hit**: a harmless kind that wanders goes
+    to `Flee` (reason `damaged`, or `steadied` after reeling) for `kFleeSeconds`, away from the player
+    and round what's in the way (`detour`, as a chase's), a new hit starting it over (even on its way
+    home), then walks home and heals. It runs at its `chase_speed` (6 for the villager; the player
+    runs 9). Like the dummy, it teaches at the training rate and gives no kill XP. Guards don't come to
+    its aid yet. A villager is a **bystander** (harmless and walking about): it can't be locked onto,
+    and a backstab or riposte never picks it, so a fight in the village doesn't pull the player's
+    attack (or the lock after a kill) onto Torvald; hitting one takes aiming at it.
+  - **Who died is recorded** (`Session::dead`, `DeadSlots`: spawn marker id to a bit per slot). Once a
+    tick `buryDead` records every dead marker NPC, and `syncSpawns` never fills a recorded slot again,
+    whether its marker's window opens, the marker is edited or the game loads; an edited marker keeps
+    a corpse that still holds loot (under the marker as it is now) instead of clearing it. The player
+    save keeps the record in a new section, `DEAD` (u32 count, per marker still in the world u32 id and
+    u8 slot bits); `NPCS` still keeps a corpse while it lies. An older save's corpses say who died (they load dead and are recorded on the
+    first tick), so old saves need nothing. The Entities tab's "Respawn NPCs at their markers" clears
+    the record: a fresh start for every marker.
+  - **Corpses go far and unseen:** `buryDead` removes a corpse with nothing on it once the player is
+    `gAi.corpseGone` (64 blocks) from it and can't see it (`canSee` from the player's eyes, or its part
+    of the world isn't loaded). One still holding loot stays until it's taken, so a quest item (Hakon's
+    helm) can't vanish with it. NPCs not from a marker (the spawn panel's, F6) go the same way, unrecorded.
+    Timed markers still clear an empty corpse out of their window after `kCorpseLinger`.
+  - **Quests need their people:** a quest lists spawn marker names it can't do without (`needs`).
+    When every NPC of one of them is dead (`npcDead`, from the record), the quest fails, started or not:
+    a started one says so in a toast ("Quest failed: Torvald's Helm (Torvald is dead)"), one not yet
+    started never starts. The journal lists both under Failed with the reason ("Torvald is dead. This
+    can never be finished now." or "... started now"). `npc_dead` conditions read the record too, so
+    they hold for good. `checkQuestMarkers` warns about a need that names no spawn marker. Torvald's
+    Helm needs Torvald (Maren Holt only points the way: with her dead it starts from Torvald); its
+    lines no longer say Hakon gets up again, and once it has failed Maren and Captain Brenna say so
+    instead of pointing the way to Hakon.
+  - The debug window: Entities has a "Lasting deaths" node (the corpse distance, how many corpses lie,
+    every marker's dead slots) and, per corpse, whether it stays and why; Quests shows each quest's needs
+    and who of them is dead.
+- **Alternatives considered:**
+  - Respawning only common enemies on a long timer: the user chose nothing, with ADR-057's spawner
+    to fill the world back up (the procedural world makes up for what's lost).
+  - A dummy that respawns: the user wants it never to fall.
+  - Deriving a quest's needs from its `talked_to` triggers: Maren Holt is one, and the quest doesn't
+    need her. An explicit list says what the author means.
+  - Dropping a corpse's loot on the ground when it goes: there are no dropped items in the world yet;
+    keeping the corpse is the same promise with nothing new.
+- **Consequences:**
+  - The story world empties as the player fights through it: three raiders, three wolves, two ghouls
+    and a boar, once each. ADR-057's spawner (mainly for the endless world) is what brings life back.
+  - The endless world's five starting NPCs die for good in that save too.
+  - A villager can be killed by a stray swing or a bomb in the village, and its quest goes with it.
+  - The helm itself can still be destroyed from the bags (Ctrl+right-click), which leaves the quest
+    unfinishable without saying so; quest items that can't be destroyed would close that.
+  - One canSee ray per empty corpse 64 or more blocks off per tick, until it goes.
+  - A quest that failed through `fail_quest` and whose need dies later says the need's death in the
+    journal (the reason isn't saved, it's read from the record).
+  - **Tested:** `lastingDeaths()` in core_test: the dummy keeps its health through a blow, a bleed and
+    poison while each shows its number, and is never killed; a villager runs from a hit (away from the
+    player, round a wall), starts over on a new hit and on one while going home, runs once steady after
+    reeling, then walks home and heals; buryDead keeps a corpse seen across open ground, a near one
+    and one with loot, takes one far behind a wall or in an unloaded part, records marker NPCs and not
+    stray ones; syncSpawns fills no dead slot, even for an edited marker, and an edited marker keeps a
+    corpse holding loot; in play nothing comes back in 130 s, the save keeps the record (dropping removed
+    markers), an older save's corpse is recorded again, and bad DEAD sections (marker 0, no slots, a
+    marker twice, a size mismatch) reject the file; Torvald dying fails Torvald's Helm started (with the
+    toast) or not (silently, and it never starts), Maren and Brenna then say so, a done quest stays done,
+    `npc_dead` holds after the corpse goes, Maren's death doesn't fail it, Hakon's corpse keeps the helm;
+    `needs` validation and the marker check; villagers can't be locked onto or backstabbed, the dummy
+    can. Older tests re-pinned: the dummy as a damage meter reads the hit's number, the boar stays dead,
+    the data table (`immortal`, the villager attackable at 6 b/s), validation (`respawn_seconds` unknown,
+    `immortal`'s rules), the save round trip and timed corpses.
+    Mutation-checked: 36 of 37 rules broken alone fail a test (the survivor, hitting a corpse, is
+    equivalent: `hurt()` refuses a dead body, and an immortal one never dies).

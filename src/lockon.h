@@ -34,7 +34,7 @@ struct LockView {
 glm::vec3 lockPoint(const Entity& e);
 // The locked entity, or null (none, or it's gone).
 const Entity* lockedEntity(const LockOn& lock, const std::vector<Entity>& entities);
-// The id of the lockable entity (alive, attackable, within acquireRange of `player`, on screen and in
+// The id of the lockable entity (alive, attackable, not a bystander, within acquireRange of `player`, on screen and in
 // line of sight) nearest the middle of the view, nearer ones winning close calls; 0 if none.
 uint32_t pickTarget(const std::vector<Entity>& entities, const Grid& world, const LockView& view, glm::vec3 player,
                     const LockSettings& s);

@@ -79,8 +79,8 @@ PREFAB_FORMAT = (
 MARKER_KINDS = ["player_spawn", "spawn", "poi", "region"]
 MARKER_NOTE = (" Markers are authored story data: they stand at the center of column x, z on ground voxel y. Kinds: "
                "`player_spawn` (where the player starts and gets back up after being knocked out; at most one), `spawn` "
-               "(`count` NPCs of kind `entity` that wander within `radius` of it and respawn there; editing its place, "
-               "radius, entity or count respawns them, a new name, new lines or a new active window don't), `poi` (a named place; its name shows to a player within `radius`), `region` (a named circle; "
+               "(`count` NPCs of kind `entity` that wander within `radius` of it; one killed in play stays dead (the player's save "
+               "keeps it); editing its place, radius, entity or count respawns the living, a new name, new lines or a new active window don't), `poi` (a named place; its name shows to a player within `radius`), `region` (a named circle; "
                "walking into it shows its name, the smallest wins when they nest). One call is one undo step, shared "
                "with the user's undo.")
 MARKER_FIELDS = {

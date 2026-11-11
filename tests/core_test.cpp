@@ -505,18 +505,24 @@ static void entities() {
     CHECK(dummy.type().attackable && !dummy.type().wanders && !dummy.type().talks);
     CHECK(villager.kind == EntityKind::Villager && villager.body.level == 5 && !villager.name.empty());
     CHECK(villager.body.health == 250 && maxHealth(villager.body.stats) == 250);
-    CHECK(!villager.type().attackable && villager.type().wanders && villager.type().talks);
+    CHECK(villager.type().attackable && villager.type().wanders && villager.type().talks);  // (attackable: ADR-056)
     CHECK(spawnEntities(g, player.pos, 1)[1].name == villager.name);  // names are seeded
     for (size_t i = 0; i < es.size(); ++i)  // nobody spawns inside anybody
         for (size_t j = 0; j < i; ++j) CHECK(glm::distance(es[i].body.pos, es[j].body.pos) >= 1.5f);
     for (const Entity& e : es) CHECK(glm::distance(e.body.pos, player.pos) >= 1.5f);
     for (const Entity& e : es) CHECK(g.get(glm::ivec3(glm::floor(e.body.pos)) - glm::ivec3(0, 1, 0)) == Grass);
 
-    // Damage: only attackable entities take it, and health stops at 0.
-    CHECK(damage(dummy, 30) && dummy.body.health == 70);
-    CHECK(damage(dummy, 500) && dummy.body.health == 0);
-    CHECK(!damage(dummy, 10));  // nothing left to hit
-    CHECK(!damage(villager, 10) && villager.body.health == 250);
+    // Damage: health stops at 0, and a corpse takes no more. The dummy is immortal (ADR-056): a hit shows its
+    // number and takes nothing.
+    Entity boar = es[2];
+    CHECK(damage(boar, 30) && boar.body.health == 70);
+    CHECK(damage(boar, 500) && boar.body.health == 0);
+    CHECK(!damage(boar, 10));  // nothing left to hit
+    CHECK(damage(dummy, 30) && dummy.body.health == 100 && dummy.body.lastDamage == 30 && dummy.body.hitTime == 0);
+    CHECK(std::ranges::any_of(dummy.body.numbers, [](const DamageNumber& n) { return n.amount == 30 && n.age == 0; }));
+    CHECK(damage(dummy, 500) && dummy.body.alive() && dummy.body.health == 100 && dummy.body.lastDamage == 500);
+    CHECK(damage(villager, 10) && villager.body.health == 240);
+    villager.body.health = 250, villager.events = 0;  // (else it runs from that hit below)
 
     // Talking: only the villager, only in range; a new phrase each time.
     player.pos = dummy.body.pos + glm::vec3(1, 0, 0);
@@ -606,30 +612,30 @@ static void combat() {
     CHECK(startPunch(player, {-1, 0}));
     CHECK(!startPunch(player, {-1, 0}));
     updateCombat(player, es, 0.01f, rng);
-    CHECK(dummy.body.health == 100);  // the fist is still on its way
+    CHECK(dummy.body.lastDamage == 0);  // the fist is still on its way
     run(0.3f);
-    float dealt = 100 - dummy.body.health;
-    CHECK(dealt >= 3 && dealt <= 6 && dummy.body.lastDamage == int(dealt));
+    int dealt = dummy.body.lastDamage;  // (it takes none: immortal, ADR-056)
+    CHECK(dealt >= 3 && dealt <= 6 && dummy.body.health == 100);
     CHECK(player.combatTimer > 0 && dummy.body.combatTimer > 0);
     run(1);
     // With the sword in the main hand the same swing hits for the sword's damage.
     giveItem(player.inv, Shortsword);
     CHECK(quickMove(player.inv, {SlotRef::Item, 0, 0}));
-    float before = dummy.body.health;
+    dummy.body.lastDamage = 0;
     CHECK(startPunch(player, {-1, 0}));
     run(0.3f);
-    CHECK(before - dummy.body.health >= 8 && before - dummy.body.health <= 12);
+    CHECK(dummy.body.lastDamage >= 8 && dummy.body.lastDamage <= 12);
     player.inv = Inventory{};
     run(1);
     CHECK(startPunch(player, {-1, 0}));
 
-    // Misses: facing away, out of reach, and the villager can't be attacked.
+    // Misses: facing away, out of reach. The villager can be hit now (ADR-056).
     player.yaw = std::numbers::pi_v<float> / 2;
     CHECK(punchTarget(es, player) == nullptr);
     standBeside(dummy, kPunchReach + 0.5f);
     CHECK(punchTarget(es, player) == nullptr);
     standBeside(villager, 1.2f);
-    CHECK(punchTarget(es, player) == nullptr);
+    CHECK(punchTarget(es, player) == &villager);
     {  // The nearest of two targets in front gets hit, but only within 60 degrees of facing.
         std::vector<Entity> two{dummy, dummy};
         two[1].body.pos = two[0].body.pos - glm::vec3(1, 0, 0);
@@ -665,17 +671,13 @@ static void combat() {
     run(1);
     CHECK(player.health == 50);  // the player regenerates out of combat only, too
 
-    // At 0 health the dummy topples, can't be hit, and stands back up fully healed.
+    // The dummy never topples (ADR-056): any hit, however big, leaves it standing at full health to hit again.
     auto standing = poseModel(dummy.body, ModelDummy);
-    CHECK(damage(dummy, 1000) && !dummy.body.alive());
+    CHECK(damage(dummy, 1000) && dummy.body.alive() && dummy.body.health == 100);
     standBeside(dummy, 1.2f);
-    CHECK(punchTarget(es, player) == nullptr);
+    CHECK(punchTarget(es, player) == &dummy);
     run(1);
-    CHECK(poseModel(dummy.body, ModelDummy)[Head][3].y < standing[Head][3].y - 0.8f);
-    run(dummy.type().respawnSeconds - 1.2f);
-    CHECK(!dummy.body.alive());
-    run(0.3f);
-    CHECK(dummy.body.alive() && dummy.body.health == 100);
+    CHECK(dummy.body.alive() && std::abs(poseModel(dummy.body, ModelDummy)[Head][3].y - standing[Head][3].y) < 0.1f);
 }
 
 // Boar and bandit: who they are, who they fight, when they give up, what they drop.
@@ -778,16 +780,13 @@ static void fighters() {
     std::swap(full, player.inv);
     CHECK(takeLoot(boar, player.inv) && boar.loot == NoItem && player.inv.containers[0][0] == BoarSkin);
     CHECK(lootTarget(es, player) == nullptr);
-    // It lies still where it fell, then comes back at home, healed and calm.
+    // It lies still where it fell, for good (ADR-056: nothing comes back).
     boar.body.vel = {};  // (killed mid-stride it would slide to a stop first)
     glm::vec3 fell = boar.body.pos;
     boar.body.deadTime = 0;
     setState(boar, AiState::Chase, "test");
-    sim(boar.type().respawnSeconds - 1);
-    CHECK(!boar.body.alive() && !boar.angry() && flat(boar.body.pos) == flat(fell));
-    sim(1.2f);
-    CHECK(boar.body.alive() && boar.body.health == 100 && boar.loot == NoItem);
-    CHECK(glm::distance(flat(boar.body.pos), flat(boar.home)) < 1);
+    sim(200);
+    CHECK(!boar.body.alive() && boar.state == AiState::Dead && flat(boar.body.pos) == flat(fell) && boar.loot == NoItem);
 
     // A swing dies with its swinger: neither a corpse nor a knocked-out player lands a hit.
     player.pos = bandit.body.pos + glm::vec3(-1.5f, 0, 0);
@@ -820,7 +819,7 @@ static void fighters() {
     held = glm::mat4(0);
     poseModel(boar.body, ModelBoar, &held);
     CHECK(held == glm::mat4(0));  // no hands
-    Player b = boar.body;
+    Player b = spawnEntities(g, player.pos, 1)[2].body;  // a live boar (this one stays dead: ADR-056)
     auto idle = poseModel(b, ModelBoar);
     CHECK(startPunch(b, {0, 1}));
     b.moveTime = impactTime(b);
@@ -2377,17 +2376,28 @@ static void markers() {
     last[0].id = UINT32_MAX - 1;
     CHECK(putMarker(g, last, fh, poi).error && last.size() == 1);  // ids never reach 2^32-1 or wrap to 0
 
-    // Respawning: a spawn marker's dead NPC comes back at its home by the marker; the player respawns
-    // at the player spawn (main.cpp uses playerSpawn).
+    // Lasting deaths (ADR-056): a spawn marker's dead NPC lies where it fell for good, and once its corpse has
+    // gone its slot stays empty. (The player respawns at the player spawn: main.cpp uses playerSpawn.)
     sync();
     Entity& boar = npcs[0];
+    uint32_t den = boar.spawn.id;
+    int slot = boar.slot;
     std::mt19937 rng(1);
     Player far;
     far.pos = {60, 4, 60};
     damage(boar, 1000);
     boar.body.pos = {20, 4, 12};  // died elsewhere
-    for (int i = 0; i < 31 * 60; ++i) updateCombat(far, npcs, 1 / 60.0f, rng);
-    CHECK(boar.body.alive() && boar.body.pos == boars.pos);
+    for (int i = 0; i < 121 * 60; ++i) updateCombat(far, npcs, 1 / 60.0f, rng);
+    CHECK(!boar.body.alive() && boar.body.pos == glm::vec3(20, 4, 12));
+    DeadSlots dead;
+    size_t alive0 = npcs.size();
+    buryDead(npcs, dead, g, far);
+    CHECK(dead.size() == 1 && dead.at(den) == 1u << slot && npcs.size() == alive0);  // recorded; 62 blocks off, the corpse lies
+    std::erase_if(npcs, [&](const Entity& e) { return e.spawn.id == den && e.slot == slot; });  // say it went
+    syncSpawns(npcs, g, list, 1, {16, 4, 16}, 0.5f, dead);
+    CHECK(npcs.size() == alive0 - 1 && std::ranges::none_of(npcs, [&](const Entity& e) { return e.spawn.id == den && e.slot == slot; }));
+    syncSpawns(npcs, g, list, 1, {16, 4, 16}, 0.5f);  // (without the record it would be back)
+    CHECK(npcs.size() == alive0);
 
     // Files: a round trip keeps every field; older files have no marker section; hostile sections fail cleanly.
     std::string path = (std::filesystem::temp_directory_path() / "flycoos_markers_test.flyw").string();
@@ -2591,7 +2601,7 @@ static void storyNpcs() {
     for (const Row& r : kRows) {
         const EntityType& t = typeOf(r.kind);
         CHECK(t.name && t.level == r.level && t.temper == r.temper && t.talks == r.talks && t.model == r.model);
-        CHECK(t.weapon == r.weapon && t.loot == r.loot && t.attackable && t.wanders && t.respawnSeconds > 0);
+        CHECK(t.weapon == r.weapon && t.loot == r.loot && t.attackable && t.wanders && !t.immortal);
         CHECK((t.loot == NoItem) == (t.lootChance == 0) && t.lootChance <= 1);
         if (r.temper == Temper::Aggressive) CHECK(t.aggroRange > 0 && t.aggroRange < t.chaseRange && t.chaseSpeed > 0);
     }
@@ -3072,29 +3082,29 @@ static void tables() {
 
     struct WantType {
         const char* name; int level; Stats stats; bool attackable, wanders, talks; Model model; Temper temper;
-        float aggroRange, wanderRadius, chaseSpeed; ItemId weapon, loot; float lootChance, respawnSeconds;
+        float aggroRange, wanderRadius, chaseSpeed; ItemId weapon, loot; float lootChance; bool immortal;
     };
     constexpr WantType kWantTypes[] = {
         // name            lvl  sta str agi int spi   attackable wanders talks model
-        //                 temper              aggro wander chase weapon      loot       chance respawn   (aggro: ADR-055's, in sight)
+        //                 temper              aggro wander chase weapon      loot       chance immortal  (aggro: ADR-055's, in sight)
         {"Training Dummy", 1, {10, 0, 0, 0, 10}, true,  false, false, ModelDummy,
-                           Temper::Harmless,   0,    0,     0,    NoItem,     NoItem,    0,     5},
-        {nullptr,          5, {25, 5, 5, 5, 5},  false, true,  true,  ModelVillager,
-                           Temper::Harmless,   0,    12,    0,    NoItem,     NoItem,    0,     30},
+                           Temper::Harmless,   0,    0,     0,    NoItem,     NoItem,    0,     true },
+        {nullptr,          5, {25, 5, 5, 5, 5},  true,  true,  true,  ModelVillager,
+                           Temper::Harmless,   0,    12,    6,    NoItem,     NoItem,    0,     false},  // (runs from a hit at 6: ADR-056)
         {"Boar",           1, {10, 2, 2, 2, 2},  true,  true,  false, ModelBoar,
-                           Temper::Passive,    0,    10,    6,    NoItem,     BoarSkin,  0.75f, 30},
+                           Temper::Passive,    0,    10,    6,    NoItem,     BoarSkin,  0.75f, false},
         {"Bandit",         2, {12, 3, 2, 2, 2},  true,  true,  false, ModelBandit,
-                           Temper::Aggressive, 24,   5,     5.5f, Knife,      Knife,     0.4f,  30},
+                           Temper::Aggressive, 24,   5,     5.5f, Knife,      Knife,     0.4f,  false},
         {"Wolf",           1, {8, 6, 70, 2, 2},   true,  true,  false, ModelWolf,
-                           Temper::Aggressive, 28,   10,    7.5f, NoItem,     WolfPelt,  0.6f,  30},
+                           Temper::Aggressive, 28,   10,    7.5f, NoItem,     WolfPelt,  0.6f,  false},
         {"Guard",          4, {16, 5, 3, 2, 4},  true,  true,  true,  ModelGuard,
-                           Temper::Passive,    0,    6,     6,    Shortsword, ItemId(20), 0.5f, 60},  // loot: the light crossbow (save id 20, ADR-052; the short bow before)
+                           Temper::Passive,    0,    6,     6,    Shortsword, ItemId(20), 0.5f, false},  // loot: the light crossbow (save id 20, ADR-052; the short bow before)
         {"Bandit Chief",   3, {11, 3, 2, 2, 2},  true,  true,  false, ModelChief,
-                           Temper::Aggressive, 24,   6,     5.5f, Shortsword, IronHelm,  1,     120},
+                           Temper::Aggressive, 24,   6,     5.5f, Shortsword, IronHelm,  1,     false},
         {"Barrow Ghoul",   3, {7, 4, 2, 2, 2},   true,  true,  false, ModelGhoul,
-                           Temper::Aggressive, 16,   4,     4,    NoItem,     BoneCharm, 0.3f,  45},
+                           Temper::Aggressive, 16,   4,     4,    NoItem,     BoneCharm, 0.3f,  false},
         {"Bandit Archer",  2, {9, 2, 4, 2, 2},   true,  true,  false, ModelBandit,  // ADR-051: the short bow (19) in hand and as loot
-                           Temper::Aggressive, 30,   5,     5,    ItemId(19), ItemId(19), 0.25f, 30},
+                           Temper::Aggressive, 30,   5,     5,    ItemId(19), ItemId(19), 0.25f, false},
     };
     static_assert(std::size(kWantTypes) == size_t(EntityKind::Count));
     for (int k = 0; k < int(EntityKind::Count); ++k) {
@@ -3105,7 +3115,7 @@ static void tables() {
         same(row, "name", str(t.name), str(w.name));
         SAME(level), SAME(stats.stamina), SAME(stats.strength), SAME(stats.agility), SAME(stats.intellect), SAME(stats.spirit);
         SAME(attackable), SAME(wanders), SAME(talks), SAME(model), SAME(temper);
-        SAME(aggroRange), SAME(wanderRadius), SAME(chaseSpeed), SAME(weapon), SAME(loot), SAME(lootChance), SAME(respawnSeconds);
+        SAME(aggroRange), SAME(wanderRadius), SAME(chaseSpeed), SAME(weapon), SAME(loot), SAME(lootChance), SAME(immortal);
 #undef SAME
     }
 
@@ -3945,12 +3955,9 @@ static void playerSaves() {
     Entity *c0 = npc(b, 3, 0), *c1 = npc(b, 3, 1);
     CHECK(c0 && c0->body.pos == glm::vec3(10.5f, 4, 50.5f) && c0->body.yaw == -2 && c0->body.health == 5 && c0->body.alive());
     CHECK(c1 && !c1->body.alive() && c1->state == AiState::Dead && c1->body.deadTime == 7 && c1->loot == Knife && c1->body.pos == corpse);
-    // The respawn timer runs on: back home, healed, after the rest of the 30 s.
-    float rest = c1->type().respawnSeconds - 7;
-    for (int i = 0; i < int((rest - 0.5f) / kTick); ++i) step(b, {}, kTick);
-    CHECK(!npc(b, 3, 1)->body.alive());
-    for (int i = 0; i < int(1 / kTick); ++i) step(b, {}, kTick);
-    CHECK(npc(b, 3, 1)->body.alive() && npc(b, 3, 1)->loot == NoItem);
+    // It stays dead (ADR-056), its corpse holding the knife.
+    for (int i = 0; i < int(60 / kTick); ++i) step(b, {}, kTick);
+    CHECK(npc(b, 3, 1) && !npc(b, 3, 1)->body.alive() && npc(b, 3, 1)->loot == Knife && b.dead.at(3) == 2);
 
     // Bad files are rejected and leave the session alone: a flipped byte, a truncation, a huge count.
     auto bytes = [](const std::string& f) {
@@ -4268,7 +4275,7 @@ static void timedSpawns() {
     }
 
     // Corpses: an empty one lies kCorpseLinger (a kill out of the window shows), one with loot until
-    // it's looted or back up; none come back by day.
+    // it's looted; none come back by day, and the dead never again (ADR-056).
     s.timeOfDay = 0.9f;
     step(s, {}, kTick);
     CHECK(s.entities.size() == 2);
@@ -4279,25 +4286,25 @@ static void timedSpawns() {
     CHECK(s.entities.size() == 1 && !s.entities[0].body.alive());  // the living one left, the corpse lies
     for (int i = 0; i < int(kCorpseLinger * 60) - 3; ++i) step(s, {}, kTick);
     CHECK(s.entities.size() == 1);
+    int slain = s.entities[0].slot;
     for (int i = 0; i < 4; ++i) step(s, {}, kTick);
-    CHECK(s.entities.empty());
+    CHECK(s.entities.empty() && s.dead.at(night.id) == 1u << slain);
     s.timeOfDay = 0.9f;
     step(s, {}, kTick);
-    CHECK(s.entities.size() == 2);
-    for (Entity& e : s.entities) {
-        CHECK(damage(e, 10000));
-        e.loot = BoneCharm;
-    }
+    CHECK(s.entities.size() == 1 && s.entities[0].slot == 1 - slain);  // only the living one's slot fills
+    CHECK(damage(s.entities[0], 10000));
+    s.entities[0].loot = BoneCharm;
     s.timeOfDay = 0.5f;
     for (int i = 0; i < int(kCorpseLinger * 60) + 2; ++i) step(s, {}, kTick);
-    CHECK(s.entities.size() == 2);
-    s.player.teleport(s.entities[1].body.pos + (s.entities[1].body.pos - s.entities[0].body.pos) * 0.3f);  // the nearer corpse
+    CHECK(s.entities.size() == 1);  // its loot keeps it
+    s.player.teleport(s.entities[0].body.pos + glm::vec3(1, 0, 0));
     SimInput loot;
     loot.interact = true;
     step(s, loot, kTick);  // looted past kCorpseLinger: it goes at once
-    CHECK(s.entities.size() == 1 && s.entities[0].loot == BoneCharm && s.player.inv.containers[0][2] == BoneCharm);
-    for (int i = 0; i < int(typeOf(EntityKind::Ghoul).respawnSeconds * 60) + 2; ++i) step(s, {}, kTick);
-    CHECK(s.entities.empty());
+    CHECK(s.entities.empty() && s.player.inv.containers[0][2] == BoneCharm && s.dead.at(night.id) == 3);
+    s.timeOfDay = 0.9f;
+    for (int i = 0; i < 60; ++i) step(s, {}, kTick);
+    CHECK(s.entities.empty());  // both dead for good: the night brings nobody
 
     // Files: windows round-trip in their TIME section; without it (older files) every marker is always active.
     std::string path = (std::filesystem::temp_directory_path() / "flycoos_times_test.flyw").string();
@@ -4744,7 +4751,7 @@ static void dataFiles() {
     if (!error.empty()) std::println(stderr, "FAIL grown creatures: {}", error);
     const EntityType& sow = grown.creatures[9];
     CHECK(sow.name == nullptr && sow.stats.stamina == 14 && sow.stats.strength == 2 && sow.model == ModelBoar &&
-          sow.temper == Temper::Passive && sow.loot == WolfPelt && sow.lootChance == 0.75f && sow.respawnSeconds == 30);
+          sow.temper == Temper::Passive && sow.loot == WolfPelt && sow.lootChance == 0.75f && !sow.immortal);
     for (auto [text, want] : std::initializer_list<std::pair<std::string, std::string_view>>{
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "loot": "boar_hide"}])",
               "record 9 'a': field 'loot': unknown item \"boar_hide\""},
@@ -4777,8 +4784,11 @@ static void dataFiles() {
               "field 'chase_speed': missing (a creature that fights chases)"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "loot_chance": 1.5}])", "field 'loot_chance': 1.5 is out of range"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "health": 50}])", "record 9 'a': field 'health': unknown field"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "model": "boar", "temper": "passive", "respawn_seconds": 5}])", "field 'level': missing"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "respawn_seconds": null}])", "field 'respawn_seconds': missing"},
+             {creatures + R"(,{"id": "a", "save_id": 9, "model": "boar", "temper": "passive"}])", "field 'level': missing"},
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "respawn_seconds": 30}])", "field 'respawn_seconds': unknown field"},  // (ADR-056)
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "immortal": 1}])", "field 'immortal': must be true or false"},
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "dummy", "attackable": false}])", "field 'immortal': only attackable creatures are hit"},
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "immortal": true}])", "field 'immortal': it never dies to drop its loot"},
              {creatures + R"(,{"id": "wolf", "save_id": 9, "copy_from": "boar"}])", "record 9 'wolf': field 'id': duplicate of record 4"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "chase_range": 24}])",
               "field 'chase_range': must be more than aggro_range"},
@@ -4788,7 +4798,7 @@ static void dataFiles() {
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "chase_range": 40}])",
               "field 'chase_range': harmless creatures don't fight"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "give_up_seconds": "soon"}])", "field 'give_up_seconds': must be a number"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "stance": 10}])",
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "attackable": false, "stance": 10}])",
               "field 'stance': only attackable creatures are hit"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "dummy", "hit_stance": 10}])",
               "field 'hit_stance': harmless creatures don't fight"},
@@ -4798,7 +4808,7 @@ static void dataFiles() {
               "field 'damage': its weapon decides (only creatures without one have their own)"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "dummy", "damage": "slash"}])", "field 'damage': harmless creatures don't fight"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "wolf", "damage": "bite"}])", "field 'damage': must be one of slash, strike, pierce"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "resist": 0.2}])", "field 'resist': only attackable creatures are hit"},
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "attackable": false, "resist": 0.2}])", "field 'resist': only attackable creatures are hit"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "wolf", "resist": {"slash": 2}}])", "field 'resist.slash': 2 is out of range -1..0.9"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "parryable": 1}])", "field 'parryable': must be true or false"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "combo": 2}])", "field 'combo': harmless creatures don't fight"},
@@ -5580,8 +5590,15 @@ static void conditions() {
     CHECK(is({.kind = C::InRegion, .name = "Village"}) && is({.kind = C::InRegion, .name = "Vale"}));  // nested: both count
     CHECK(!is({.kind = C::InRegion, .name = "Raiders"}) && is({.kind = C::InRegion, .negate = true, .name = "Elsewhere"}));
     CHECK(s.entities.size() == 2 && !is({.kind = C::NpcDead, .name = "Raiders"}) && !is({.kind = C::NpcDead, .name = "Nobody"}));
+    // Who died is the dead record's (ADR-056): step() fills it each tick (buryDead); loot keeps the corpses lying.
     CHECK(damage(s.entities[0], 1000) && !is({.kind = C::NpcDead, .name = "Raiders"}));
-    CHECK(damage(s.entities[1], 1000) && is({.kind = C::NpcDead, .name = "Raiders"}));
+    s.entities[0].loot = BoarSkin;
+    buryDead(s.entities, s.dead, s.world, s.player);
+    CHECK(!is({.kind = C::NpcDead, .name = "Raiders"}));
+    CHECK(damage(s.entities[1], 1000) && !is({.kind = C::NpcDead, .name = "Raiders"}));
+    s.entities[1].loot = BoarSkin;
+    buryDead(s.entities, s.dead, s.world, s.player);
+    CHECK(is({.kind = C::NpcDead, .name = "Raiders"}) && s.entities.size() == 2);
     CHECK(passesAll(s, {}) && !passesAll(s, {{.kind = C::NpcDead, .name = "Raiders"}, {.kind = C::Done, .quest = q}}));
     // Loot and rewards go into an empty matching equip slot when the bags are full; Ctrl+right-click destroys.
     {
@@ -5668,8 +5685,8 @@ static void progression() {
     CHECK(bladeXp() == sword && bandit.xpWear == 1);
     awardHitXp(hero, dummy, true, false);
     CHECK(std::abs(bladeXp() - sword * (1 + kTrainingRate)) < 1e-4f);  // the dummy teaches at a quarter
-    awardHitXp(hero, villager, true, true);
-    CHECK(std::abs(bladeXp() - sword * (1 + kTrainingRate)) < 1e-4f && hero.progress.xp == 0 && villager.xpWear == 0);  // can't be hurt: nothing
+    awardHitXp(hero, villager, true, true);  // harmless, as the dummy: a quarter, and no kill XP (it can be hurt since ADR-056)
+    CHECK(std::abs(bladeXp() - sword * (1 + 2 * kTrainingRate)) < 1e-4f && hero.progress.xp == 0 && villager.xpWear == 1);
     // The final hit doesn't matter: strength, damage modifiers and talents earn no more per hit.
     Player strong = hero;
     strong.progress = {};
@@ -5815,7 +5832,7 @@ static void progression() {
         if (d.creatureIds[k] == "guard") CHECK(downTime < killTime && foe.temper == Temper::Passive);
         else CHECK(downTime > killTime);
     }
-    // Kill XP wears too: killing the same respawning guard again and again gives less each time.
+    // Kill XP wears too: killing the same guard again and again (brought back by hand) gives less each time.
     {
         Player slayer;
         slayer.swingWeapon = Shortsword;
@@ -5832,7 +5849,8 @@ static void progression() {
             CHECK(damage(guard, 10000));
             awardHitXp(slayer, guard, true, true);
             kills.push_back(slayer.progress.xp + 10000 * slayer.level - before);
-            updateCombat(slayer, gs, guard.type().respawnSeconds, rng);  // it gets back up; some wear fades
+            updateCombat(slayer, gs, 60, rng);  // some wear fades...
+            guard.body.health = float(maxHealth(sheet(guard.body)));  // ...and it's brought back by hand (nothing respawns: ADR-056)
             CHECK(guard.body.alive());
         }
         std::println("guard kills: {} {} {} {} XP (no wear: {})", kills[0], kills[1], kills[2], kills[3], guard.type().xp);
@@ -6023,7 +6041,14 @@ static void progression() {
             Defs out;
             return loadDefs(data, out, error) ? std::string() : error;
         };
-        CHECK(withXp(R"("id": "villager", "save_id": 1,)", R"( "xp": 5,)").find("'villager': field 'xp': a creature that can't be hurt") != std::string::npos);
+        CHECK(withXp(R"("id": "villager", "save_id": 1,)", R"( "xp": 5,)").empty());  // it can be hurt (ADR-056)
+        {
+            std::string c = creatures;
+            c.replace(c.find(R"("attackable": true, "wanders": true, "talks": true, "model": "villager")"), 19, R"("xp": 5, )");
+            std::ofstream(data / "creatures.json") << c;
+            Defs out;
+            CHECK(!loadDefs(data, out, error) && error.find("'villager': field 'xp': a creature that can't be hurt") != std::string::npos);
+        }
         CHECK(withXp(R"("id": "wolf", "save_id": 4,)", R"( "xp": -1,)").find("'wolf': field 'xp': -1 is out of range") != std::string::npos);
         CHECK(withXp(R"("id": "wolf", "save_id": 4,)", R"( "xp": 0,)").empty());
     }
@@ -6576,11 +6601,11 @@ static void weaponClasses() {
             Input move;
             MeleeInput in{.attack = !p.punching() || moveProgress(p) >= spec(p).chain};
             updateMelee(p, in, move, 1 / 60.0f);
-            float before = dummy.health;
+            dummy.lastDamage = 0;  // (the dummy is immortal: its last hit's number tells, ADR-056)
             dummy.stance = 1000;  // never broken: no riposte
             Move m = p.move;
             updateCombat(p, es, 1 / 60.0f, rng);
-            if (dummy.health < before) {
+            if (dummy.lastDamage > 0) {
                 CHECK(m == want);
                 if (m != want) std::println(stderr, "  {}: hit {} with {}, want {}", kWeaponClassIds[size_t(c)], hits, kMoveNames[size_t(m)], kMoveNames[size_t(want)]);
                 float stop = std::min(0.04f + 0.003f * spec(c, m).stance, 0.12f) * weaponClass(c).hitStop;
@@ -7367,12 +7392,12 @@ static void criticals() {
         int hits = 0, crits = 0;
         float plain = 0, critical = 0, most = 0;
         for (int i = 0; i < 60 * 60 * 15 && hits < 600; ++i) {
-            float before = d.body.health;
+            d.body.lastDamage = 0;  // (immortal: the hit's number tells, ADR-056)
             d.body.stance = d.type().stance;  // never broken: no ripostes
             tick(p, {.attack = !p.punching()}, es);
-            if (d.body.health < before) {
+            if (d.body.lastDamage > 0) {
                 ++hits;
-                (d.body.lastCrit ? critical : plain) += before - d.body.health;
+                (d.body.lastCrit ? critical : plain) += float(d.body.lastDamage);
                 crits += d.body.lastCrit;
                 if (!d.body.lastCrit) most = std::max(most, p.trauma);
             }
@@ -7856,11 +7881,11 @@ static void greatWeapons() {
         std::vector<Entity> es;
         es.reserve(2);
         p.yaw = glm::radians(degrees);
-        float before = spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, dist).body.health;
+        spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, dist);
         p.yaw = 0;
         tick(p, {.attack = true}, &es);
         for (int i = 0; i < 120 && p.punching(); ++i) tick(p, {}, &es);
-        return es[0].body.health < before;
+        return es[0].body.lastDamage > 0;  // (immortal: the hit's number, ADR-056)
     };
     CHECK(lands(Shortsword, 1.6f, 0) && !lands(Shortsword, 2.3f, 0) && lands(gs, 2.3f, 0) && lands(ga, 2.3f, 0) && !lands(gs, 2.8f, 0));
     CHECK(!lands(Shortsword, 1.5f, 70) && lands(gs, 1.5f, 70) && !lands(ga, 1.5f, 72));
@@ -7894,12 +7919,12 @@ static void greatWeapons() {
         p.yaw = 0;
         std::vector<Entity> es;
         es.reserve(2);
-        float before = spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 2.3f).body.health;
+        spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 2.3f);
         tick(p, {.attack = true}, &es);
         tick(p, {}, &es);
         p.inv.equipped[SlotMainHand] = gs;
         for (int i = 0; i < 120 && p.punching(); ++i) tick(p, {}, &es);
-        CHECK(es[0].body.health == before);
+        CHECK(es[0].body.lastDamage == 0);
     }
     {  // A backstab reaches as far: a dummy 2.3 blocks ahead with its back turned is open to the greatsword's, not the sword's.
         Player p = holder(gs);
@@ -7925,11 +7950,11 @@ static void greatWeapons() {
         for (int i = 0; i < 8 * 60 && hits < 4; ++i) {
             Input move;
             updateMelee(p, {.attack = !p.punching() || moveProgress(p) >= spec(p).chain}, move, dt);
-            float before = dummy.health;
+            dummy.lastDamage = 0;  // (immortal: the hit's number tells, ADR-056)
             dummy.stance = 1000;
             Move m = p.move;
             updateCombat(p, es, dt, rng);
-            if (dummy.health < before) {
+            if (dummy.lastDamage > 0) {
                 CHECK(m == want && dummy.hitStance == spec(c, m).stance);
                 CHECK(std::abs(p.freeze - std::min(0.04f + 0.003f * spec(c, m).stance, 0.12f) * weaponClass(c).hitStop) < 1e-5f);
                 ++hits, want = Move(int(want) + 1);
@@ -8178,12 +8203,12 @@ static void statusEffects() {
         d.body.yaw = std::numbers::pi_v<float>;  // facing: no backstabs
         int hits = 0, bleeds = 0, firstBleed = 0;
         for (int i = 0; i < 60 * 60 && hits < 40; ++i) {
-            float before = d.body.health;
+            d.body.lastDamage = 0;  // (immortal: the hit's number tells, ADR-056)
             d.body.stance = d.type().stance;
             Input still;
             updateMelee(hero, {.attack = !hero.punching()}, still, dt);
             updateCombat(hero, es, dt, rng);
-            if (d.body.health < before) {
+            if (d.body.lastDamage > 0) {
                 ++hits;
                 if (d.body.made(Noise::Bleed)) {
                     ++bleeds;
@@ -8791,23 +8816,24 @@ static void bows() {
         Session s = field();
         Player& p = s.player;
         Entity& dummy = spawnAhead(s.entities, s.world, p, EntityKind::TrainingDummy, 4, 12);
-        float full = dummy.body.health;
         p.swingWeapon = Shortsword;
         shoot(s, 1, {}, 20);
-        CHECK(dummy.body.health < full && dummy.body.hitWith == bow && s.projectiles.empty() && p.swingWeapon == bow);
+        CHECK(dummy.body.lastDamage > 0 && dummy.body.hitWith == bow && s.projectiles.empty() && p.swingWeapon == bow);  // (immortal, ADR-056)
         CHECK(p.progress.skills[size_t(Skill::OneHanded)].xp > 0);  // XP as a hit (one-handed: no new use skills)
         // Determinism: the same shots again give the same everything.
         Session again = field();
         Entity& twin = spawnAhead(again.entities, again.world, again.player, EntityKind::TrainingDummy, 4, 12);
         again.player.swingWeapon = Shortsword;
         shoot(again, 1, {}, 20);
-        CHECK(twin.body.health == dummy.body.health && again.player.arrows == p.arrows);
-        // A kill: Killed, as a swing's.
-        dummy.body.health = 1;
+        CHECK(twin.body.lastDamage == dummy.body.lastDamage && twin.body.lastCrit == dummy.body.lastCrit && again.player.arrows == p.arrows);
+        // A kill: Killed, as a swing's (on a boar: the dummy can't die, ADR-056).
+        s.entities.clear();
+        Entity& boar = spawnAhead(s.entities, s.world, p, EntityKind::Boar, 4, 12);
+        boar.body.health = 1;
         s.events.clear();
-        s.projectiles = {{dummy.body.pos + glm::vec3(-3, 1, 0), {}, {40, 0, 0}, bow, 1, 0}};
+        s.projectiles = {{boar.body.pos + glm::vec3(-3, 1, 0), {}, {40, 0, 0}, bow, 1, 0}};
         for (int i = 0; i < 10; ++i) updateProjectiles(s, kTick);
-        CHECK(!dummy.body.alive() && std::ranges::any_of(s.events, [](const GameEvent& e) { return std::holds_alternative<Killed>(e); }));
+        CHECK(!boar.body.alive() && std::ranges::any_of(s.events, [](const GameEvent& e) { return std::holds_alternative<Killed>(e); }));
         // Two in line: the nearer takes it (whichever comes first in the list). The player's own swing weapon
         // is its own again after; an arrow may be a random critical.
         s.entities.clear();
@@ -8877,10 +8903,9 @@ static void bows() {
         for (float hold : {0.0f, 1.0f}) {
             Session s = field();
             Entity& dummy = spawnAhead(s.entities, s.world, s.player, EntityKind::TrainingDummy, 4, 30);
-            float full = dummy.body.health;
             SimInput in{.aim = {1, 0}, .aimAt = dummy.body.pos + glm::vec3(0, 1, 0)};
             shoot(s, hold, in, 120);
-            CHECK(dummy.body.health < full && s.projectiles.empty());
+            CHECK(dummy.body.lastDamage > 0 && s.projectiles.empty());
         }
     }
 
@@ -10105,6 +10130,355 @@ static void throwables() {
     }
 }
 
+// Lasting deaths (ADR-056): nothing comes back. The dummy can't die (its hits show, its health stays), a villager
+// runs from a hit, corpses with nothing on them go once the player is far and can't see them, the player save keeps
+// who died, and a quest whose needed NPC dies fails, started or not.
+static void lastingDeaths() {
+    namespace fs = std::filesystem;
+    auto flat = [](int size) {  // grass, no water
+        Grid g({size, 8, size});
+        for (int z = 0; z < size; ++z)
+            for (int x = 0; x < size; ++x) {
+                for (int y = 0; y < 3; ++y) g.set({x, y, z}, Dirt);
+                g.set({x, 3, z}, Grass);
+            }
+        return g;
+    };
+    auto wall = [](Grid& g, glm::ivec2 from, glm::ivec2 to) {  // x and z inclusive, 4 high
+        for (int z = from.y; z <= to.y; ++z)
+            for (int x = from.x; x <= to.x; ++x)
+                for (int y = 4; y < 8; ++y) g.set({x, y, z}, Stone);
+    };
+    auto reason = [](const Entity& e) { return std::string_view(e.history[(e.transitions - 1) % e.history.size()].reason); };
+    auto spawn = [](uint32_t id, const char* name, EntityKind kind, glm::vec3 pos, int count = 1) {
+        return Marker{.id = id, .kind = MarkerKind::Spawn, .name = name, .pos = pos, .radius = 2, .entity = kind, .count = count};
+    };
+    std::mt19937 rng(3);
+
+    {  // The dummy: a blow, poison and a bleed all show their numbers; its health never moves, and it's never killed.
+        Grid g = flat(64);
+        Player p;
+        p.pos = {20.5f, 4, 20.5f};
+        std::vector<Entity> es;
+        Entity& d = spawnAhead(es, g, p, EntityKind::TrainingDummy, 1, 1.5f);
+        const float full = float(maxHealth(sheet(d.body)));
+        std::vector<GameEvent> events;
+        strike(p, d, {.power = 40, .from = p.pos}, rng, kArmorK, &events);
+        CHECK(d.body.alive() && d.body.health == full && d.body.lastDamage > 0 && events.empty());
+        CHECK(damage(d, int(full) * 3, false, Status::Bleed) && d.body.health == full && d.body.alive());
+        CHECK(std::ranges::any_of(d.body.numbers, [&](const DamageNumber& n) { return n.kind == Status::Bleed && n.amount == int(full) * 3; }));
+        afflict(d.body, Status::Poison, "test");
+        for (int i = 0; i < 3 * 60; ++i) updateCombat(p, es, kTick, rng, kArmorK, &events);
+        CHECK(d.body.alive() && d.body.health == full && events.empty() &&
+              std::ranges::any_of(d.body.numbers, [](const DamageNumber& n) { return n.kind == Status::Poison && n.amount > 0; }));
+    }
+
+    {  // A villager runs from a hit (away from the player, round a wall), a while longer from each new one, then walks home and heals.
+        Grid g = flat(96);
+        std::vector<Entity> vs;
+        syncSpawns(vs, g, {spawn(1, "Wenna", EntityKind::Villager, {40.5f, 4, 40.5f})}, 1, {}, 0.5f);
+        Entity& v = vs.at(0);
+        Player hero;
+        hero.pos = v.body.pos + glm::vec3(2, 0, 0);
+        auto run = [&](float seconds) {
+            for (int i = 0; i < int(seconds * 60); ++i) updateEntities(vs, g, hero, kTick), updateCombat(hero, vs, kTick, rng);
+        };
+        float start = glm::distance(v.body.pos, hero.pos);
+        CHECK(damage(v, 10) && v.body.health < float(maxHealth(sheet(v.body))));
+        run(kTick);
+        CHECK(v.state == AiState::Flee && reason(v) == "damaged");
+        run(2);
+        CHECK(v.state == AiState::Flee && glm::distance(v.body.pos, hero.pos) > start + 6);
+        CHECK(damage(v, 10));
+        run(kTick);
+        CHECK(v.state == AiState::Flee && reason(v) == "damaged" && v.stateTime < 0.1f);  // starts over
+        run(kFleeSeconds + 0.1f);
+        CHECK(v.state == AiState::Return && reason(v) == "fled");
+        CHECK(damage(v, 10));
+        run(kTick);
+        CHECK(v.state == AiState::Flee && reason(v) == "damaged");  // hit on the way home: off again
+        run(kFleeSeconds + 30);
+        CHECK(v.state == AiState::Wander && v.body.health == float(maxHealth(sheet(v.body))));  // home, healed
+        staggerHit(v, 1000, false);  // a reeling one runs once it's steady
+        run(kTick);
+        CHECK(v.state == AiState::Stagger);
+        for (int i = 0; i < 600 && v.state == AiState::Stagger; ++i) run(kTick);
+        CHECK(v.state == AiState::Flee && reason(v) == "steadied");
+        // A wall behind it: it goes round, not stuck.
+        Grid walled = flat(96);
+        wall(walled, {45, 30}, {45, 50});
+        std::vector<Entity> ws;
+        syncSpawns(ws, walled, {spawn(1, "Wenna", EntityKind::Villager, {43.5f, 4, 40.5f})}, 1, {}, 0.5f);
+        hero.pos = ws[0].body.pos + glm::vec3(-2, 0, 0.3f);
+        glm::vec3 was = ws[0].body.pos;
+        CHECK(damage(ws[0], 10));
+        for (int i = 0; i < 2 * 60; ++i) updateEntities(ws, walled, hero, kTick);
+        CHECK(ws[0].state == AiState::Flee && glm::distance(ws[0].body.pos, was) > 4);
+    }
+
+    {  // buryDead: a corpse with nothing on it goes once the player is gAi.corpseGone off and can't see it.
+        Grid g = flat(200);
+        std::vector<Entity> es;
+        syncSpawns(es, g, {spawn(4, "Den", EntityKind::Boar, {20.5f, 4, 100.5f}, 2)}, 1, {}, 0.5f);
+        CHECK(es.size() == 2 && damage(es[0], 10000));
+        es[0].loot = NoItem;
+        int slot = es[0].slot;
+        Player p;
+        DeadSlots dead;
+        auto bury = [&](glm::vec3 at, const std::function<bool(glm::vec3)>& loaded = {}) {
+            p.pos = at;
+            buryDead(es, dead, g, p, loaded);
+            return std::ranges::none_of(es, [](const Entity& e) { return !e.body.alive(); });
+        };
+        CHECK(!bury({120.5f, 4, 100.5f}) && dead.at(4) == 1u << slot);  // 100 off in the open: seen, it lies; but it's recorded
+        CHECK(!bury({60.5f, 4, 100.5f}));
+        wall(g, {80, 90}, {80, 110});
+        CHECK(!bury({60.5f, 4, 100.5f}));  // behind nothing, 40 off: near
+        CHECK(!bury({82.5f, 4, 100.5f}));  // 62 off behind the wall: near still
+        es[0].loot = BoarSkin;
+        CHECK(!bury({120.5f, 4, 100.5f}));  // behind the wall, far: but it holds loot
+        es[0].loot = NoItem;
+        CHECK(bury({120.5f, 4, 100.5f}) && es.size() == 1 && dead.at(4) == 1u << slot);  // far and unseen: gone, still dead
+        CHECK(damage(es[0], 10000));
+        es[0].loot = NoItem;
+        CHECK(bury({40.5f, 4, 180.5f}, [](glm::vec3 at) { return at.z > 150; }) && es.empty() && dead.at(4) == 3);  // seen, but not loaded
+        Entity& stray = spawnAhead(es, g, p, EntityKind::Wolf, 1, 3);  // not from a marker: goes the same, no record
+        CHECK(damage(stray, 10000));
+        stray.loot = NoItem;
+        CHECK(bury({120.5f, 4, 180.5f}) == false && bury({150.5f, 4, 100.5f}, [](glm::vec3 at) { return at.x > 140; }) && dead.size() == 1);
+        // syncSpawns never brings a dead slot back, not even when its marker changes.
+        syncSpawns(es, g, {spawn(4, "Den", EntityKind::Boar, {20.5f, 4, 100.5f}, 2)}, 1, {}, 0.5f, dead);
+        CHECK(es.empty());
+        syncSpawns(es, g, {spawn(4, "Den", EntityKind::Boar, {30.5f, 4, 90.5f}, 3)}, 1, {}, 0.5f, dead);
+        CHECK(es.size() == 1 && es[0].slot == 2);
+        // An edited marker keeps a corpse that still holds loot (a quest's item), under the marker as it is now.
+        std::vector<Entity> hs;
+        Marker chief = spawn(9, "Hakon", EntityKind::BanditChief, {60.5f, 4, 60.5f});
+        syncSpawns(hs, g, {chief}, 1, {}, 0.5f);
+        CHECK(hs.size() == 1 && damage(hs[0], 100000) && hs[0].loot == IronHelm);
+        uint32_t body = hs[0].id;
+        DeadSlots hd;
+        p.pos = {90.5f, 4, 60.5f};
+        buryDead(hs, hd, g, p);
+        chief.radius = 5;
+        syncSpawns(hs, g, {chief}, 1, {}, 0.5f, hd);
+        CHECK(hs.size() == 1 && hs[0].id == body && hs[0].loot == IronHelm && hs[0].spawn.radius == 5);
+        syncSpawns(hs, g, {chief}, 1, {}, 0.5f, hd);  // (not stale again)
+        CHECK(hs.size() == 1 && hs[0].id == body);
+        hs[0].loot = NoItem;  // taken: the next edit clears it, and nobody comes back
+        chief.radius = 6;
+        syncSpawns(hs, g, {chief}, 1, {}, 0.5f, hd);
+        CHECK(hs.empty());
+    }
+
+    {  // Bystanders: a villager can't be locked onto, and no backstab pulls an attack onto it; the dummy is still both.
+        Grid g = flat(48);
+        std::vector<Entity> es;
+        es.reserve(4);
+        Player at;
+        at.pos = {24.5f, 4, 19.5f};
+        Entity& v = spawnAhead(es, g, at, EntityKind::Villager, 1, 1);
+        LockView view;
+        view.eye = {24.5f, 6, 6};
+        view.viewProj = glm::perspectiveRH_ZO(glm::radians(70.0f), view.aspect, 0.1f, 1000.0f) *
+                        glm::lookAtRH(view.eye, glm::vec3(24.5f, 5, 30), glm::vec3(0, 1, 0));
+        glm::vec3 me(24.5f, 4, 10.5f);
+        CHECK(pickTarget(es, g, view, me, {}) == 0);
+        at.pos = {28.5f, 4, 19.5f};
+        Entity& d = spawnAhead(es, g, at, EntityKind::TrainingDummy, 2, 1);
+        CHECK(pickTarget(es, g, view, me, {}) == d.id);
+        for (Entity* e : {&v, &d}) {
+            e->body.yaw = 0, e->body.hitTime = 99;  // facing +z, not hit lately
+            Player behindIt;
+            behindIt.pos = e->body.pos - glm::vec3(0, 0, 1.2f);
+            CHECK(opensToCritical(*e, behindIt) == (e == &d));
+            e->body.broken = true;  // nor a riposte
+            CHECK(opensToCritical(*e, behindIt) == (e == &d));
+            e->body.broken = false;
+        }
+    }
+
+    {  // In play: the dead stay dead; the save keeps who (DEAD), and its corpse while it lies (NPCS).
+        auto make = [&] {
+            Session s{.world = flat(256), .seed = 3};
+            wall(s.world, {100, 200}, {255, 200});
+            s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {20.5f, 4, 20.5f}}, spawn(2, "Raiders", EntityKind::Bandit, {30.5f, 4, 60.5f}, 2)};
+            startSession(s);
+            return s;
+        };
+        auto slotOf = [](Session& s, int slot) -> Entity* {
+            auto it = std::ranges::find(s.entities, slot, &Entity::slot);
+            return it != s.entities.end() ? &*it : nullptr;
+        };
+        Session s = make();
+        s.dead[77] = 1;  // a marker removed since (the editor): not saved
+        s.player.teleport({230.5f, 4, 230.5f});  // far, behind the wall
+        CHECK(s.entities.size() == 2 && damage(*slotOf(s, 0), 10000));
+        slotOf(s, 0)->loot = NoItem;
+        slotOf(s, 1)->calmTimer = 1e6f;
+        step(s, {}, kTick);
+        CHECK(s.entities.size() == 1 && !slotOf(s, 0) && s.dead.at(2) == 1);
+        for (int i = 0; i < 130 * 60; ++i) step(s, {}, kTick);  // past the longest old respawn time (120 s)
+        CHECK(s.entities.size() == 1 && slotOf(s, 1) && slotOf(s, 1)->body.alive());
+        std::string path = (fs::temp_directory_path() / "flycoos_dead_test.flys").string();
+        fs::remove(path), fs::remove(path + ".bak");
+        CHECK(savePlayer(path.c_str(), s, "w.flyw", 5).empty());
+        Session b = make();
+        SaveReport r;
+        CHECK(loadPlayer(path.c_str(), b, 5, r).empty() && r.npcs == 1 && r.droppedNpcs == 0 && r.notes.empty());
+        s.dead.erase(77);
+        CHECK(b.dead == s.dead && b.entities.size() == 1 && slotOf(b, 1) && !slotOf(b, 0));
+        // A corpse holding loot lies on through a save; one in a save without its DEAD record (older saves) still stays dead.
+        CHECK(damage(*slotOf(b, 1), 10000));
+        slotOf(b, 1)->loot = Knife;
+        step(b, {}, kTick);
+        CHECK(b.dead.at(2) == 3 && b.entities.size() == 1);
+        CHECK(savePlayer(path.c_str(), b, "w.flyw", 5).empty());  // the corpse with its record: it loads, loot and all
+        {
+            Session e = make();
+            CHECK(loadPlayer(path.c_str(), e, 5, r).empty() && e.dead.at(2) == 3 && e.entities.size() == 1 && slotOf(e, 1) &&
+                  !slotOf(e, 1)->body.alive() && slotOf(e, 1)->loot == Knife);
+            startSession(e);  // a new game: everyone back, nobody dead
+            CHECK(e.dead.empty() && e.entities.size() == 2 && slotOf(e, 0)->body.alive() && slotOf(e, 1)->body.alive());
+        }
+        b.dead.clear();
+        CHECK(savePlayer(path.c_str(), b, "w.flyw", 5).empty());
+        Session c = make();
+        CHECK(loadPlayer(path.c_str(), c, 5, r).empty() && r.npcs == 1 && slotOf(c, 1) && !slotOf(c, 1)->body.alive() && slotOf(c, 1)->loot == Knife);
+        step(c, {}, kTick);
+        CHECK(c.dead.at(2) == 2 && slotOf(c, 1) && !slotOf(c, 1)->body.alive());  // its corpse told: recorded again
+        CHECK(c.entities.size() == 2 && slotOf(c, 0)->body.alive());  // (slot 0's corpse had gone: without its record it's back)
+        // Bad DEAD sections reject the file: marker 0, no slots, the same marker twice, a size mismatch.
+        CHECK(savePlayer(path.c_str(), s, "w.flyw", 5).empty());
+        std::vector<uint8_t> good;
+        {
+            std::ifstream in(path, std::ios::binary);
+            good.assign(std::istreambuf_iterator<char>(in), {});
+        }
+        size_t at = std::string_view(reinterpret_cast<const char*>(good.data()), good.size()).find("DEAD");
+        CHECK(at != std::string::npos && good[at + 4] == 9 && good[at + 12] == 1 && good[at + 16] == 2 && good[at + 20] == 1);
+        auto broken = [&](auto&& edit) {
+            std::vector<uint8_t> v = good;
+            edit(v);
+            uint32_t h = fnv1a(v.data(), v.size() - 4);
+            for (int i = 0; i < 4; ++i) v[v.size() - 4 + size_t(i)] = uint8_t(h >> (8 * i));
+            std::ofstream(path, std::ios::binary | std::ios::trunc).write(reinterpret_cast<const char*>(v.data()), std::streamsize(v.size()));
+            fs::remove(path + ".bak");
+            Session t = make();
+            return !loadPlayer(path.c_str(), t, 5, r).empty();
+        };
+        CHECK(!broken([](std::vector<uint8_t>&) {}));  // (the patching itself is sound)
+        CHECK(broken([&](std::vector<uint8_t>& v) { v[at + 16] = 0; }));     // marker 0
+        CHECK(broken([&](std::vector<uint8_t>& v) { v[at + 20] = 0; }));     // no slots
+        CHECK(broken([&](std::vector<uint8_t>& v) { v[at + 12] = 2; }));     // a count past the payload
+        CHECK(broken([&](std::vector<uint8_t>& v) {                          // the same marker twice
+            v.insert(v.begin() + long(at + 21), {2, 0, 0, 0, 2});
+            v[at + 4] = 14, v[at + 12] = 2;
+        }));
+        CHECK(!broken([&](std::vector<uint8_t>& v) {                         // (two markers are fine)
+            v.insert(v.begin() + long(at + 21), {3, 0, 0, 0, 2});
+            v[at + 4] = 14, v[at + 12] = 2;
+        }));
+        fs::remove(path), fs::remove(path + ".bak");
+    }
+
+    {  // Quests: Torvald's Helm needs Torvald. Killed before it starts, it never starts; killed mid-way, it fails (a toast says why).
+        const Defs& d = defs();
+        const auto helm = size_t(d.questById.at("torvalds_helm"));
+        CHECK(d.quests[helm].needs == std::vector<std::string>{"Torvald"});
+        for (const Stage& st : d.quests[helm].stages) CHECK(!st.journal.contains("rises again"));
+        for (const QuestLine& l : d.questLines) CHECK(!l.text.contains("gets up") && !l.text.contains("will be back"));
+        std::vector<Marker> act1 = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}},
+                                    spawn(2, "Maren Holt", EntityKind::Villager, {20.5f, 4, 20.5f}),
+                                    spawn(3, "Torvald", EntityKind::Villager, {60.5f, 4, 20.5f}),
+                                    spawn(4, "Captain Brenna", EntityKind::Guard, {100.5f, 4, 20.5f}),
+                                    spawn(5, "Hakon the Red", EntityKind::BanditChief, {64.5f, 4, 100.5f}),
+                                    {.id = 6, .kind = MarkerKind::Region, .name = "Greyfang Rise", .pos = {64.5f, 4, 100.5f}, .radius = 12}};
+        auto make = [&] {
+            Session s{.world = flat(128), .seed = 9};
+            s.markers = act1;
+            startSession(s);
+            return s;
+        };
+        auto npc = [](Session& s, const char* name) -> Entity& {
+            return *std::ranges::find_if(s.entities, [&](const Entity& e) { return e.spawn.name == name; });
+        };
+        SimInput interact;
+        interact.interact = true;
+        auto talkTo = [&](Session& s, const char* name) {
+            s.player.teleport(npc(s, name).body.pos + glm::vec3(1.5f, 0, 0));
+            step(s, interact, kTick);
+        };
+        auto kill = [&](Session& s, const char* name) {
+            CHECK(damage(npc(s, name), 100000));
+            step(s, {}, kTick);
+        };
+        Session s = make();
+        CHECK(!npcDead(s, "Torvald") && !deadNeed(s, d.quests[helm]));
+        kill(s, "Torvald");
+        CHECK(npcDead(s, "Torvald") && deadNeed(s, d.quests[helm]) && *deadNeed(s, d.quests[helm]) == "Torvald");
+        CHECK(s.quests[helm].failed && s.quests[helm].stage == 0 && s.toasts.empty());  // never started: no news
+        talkTo(s, "Maren Holt");
+        CHECK(s.quests[helm].stage == 0 && s.quests[helm].failed && s.toasts.empty());  // nor does it start now
+        CHECK(npc(s, "Maren Holt").speech() && std::string_view(npc(s, "Maren Holt").speech()).starts_with("Torvald's forge is cold for good"));
+        talkTo(s, "Captain Brenna");
+        CHECK(npc(s, "Captain Brenna").speech() && std::string_view(npc(s, "Captain Brenna").speech()).starts_with("A smith dead"));
+        std::erase_if(s.entities, [](const Entity& e) { return e.spawn.name == "Torvald"; });  // his corpse gone: still dead
+        step(s, {}, kTick);
+        CHECK(npcDead(s, "Torvald") && passes(s, {.kind = Condition::NpcDead, .name = "Torvald"}) && s.quests[helm].failed);
+        CHECK(std::ranges::any_of(s.eventLog, [](const std::string& l) { return l.contains("failed torvalds_helm: Torvald is dead"); }));
+
+        Session m = make();
+        talkTo(m, "Maren Holt");
+        CHECK(m.quests[helm].stage == 10);
+        m.toasts.clear();
+        kill(m, "Torvald");
+        CHECK(m.quests[helm].failed && m.quests[helm].stage == 10 && !m.quests[helm].active());
+        CHECK(m.toasts.size() == 1 && m.toasts[0].second == "Quest failed: Torvald's Helm (Torvald is dead)");
+        kill(m, "Maren Holt");
+        CHECK(m.toasts.size() == 1);  // failed once
+        CHECK(npcDead(m, "Maren Holt") && !npcDead(m, "Captain Brenna") && !npcDead(m, "Nobody"));
+
+        Session dn = make();  // a quest already done stays done
+        dn.quests[helm].done = true, dn.quests[helm].stage = 40;
+        kill(dn, "Torvald");
+        CHECK(dn.quests[helm].done && !dn.quests[helm].failed && dn.toasts.empty());
+
+        Session h = make();  // Maren isn't needed: with her dead it starts from Torvald, and with Hakon dead the helm is on his body for good
+        kill(h, "Maren Holt");
+        kill(h, "Hakon the Red");
+        CHECK(!h.quests[helm].failed && npc(h, "Hakon the Red").loot == IronHelm);
+        talkTo(h, "Torvald");
+        CHECK(h.quests[helm].stage == 20 && h.quests[helm].active());
+        h.player.teleport({120.5f, 4, 120.5f});
+        for (int i = 0; i < 125 * 60; ++i) step(h, {}, kTick);
+        CHECK(npc(h, "Hakon the Red").loot == IronHelm && !npc(h, "Hakon the Red").body.alive());  // two minutes on: still lying there with it
+    }
+
+    {  // The data: needs are spawn marker names, each once; checkQuestMarkers warns about one that names no marker.
+        fs::path dir = fs::temp_directory_path() / "flycoos_needs_test";
+        fs::remove_all(dir);
+        fs::create_directories(dir / "quests");
+        for (const char* f : {"items.json", "creatures.json", "skills.json", "talents.json", "weapon_classes.json"})
+            fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / f, dir / f);
+        std::string error;
+        auto load = [&](std::string_view needs, Defs& out) {
+            std::ofstream(dir / "quests" / "a.json", std::ios::trunc)
+                << std::format(R"([{{"id": "a", "title": "A", {} "stages": [{{"id": 1, "journal": "One."}}]}}])", needs);
+            return loadDefs(dir, out, error);
+        };
+        Defs ok;
+        CHECK(load(R"("needs": ["Nobody", "Torvald"],)", ok) && ok.quests[0].needs.size() == 2);
+        std::vector<std::string> w = checkQuestMarkers(ok, {spawn(3, "Torvald", EntityKind::Villager, {1, 4, 1})});
+        CHECK(w.size() == 1 && w[0].contains("no spawn marker named 'Nobody'"));
+        for (std::string_view bad : {R"("needs": ["Torvald", "Torvald"],)", R"("needs": "Torvald",)", R"("needs": [3],)", R"("needs": [""],)"}) {
+            Defs out;
+            CHECK(!load(bad, out) && error.contains("needs"));
+        }
+        fs::remove_all(dir);
+    }
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -10171,6 +10545,7 @@ int main() {
     boarReplay();
     npcAi();
     pursuit();
+    lastingDeaths();
     session();
     timedSpawns();
     ticks();

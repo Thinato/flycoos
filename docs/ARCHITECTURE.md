@@ -42,17 +42,17 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/melee.h/.cpp` | Melee (ADR-035): `MoveSpec` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), the weapon classes' movesets (`WeaponClassDef`, `weaponClass`, `spec`; loaded from data/weapon_classes.json, ADR-044), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces`; `parryOf` (a knife or fists parry too) and `perfectGuard` (ADR-041); `damageOf` (ADR-040) |
 | `src/projectile.h/.cpp` | Projectiles (ADR-050): `Projectile` (an arrow: tip, velocity, the bow, power, stance, stuck), `RangedTuning gRanged` (gravity, speeds by draw, the draw time, expiry, pickup, the aim walk; the debug Player tab edits it), `drawOf`, `shotOrigin`, `shotVelocity` (straight at a point, lobbed onto it, or along the facing), `segmentBox`, `hitBox`, `loose` (the release: an arrow from the quiver, or a crossbow's loaded bolt at `boltSpeed`, ADR-052; an archer's, ADR-051: at the player along its facing, off by its aim error), throwables (ADR-053: `fillPouch`, `cycleThrowable`, `hurl` at a throw's release, `burst` and the `Burst` puffs in `Session::bursts`) and `updateProjectiles` (gravity, a swept voxel ray and body boxes, hits through `strike()`, or for an archer's arrow (`Projectile::owner`) only the player's box, through `strikePlayer()`; a bomb or pot bursting on the first thing it meets; sticking, pickup into the quiver or the pouch, expiry) |
 | `src/audio.h/.cpp` | Sound (ADR-037): `Audio` (loads `data/sounds/*.ogg` with stb_vorbis into groups of takes; `play` picks a take never twice running with a little random pitch and volume; `mix` is the device thread's stereo mix: up to 48 resampled voices, three buses, a soft limiter), `place` (falloff and pan from the listener), `layersOf`/`hear` (what a `Sound` from the sim plays), `updateAmbience` (looping beds faded by what's around). No device here: main.cpp's `Speaker` feeds `mix` to SDL3's audio stream |
-| `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
+| `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight; never a villager, ADR-056), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`; plants become `PlantInstance`s, not faces), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
 | `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (base stats, level, health, swing and damage timers, `Inventory`); `Progress`; `collect`/`sheet` (its modifiers and final stats, optionally with a weapon skill's conditional modifiers), `skillOf`; walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
 | `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch`; `Skill` and the progression formulas (skill XP per use and per level, character XP and level costs, default kill XP; ADR-027) |
 | `src/progress.h/.cpp` | Progression (ADR-027): `SkillDef`/`TalentDef` (filled by the loader), `Progress` (character XP, skill levels, talent ranks), `addSkillXp`/`addCharacterXp`, `canLearn`/`learn`/`respec`, `talentPoints`, `progressModifiers` (what `collect` adds) |
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel` by weapon class, `partModels`), procedural animation (`poseModel`; swing poses per weapon class, ADR-044). Core (no GPU), since NPC traits name their `Model` |
-| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
-| `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the quest drain, the knocked-out player's respawn, skill and level-up toasts) |
-| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`, `WEAR`, `REST`, `GRIP`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
-| `src/quest.h/.cpp` | Quests (ADR-026): `GameEvent` (`Killed`, `ItemCountChanged`, `TalkedTo`, `RegionEntered`), the quest data types the loader fills (`QuestDef`, `Stage`, `Trigger`, `Action`, `Condition`, `QuestLine`), `QuestState`; `updateQuests` (the once-per-tick drain), `setQuestStage`/`resetQuest(s)`, the condition evaluator (`passes`, `passesAll`, `pickLine`), `countItem`, `checkQuestMarkers` |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), lasting deaths (`DeadSlots`, `buryDead`; ADR-056), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
+| `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the dead recorded and far corpses buried (`buryDead`), the quest drain, the knocked-out player's respawn, skill and level-up toasts) |
+| `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`, `WEAR`, `REST`, `GRIP`, `ARRW`, `THRW`, `DEAD`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
+| `src/quest.h/.cpp` | Quests (ADR-026): `GameEvent` (`Killed`, `ItemCountChanged`, `TalkedTo`, `RegionEntered`), the quest data types the loader fills (`QuestDef`, `Stage`, `Trigger`, `Action`, `Condition`, `QuestLine`), `QuestState`; `updateQuests` (the once-per-tick drain, then failing quests whose needs died), `setQuestStage`/`resetQuest(s)`, the condition evaluator (`passes`, `passesAll`, `pickLine`), `npcDead`/`deadNeed` (ADR-056), `countItem`, `checkQuestMarkers` |
 | `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` and `data/quests/*.json` (records by string id, `copy_from`, field and range checks, quest references resolved to handles, warnings), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C), Bags (B), Journal (J) and Progress (K) windows: slots, drag and drop, right-click equip, tooltips, attributes; quests with the current entry and checked objectives; level, skills and the talent trees |
@@ -199,7 +199,8 @@ u32 FNV-1a checksum of every byte before it
   home moved away starts at home; the player and NPCs are clamped into the world and lifted out of terrain;
   items that no longer fit their slot move to a free one (or are lost). Each case adds a line to
   `SaveReport::notes`: the log prints them, the debug Save tab lists them.
-- The AI state isn't saved: living NPCs start calm, dead ones in Dead with their respawn timer.
+- The AI state isn't saved: living NPCs start calm, dead ones lie in Dead. `DEAD` (ADR-056) keeps
+  which marker slots died for good: those whose corpse has gone are left out again after the load.
 - Writing builds the file in memory and calls `replaceFile(path, bytes, durable)`: `PATH.tmp`,
   `F_FULLFSYNC`, the old save renamed to `PATH.bak`, the temp renamed over `PATH`, the folder
   synced (best effort). The story world's save is ~1 KB and takes ~5 ms.
@@ -331,7 +332,7 @@ and for spawns an entity kind, a count, dialogue lines and an active window. Kin
 | Kind | Radius | Effect |
 |---|---|---|
 | `player_spawn` (at most one) | – | The player starts and gets back up here (`playerSpawn`); without one, `findSpawn` as before |
-| `spawn` | wander area | `count` (1–8) NPCs of `entity` (see "Entities"); they wander within the radius and respawn at their home by the marker |
+| `spawn` | wander area | `count` (1–8) NPCs of `entity` (see "Entities"); they wander within the radius of their home by the marker; one that dies stays dead (ADR-056) |
 | `poi` | label range | Its name floats above it while the player is within the radius (fading in over the outer quarter) |
 | `region` | the circle | Walking into it shows its name for 4 s; `regionAt` picks the smallest containing circle, so nested regions work |
 
@@ -352,7 +353,7 @@ and for spawns an entity kind, a count, dialogue lines and an active window. Kin
 - **Spawns follow the markers.** Every NPC remembers the spawn marker it came from as it was then
   (`Entity::spawn`). `syncSpawns` runs after every edit, undo, redo and command (`edited` in
   main.cpp): a marker whose NPCs are missing, too many, or out of date (position, radius, entity,
-  count) gets them all respawned; NPCs of a removed marker go; the rest keep their state. The first
+  count) gets them all respawned, but never a slot whose NPC died (`Session::dead`, ADR-056), and a corpse still holding loot stays; NPCs of a removed marker go; the rest keep their state. The first
   NPC stands on the marker, the others on a small spiral around it, each on the first dry ground
   within a few blocks of the marker's height. A spot inside terrain (a marker built over since) is
   lifted until the body is free (`clearOfTerrain`), for the player's spawn and for NPCs, whose
@@ -898,8 +899,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   and rolls loot on a kill.
 - Dealing or taking damage puts a body in combat for 5 s; spirit regeneration only runs out of
   combat.
-- At 0 health a body falls over (the dummy topples off its base) and can't be hit. NPCs come back
-  at home, fully healed, after their kind's respawn time (dummy 5 s, others 30 s). The player is
+- At 0 health a body falls over and can't be hit. NPCs stay dead (ADR-056): nothing respawns, and the
+  training dummy is immortal instead (its hits show their numbers and take no health). The player is
   knocked out: no movement or attacks, then back at the player spawn (marker, else the world spawn) with full health after 5 s.
 - HUD: a damage number pops above whoever was hit and rises for a second (the latest hit only):
   gold over NPCs, red over the player.
@@ -1004,9 +1005,10 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   `{"id": "wolf", "save_id": 4, "name": "Wolf", "level": 1, "stats": {"stamina": 8, "strength": 2,
   "agility": 4, "intellect": 2, "spirit": 2}, "attackable": true, "wanders": true, "model": "wolf",
   "temper": "aggressive", "aggro_range": 28, "wander_radius": 10, "chase_speed": 7.5, "loot":
-  "wolf_pelt", "loot_chance": 0.6, "respawn_seconds": 30}`. Required: `level`, all five `stats`,
-  `model` (a body model: player, villager, dummy, boar, bandit, wolf, guard, chief, ghoul),
-  `temper` (harmless, passive, aggressive) and `respawn_seconds`. `name` null or absent gives each
+  "wolf_pelt", "loot_chance": 0.6}`. Required: `level`, all five `stats`,
+  `model` (a body model: player, villager, dummy, boar, bandit, wolf, guard, chief, ghoul) and
+  `temper` (harmless, passive, aggressive). `immortal` (ADR-056; attackable kinds without loot): hits
+  show their numbers and take no health. `name` null or absent gives each
   NPC a random villager name; flags default to false, ranges and speeds to 0; `weapon` (a main_hand
   item's id) and `loot` (any item's id) to none. `aggro_range` is for aggressive kinds only, a
   `loot_chance` needs `loot`, kinds that fight need a `chase_speed`, and stamina is at least 1. `copy_from` works as for items.
@@ -1051,8 +1053,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 
   | Kind | Name | Lv | Sta/Str/Agi/Int/Spi | HP | Temper | Weapon | Drops | Talks |
   |---|---|---|---|---|---|---|---|---|
-  | Training Dummy | "Training Dummy" | 1 | 10/0/0/0/10 | 100 | harmless (attackable, static) | – | – | no |
-  | Villager | random from a name list (seeded) | 5 | 25/5/5/5/5 | 250 | harmless (not attackable) | – | – | yes (E) |
+  | Training Dummy | "Training Dummy" | 1 | 10/0/0/0/10 | 100 | harmless (attackable, immortal, static) | – | – | no |
+  | Villager | random from a name list (seeded) | 5 | 25/5/5/5/5 | 250 | harmless (attackable: runs from a hit at 6 b/s, ADR-056) | – | – | yes (E) |
   | Boar | "Boar" | 1 | 10/2/2/2/2 (the player's) | 100 | passive | tusks (= punch, 3–6) | Boar Skin 75% | no |
   | Bandit | "Bandit" | 2 | 12/3/2/2/2 | 120 | aggressive, aggro 24 | Rusty Knife (5–8) | Rusty Knife 40% | no |
   | Wolf | "Wolf" | 1 | 8/6/70/2/2 | 80 | aggressive, aggro 28 | bite (= punch, 7–10, quick) | Wolf Pelt 60% | no |
@@ -1071,8 +1073,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   0.4, ghoul 0.5 s (ADR-042: strings came with longer openings after them); `hit_stance` wolf 8, boar and bandit 12, ghoul 14, guard 20, chief 26. Higher levels get through more armor, so the
   chief and the ghouls pay for theirs with less health. Per kind there's also a wander radius (villager 12, boar and wolf 10, guard
   and chief 6, bandit 5, ghoul 4), a chase speed (ghoul 4, bandit and chief 5.5, boar and guard 6,
-  wolf 7.5 b/s; the player walks 5 and runs 9) and a respawn time (30 s; guard 60, ghoul 45, chief
-  120). Against the whole Iron set (armor 37) a wolf hits for 4–5 (quickly: agility 70), a ghoul 4–6, the chief 7–10.
+  wolf 7.5 b/s; the villager runs from a hit at 6; the player walks 5 and runs 9). Nothing respawns (ADR-056). Against the whole Iron set (armor 37) a wolf hits for 4–5 (quickly: agility 70), a ghoul 4–6, the chief 7–10.
 - **Adding an NPC kind:** append a record to `data/creatures.json` with the next `save_id` (spawn
   markers save it: never renumber or reuse one). Reload defs in the Data tab, then place it with a
   spawn marker: the editor's Entity list, `mark`/`edit_marker` and the MCP schemas all read the
@@ -1147,8 +1148,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   parry deflects lights (the player reels 1 s); its roll's i-frames let the hit pass through. After
   a block or a parry its next swing comes within 1 s with a 0.3 s windup (a counter). After its
   string it may back off (`back_off`) for 0.9 s, walking away facing the player.
-- **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell until it
-  respawns; E within 3.5 blocks moves the loot into the bags, else into its empty equip slot (it
+- **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell (ADR-056:
+  until the player is `gAi.corpseGone`, 64 blocks, away and can't see it, and never while it holds
+  loot); E within 3.5 blocks moves the loot into the bags, else into its empty equip slot (it
   stays on the corpse if neither has room, and E talks instead).
 - **Default spawns:** dummy and villager just in front of the spawn, the boar about 14 blocks out, the
   bandit's camp about 34 blocks out: even at the edge of its wander radius more than its aggro range
@@ -1164,7 +1166,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   HUD always runs an ImGui frame; the UI render pass is skipped when there is nothing to draw.
 - **From markers:** the NPCs come from spawn markers (see "Markers"); a world without markers
   gets the five above as default markers. Regeneration resets the markers to those defaults; the
-  Entities tab respawns every NPC at its marker.
+  Entities tab respawns every NPC at its marker (clearing who died for good).
 
 ## Quests (`quest.h`, ADR-026)
 
@@ -1191,8 +1193,14 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
    "objectives": [{"id": "get_helm", "text": "Take the helm Hakon the Red wears"}, ...],
    "stages": [{"id": 0, "on": [{"talked_to": "Maren Holt", "do": [{"set_stage": 10}]}]},
               {"id": 10, "journal": "...", "actions": [{"show_objective": "talk_torvald"}], "on": [...]}, ...],
-   "lines": [{"spawn": "Torvald", "if": [{"stage": "torvalds_helm", "value": 20}], "say": "..."}, ...]}
+   "lines": [{"spawn": "Torvald", "if": [{"stage": "torvalds_helm", "value": 20}], "say": "..."}, ...],
+   "needs": ["Torvald"]}
   ```
+
+  - **Needs** (ADR-056): spawn marker names the quest can't do without. Once every NPC of one has
+    died (`npcDead`) the quest fails, started or not: a started one with a toast ("Quest failed:
+    Torvald's Helm (Torvald is dead)"), one not started silently, and it never starts. The journal
+    says why under Failed. Each name once; `checkQuestMarkers` checks them like the others.
 
   - **Stages** are numbered 0–65535 (gaps leave room). Stage 0 is "not started": only its triggers
     (what starts the quest), no journal or actions. A quest needs one other stage. Entering a stage
@@ -1217,7 +1225,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
     (`"quest.objective"`, `is`: hidden, shown, completed, failed), `flag` (name, `op`, `value`;
     unset is 0), `has_item` (item id, `op` default `>=`, `value` default 1), `in_region` (a region
     marker's name: any region of that name around the player, nested ones too), `npc_dead` (a spawn
-    marker's name: every NPC of the spawns of that name is dead, and there is one). `passes` is a
+    marker's name: every NPC of the spawns of that name has died, and there is one; from
+    `Session::dead`, so it holds for good, ADR-056). `passes` is a
     plain function; dialogue asks it directly.
   - Errors are hard and name file, record and field (`quests/a.json: record 0 'q': field
     'stages[1].on[0].do[0].set_stage': 50 is not one of this quest's stages`); unknown fields,
@@ -1243,7 +1252,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   `startSession` resets both. A defs reload may add or drop quests at the end, not reorder them.
 - **UI.** J opens the Journal: active quests with the current stage's journal text and their
   shown objectives (a check mark when completed, dimmed when failed), then completed and failed
-  titles. `updateQuests` leaves quest news in `Session::toasts` ("Quest started/updated/complete/
+  titles (a failed one whose needed NPC is dead, started or not, says who and that it can never be
+  finished or started now). `updateQuests` leaves quest news in `Session::toasts` ("Quest started/updated/complete/
   failed: title", "Make room in your bags: title"; one per quest per tick); main shows them in the notice line. The debug Quests
   tab lists every quest (set any stage, which runs its actions, reset, done/failed, objective
   states), the flags (edit, delete, add), the loader's and the marker check's warnings, and the

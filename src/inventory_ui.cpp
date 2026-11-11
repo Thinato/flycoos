@@ -465,12 +465,14 @@ void journalWindow(bool& open, const Session& s) {
             bool any = false;
             for (size_t q = 0; q < std::min(s.quests.size(), d.quests.size()); ++q) {
                 const QuestState& st = s.quests[q];
-                if (st.stage == 0 || !shows(st)) continue;
+                if ((st.stage == 0 && !st.failed) || !shows(st)) continue;  // (one failed before it started: someone it needed died, ADR-056)
                 any = true;
                 const QuestDef& def = d.quests[q];
                 ImGui::PushID(int(q));
                 if (!st.active()) {
                     ImGui::TextDisabled("%s", def.title.c_str());
+                    if (const std::string* who = st.failed ? deadNeed(s, def) : nullptr)
+                        ImGui::TextWrapped("%s is dead. This can never be %s now.", who->c_str(), st.stage ? "finished" : "started");
                 } else if (ImGui::TreeNodeEx(def.title.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
                     if (const Stage* stage = findStage(def, st.stage); stage && !stage->journal.empty())
                         ImGui::TextWrapped("%s", stage->journal.c_str());

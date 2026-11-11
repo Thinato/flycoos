@@ -11,6 +11,7 @@
 void startSession(Session& s) {
     s.player = {};
     s.entities.clear();
+    s.dead.clear();
     s.elapsed = 0;
     s.regionId = 0;
     s.regionSince = 0;
@@ -142,7 +143,7 @@ StepResult step(Session& s, const SimInput& in, float dt) {
     }
     s.timeOfDay = std::fmod(s.timeOfDay + dt / kDayLength * s.timeScale * in.timeRate, 1.0f);
     if (std::ranges::any_of(s.markers, [](const Marker& m) { return m.activeFrom != m.activeTo; }))  // timed spawns come and go
-        syncSpawns(s.entities, s.world, s.markers, s.seed, p.pos, s.timeOfDay);
+        syncSpawns(s.entities, s.world, s.markers, s.seed, p.pos, s.timeOfDay, s.dead);
     const Marker* region = regionAt(s.markers, p.pos);  // its name shows for a few seconds on entering
     if (uint32_t id = region ? region->id : 0; id != s.regionId) {
         s.regionId = id, s.regionSince = s.elapsed;
@@ -154,6 +155,7 @@ StepResult step(Session& s, const SimInput& in, float dt) {
     for (size_t id = 1; id < counts.size(); ++id)
         if (counts[id] != (id < s.itemCounts.size() ? s.itemCounts[id] : 0)) s.events.push_back(ItemCountChanged{ItemId(id), counts[id]});
     s.itemCounts = std::move(counts);
+    buryDead(s.entities, s.dead, s.world, p, s.loaded);  // (after every kill this tick: blows, poison, arrows)
     updateQuests(s);
     hear(s, p, -1);
     for (Entity& e : s.entities)

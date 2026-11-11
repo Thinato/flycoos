@@ -231,7 +231,7 @@ static void spawnAt(std::vector<Entity>& out, const Grid& world, const Marker& m
 }
 
 void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vector<Marker>& markers, uint32_t seed,
-                glm::vec3 face, float timeOfDay) {
+                glm::vec3 face, float timeOfDay, const DeadSlots& dead) {
     // Runs every tick in worlds with timed markers: no hashing, one small buffer, no copies of unchanged lines.
     auto spawnOf = [&](uint32_t id) -> ptrdiff_t {  // the index of spawn marker `id`, or -1
         auto it = std::ranges::lower_bound(markers, id, {}, &Marker::id);
@@ -248,6 +248,7 @@ void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vec
     // (a window opening, a removed marker undone) while active, keeping the rest as they are.
     struct Tally {
         uint32_t slots = 0;  // bit per slot present
+        uint32_t kept = 0;   // stale, but a corpse with loot that stays
         bool stale = false;
     };
     std::vector<Tally> tally(markers.size());
@@ -270,16 +271,22 @@ void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vec
             t.stale = true;
         t.slots |= bit;
     }
-    auto missing = [&](size_t i) {  // the slots marker i spawns now (all once its stale ones are erased)
+    for (Entity& e : entities) {  // a changed marker's corpse with loot on it stays, under the marker as it is now (ADR-056)
+        ptrdiff_t i = spawnOf(e.spawn.id);
+        if (e.spawn.id && i >= 0 && tally[size_t(i)].stale && !e.body.alive() && e.loot != NoItem && e.slot < markers[size_t(i)].count)
+            e.spawn = markers[size_t(i)], tally[size_t(i)].kept |= 1u << e.slot;
+    }
+    auto missing = [&](size_t i) {  // the slots marker i spawns now (all once its stale ones are erased), never the dead's
         const Marker& m = markers[i];
         if (m.kind != MarkerKind::Spawn || !activeAt(m, timeOfDay)) return 0u;
-        return ((1u << m.count) - 1) & ~(tally[i].stale ? 0 : tally[i].slots);
+        auto d = dead.find(m.id);
+        return ((1u << m.count) - 1) & ~(tally[i].stale ? tally[i].kept : tally[i].slots) & ~(d != dead.end() ? d->second : 0);
     };
     for (size_t i = 0; i < markers.size(); ++i) any |= tally[i].stale || missing(i);
     if (!any) return;
     std::erase_if(entities, [&](const Entity& e) {
         ptrdiff_t i = spawnOf(e.spawn.id);
-        return e.spawn.id && (i < 0 || tally[size_t(i)].stale);
+        return e.spawn.id && (i < 0 || (tally[size_t(i)].stale && (e.body.alive() || !(tally[size_t(i)].kept >> e.slot & 1))));
     });
     for (size_t i = 0; i < markers.size(); ++i)
         if (uint32_t slots = missing(i)) spawnAt(entities, world, markers[i], seed, face, slots);
@@ -468,9 +475,9 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
         case AiState::Idle:
         case AiState::Wander:
         case AiState::Talk:
-            if (fighter && (e.events & EventDamaged)) {
+            if (e.events & EventDamaged) {
                 e.events = 0;  // read once
-                setState(e, AiState::Chase, "damaged");
+                setState(e, fighter ? AiState::Chase : AiState::Flee, "damaged");  // a villager runs from it (ADR-056)
                 continue;
             }
             // Aggro range is in 3D (a player high above, or a floor below, is out of it) and needs sight (ADR-055).
@@ -573,7 +580,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
         case AiState::Stagger:  // reels (a stance break: open to a riposte), then fights on
             if (e.body.stagger > 0) return in;
             e.events = 0;  // the hit that staggered it is answered by fighting
-            setState(e, fighter ? AiState::Chase : t.wanders ? AiState::Wander : AiState::Idle, "steadied");
+            setState(e, fighter ? AiState::Chase : AiState::Flee, "steadied");  // (only wanderers think: a villager runs, ADR-056)
             continue;
         case AiState::Recover:
             if (e.stateTime < t.recover) return in;
@@ -581,13 +588,18 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             if (e.pack > gAi.attackers) e.token = false;  // its turn is over, others wait: the next sides pass hands the tokens out again (ADR-042)
             setState(e, AiState::Chase, "recovered");
             continue;
-        case AiState::Flee:
+        case AiState::Flee:  // runs from the target a while (hit again: a while longer), then goes home
+            if (!fighter && (e.events & EventDamaged)) {
+                e.events = 0;
+                setState(e, AiState::Flee, "damaged");
+                continue;
+            }
             if (e.stateTime >= kFleeSeconds) {
                 setState(e, AiState::Return, "fled");
                 continue;
             }
-            if (walkable(g, e.body.pos, -dir, target.pos)) {
-                in.move = -dir;
+            if (glm::vec2 d = roomy(g, e.body.pos, -dir, target.pos) ? -dir : detour(g, e.body.pos, -dir, target.pos); d != glm::vec2(0)) {
+                in.move = d;
                 in.run = true;
             }
             return in;
@@ -612,6 +624,11 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             }
             continue;
         case AiState::Return:  // walks home, ignoring the player; a hit brings it back (ADR-055), unless it gave up for want of a way to them and still has none
+            if (!fighter && (e.events & EventDamaged)) {  // a villager hit on its way home runs again (ADR-056)
+                e.events = 0;
+                setState(e, AiState::Flee, "damaged");
+                continue;
+            }
             if (fighter && (e.events & EventDamaged) &&
                 (inReach || std::string_view(e.history[(e.transitions - 1) % e.history.size()].reason) != "lost_target")) {
                 e.events = 0;
@@ -651,6 +668,16 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
 
 bool canSee(const Grid& world, const Player& from, const Player& target) {
     return clearLine(world, from.pos + glm::vec3(0, 1.5f, 0), target.pos + glm::vec3(0, 1.1f, 0));
+}
+
+void buryDead(std::vector<Entity>& entities, DeadSlots& dead, const Grid& world, const Player& player,
+              const std::function<bool(glm::vec3)>& loaded) {
+    for (const Entity& e : entities)
+        if (e.spawn.id && !e.body.alive()) dead[e.spawn.id] |= 1u << e.slot;
+    std::erase_if(entities, [&](const Entity& e) {
+        if (e.body.alive() || e.loot != NoItem || glm::distance(e.body.pos, player.pos) < gAi.corpseGone) return false;
+        return (loaded && !loaded(e.body.pos)) || !canSee(world, player, e.body);  // (ponytail: no view cone: unseen is behind something)
+    });
 }
 
 // Sides for the fighters on the player: evenly spaced around it, in the order they stand, turned to
@@ -720,7 +747,7 @@ void updateEntities(std::vector<Entity>& entities, const Grid& world, const Play
         e.calmTimer = std::max(0.0f, e.calmTimer - dt);
         e.stateTime += dt;
         e.body.pos = clearOfTerrain(world, e.body.pos);  // e.g. respawned at a home that was built over since
-        if (!e.type().wanders) {  // stands where it was put: only dies and comes back
+        if (!e.type().wanders) {  // stands where it was put: only dies (the dummy not even that)
             if (!e.body.alive() && e.state != AiState::Dead) setState(e, AiState::Dead, "died");
             else if (e.body.alive() && e.state != AiState::Idle) setState(e, AiState::Idle, e.state == AiState::Dead ? "respawned" : "stands");
             e.events = 0;
@@ -824,8 +851,10 @@ bool hurt(Player& b, int amount, bool crit, Status kind) {
 
 bool damage(Entity& e, int amount, bool crit, Status kind) {
     const EntityType& t = e.type();
-    if (!t.attackable || !hurt(e.body, amount, crit, kind)) return false;
-    if (t.temper != Temper::Harmless && kind != Status::Poison) e.events |= EventDamaged;  // poison's ticks don't call it back
+    if (!t.attackable || !e.body.alive()) return false;
+    if (t.immortal) e.body.health += float(std::max(amount, 0));  // takes none (ADR-056); hurt() still shows the number and counts the hit
+    if (!hurt(e.body, amount, crit, kind)) return false;
+    if (kind != Status::Poison) e.events |= EventDamaged;  // poison's ticks don't call it back
     if (!e.body.alive()) {  // the usual drop, else (ADR-049) a rare one; rand01 may return 1
         if (t.lootChance >= 1 || rand01(e.rng) < t.lootChance) e.loot = t.loot;
         else if (t.rareChance > 0 && (t.rareChance >= 1 || rand01(e.rng) < t.rareChance)) e.loot = t.rareLoot;
@@ -873,6 +902,7 @@ bool behind(const Entity& e, const Player& a) {
 
 bool opensToCritical(const Entity& e, const Player& a) {
     const Player& b = e.body;
+    if (bystander(e.type())) return false;  // (a villager near a fight mustn't pull the player's attack onto it, ADR-056)
     return b.broken || (behind(e, a) && !b.punching() && !b.rolling() && b.stagger == 0 && b.hitTime >= gMelee.backstabWait);
 }
 
@@ -1205,18 +1235,5 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
         if (swings && e.body.move == Move::Shot) swings = false, e.body.loosed = true;  // an archer's release: step() looses it (ADR-051)
         if (swings && inReach(e.body, player.pos) && player.alive() && !invulnerable(player))
             strikePlayer(e, player, {1, e.type().hitStance, e.body.pos, damageOf(e.body, e.type().damage)}, rng, armorK);
-        if (!e.body.alive() && e.body.deadTime >= e.type().respawnSeconds) {  // back home, fully healed
-            e.body.teleport(e.home);
-            e.body.vel = {};
-            e.body.health = float(maxHealth(sheet(e.body)));
-            e.body.stance = e.type().stance;
-            e.parried = 0;
-            e.body.stamina = gMelee.staminaMax;
-            e.body.deadTime = 0;
-            e.body.combatTimer = 0;
-            e.body.effects.clear(), e.body.buildup = {};
-            e.loot = NoItem;
-            e.wanderDir = {};
-        }
     }
 }

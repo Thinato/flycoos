@@ -318,7 +318,7 @@ static int run(SDL_Window* window, const Options& opt) {
         editor.lastDirty = dirty;
         ++editor.edits;
         renderer.updateWorld(world, dirty);
-        syncSpawns(entities, world, markers, worldSeed, player.pos, session.timeOfDay);
+        syncSpawns(entities, world, markers, worldSeed, player.pos, session.timeOfDay, session.dead);
         editor.unsaved = true;
         editor.quitArmed = false;
     };
@@ -1061,6 +1061,7 @@ static int run(SDL_Window* window, const Options& opt) {
         }
         if (actions.regenerate || actions.respawnEntities) {
             entities.clear();
+            session.dead.clear();  // the dead too (ADR-056): a fresh start for every marker
             syncSpawns(entities, world, markers, worldSeed, player.pos, session.timeOfDay);
         }
         if (benchmark) actions.saveGame = actions.loadGame = actions.deleteSave = false;

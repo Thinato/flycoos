@@ -89,6 +89,7 @@ struct QuestDef {
     std::string id, title;
     std::vector<Stage> stages;
     std::vector<Objective> objectives;
+    std::vector<std::string> needs;  // spawn marker names it can't do without (ADR-056): one dead fails it, started or not
 };
 // A quest-owned dialogue line: the NPCs of the spawn marker named `spawn` say `text` while all
 // `conditions` pass. The first passing line (quests in load order, lines in file order) wins; when
@@ -114,6 +115,11 @@ constexpr size_t kEventLogSize = 32;
 const Stage* findStage(const QuestDef& q, int id);
 int countItem(const Inventory& inv, ItemId id);  // in the item slots, worn and on the bag bar
 
+// Whether every NPC of the spawn markers named `name` has died (Session::dead), and there is one (ADR-056).
+bool npcDead(const Session& s, const std::string& name);
+// The first of `q`'s needs (QuestDef::needs) who is dead, or null: why it failed, for the journal.
+const std::string* deadNeed(const Session& s, const QuestDef& q);
+
 // Whether `c` (all of `cs`) holds in `s` now. A plain function: dialogue and triggers ask it directly.
 bool passes(const Session& s, const Condition& c);
 bool passesAll(const Session& s, const std::vector<Condition>& cs);
@@ -127,7 +133,8 @@ void resetQuest(Session& s, size_t quest);
 // Enters stage `id` of `quest`: runs its actions and re-checks its has_item triggers (as next
 // tick's ItemCountChanged events). Unknown stages, the current one and done or failed quests are ignored.
 void setQuestStage(Session& s, size_t quest, int id);
-// Drains this tick's events into the quests' triggers; what that raises lands in the next batch.
+// Drains this tick's events into the quests' triggers; what that raises lands in the next batch. Then fails every
+// quest not done whose needs (QuestDef::needs) one has died, started or not (ADR-056); a started one says so in a toast.
 // An item's ItemCountChanged counts once per batch (has_item reads the count now). Each event goes to
 // the quests as they were before it (one another quest started on it hears the next). A trigger
 // whose items wouldn't fit (stowItem) waits, so a reward is never lost. Records each event in
@@ -135,5 +142,5 @@ void setQuestStage(Session& s, size_t quest, int id);
 void updateQuests(Session& s);
 
 // Warnings for marker names quests refer to that don't name exactly one marker of their kind in
-// `markers` (spawn names for talked_to, killed, npc_dead and lines; region names for entered and in_region).
+// `markers` (spawn names for talked_to, killed, npc_dead, needs and lines; region names for entered and in_region).
 std::vector<std::string> checkQuestMarkers(const Defs& d, const std::vector<Marker>& markers);

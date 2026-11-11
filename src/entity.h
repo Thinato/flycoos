@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include <map>
 #include <optional>
 #include <array>
 #include <cstdint>
@@ -22,20 +23,20 @@ struct EntityType {
     const char* name;  // null: a random villager name
     int level;
     Stats stats;       // health and everything else derive from these
-    bool attackable;   // can take damage
+    bool attackable;   // can be hit
+    bool immortal;     // hits show their numbers but take no health (the training dummy, ADR-056)
     bool wanders;      // walks around its home spot
     bool talks;        // E shows a speech balloon
     Model model;
     Temper temper;
     float aggroRange;     // aggressive: attacks a player this close (blocks) that it can see (ADR-055)
     float wanderRadius;   // stays this close to home while not fighting
-    float chaseSpeed;     // blocks/s while chasing
+    float chaseSpeed;     // blocks/s while chasing, or running away (a villager, ADR-056)
     ItemId weapon;        // held in the main hand
     ItemId loot;          // can drop when killed
     float lootChance;
     ItemId rareLoot;      // dropped instead when `loot` isn't (ADR-049: a great weapon)
     float rareChance;
-    float respawnSeconds; // dead this long, then back at home fully healed
     // The AI's numbers (ADR-020); fighters only.
     float chaseRange;      // a chase ends once the player is this far from it, seen or not (> aggroRange; ADR-055)
     float reaggroCooldown; // seconds after getting home before it attacks on sight again
@@ -73,6 +74,9 @@ struct EntityType {
 };
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);
+// A bystander (a villager): harmless and walking about. It can be hit (ADR-056), but only on purpose: no lock-on,
+// and no backstab or riposte turns an attack onto it.
+inline bool bystander(const EntityType& t) { return t.temper == Temper::Harmless && t.wanders; }
 
 // The NPC AI's states (ADR-020). Idle: stands where it was put (kinds that don't wander). Talk:
 // stands facing the player while its balloon is up. Chase, Windup, Recover: fighting. Return: walks
@@ -113,6 +117,7 @@ struct AiTuning {
     float closeIn = 3;          // an archer with a sidearm takes it out once the player is this close (the bow back past keepMin)
     float sightGrace = 0.5f;    // a chase goes on this long out of sight (round a corner) before it turns into a search (ADR-055)
     float searchSeconds = 8;    // a search lasts this long (going to where it last saw the player, looking round) before it gives up
+    float corpseGone = 64;      // a corpse with nothing on it goes once the player is this far (blocks) and can't see it (ADR-056)
 };
 inline AiTuning gAi;
 
@@ -121,7 +126,7 @@ struct Entity {
     EntityKind kind;
     std::string name;
     Player body;           // position, animation, health, level
-    glm::vec3 home{};      // wanderers stay near this; respawns here
+    glm::vec3 home{};      // wanderers stay near this, and go back to it
     float wanderRadius = 0;  // how far from home it wanders: its kind's, or its spawn marker's radius
     Marker spawn;          // the spawn marker it came from as it was then (id 0: none); see syncSpawns
     int slot = 0;          // which of that marker's NPCs it is (0..count-1): player saves key NPCs by spawn.id and slot
@@ -178,6 +183,9 @@ constexpr float kTalkRange = 3.5f;   // blocks between feet; also how close you 
 constexpr float kPunchReach = 2.0f;  // blocks between feet
 constexpr float kFleeSeconds = 4;    // how long a fleeing NPC runs before it heads home
 constexpr float kPlayerRespawnSeconds = 5;
+// Who died for good (ADR-056): spawn marker id -> a bit per slot whose NPC is dead. Nothing comes back; the player
+// save keeps it (DEAD), so a slot stays empty after its corpse has gone.
+using DeadSlots = std::map<uint32_t, uint32_t>;
 constexpr float kCorpseLinger = 3;  // seconds an empty corpse of an inactive spawn marker (ADR-023) lies before it goes
 
 // The training dummy, a villager, a boar, a bandit and a bandit archer on grass beside `near` (usually the player
@@ -202,9 +210,15 @@ int spawnGroup(std::vector<Entity>& entities, const Grid& world, EntityKind kind
 // spawns only inside it at `timeOfDay` (then only the slots it misses: those still out keep their
 // state); outside it its NPCs leave once out of a fight (Chase, Windup,
 // Recover), its corpses once looted (kCorpseLinger after death at the earliest) or back up, and the
-// rest of its NPCs stay away.
+// rest of its NPCs stay away. Slots in `dead` are never spawned again, stale marker or not, and a changed marker's
+// corpse that holds loot stays where it lies (ADR-056: a quest's item mustn't vanish with an edit).
 void syncSpawns(std::vector<Entity>& entities, const Grid& world, const std::vector<Marker>& markers, uint32_t seed,
-                glm::vec3 face, float timeOfDay);
+                glm::vec3 face, float timeOfDay, const DeadSlots& dead = {});
+// Lasting deaths (ADR-056), once a tick: every dead marker NPC goes into `dead`, and a corpse with no loot left
+// goes once `player` is gAi.corpseGone away and can't see it (or its part of the world isn't `loaded`). One with
+// loot stays until it's taken, so a quest's item can't vanish with it.
+void buryDead(std::vector<Entity>& entities, DeadSlots& dead, const Grid& world, const Player& player,
+              const std::function<bool(glm::vec3)>& loaded = {});
 // Where the player starts and gets back up: the player_spawn marker, else findSpawn, out of the terrain.
 glm::vec3 playerSpawn(const Grid& world, const std::vector<Marker>& markers);
 // Spawn markers for the NPCs that worlds had before markers existed: one per spawnEntities entity
@@ -243,7 +257,8 @@ bool takeLoot(Entity& e, Inventory& inv);
 // they leave hitTime alone (and damage() doesn't call a fighter back for them). A death ends its status
 // build-up and timed effects.
 bool hurt(Player& body, int amount, bool crit = false, Status kind = Status::Count);
-// hurt() for attackable entities only. Tells fighters (EventDamaged); a kill rolls the loot.
+// hurt() for attackable entities only, an immortal one keeping its health. Tells it (EventDamaged: a fighter fights
+// back, a harmless wanderer flees); a kill rolls the loot.
 bool damage(Entity& e, int amount, bool crit = false, Status kind = Status::Count);
 
 // The status effects' knobs (ADR-046), live from the debug window's Player tab. Shares are of the
@@ -287,7 +302,7 @@ Entity* punchTarget(std::vector<Entity>& entities, const Player& attacker);
 bool behind(const Entity& e, const Player& attacker);
 // Whether an attack from `attacker` on `e` is a critical (ADR-045): its stance is broken (a riposte),
 // or `attacker` is behind it while it isn't attacking, rolling or reeling and wasn't hurt for
-// backstabWait seconds (a backstab).
+// backstabWait seconds (a backstab). Never a bystander (ADR-056).
 bool opensToCritical(const Entity& e, const Player& attacker);
 // The nearest living, attackable entity in reach open to a critical: an attack on it is the riposte
 // move. `caught`: the move is already on its way, and the backstab it caught (reeling now, held) still
@@ -349,7 +364,7 @@ void strikePlayer(Entity& npc, Player& player, const Strike& s, std::mt19937& rn
 // Combat timers, the moves' clocks, stance recovery, status build-up and timed effects (poison's ticks,
 // a kill by them the player's) and out-of-combat regeneration for everyone; lands
 // every swing at its impact frame (the player's on entities, entities' on the player) through
-// resolveHit (`armorK` is the K of armorReduction) and awardHitXp (the player's through strike()); brings the dead back home.
+// resolveHit (`armorK` is the K of armorReduction) and awardHitXp (the player's through strike()). The dead stay dead (ADR-056).
 // A bow's shot reaching its release sets the shooter's `loosed` instead (step() looses the arrow; an NPC's too, ADR-051). Any hit
 // but the riposte move's may be a random critical (the attacker's CritChance, for CritDamage more). A kill
 // by the player raises Killed into `events`. The player's moves hit with their damage and stance

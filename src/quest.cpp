@@ -170,6 +170,24 @@ int countItem(const Inventory& inv, ItemId id) {
     return id == NoItem ? 0 : n;
 }
 
+bool npcDead(const Session& s, const std::string& name) {
+    bool any = false;
+    for (const Marker& m : s.markers)
+        if (m.kind == MarkerKind::Spawn && m.name == name) {
+            auto d = s.dead.find(m.id);
+            uint32_t all = (1u << m.count) - 1;
+            if (d == s.dead.end() || (d->second & all) != all) return false;
+            any = true;
+        }
+    return any;
+}
+
+const std::string* deadNeed(const Session& s, const QuestDef& q) {
+    for (const std::string& name : q.needs)
+        if (npcDead(s, name)) return &name;
+    return nullptr;
+}
+
 bool passes(const Session& s, const Condition& c) {
     bool r = false;
     const QuestState& q = stateOf(s, c.quest);
@@ -192,14 +210,7 @@ bool passes(const Session& s, const Condition& c) {
                    glm::distance(glm::vec2(s.player.pos.x, s.player.pos.z), glm::vec2(m.pos.x, m.pos.z)) <= m.radius;
         });
         break;
-    case Condition::NpcDead: {  // every NPC of the spawns of that name (and there is one)
-        bool any = false;
-        r = true;
-        for (const Entity& e : s.entities)
-            if (e.spawn.id && e.spawn.name == c.name) any = true, r = r && !e.body.alive();
-        r = r && any;
-        break;
-    }
+    case Condition::NpcDead: r = npcDead(s, c.name); break;
     }
     return r != c.negate;
 }
@@ -268,6 +279,14 @@ void updateQuests(Session& s) {
                 }
         }
     }
+    for (size_t q = 0; q < d.quests.size(); ++q) {  // someone it needs is dead: it can't be started or finished (ADR-056)
+        QuestState& st = s.quests[q];
+        const std::string* who = st.done || st.failed ? nullptr : deadNeed(s, d.quests[q]);
+        if (!who) continue;
+        st.failed = true;
+        if (st.stage) toast(s, int(q), std::format("Quest failed: {} ({} is dead)", d.quests[q].title, *who), true);
+        log(s, std::format("failed {}: {} is dead", d.questIds[q], *who));
+    }
 }
 
 std::vector<std::string> checkQuestMarkers(const Defs& d, const std::vector<Marker>& markers) {
@@ -282,6 +301,8 @@ std::vector<std::string> checkQuestMarkers(const Defs& d, const std::vector<Mark
             if (c.kind == Condition::InRegion || c.kind == Condition::NpcDead)
                 check(quest, c.name, c.kind == Condition::InRegion ? MarkerKind::Region : MarkerKind::Spawn);
     };
+    for (const QuestDef& q : d.quests)
+        for (const std::string& name : q.needs) check(q.id, name, MarkerKind::Spawn);
     for (const QuestDef& q : d.quests)
         for (const Stage& st : q.stages)
             for (const Trigger& t : st.on) {

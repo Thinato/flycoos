@@ -6,7 +6,7 @@
 
 namespace {
 
-bool lockable(const Entity& e) { return e.type().attackable && e.body.alive(); }
+bool lockable(const Entity& e) { return e.type().attackable && !bystander(e.type()) && e.body.alive(); }
 
 // Its place on screen (x scaled by the aspect, so directions and distances are true), if it's in
 // front of the camera.

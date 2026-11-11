@@ -89,6 +89,9 @@ system is summarized in ADR-035.
   quest with them (it can't be started or finished any more, and says so in the journal); a
   procedural world makes up for what's lost. Needs: a spawner (budget, distance, out of view), a
   record of who died where (saved), and quests that check their giver is alive
+  - [x] Lasting deaths: nothing respawns (an immortal training dummy instead), villagers can be hit
+    and run, corpses go far and unseen, who died is saved, quests that need their people (ADR-056)
+  - [ ] The spawner: random populations out of view, by biome and a level band (ADR-057)
 - [x] **Pursuit:** a much larger aggro range, and an enemy that has seen the player keeps chasing
   while it can still see them (line of sight) or until they're far outside that range; no giving up
   at a leash mid-fight just because it was kited away from home. Losing sight starts a search at the

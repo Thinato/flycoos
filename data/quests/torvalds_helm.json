@@ -2,6 +2,7 @@
   {
     "id": "torvalds_helm",
     "title": "Torvald's Helm",
+    "needs": ["Torvald"],
     "objectives": [
       {"id": "talk_torvald", "text": "Speak with Torvald at his forge in Ravensford"},
       {"id": "get_helm", "text": "Take the helm Hakon the Red wears"},
@@ -28,7 +29,7 @@
         {"killed": "Hakon the Red", "do": [{"set_stage": 25}]}
       ]},
       {"id": 25,
-       "journal": "I struck down Hakon the Red. Now to take Torvald's helm from his body, or from Hakon himself if he rises again.",
+       "journal": "I struck down Hakon the Red. Now to take Torvald's helm from his body before anyone else does.",
        "on": [{"has_item": "iron_helm", "do": [{"set_stage": 30}]}]},
       {"id": 30,
        "journal": "I have Torvald's helm. Time to bring it home to the forge in Ravensford.",
@@ -46,6 +47,7 @@
     ],
     "lines": [
       {"spawn": "Maren Holt", "if": [{"done": "torvalds_helm"}], "say": "Torvald sings at his anvil again. Ravensford won't forget what you did."},
+      {"spawn": "Maren Holt", "if": [{"failed": "torvalds_helm"}], "say": "Torvald's forge is cold for good now. Without our smith, Hakon has taken more than iron from us."},
       {"spawn": "Maren Holt", "if": [{"stage": "torvalds_helm", "op": ">=", "value": 30}], "say": "Is that Torvald's helm? Take it to him before he wears a hole in the floor."},
       {"spawn": "Maren Holt", "if": [{"stage": "torvalds_helm", "op": ">=", "value": 20}], "say": "Greyfang Rise is south-east, past the fields. Hakon keeps to the watchtower at the top."},
       {"spawn": "Maren Holt", "if": [{"stage": "torvalds_helm", "value": 10}], "say": "Torvald's forge is on the east side of the village, toward the ford. He'll tell you what Hakon took."},
@@ -56,13 +58,14 @@
                                   {"has_item": "iron_helm"}],
        "say": "That's my mark on the brow! Give it here. Take this cuirass. I kept it hidden from those thieves."},
       {"spawn": "Torvald", "if": [{"stage": "torvalds_helm", "value": 30}], "say": "You had my helm, and now you don't? Find it before some crow does."},
-      {"spawn": "Torvald", "if": [{"stage": "torvalds_helm", "value": 25}], "say": "Hakon's down? Then bring me my helm. Off his body, or off him again if he gets up."},
+      {"spawn": "Torvald", "if": [{"stage": "torvalds_helm", "value": 25}], "say": "Hakon's down? Then bring me my helm. It'll be on his body still, if the crows haven't got it."},
       {"spawn": "Torvald", "if": [{"stage": "torvalds_helm", "value": 20}], "say": "Greyfang Rise, past the south-east fields. Hakon stands at the watchtower door, wearing my helm."},
       {"spawn": "Torvald", "if": [{"stage": "torvalds_helm", "value": 10}], "say": "Maren sent you? Good. Hakon's lot took my iron, and Hakon took my best helm too."},
       {"spawn": "Torvald", "if": [{"stage": "torvalds_helm", "value": 0}], "say": "Hakon's lot took my iron, and Hakon himself wears the best helm I ever made. Bring it back to me?"},
 
       {"spawn": "Captain Brenna", "if": [{"flag": "ravensford_friend", "op": ">=", "value": 1}], "say": "So you're the one who brought down Hakon. The gate is always open to you."},
-      {"spawn": "Captain Brenna", "if": [{"npc_dead": "Hakon the Red"}], "say": "Word is Hakon fell on the Rise. His raiders will be back, mind you."},
+      {"spawn": "Captain Brenna", "if": [{"npc_dead": "Hakon the Red"}], "say": "Word is Hakon fell on the Rise. Good riddance. The south-east road is quieter for it."},
+      {"spawn": "Captain Brenna", "if": [{"failed": "torvalds_helm"}], "say": "A smith dead in his own forge. Keep your blade sheathed in my village."},
       {"spawn": "Captain Brenna", "if": [{"stage": "torvalds_helm", "op": ">=", "value": 20}, {"stage": "torvalds_helm", "op": "<", "value": 40}], "say": "Going after Hakon? Take the south-east road and keep off the tower stairs until his raiders are down."}
     ]
   }

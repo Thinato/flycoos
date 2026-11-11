@@ -43,6 +43,8 @@
 // "THRW" (ADR-053): u8 the readied throwable's item save id (0: none) | u8 count, each u8 item save id | u8 how
 //   many in the pouch. One the data doesn't know as a throwable is dropped; counts stop at its pouch. Missing
 //   (older saves): a full pouch.
+// "DEAD" (ADR-056): u32 count, then per spawn marker (still in the world) with NPCs dead for good: u32 marker id |
+//   u8 a bit per dead slot. Apart from NPCS (whose corpses stay there while they lie). Missing (older saves): their corpses say who died.
 constexpr uint32_t kSaveFileVersion = 1;
 constexpr size_t kMaxSaveBytes = size_t(1) << 20;  // the biggest valid one is a few KB
 constexpr size_t kNpcBytes = 31;
@@ -118,6 +120,7 @@ struct SaveData {
     std::optional<std::map<std::string, int32_t, std::less<>>> flags;
     std::optional<Progress> progress;  // unknown skills and talents already dropped
     std::map<std::pair<uint32_t, int>, std::pair<float, float>> wear;  // (marker id, slot) -> xpWear, armorWear
+    DeadSlots dead;
     std::optional<int> flasks;
     std::optional<glm::vec3> restPoint;
     bool twoHanded = false;
@@ -309,6 +312,18 @@ std::string readWear(Reader r, SaveData& d) {
     return r.done("wear");
 }
 
+std::string readDead(Reader r, SaveData& d) {
+    uint64_t count = r.take(4);
+    if (count > uint64_t(kMaxSpawnedNpcs)) return std::format("more than {} markers with dead", kMaxSpawnedNpcs);
+    if (uint64_t(r.end - r.p) != count * 5) return "dead section size mismatch";
+    for (uint64_t i = 0; i < count; ++i) {
+        uint32_t marker = uint32_t(r.take(4)), slots = uint32_t(r.take(1));
+        if (marker == 0 || slots == 0 || !d.dead.emplace(marker, slots).second)  // (u8: kMaxSpawnCount's 8 slots)
+            return std::format("bad dead (marker {})", marker);
+    }
+    return r.done("dead");
+}
+
 std::string readRest(Reader r, SaveData& d) {
     d.flasks = int(r.take(1));
     uint64_t rested = r.take(1);
@@ -378,6 +393,7 @@ std::string parse(const char* path, SaveData& d) {
         else if (tag == "FLAG") error = readFlags(r, d);
         else if (tag == "PROG") error = readProgress(r, d);
         else if (tag == "WEAR") error = readWear(r, d);
+        else if (tag == "DEAD") error = readDead(r, d);
         else if (tag == "REST") error = readRest(r, d);
         else if (tag == "GRIP") error = readGrip(r, d);
         else if (tag == "ARRW") error = readArrows(r, d);
@@ -495,8 +511,7 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
     }
     for (Entity& e : s.entities)  // by the same key as NPCS, but on its own
         if (auto w = d.wear.find({e.spawn.id, e.slot}); e.spawn.id && w != d.wear.end()) e.xpWear = w->second.first, e.armorWear = w->second.second;
-    if (!d.npcs) return;
-    for (const SavedNpc& n : *d.npcs) {
+    for (const SavedNpc& n : d.npcs ? *d.npcs : std::span<const SavedNpc>{}) {
         auto e = std::ranges::find_if(s.entities, [&](const Entity& e) { return e.spawn.id == n.marker && e.slot == n.slot; });
         if (e == s.entities.end() || e->kind != n.kind) {
             ++r.droppedNpcs;
@@ -519,6 +534,12 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
         if (!e->body.alive()) setState(*e, AiState::Dead, "loaded");  // alive ones start calm (the FSM isn't saved)
         ++r.npcs;
     }
+    // The dead stay dead (ADR-056): startSession spawned every slot; those whose corpse has gone go again.
+    s.dead = d.dead;
+    std::erase_if(s.entities, [&](const Entity& e) {
+        auto it = s.dead.find(e.spawn.id);
+        return e.spawn.id && e.body.alive() && it != s.dead.end() && (it->second >> e.slot & 1);
+    });
 }
 
 }  // namespace
@@ -614,6 +635,13 @@ std::string savePlayer(const char* path, const Session& s, const std::string& wo
                 putF(out, e.xpWear);
                 putF(out, e.armorWear);
             }
+    });
+    static_assert(kMaxSpawnCount <= 8, "DEAD keeps a marker's dead slots in a byte");
+    section("DEAD", [&] {  // markers still there only: one removed in the editor can't be dead in (and the record stays small)
+        auto there = [&](uint32_t id) { return std::ranges::any_of(s.markers, [&](const Marker& m) { return m.id == id && m.kind == MarkerKind::Spawn; }); };
+        put(out, size_t(std::ranges::count_if(s.dead, [&](auto& d) { return there(d.first); })), 4);
+        for (auto [marker, slots] : s.dead)
+            if (there(marker)) put(out, marker, 4), put(out, slots, 1);
     });
     section("REST", [&] {
         put(out, uint32_t(std::clamp(p.flasks, 0, 255)), 1);

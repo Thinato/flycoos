@@ -588,6 +588,24 @@ static void entitiesTab(Session& session, DebugActions& actions, SpawnSettings& 
         if (damage(e, amount, false, kind) && !e.body.alive()) session.events.push_back(Killed{e.kind, e.spawn.id});
     };
     if (ImGui::Button("Respawn NPCs at their markers")) actions.respawnEntities = true;
+    ImGui::SetItemTooltip("Every marker's NPCs fresh, the dead too (it clears who died for good).");
+    if (ImGui::TreeNode("deaths", "Lasting deaths (ADR-056): %zu markers with dead", session.dead.size())) {
+        ImGui::SliderFloat("Corpses go past", &gAi.corpseGone, 8, 256, "%.0f blocks");
+        ImGui::SetItemTooltip("A corpse with nothing on it goes once you're this far and can't see it. One with loot stays until it's taken.");
+        int corpses = 0;
+        for (const Entity& e : entities) corpses += !e.body.alive();
+        ImGui::Text("%d corpses lying", corpses);
+        for (auto [id, slots] : session.dead) {
+            auto m = std::ranges::lower_bound(session.markers, id, {}, &Marker::id);
+            bool named = m != session.markers.end() && m->id == id;
+            std::string which;
+            for (int k = 0; k < kMaxSpawnCount; ++k)
+                if (slots >> k & 1) which += std::format(" {}", k);
+            ImGui::Text("#%u %s: dead%s%s", id, named ? m->name.c_str() : "(marker gone)", which.c_str(),
+                        named && npcDead(session, m->name) ? "   (all of that name)" : "");
+        }
+        ImGui::TreePop();
+    }
     ImGui::SeparatorText("Spawn (ADR-054)");
     const std::vector<std::string>& kinds = defs().creatureIds;
     if (size_t(spawn.kind) >= kinds.size()) spawn.kind = EntityKind(0);
@@ -671,8 +689,14 @@ static void entitiesTab(Session& session, DebugActions& actions, SpawnSettings& 
         if (!ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) continue;
         ImGui::PushID(int(i));
         attributes(e.body, false);
-        ImGui::Text("Attackable %s   Wanders %s   Talks %s   Temper %s", t.attackable ? "yes" : "no",
+        ImGui::Text("Attackable %s%s   Wanders %s   Talks %s   Temper %s", t.attackable ? "yes" : "no", t.immortal ? " (immortal)" : "",
                     t.wanders ? "yes" : "no", t.talks ? "yes" : "no", kTemperNames[int(t.temper)]);
+        if (!e.body.alive()) {  // lasting deaths (ADR-056)
+            float far = glm::distance(e.body.pos, player.pos);
+            bool seen = canSee(session.world, player, e.body);
+            ImGui::Text("Dead %.0f s: %s", double(e.body.deadTime),
+                        e.loot ? "stays while it holds loot" : far < gAi.corpseGone ? "stays: you're near" : seen ? "stays: you can see it" : "goes now");
+        }
         if (int st = int(e.state); ImGui::Combo("State", &st, kAiStateNames, int(AiState::Count)) && st != int(e.state))
             setState(e, AiState(st), "forced");
         ImGui::SetItemTooltip("Forces a state; the AI leaves it again at once if it doesn't fit (e.g. dead while alive).");
@@ -904,6 +928,11 @@ static void questsTab(Session& s) {
         ImGui::SameLine();
         ImGui::Checkbox("Failed", &st.failed);
         if (const Stage* now = findStage(def, st.stage); now && !now->journal.empty()) ImGui::TextWrapped("%s", now->journal.c_str());
+        if (!def.needs.empty()) {  // (ADR-056) one of them dead fails it
+            std::string needs;
+            for (const std::string& n : def.needs) needs += std::format("{}{}{}", needs.empty() ? "" : ", ", n, npcDead(s, n) ? " (DEAD)" : "");
+            ImGui::TextWrapped("Needs alive: %s", needs.c_str());
+        }
         for (size_t o = 0; o < std::min(def.objectives.size(), st.objectives.size()); ++o) {
             ImGui::PushID(int(o));
             int state = int(st.objectives[o]);

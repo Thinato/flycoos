@@ -473,7 +473,7 @@ json catalogJson() {
     for (size_t k = 0; k < d.creatures.size(); ++k) {
         const EntityType& t = d.creatures[k];
         json e = {{"id", d.creatureIds[k]}, {"name", t.name ? json(t.name) : json()}, {"level", t.level}, {"health", maxHealth(compute(t.stats, itemType(t.weapon).mods))},
-                  {"temper", kTemperNames[int(t.temper)]}, {"attackable", t.attackable}, {"talks", t.talks},
+                  {"temper", kTemperNames[int(t.temper)]}, {"attackable", t.attackable}, {"immortal", t.immortal}, {"talks", t.talks},
                   {"wander_radius", t.wanderRadius}, {"chase_speed", t.chaseSpeed}, {"aggro_range", t.aggroRange}};
         if (t.weapon) e["weapon"] = itemType(t.weapon).name;
         if (t.loot) e["loot"] = itemType(t.loot).name, e["loot_chance"] = t.lootChance;
