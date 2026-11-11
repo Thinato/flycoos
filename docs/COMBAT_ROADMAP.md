@@ -93,7 +93,7 @@ system is summarized in ADR-035.
 
 ## Feel
 
-- [ ] Hit sparks, blood, a slash trail on the blade
+- [x] Hit sparks, blood, a slash trail on the blade (a white smear; ADR-058)
 - [x] Sounds: swings, hits, blocks, parries, footsteps, voices, ambience (ADR-037)
 - [x] Hit-stop tuned per weapon class (ADR-044)
 - [x] Camera shake on heavy hits (and criticals, big hits taken; ADR-045)

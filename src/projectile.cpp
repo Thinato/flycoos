@@ -45,8 +45,7 @@ std::optional<float> segmentBox(glm::vec3 a, glm::vec3 b, glm::vec3 lo, glm::vec
 }
 
 Box3 hitBox(const Entity& e) {
-    Model m = e.type().model;
-    float h = m == ModelBoar || m == ModelWolf ? 1.1f : m == ModelChief ? 2.0f : kHeight, r = gRanged.hitRadius;
+    float h = bodyHeight(e.type().model), r = gRanged.hitRadius;
     return {e.body.pos - glm::vec3(r, 0, r), e.body.pos + glm::vec3(r, h, r)};
 }
 
@@ -150,7 +149,7 @@ void burst(Session& s, glm::vec3 at, ItemId item, glm::vec3 from) {
     if (it.thrown.look == ThrowLook::Bomb)  // a blast nearby shakes the camera (ADR-045)
         p.trauma = std::min(1.0f, p.trauma + 0.4f * std::clamp(1 - glm::distance(at, p.pos) / 16, 0.0f, 1.0f));
     s.bursts.push_back({at, r, item, 0});
-    if (s.sounds.size() < kMaxSounds) s.sounds.push_back({Noise::Thunk, at, -1, Air, Move::None, item, 0});
+    if (s.sounds.size() < kMaxSounds) s.sounds.push_back({Noise::Thunk, at, -1, Air, Move::None, item, 0, at, false});
 }
 
 void updateProjectiles(Session& s, float dt) {
@@ -219,7 +218,7 @@ void updateProjectiles(Session& s, float dt) {
             } else if (wall) {  // in where it went: lies there
                 a.pos = from + dir * best;
                 a.stuck = true, a.age = 0;
-                if (s.sounds.size() < kMaxSounds) s.sounds.push_back({Noise::Thunk, a.pos, -1, s.world.get(wall->cell), Move::None, a.weapon, 0});
+                if (s.sounds.size() < kMaxSounds) s.sounds.push_back({Noise::Thunk, a.pos, -1, s.world.get(wall->cell), Move::None, a.weapon, 0, a.pos - dir, false});
             } else {
                 a.pos = from + step;
                 gone = a.age >= gRanged.flightSeconds || a.pos.y < 0;

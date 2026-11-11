@@ -76,9 +76,12 @@ static void hear(Session& s, Player& b, int kind) {
                 break;
             case Noise::Roll: case Noise::Backstep: h.amount = float(b.rollLoad); break;
             case Noise::Land: h.amount = b.landSpeed; break;
-            case Noise::Hurt: case Noise::Death: case Noise::Crit: h.with = b.hitWith, h.amount = b.hitStance; break;
+            case Noise::Hurt: case Noise::Death: case Noise::Crit:
+                h.with = b.hitWith, h.amount = b.hitStance, h.from = b.hitFrom == glm::vec3(0) ? b.pos : b.hitFrom, h.plated = plated(model, b.inv);
+                break;
             case Noise::Block: case Noise::Bounce: case Noise::Parry: case Noise::GuardBreak: case Noise::PerfectGuard:
                 h.with = shieldOf(b) ? b.inv.equipped[SlotOffHand] : b.inv.equipped[SlotMainHand];
+                h.from = b.pos + glm::vec3(std::sin(b.yaw), 0, std::cos(b.yaw));  // a guard faces what it takes
                 break;
             default: break;
         }

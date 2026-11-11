@@ -23,6 +23,10 @@ struct Sound {
     Move move = Move::None;  // the move it was in (swings: the one swung)
     ItemId with = NoItem;    // swings: the weapon; hurt: what hit it; blocks: what took it (a shield, the main hand)
     float amount = 0;        // steps: the gait (0..1.4); landings: the fall speed; hurt: the hit's stance damage
+    // Where the blow came from (hurt, death, crit: the hitter; a guard's noises: straight ahead of it; an arrow's
+    // thunk: back along its flight), and whether the body hit wears plate: its effects' (ADR-058).
+    glm::vec3 from{};
+    bool plated = false;
 };
 constexpr size_t kMaxSounds = 256;  // Session::sounds stops growing here when nobody plays them
 

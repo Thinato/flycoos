@@ -26,7 +26,7 @@
    "combo": 3, "delay": 0.35, "guard": 0.1, "back_off": 0.3},
   {"id": "ghoul", "save_id": 7, "name": "Barrow Ghoul", "level": 3, "stats": {"stamina": 7, "strength": 4, "agility": 2, "intellect": 2, "spirit": 2},
    "attackable": true, "wanders": true, "model": "ghoul", "temper": "aggressive", "aggro_range": 16, "wander_radius": 4, "chase_speed": 4,
-   "loot": "bone_charm", "loot_chance": 0.3, "rare_loot": "barrow_greataxe", "rare_loot_chance": 0.12, "stance": 90, "poise": 12, "attack_windup": 0.6, "attack_recover": 0.5, "hit_stance": 14, "voice": "ghoul",
+   "loot": "bone_charm", "loot_chance": 0.3, "rare_loot": "barrow_greataxe", "rare_loot_chance": 0.12, "stance": 90, "poise": 12, "attack_windup": 0.6, "attack_recover": 0.5, "hit_stance": 14, "voice": "ghoul", "blood": "dust",
    "damage": "slash", "resist": {"slash": 0, "strike": -0.3, "pierce": 0.3}, "combo": 2, "delay": 0.4,
    "mods": [{"stat": "poison", "flat": 25}, {"stat": "poison_resist", "flat": 400}]},
   {"id": "bandit_archer", "save_id": 8, "name": "Bandit Archer", "level": 2, "stats": {"stamina": 9, "strength": 2, "agility": 4, "intellect": 2, "spirit": 2},

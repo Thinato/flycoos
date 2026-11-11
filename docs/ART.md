@@ -2,6 +2,8 @@
 
 How voxels get their colour. These rules hold for every block, model and future asset; the
 renderer implements them (ADR-028, `kTones` in `src/world.h`, `albedoOf` in `shaders/world.metal`).
+One deliberate exception, at the user's request: the white smear behind a swinging blade (ADR-058) is a
+smooth see-through ribbon, not voxels. Hit sparks, blood and chips are voxels and follow the rules.
 
 ## The rules
 

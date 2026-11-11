@@ -443,7 +443,7 @@ void loadCreatures(const File& f, Defs& d) {
         r.allow({"id", "save_id", "copy_from", "name", "level", "stats", "attackable", "wanders", "talks", "model", "temper",
                  "aggro_range", "wander_radius", "chase_speed", "weapon", "loot", "loot_chance", "rare_loot", "rare_loot_chance", "immortal", "chase_range",
                  "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
-                 "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "damage",
+                 "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "blood", "damage",
                  "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield", "mods", "keep_range", "aim_error", "sidearm"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
@@ -538,6 +538,9 @@ void loadCreatures(const File& f, Defs& d) {
         std::string body = given("body") ? r.text("body") : "flesh";
         if (body != "flesh" && body != "wood") throw r.fail("body", "must be flesh or wood");
         t.wooden = body == "wood";
+        std::string blood = given("blood") ? r.text("blood") : t.wooden ? "splinters" : "red";  // ADR-058
+        if (blood != "red" && blood != "splinters" && blood != "dust") throw r.fail("blood", "must be red, splinters or dust");
+        t.blood = blood == "red" ? Blood::Red : blood == "splinters" ? Blood::Splinters : Blood::Dust;
         // Damage types (ADR-040): what its own attacks do (with no weapon: teeth, tusks, claws, fists) and
         // what it resists (0.2: takes 20% less) or is weak to (-0.3: 30% more).
         if (given("damage") && t.temper == Temper::Harmless) throw r.fail("damage", "harmless creatures don't fight");

@@ -270,6 +270,68 @@ fragment float4 water_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) 
     return float4(tonemap(applyFog(f, color, in.worldPos)), mix(0.78, 0.95, fresnel));
 }
 
+// ---- Hit effects (src/fx.h, ADR-058): voxel bits flung out by hits, and the white smear behind a blade ----
+
+struct FxParticle { float4 posSize; uint4 info; };  // info.x colour rgb8 (sRGB), bit 24 glows, bit 25 lies flat; y light (sky << 4 | block)
+struct FxOut {
+    float4 position [[position]];
+    float3 worldPos;
+    float3 normal;
+    uint lit [[flat]];
+    uint colour [[flat]];
+};
+
+// Instance iid's cube: face vid / 6 of a unit voxel (quadVertex's corners and winding, open AO), centred on
+// the particle and scaled to its size; one lying on the ground is a quarter as tall, its bottom on the ground.
+vertex FxOut particle_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
+                         constant Frame& f [[buffer(0)]],
+                         const device FxParticle* particles [[buffer(1)]]) {
+    FxParticle p = particles[iid];
+    uint face = vid / 6;
+    QuadVertex v = quadVertex(f, uint2(0u, face | 0xFFu << 3), vid);
+    bool flat = (p.info.x >> 25 & 1u) != 0u;
+    FxOut out;
+    out.worldPos = p.posSize.xyz + (v.local - float3(0.5, flat ? 0.0 : 0.5, 0.5)) * float3(1.0, flat ? 0.25 : 1.0, 1.0) * p.posSize.w;
+    out.position = f.viewProj * float4(out.worldPos, 1.0);
+    out.normal = kNormals[face];
+    out.lit = p.info.y;
+    out.colour = p.info.x;
+    return out;
+}
+
+// One flat colour, lit and fogged as a model's voxel (sparks glow: unshaded).
+fragment float4 particle_fs(FxOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
+    VOut v;
+    v.position = in.position;
+    v.worldPos = in.worldPos;
+    v.normal = in.normal;
+    v.ao = 1.0;
+    v.blockAndQuad = (in.lit & 255u) << 7 | (in.colour >> 24 & 1u) << 30 | 1u << 31;
+    float3 srgb = float3(float(in.colour & 255u), float(in.colour >> 8 & 255u), float(in.colour >> 16 & 255u)) / 255.0;
+    return shade(f, v, pow(srgb, 2.2));
+}
+
+struct RibbonOut {
+    float4 position [[position]];
+    float3 worldPos;
+    float alpha;
+};
+
+// The smears' triangles as they are (xyz world, w alpha): no texture, no light.
+vertex RibbonOut ribbon_vs(uint vid [[vertex_id]], constant Frame& f [[buffer(0)]], const device float4* verts [[buffer(1)]]) {
+    float4 v = verts[vid];
+    RibbonOut out;
+    out.worldPos = v.xyz;
+    out.position = f.viewProj * float4(v.xyz, 1.0);
+    out.alpha = v.w;
+    return out;
+}
+
+// Plain bright white (2 tonemaps to about 0.92), fogged with distance like everything else.
+fragment float4 ribbon_fs(RibbonOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
+    return float4(tonemap(applyFog(f, float3(2.0), in.worldPos)), in.alpha);
+}
+
 // ---- Plants (src/plants.h): instanced models of grass and flowers ----
 
 constant uint kGrass = 1;  // Block::Grass

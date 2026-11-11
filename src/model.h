@@ -38,7 +38,14 @@ Model burstModel(ItemId item);
 glm::mat4 tumblePose(glm::vec3 at, float spin);
 // A burst's puff (ADR-053) at `at`: swells to `radius` across most of its `u` (0 .. 1 of its time), then shrinks away.
 glm::mat4 burstPose(glm::vec3 at, float radius, float u);
-Model shieldModel(ItemId shield);  // an off-hand shield's, by its size (ADR-036)
+Model shieldModel(ItemId shield);
+// How tall a body of `model` stands, in blocks (its hit box: hitBox).
+constexpr float bodyHeight(Model m) { return m == ModelBoar || m == ModelWolf ? 1.1f : m == ModelChief ? 2.0f : 1.8f; }
+// Whether `model` wearing `inv` has plate over its chest (an iron cuirass, the guard's): hits on it spark (ADR-058).
+bool plated(Model model, const Inventory& inv);
+// A held weapon's edge in its part grid (ADR-058): the line from `base` to `tip` its swings sweep; none (false)
+// for what has no blade (fists, bows, crossbows, throwables).
+bool bladeEdge(Model held, glm::vec3& base, glm::vec3& tip);  // an off-hand shield's, by its size (ADR-036)
 // Which model each part of `model` is drawn from: its own, or the armor worn over it. Greaves have
 // no part (the rig has no legs), so they don't show.
 std::array<Model, PartCount> partModels(Model model, const Inventory& inv);

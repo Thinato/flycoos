@@ -163,6 +163,7 @@ struct Combatant {
     float hitTime = 99;                    // seconds since this body last took damage
     ItemId hitWith = NoItem;               // what that hit was struck with (NoItem: bare hands, teeth, tusks)
     float hitStance = 0;                   // and its stance damage: how heavy it was
+    glm::vec3 hitFrom{};                   // and where it came from (the hit's Strike::from), for its effects (ADR-058); the sim never reads it
     uint32_t noises = 0;                   // bits of Noise made this tick
     Move swung = Move::None;               // the move the latest Noise::Swing came from (it may be cut short the same tick)
     int lastDamage = 0;

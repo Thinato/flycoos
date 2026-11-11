@@ -7,6 +7,7 @@
 #include <glm/glm.hpp>
 
 #include "edit.h"
+#include "fx.h"
 #include "light.h"
 #include "mesher.h"
 #include "model.h"
@@ -29,6 +30,7 @@ struct FrameParams {
     bool underwater = false; // the eye is under water (underWater): blue fog and sky
     double seconds = 0;      // real time (benchmarks: ticks), for the grass swaying in the wind
     std::vector<ModelInstance> models;  // player and NPCs
+    const Fx* fx = nullptr;  // hit sparks, blood, chips and blade smears (ADR-058); null: none
 };
 
 // Debug-view switches (debug UI "Render" tab).
@@ -108,7 +110,11 @@ private:
     SDL_GPUBuffer* upload(const void* data, uint32_t bytes, uint32_t capacity = 0);  // capacity: bytes, >= data
     void write(const void* data, uint32_t bytes, const std::vector<Upload>& uploads);
     void packWorld();  // with headroom_ quads to spare beyond an eighth more
-    void uploadChunks(const Grid& world, const std::vector<size_t>& ids);  // meshes_[ids] into their slots (repacking if they don't fit)
+    void uploadChunks(const Grid& world, const std::vector<size_t>& ids);
+    // A storage buffer rewritten every frame through a cycled transfer buffer (frames in flight keep theirs).
+    struct Streamed { SDL_GPUBuffer* buffer = nullptr; SDL_GPUTransferBuffer* transfer = nullptr; uint32_t cap = 0; };  // cap: bytes
+    // Copies `bytes` of `data` into it (growing it first if needed); false (nothing to draw) if it failed.
+    bool stream(SDL_GPUCommandBuffer* cmd, Streamed& s, const void* data, uint32_t bytes);  // meshes_[ids] into their slots (repacking if they don't fit)
     SDL_GPUTexture* texture(SDL_GPUTextureFormat format, SDL_GPUTextureUsageFlags usage, SDL_GPUSampleCount samples,
                             uint32_t w, uint32_t h);
     bool ensureTargets(uint32_t w, uint32_t h);
@@ -123,6 +129,7 @@ private:
     SDL_GPUTextureFormat colorFormat_{};
     SDL_GPUSampleCount samples_ = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUGraphicsPipeline *sky_ = nullptr, *opaque_ = nullptr, *water_ = nullptr, *wire_ = nullptr, *plants_ = nullptr;
+    SDL_GPUGraphicsPipeline *particles_ = nullptr, *ribbon_ = nullptr;  // hit effects (ADR-058): voxel bits, the blade's smear
     glm::mat4 cullViewProj_{1};
     SDL_GPUBuffer* models_ = nullptr;
     std::array<SDL_GPUBuffer*, 2> world_{};  // opaque, water quads of every chunk
@@ -138,8 +145,9 @@ private:
     std::array<std::pair<uint32_t, uint32_t>, 2 * PlantModelCount> plantParts_{};  // [model * 2 + far], in models_ too
     // This frame's plants near the eye, grouped by plantParts_ index, uploaded to plantInstances_ every frame.
     std::vector<PlantInstance> plantStage_;
-    SDL_GPUBuffer* plantInstances_ = nullptr;
-    SDL_GPUTransferBuffer* plantTransfer_ = nullptr;
-    uint32_t plantCap_ = 0;  // instances both hold
+    struct FxInstance { glm::vec4 posSize; glm::uvec4 info; };  // particle_vs's: x colour rgb8, glow bit 24, flat bit 25; y light
+    std::vector<FxInstance> fxStage_;
+    Streamed plantInstances_;
+    Streamed fxParticles_, fxRibbon_;  // this frame's hit effects (ADR-058)
     double windPhase_ = 0, windSeconds_ = 0;  // advanced by render() at the Wind speed, kept in 0..2 pi
 };

@@ -21,6 +21,7 @@
 #include "debug_ui.h"
 #include "defs.h"
 #include "editor_ui.h"
+#include "fx.h"
 #include "hud.h"
 #include "inventory_ui.h"
 #include "lockon.h"
@@ -148,6 +149,8 @@ static int run(SDL_Window* window, const Options& opt) {
     }
     Ambience ambience;
     ui.audio = &audio, ui.ambience = &ambience;
+    Fx fx;  // hit sparks, blood and blade smears (ADR-058): drawn from the sim's sounds and poses, never read by it
+    ui.fx = &fx;
 
     Session session{.world = Grid(kWorldSize), .seed = game.seed};
     session.timeOfDay = opt.timeOfDay;
@@ -739,6 +742,9 @@ static int run(SDL_Window* window, const Options& opt) {
             if (int top = groundTop(world, int(std::floor(to.x)), int(std::floor(to.z))); top >= 0) to.y = float(top + 12);
             player.teleport(to);
         }
+        uint64_t fxStart = SDL_GetTicksNS();
+        for (const Sound& h : session.sounds) spawnFx(fx, h, viewEye);  // what the hits threw out (ADR-058)
+        double fxNs = double(SDL_GetTicksNS() - fxStart);
         {  // what this frame's ticks sounded like, heard at the player with the camera's right (ADR-037)
             Listener ear{player.pos, {std::cos(camYaw), -std::sin(camYaw)}};
             if (speaker) {
@@ -877,6 +883,7 @@ static int run(SDL_Window* window, const Options& opt) {
         auto pushModel = [&](const Player& body, Model model) {  // with whatever it holds
             glm::mat4 held(0), shield(0), flask(0), arrow(0);
             fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held, alpha, &shield, &flask, &arrow)});
+            if (held != glm::mat4(0)) trailFx(fx, &body, heldModel(body), held, body.alive() && swingsBlade(body), body.freeze > 0 && body.punching());  // its blade's smear (ADR-058)
             auto push = [&](Model m, const glm::mat4& pose) {
                 if (pose == glm::mat4(0)) return;
                 ModelInstance item;
@@ -900,6 +907,10 @@ static int run(SDL_Window* window, const Options& opt) {
             item.pose.fill(thrown && m != ModelThrowingKnife ? tumblePose(at, (a.age + alpha * kTick) * 9) : arrowPose(at, dir));
             fp.models.push_back(item);
         }
+        fxStart = SDL_GetTicksNS();
+        updateFx(fx, world, editor.active || noteOpen ? 0 : dt);  // frame time while the sim runs (a benchmark's: a tick)
+        fx.ms = float((fxNs + double(SDL_GetTicksNS() - fxStart)) * 1e-6);
+        fp.fx = &fx;
         for (const Burst& b : session.bursts) {  // a bomb's or a pot's puff (ADR-053)
             ModelInstance item;
             item.parts.fill(burstModel(b.item));

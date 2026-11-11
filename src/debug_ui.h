@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "audio.h"
+#include "fx.h"
 #include "renderer.h"
 #include "lockon.h"
 #include "session.h"
@@ -52,7 +53,7 @@ struct SpawnSettings {
 int spawnNpcs(Session& session, SpawnSettings& s, uint32_t seed);
 
 // Dear ImGui debug window, toggled with '.'. Tabs: Render, Player, Progression, Items, Entities, Quests, Data, Camera, World, Save,
-// Audio, Stats.
+// Audio, Effects, Stats.
 // Also owns the ImGui frame the in-game HUD draws into.
 class Stream;
 class DebugUI {
@@ -89,6 +90,7 @@ public:
     bool saveLocked = false;    // the save didn't load: F5 and quitting won't write over it
     Audio* audio = nullptr;          // the Audio tab's (main sets them)
     const Ambience* ambience = nullptr;
+    Fx* fx = nullptr;                // the Effects tab's (main sets it; ADR-058)
 
 private:
     void window(GameSettings& game, RenderSettings& render, Session& session,

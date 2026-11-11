@@ -330,6 +330,22 @@ Model shieldModel(ItemId shield) {
     }
 }
 
+static_assert(bodyHeight(ModelPlayer) == kHeight);
+
+bool plated(Model model, const Inventory& inv) { return model == ModelGuard || partModels(model, inv)[Torso] == ModelIronArmor; }
+
+bool bladeEdge(Model held, glm::vec3& base, glm::vec3& tip) {  // voxel centres across, from the guard to past the tip
+    switch (held) {
+    case ModelSword: base = {2.5f, 5, 0.5f}, tip = {2.5f, 15, 0.5f}; return true;
+    case ModelDagger: base = {2.5f, 5, 0.5f}, tip = {2.5f, 11, 0.5f}; return true;
+    case ModelAxe: base = {6.5f, 8, 0.5f}, tip = {6.5f, 15, 0.5f}; return true;          // the edge
+    case ModelMace: base = {2.5f, 9, 2.5f}, tip = {2.5f, 14, 2.5f}; return true;         // the head
+    case ModelGreatsword: base = {3.5f, 7, 0.5f}, tip = {3.5f, 24, 0.5f}; return true;
+    case ModelGreataxe: base = {7.5f, 15, 0.5f}, tip = {7.5f, 27, 0.5f}; return true;
+    default: return false;
+    }
+}
+
 std::array<Model, PartCount> partModels(Model model, const Inventory& inv) {
     std::array<Model, PartCount> out;
     out.fill(model);

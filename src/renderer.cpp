@@ -34,6 +34,7 @@ struct DrawUniforms {
 };
 static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 3 * 128 * 16);
 static_assert(sizeof(DrawUniforms) == 64 + 16 + 16);
+static_assert(sizeof(RibbonVertex) == 16);  // float4 in ribbon_vs
 static_assert(BlockCount <= 128);  // also: shaders/world.metal packs block ids into 7 bits
 
 glm::vec3 lin(glm::vec3 srgb) { return glm::pow(srgb, glm::vec3(2.2f)); }
@@ -86,9 +87,12 @@ bool inFrustum(const glm::mat4& m, glm::vec3 lo, glm::vec3 hi) {
 Renderer::~Renderer() {
     if (!device_) return;
     SDL_WaitForGPUIdle(device_);
-    for (auto* p : {sky_, opaque_, water_, wire_, plants_}) if (p) SDL_ReleaseGPUGraphicsPipeline(device_, p);
-    for (auto* b : {world_[0], world_[1], models_, plantInstances_}) if (b) SDL_ReleaseGPUBuffer(device_, b);
-    if (plantTransfer_) SDL_ReleaseGPUTransferBuffer(device_, plantTransfer_);
+    for (auto* p : {sky_, opaque_, water_, wire_, plants_, particles_, ribbon_}) if (p) SDL_ReleaseGPUGraphicsPipeline(device_, p);
+    for (auto* b : {world_[0], world_[1], models_}) if (b) SDL_ReleaseGPUBuffer(device_, b);
+    for (Streamed* s : {&plantInstances_, &fxParticles_, &fxRibbon_}) {
+        if (s->buffer) SDL_ReleaseGPUBuffer(device_, s->buffer);
+        if (s->transfer) SDL_ReleaseGPUTransferBuffer(device_, s->transfer);
+    }
     for (auto* t : {msaaColor_, depth_, resolved_}) if (t) SDL_ReleaseGPUTexture(device_, t);
     SDL_ReleaseWindowFromGPUDevice(device_, window_);
     SDL_DestroyGPUDevice(device_);
@@ -143,18 +147,50 @@ bool Renderer::init(SDL_Window* window, bool vsync) {
     SDL_GPUShader* wireFs = shader(src, "wire_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
     SDL_GPUShader* plantVs = shader(src, "plant_vs", SDL_GPU_SHADERSTAGE_VERTEX, 2, 2);
     SDL_GPUShader* plantFs = shader(src, "plant_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
-    if (voxelVs && voxelFs && waterFs && skyVs && skyFs && wireFs && plantVs && plantFs) {
+    SDL_GPUShader* particleVs = shader(src, "particle_vs", SDL_GPU_SHADERSTAGE_VERTEX, 1, 1);
+    SDL_GPUShader* particleFs = shader(src, "particle_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
+    SDL_GPUShader* ribbonVs = shader(src, "ribbon_vs", SDL_GPU_SHADERSTAGE_VERTEX, 1, 1);
+    SDL_GPUShader* ribbonFs = shader(src, "ribbon_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
+    if (voxelVs && voxelFs && waterFs && skyVs && skyFs && wireFs && plantVs && plantFs && particleVs && particleFs && ribbonVs && ribbonFs) {
         sky_ = pipeline(skyVs, skyFs, false, false, false, SDL_GPU_CULLMODE_NONE);
         opaque_ = pipeline(voxelVs, voxelFs, true, true, false, SDL_GPU_CULLMODE_BACK);
         water_ = pipeline(voxelVs, waterFs, true, false, true, SDL_GPU_CULLMODE_NONE);
         wire_ = pipeline(voxelVs, wireFs, true, false, false, SDL_GPU_CULLMODE_BACK, SDL_GPU_FILLMODE_LINE);
         plants_ = pipeline(plantVs, plantFs, true, true, false, SDL_GPU_CULLMODE_BACK);
+        particles_ = pipeline(particleVs, particleFs, true, true, false, SDL_GPU_CULLMODE_BACK);
+        ribbon_ = pipeline(ribbonVs, ribbonFs, true, false, true, SDL_GPU_CULLMODE_NONE);  // see-through, both sides, after the opaque
     }
-    for (auto* s : {voxelVs, voxelFs, waterFs, skyVs, skyFs, wireFs, plantVs, plantFs}) if (s) SDL_ReleaseGPUShader(device_, s);
-    if (!sky_ || !opaque_ || !water_ || !wire_ || !plants_) {
+    for (auto* s : {voxelVs, voxelFs, waterFs, skyVs, skyFs, wireFs, plantVs, plantFs, particleVs, particleFs, ribbonVs, ribbonFs})
+        if (s) SDL_ReleaseGPUShader(device_, s);
+    if (!sky_ || !opaque_ || !water_ || !wire_ || !plants_ || !particles_ || !ribbon_) {
         std::println(stderr, "pipeline creation failed: {}", SDL_GetError());
         return false;
     }
+    return true;
+}
+
+bool Renderer::stream(SDL_GPUCommandBuffer* cmd, Streamed& s, const void* data, uint32_t bytes) {
+    if (bytes > s.cap) {
+        if (s.buffer) SDL_ReleaseGPUBuffer(device_, s.buffer);
+        if (s.transfer) SDL_ReleaseGPUTransferBuffer(device_, s.transfer);
+        uint32_t cap = bytes + bytes / 2 + 16384;
+        s.buffer = upload(nullptr, 0, cap);
+        SDL_GPUTransferBufferCreateInfo ti{};
+        ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        ti.size = cap;
+        s.transfer = SDL_CreateGPUTransferBuffer(device_, &ti);
+        s.cap = s.buffer && s.transfer ? cap : 0;  // failed: try again next frame
+    }
+    // Cycling: frames still in flight keep the buffers they were given.
+    void* mapped = s.cap ? SDL_MapGPUTransferBuffer(device_, s.transfer, true) : nullptr;
+    if (!mapped) return false;
+    std::memcpy(mapped, data, bytes);
+    SDL_UnmapGPUTransferBuffer(device_, s.transfer);
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTransferBufferLocation src{s.transfer, 0};
+    SDL_GPUBufferRegion dst{s.buffer, 0, bytes};
+    SDL_UploadToGPUBuffer(copy, &src, &dst, true);
+    SDL_EndGPUCopyPass(copy);
     return true;
 }
 
@@ -500,32 +536,25 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     }
     stats.plantsDrawn = plantStage_.size();
     stats.plantQuadsDrawn = 0;
-    if (!plantStage_.empty()) {
-        uint32_t n = uint32_t(plantStage_.size()), bytes = n * uint32_t(sizeof(PlantInstance));
-        if (n > plantCap_) {
-            if (plantInstances_) SDL_ReleaseGPUBuffer(device_, plantInstances_);
-            if (plantTransfer_) SDL_ReleaseGPUTransferBuffer(device_, plantTransfer_);
-            uint32_t cap = n + n / 2 + 1024;
-            plantInstances_ = upload(nullptr, 0, cap * uint32_t(sizeof(PlantInstance)));
-            SDL_GPUTransferBufferCreateInfo ti{};
-            ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-            ti.size = cap * uint32_t(sizeof(PlantInstance));
-            plantTransfer_ = SDL_CreateGPUTransferBuffer(device_, &ti);
-            plantCap_ = plantTransfer_ ? cap : 0;  // failed: try again next frame
+    if (!plantStage_.empty() && !stream(cmd, plantInstances_, plantStage_.data(), uint32_t(plantStage_.size() * sizeof(PlantInstance))))
+        plantStage_.clear();
+
+    // Hit effects (ADR-058): each particle a cube lit by the light where it is, the smears as they are.
+    fxStage_.clear();
+    uint32_t ribbonVerts = 0;
+    if (frame.fx) {
+        for (const Particle& p : frame.fx->particles) {
+            glm::uvec3 c(glm::clamp(p.colour, 0.0f, 1.0f) * 255.0f + 0.5f);
+            uint8_t l = light_.get(glm::ivec3(glm::floor(p.pos)));
+            uint32_t lit = uint32_t(skyLight(l)) << 4 | blockLight(l);
+            fxStage_.push_back({glm::vec4(p.pos, drawnSize(p)), glm::uvec4(c.r | c.g << 8 | c.b << 16 | uint32_t(p.glow) << 24 | uint32_t(p.resting) << 25, lit, 0, 0)});
         }
-        // Cycling: frames still in flight keep the buffers they were given.
-        if (void* mapped = plantTransfer_ ? SDL_MapGPUTransferBuffer(device_, plantTransfer_, true) : nullptr) {
-            std::memcpy(mapped, plantStage_.data(), bytes);
-            SDL_UnmapGPUTransferBuffer(device_, plantTransfer_);
-            SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
-            SDL_GPUTransferBufferLocation src{plantTransfer_, 0};
-            SDL_GPUBufferRegion dst{plantInstances_, 0, bytes};
-            SDL_UploadToGPUBuffer(copy, &src, &dst, true);
-            SDL_EndGPUCopyPass(copy);
-        } else {
-            plantStage_.clear();
-        }
+        if (!fxStage_.empty() && !stream(cmd, fxParticles_, fxStage_.data(), uint32_t(fxStage_.size() * sizeof(FxInstance)))) fxStage_.clear();
+        const std::vector<RibbonVertex>& r = frame.fx->ribbon;
+        if (!r.empty() && stream(cmd, fxRibbon_, r.data(), uint32_t(r.size() * sizeof(RibbonVertex)))) ribbonVerts = uint32_t(r.size());
     }
+    stats.particlesDrawn = fxStage_.size();
+    stats.ribbonTriangles = ribbonVerts / 3;
 
     SDL_GPUColorTargetInfo color{};
     color.clear_color = {0.03f, 0.03f, 0.04f, 1};  // visible only with the sky off
@@ -582,7 +611,7 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     };
 
     auto drawPlants = [&] {  // one instanced draw per plant model
-        SDL_GPUBuffer* buffers[2] = {models_, plantInstances_};
+        SDL_GPUBuffer* buffers[2] = {models_, plantInstances_.buffer};
         SDL_BindGPUVertexStorageBuffers(pass, 0, buffers, 2);
         for (size_t k = 0; k < kPlantDraws; ++k) {
             uint32_t count = plantFirst[k + 1] - plantFirst[k];
@@ -609,9 +638,21 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
         drawChunks(0);
         if (settings.character) drawModels();
     }
+    if (!fxStage_.empty()) {  // a cube of 36 vertices per particle, one draw
+        SDL_BindGPUGraphicsPipeline(pass, particles_);
+        SDL_BindGPUVertexStorageBuffers(pass, 0, &fxParticles_.buffer, 1);
+        SDL_DrawGPUPrimitives(pass, 36, uint32_t(fxStage_.size()), 0, 0);
+        ++stats.drawCalls;
+    }
     if (settings.water) {
         SDL_BindGPUGraphicsPipeline(pass, water_);
         drawChunks(1);
+    }
+    if (ribbonVerts) {  // see-through: after everything opaque and the water
+        SDL_BindGPUGraphicsPipeline(pass, ribbon_);
+        SDL_BindGPUVertexStorageBuffers(pass, 0, &fxRibbon_.buffer, 1);
+        SDL_DrawGPUPrimitives(pass, ribbonVerts, 1, 0, 0);
+        ++stats.drawCalls;
     }
     SDL_EndGPURenderPass(pass);
 }

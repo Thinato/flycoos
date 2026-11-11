@@ -29,6 +29,7 @@
 #include "defs.h"
 #include "edit.h"
 #include "entity.h"
+#include "fx.h"
 #include "light.h"
 #include "lockon.h"
 #include "melee.h"
@@ -4808,6 +4809,7 @@ static void dataFiles() {
               "field 'damage': its weapon decides (only creatures without one have their own)"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "dummy", "damage": "slash"}])", "field 'damage': harmless creatures don't fight"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "wolf", "damage": "bite"}])", "field 'damage': must be one of slash, strike, pierce"},
+             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "blood": "green"}])", "field 'blood': must be red, splinters or dust"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "attackable": false, "resist": 0.2}])", "field 'resist': only attackable creatures are hit"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "wolf", "resist": {"slash": 2}}])", "field 'resist.slash': 2 is out of range -1..0.9"},
              {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "parryable": 1}])", "field 'parryable': must be true or false"},
@@ -10133,6 +10135,273 @@ static void throwables() {
 // Lasting deaths (ADR-056): nothing comes back. The dummy can't die (its hits show, its health stays), a villager
 // runs from a hit, corpses with nothing on them go once the player is far and can't see them, the player save keeps
 // who died, and a quest whose needed NPC dies fails, started or not.
+// Hit effects (ADR-058): what the sim tells them, what each hit throws out, how bits fly, land and go, the
+// cap, the blade's smear, and that none of it changes the sim.
+static void hitEffects() {
+    const int bandit = int(EntityKind::Bandit), dummy = int(EntityKind::TrainingDummy), ghoul = int(EntityKind::Ghoul);
+    CHECK(typeOf(EntityKind::Bandit).blood == Blood::Red && typeOf(EntityKind::TrainingDummy).blood == Blood::Splinters &&
+          typeOf(EntityKind::Ghoul).blood == Blood::Dust && typeOf(EntityKind::Wolf).blood == Blood::Red);
+    {  // where a blow came from reaches the sounds; plate is known; a guard's noises come from straight ahead
+        Session s{.world = meadow(), .seed = 3};
+        s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}}};
+        startSession(s);
+        for (int i = 0; i < 30; ++i) step(s, {}, kTick);
+        s.entities.reserve(8);  // the references below stay put while more spawn
+        Entity& b = spawnAhead(s.entities, s.world, s.player, EntityKind::Bandit, 1, 1.5f);
+        Strike st{1, 10, s.player.pos + glm::vec3(0.25f, 0, 0)};
+        st.canCrit = false;
+        s.sounds.clear();
+        strike(s.player, b, st, s.rng);
+        CHECK(b.body.hitFrom == st.from);
+        step(s, {}, kTick);
+        auto hurt = std::ranges::find_if(s.sounds, [&](const Sound& h) { return h.what == Noise::Hurt && h.kind == bandit; });
+        CHECK(hurt != s.sounds.end() && hurt->from == st.from && !hurt->plated);
+        Entity& guard = spawnAhead(s.entities, s.world, s.player, EntityKind::Guard, 3, 1.5f);
+        s.sounds.clear();
+        strike(s.player, guard, st, s.rng);
+        step(s, {}, kTick);
+        CHECK(std::ranges::any_of(s.sounds, [](const Sound& h) { return h.what == Noise::Hurt && h.kind == int(EntityKind::Guard) && h.plated; }));
+        strikePlayer(b, s.player, {1, 5, b.body.pos + glm::vec3(0, 0, 0.1f)}, s.rng);
+        CHECK(s.player.hitFrom == b.body.pos + glm::vec3(0, 0, 0.1f));
+        CHECK(plated(ModelGuard, {}) && !plated(ModelBandit, {}) && !plated(ModelPlayer, {}));
+        Inventory worn;
+        worn.equipped[SlotChest] = IronCuirass;
+        CHECK(plated(ModelPlayer, worn));
+        s.sounds.clear();
+        s.player.noise(Noise::Block);
+        step(s, {}, kTick);
+        auto block = std::ranges::find(s.sounds, Noise::Block, &Sound::what);
+        glm::vec3 ahead(std::sin(s.player.yaw), 0, std::cos(s.player.yaw));
+        CHECK(block != s.sounds.end() && glm::distance(block->from - block->pos, ahead) < 1e-4f);
+        Entity& never = spawnAhead(s.entities, s.world, s.player, EntityKind::Wolf, 2, 4);  // never struck (a poison death, say)
+        s.sounds.clear();
+        never.body.noise(Noise::Death);
+        step(s, {}, kTick);
+        auto death = std::ranges::find(s.sounds, Noise::Death, &Sound::what);
+        CHECK(death != s.sounds.end() && death->from == death->pos);  // from itself: no side, not the world's corner
+    }
+    // What each hit throws out (the eye at the origin, everything near it).
+    auto burst = [](const Sound& h, FxSettings set = {}) {
+        Fx fx;
+        fx.set = set;
+        spawnFx(fx, h, {});
+        return fx.particles;
+    };
+    auto glowing = [](const std::vector<Particle>& ps) { return int(std::ranges::count(ps, true, &Particle::glow)); };
+    auto red = [](const Particle& p) { return p.colour.r > 3 * p.colour.g && p.colour.r > 3 * p.colour.b; };
+    glm::vec3 from(-1, 0, 0);
+    Sound hit{.what = Noise::Hurt, .kind = bandit, .with = Shortsword, .amount = 0, .from = from};
+    auto light = burst(hit);
+    CHECK(light.size() == 6 && glowing(light) == 0 && std::ranges::all_of(light, red));
+    hit.amount = 30;
+    CHECK(burst(hit).size() == 12);  // 6 to 12 by how heavy the hit was
+    hit.amount = 300;
+    CHECK(burst(hit).size() == 12);
+    glm::vec3 flung(0);
+    for (const Particle& p : light) flung += p.vel;
+    CHECK(flung.x < 0 && flung.y > 0 && light[0].pos.y > 0.8f && light[0].pos.y < 1.4f && light[0].pos.x < -0.2f);  // out of the struck side, up
+    auto farHit = burst({.what = Noise::Hurt, .kind = bandit, .from = {-10, 0, 0}});
+    CHECK(std::abs(light[0].pos.x + 0.5f) < 0.1f && std::abs(farHit[0].pos.x + 0.8f) < 0.1f);  // halfway to the hitter, at most 0.8
+    CHECK(burst({.what = Noise::Death, .kind = bandit, .from = from}).size() == 22 && burst({.what = Noise::Crit, .kind = bandit, .from = from}).size() == 14);
+    CHECK(burst({.what = Noise::Hurt, .from = from}).size() == 6 && std::ranges::all_of(burst({.what = Noise::Hurt, .from = from}), red));  // the player bleeds too
+    auto splinters = burst({.what = Noise::Hurt, .kind = dummy, .from = from});
+    auto ofBlock = [](Block b) { return [b](const Particle& p) { return p.colour == glm::vec3(kPalette[b][0], kPalette[b][1], kPalette[b][2]); }; };
+    CHECK(splinters.size() == 6 && std::ranges::none_of(splinters, red) &&
+          std::ranges::all_of(splinters, [&](const Particle& p) { return ofBlock(Wood)(p) || ofBlock(Straw)(p); }));
+    auto dust = burst({.what = Noise::Hurt, .kind = ghoul, .from = from});
+    CHECK(dust.size() == 6 && std::ranges::none_of(dust, red) && glowing(dust) == 0);
+    auto plate = burst({.what = Noise::Hurt, .kind = int(EntityKind::Guard), .from = from, .plated = true});
+    CHECK(plate.size() == 9 && glowing(plate) == 3);  // 2-3 sparks off plate, over the blood
+    CHECK(glowing(burst({.what = Noise::Crit, .kind = int(EntityKind::Guard), .from = from, .plated = true})) == 0);
+    const ItemId buckler = defs().itemById.at("oak_buckler"), heater = defs().itemById.at("heater_shield");
+    auto sparks = burst({.what = Noise::Block, .with = Shortsword, .from = from});
+    glm::vec3 sprayed(0);
+    for (const Particle& p : sparks) sprayed += p.vel;
+    CHECK(sparks.size() == 10 && glowing(sparks) == 10 && sprayed.x < 0 && sprayed.y > 0);  // metal on metal: up, a little back toward the blow
+    CHECK(glowing(burst({.what = Noise::Block, .with = heater, .from = from})) == 10);
+    auto wood = burst({.what = Noise::Block, .with = buckler, .from = from});
+    CHECK(wood.size() == 8 && glowing(wood) == 2);  // a buckler's splinters, a spark or two
+    auto arms = burst({.what = Noise::Block, .from = from});
+    CHECK(arms.size() == 5 && glowing(arms) == 0);
+    CHECK(glowing(burst({.what = Noise::Parry, .from = from})) == 18 && glowing(burst({.what = Noise::PerfectGuard, .from = from})) == 10);
+    CHECK(glowing(burst({.what = Noise::Bounce, .from = from})) == 8 && burst({.what = Noise::GuardBreak, .with = buckler, .from = from}).size() == 24);
+    auto stone = burst({.what = Noise::Thunk, .ground = Stone, .from = from});
+    CHECK(stone.size() == 8 && glowing(stone) == 3 && std::ranges::count_if(stone, ofBlock(Stone)) == 5);
+    CHECK(burst({.what = Noise::Thunk, .ground = Dirt, .from = from}).size() == 5 && burst({.what = Noise::Thunk, .from = from}).empty());
+    CHECK(burst({.what = Noise::Step}).empty() && burst({.what = Noise::Swing, .with = Shortsword}).empty());
+    FxSettings off;
+    off.blood = false;
+    CHECK(burst(hit, off).empty() && burst({.what = Noise::Hurt, .kind = int(EntityKind::Guard), .from = from, .plated = true}, off).size() == 3);
+    off = {}, off.sparks = false;
+    CHECK(burst({.what = Noise::Block, .with = Shortsword, .from = from}, off).empty() && burst({.what = Noise::Block, .with = buckler, .from = from}, off).size() == 6);
+    off = {}, off.chips = false;
+    CHECK(burst({.what = Noise::Block, .from = from}, off).empty() && burst({.what = Noise::Thunk, .ground = Stone, .from = from}, off).size() == 3);
+    off = {}, off.amount = 2;
+    CHECK(burst(hit, off).size() == 24);
+    {  // out of reach of the eye: nothing
+        Fx fx;
+        Sound far = hit;
+        far.pos = {0, 0, fx.set.reach + 1};
+        spawnFx(fx, far, {});
+        CHECK(fx.particles.empty());
+    }
+    {  // blood flies, lands on the ground and lies there its while; sparks die where they land, within their life
+        Grid g = meadow();  // grass at y 3: the ground's top at 4
+        Fx fx;
+        spawnFx(fx, {.what = Noise::Death, .pos = {10, 4, 10}, .kind = bandit, .from = {9, 4, 10}}, {10, 6, 10});
+        spawnFx(fx, {.what = Noise::Parry, .pos = {20, 4, 20}, .from = {20, 4, 21}}, {10, 6, 10});
+        CHECK(fx.particles.size() == 40);
+        Particle first = fx.particles[0];
+        updateFx(fx, g, 0);
+        CHECK(fx.particles.size() == 40 && fx.particles[0].pos == first.pos && fx.particles[0].age == 0);  // paused
+        updateFx(fx, g, kTick);
+        CHECK(fx.particles[0].pos != first.pos && fx.particles[0].vel.y < first.vel.y);  // gravity
+        for (int i = 0; i < 18; ++i) updateFx(fx, g, kTick);  // 0.32 s
+        CHECK(glowing(fx.particles) == 0);
+        for (int i = 0; i < 120; ++i) updateFx(fx, g, kTick);
+        CHECK(fx.particles.size() == 22 && std::ranges::all_of(fx.particles, [](const Particle& p) {
+                  return p.resting && std::abs(p.pos.y - 4.01f) < 1e-4f && p.vel == glm::vec3(0) && p.life == FxSettings{}.bloodSeconds;
+              }));
+        float oldest = std::ranges::max(fx.particles, {}, &Particle::age).age;
+        Particle lying = fx.particles[0];
+        CHECK(drawnSize(lying) == lying.size);  // full size until its last quarter
+        lying.age = lying.life * 0.875f;
+        CHECK(std::abs(drawnSize(lying) - lying.size * 0.5f) < 1e-4f);
+        for (int i = 0; i < int((FxSettings{}.bloodSeconds - oldest) * 60) - 2; ++i) updateFx(fx, g, kTick);
+        CHECK(fx.particles.size() == 22);
+        for (int i = 0; i < 90; ++i) updateFx(fx, g, kTick);
+        CHECK(fx.particles.empty());  // faded within its 6 s on the ground
+        spawnFx(fx, {.what = Noise::Thunk, .pos = {10, 1.5f, 10}, .ground = Dirt, .from = {9, 1.5f, 10}}, {10, 6, 10});
+        CHECK(fx.particles.size() == 5);
+        updateFx(fx, g, kTick);
+        CHECK(fx.particles.empty());  // born inside the ground: gone, not stuck there
+        spawnFx(fx, {.what = Noise::Death, .pos = {10, 8, 10}, .kind = bandit, .from = {9, 8, 10}}, {10, 6, 10});
+        glm::vec3 was = fx.particles[0].pos, v = fx.particles[0].vel;
+        updateFx(fx, g, 1);  // a stalled frame counts as 0.05 s
+        CHECK(glm::distance(fx.particles[0].pos, was) < glm::length(v) * 0.05f + 0.1f);
+        fx.set.sparkSeconds = 5;  // long-lived sparks still die where they land
+        spawnFx(fx, {.what = Noise::Parry, .pos = {10, 4, 10}, .from = {10, 4, 11}}, {10, 6, 10});
+        for (int i = 0; i < 90; ++i) updateFx(fx, g, kTick);
+        CHECK(glowing(fx.particles) == 0);
+        Particle spark;
+        spark.glow = true, spark.life = 0.3f, spark.age = 0.15f;
+        CHECK(drawnSize(spark) < spark.size);  // sparks shrink as they go
+    }
+    {  // the cap: a new bit replaces the oldest; a lower cap drops the rest
+        Fx fx;
+        fx.set.cap = 50;
+        for (int i = 0; i < 6; ++i) spawnFx(fx, {.what = Noise::Hurt, .pos = {float(i), 0, 0}, .kind = bandit, .from = from}, {});
+        for (int i = 0; i < 3; ++i) spawnFx(fx, {.what = Noise::Parry, .from = from}, {});
+        CHECK(fx.particles.size() == 50 && glowing(fx.particles) == 50);  // 36 drops, then 54 sparks: every drop was older
+        fx.set.cap = 10;
+        updateFx(fx, meadow(), 0);
+        CHECK(fx.particles.size() == 10);
+        fx.set.cap = 0;
+        spawnFx(fx, hit, {});
+        updateFx(fx, meadow(), 0);
+        CHECK(fx.particles.empty());
+    }
+    {  // the smear: a fast blade leaves one, a slow or idle one none; it fades from the blade back, holds in hit-stop
+        auto at = [](Move m, float u) {  // u of the way through m
+            Player p;
+            p.move = m;
+            p.moveTime = u * moveLength(p);
+            return p;
+        };
+        const MoveSpec& light = spec(WeaponClass::Fists, Move::Light1);
+        CHECK(swingsBlade(at(Move::Light1, light.holdAt)) && swingsBlade(at(Move::Light1, light.impact + kSmearAfter - 0.01f)) && !swingsBlade(Player{}));
+        for (Move m : {Move::Parry, Move::Drink, Move::Shot, Move::Reload, Move::Throw})
+            for (float u = 0.05f; u < 1; u += 0.05f) CHECK(!swingsBlade(at(m, u)));  // no blade's strike
+        CHECK(!swingsBlade(at(Move::Light1, light.holdAt - 0.01f)) && !swingsBlade(at(Move::Light1, light.impact + kSmearAfter + 0.01f)));  // not the windup or the recovery
+        CHECK(!swingsBlade([] { Player p; p.move = Move::Parry; return p; }()) && !swingsBlade([] { Player p; p.move = Move::Shot; return p; }()));
+        glm::vec3 base, tip;
+        CHECK(bladeEdge(ModelSword, base, tip) && !bladeEdge(ModelBow, base, tip) && !bladeEdge(ModelPlayer, base, tip));
+        float sword = glm::distance(base, tip), dagger = 0, great = 0;
+        CHECK(bladeEdge(ModelDagger, base, tip) && (dagger = glm::distance(base, tip)) < sword);
+        CHECK(bladeEdge(ModelGreatsword, base, tip) && (great = glm::distance(base, tip)) > sword);  // sized by the weapon
+        Grid g = meadow();
+        Fx fx;
+        int body = 0;
+        auto pose = [](float x) { return glm::scale(glm::translate(glm::mat4(1), {x, 2, 0}), glm::vec3(0.1f)); };
+        auto frame = [&](float x, bool swinging = true, bool frozen = false, float dt = kTick) {
+            trailFx(fx, &body, ModelSword, pose(x), swinging, frozen);
+            updateFx(fx, g, dt);
+        };
+        frame(0);
+        CHECK(fx.trails.size() == 1 && fx.trails[0].samples.empty() && fx.ribbon.empty());
+        frame(0.2f, true, false, kTick / 2);  // 12 blocks/s; frames at 120 Hz from here
+        CHECK(fx.trails[0].samples.size() == 2 && fx.ribbon.size() == 24);  // from where it was: 4 steps of 2 triangles
+        frame(0.2f, true, false, kTick / 2);  // the frame between two ticks: the same edge
+        CHECK(fx.trails[0].samples.size() == 2);
+        frame(0.4f);
+        CHECK(fx.trails[0].samples.size() == 3 && fx.ribbon.size() == 48);
+        const RibbonVertex &hilt = fx.ribbon[fx.ribbon.size() - 1], &end = fx.ribbon[fx.ribbon.size() - 2];
+        CHECK(end.alpha > 0.7f && hilt.alpha < end.alpha * 0.3f && fx.ribbon[1].alpha < end.alpha - 0.1f);  // brightest at the tip, now
+        CHECK(std::abs(end.pos.y - (2 + 1.5f)) < 1e-4f);  // the sword's tip, 15 voxels up the grip
+        frame(0.41f);  // 0.6 blocks/s: too slow to add
+        CHECK(fx.trails[0].samples.size() == 3);
+        std::vector<float> ages;
+        for (const TrailSample& s : fx.trails[0].samples) ages.push_back(s.age);
+        frame(0.41f, true, true);  // hit-stop: held
+        for (size_t i = 0; i < ages.size(); ++i) CHECK(fx.trails[0].samples[i].age == ages[i]);
+        for (int i = 0; i < int(FxSettings{}.trailSeconds * 60) + 1; ++i) frame(0.41f);
+        CHECK(fx.trails[0].samples.empty() && fx.ribbon.empty());  // faded out
+        frame(0.6f, true, false, kTick / 2), frame(0.8f, true, false, kTick / 2);  // a swing, a pause, another while it's still showing
+        frame(0.8f, true, false, kTick / 2), frame(0.81f, true, false, kTick / 2);
+        frame(1.0f, true, false, kTick / 2);
+        CHECK(fx.trails[0].samples.size() == 4 && fx.ribbon.size() == 48);  // two smears, no band across the gap
+        frame(1.0f, true, true);  // held in hit-stop, then no longer drawn: it fades and goes
+        for (int i = 0; i < 10; ++i) updateFx(fx, g, kTick);
+        CHECK(fx.trails.empty());
+        frame(0.61f, false);  // fast, but not an attack
+        frame(0.81f, false);
+        CHECK(fx.trails[0].samples.empty());
+        frame(5);  // a jump: another body at this address, not a swing
+        CHECK(fx.trails[0].samples.empty());
+        fx.set.trails = false;
+        frame(5.2f);
+        CHECK(fx.trails[0].samples.empty());
+        updateFx(fx, g, kTick);  // not drawn this frame and nothing left: forgotten
+        CHECK(fx.trails.empty());
+        trailFx(fx, &body, ModelBow, pose(0), true, false);
+        CHECK(fx.trails.empty());  // a bow has no edge
+    }
+    {  // feeding the effects never changes the sim: the same fight with and without them
+        size_t most = 0, smear = 0;  // the most bits and smear triangles at once
+        auto fight = [&](bool effects, Fx& fx) {
+            Session s{.world = meadow(), .seed = 9};
+            s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}}};
+            startSession(s);
+            Entity& b = spawnAhead(s.entities, s.world, s.player, EntityKind::Bandit, 4, 1.8f);
+            damage(b, 1);  // it fights back
+            for (int i = 0; i < 600; ++i) {
+                SimInput in;
+                in.attack = i % 40 == 0;
+                in.guard = i % 200 > 150;
+                step(s, in, kTick);
+                if (effects) {
+                    for (const Sound& h : s.sounds) spawnFx(fx, h, s.player.pos);
+                    for (const Player* p : {&static_cast<const Player&>(s.player), &static_cast<const Player&>(s.entities[0].body)}) {
+                        glm::mat4 held(0);
+                        poseModel(*p, p == &s.player ? ModelPlayer : ModelBandit, &held);
+                        if (held != glm::mat4(0)) trailFx(fx, p, heldModel(*p), held, swingsBlade(*p), p->freeze > 0 && p->punching());
+                    }
+                    updateFx(fx, s.world, kTick);
+                    most = std::max(most, fx.particles.size()), smear = std::max(smear, fx.ribbon.size() / 3);
+                }
+                s.sounds.clear();
+            }
+            return s;
+        };
+        Fx fx, unused;
+        Session a = fight(true, fx), b = fight(false, unused);
+        CHECK(a.rng == b.rng && a.player.pos == b.player.pos && a.player.health == b.player.health);
+        CHECK(a.entities.size() == b.entities.size() && a.entities[0].body.pos == b.entities[0].body.pos &&
+              a.entities[0].body.health == b.entities[0].body.health);
+        CHECK(most >= 6 && smear > 0 && unused.particles.empty());  // the effects did run
+    }
+}
+
 static void lastingDeaths() {
     namespace fs = std::filesystem;
     auto flat = [](int size) {  // grass, no water
@@ -10520,6 +10789,7 @@ int main() {
     archers();
     crossbows();
     throwables();
+    hitEffects();
     arena();
     sounds();
     combat();

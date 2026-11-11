@@ -1113,6 +1113,7 @@ void strike(Player& player, Entity& target, const Strike& s, std::mt19937& rng, 
     if (killed || !guard) b.noise(killed ? Noise::Death : Noise::Hurt);  // a blocked hit sounds as the block
     if (crit && !guard) b.noise(Noise::Crit);
     b.hitWith = player.swingWeapon;
+    b.hitFrom = s.from;
     if (killed && events) events->push_back(Killed{target.kind, target.spawn.id});
     b.hitStance = s.riposte ? 100 : stance;
     if (!killed) staggerHit(target, stance, s.riposte);
@@ -1170,6 +1171,7 @@ void strikePlayer(Entity& e, Player& player, const Strike& s, std::mt19937& rng,
         if (crit && !guarded) player.noise(Noise::Crit);
         shake(player, std::min(0.6f, 1.5f * float(full) / float(maxHealth(sheet(player)))));  // by the share of its health it took
         player.hitWith = e.body.swingWeapon, player.hitStance = s.stance;
+        player.hitFrom = s.from;
     }
 }
 

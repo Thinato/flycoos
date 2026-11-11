@@ -19,6 +19,9 @@ enum class Temper { Harmless, Passive, Aggressive };  // passive: fights back on
 inline constexpr const char* kTemperNames[] = {"harmless", "passive", "aggressive"};  // their ids in data/creatures.json
 
 // Fixed traits per kind, from data/creatures.json (ADR-018).
+// What a hit on a creature throws out (ADR-058, fx.h): red drops, wood splinters, grave dust and bone chips.
+enum class Blood : uint8_t { Red, Splinters, Dust };
+
 struct EntityType {
     const char* name;  // null: a random villager name
     int level;
@@ -56,6 +59,7 @@ struct EntityType {
     std::string voice;
     float voicePitch;
     bool wooden;
+    Blood blood;        // what a hit on it throws out (ADR-058): blood, splinters (the dummy) or grave dust (ghouls)
     DamageType damage;  // what its attacks do without a weapon (ADR-040): teeth pierce, claws slash, tusks and fists strike
     PerType resist;     // the share of each damage type it shrugs off (negative: it's weak to it)
     // Its tactics (ADR-042, ADR-043): the longest string of hits it swings (1: single hits), the chance a

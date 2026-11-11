@@ -2732,3 +2732,98 @@
     `immortal`'s rules), the save round trip and timed corpses.
     Mutation-checked: 36 of 37 rules broken alone fail a test (the survivor, hitting a corpse, is
     equivalent: `hurt()` refuses a dead body, and an immortal one never dies).
+
+## ADR-058: Hit feedback: sparks, blood, chips and a white smear on the blade
+
+- **Status:** accepted (2026-11-11)
+- **Context:**
+  - The roadmap's Feel line "Hit sparks, blood, a slash trail on the blade". A landed hit showed a
+    damage number, a sound, hit-stop and (big ones) camera shake, but nothing at the point of impact.
+    A block and a hit looked the same apart from the number.
+  - Effects are presentation: they must not change the deterministic sim (ADR-017).
+  - Nothing like a particle system existed. Throwables' bursts (ADR-053) are one model each.
+- **Decision** (the user's calls: moderate blood with specks on the ground for about 6 s; a smooth
+  white smear, not voxels; smears on every bladed swing, the player's and NPCs'; ghouls throw grave
+  dust and bone; 2 to 3 sparks off plate on top of the blood):
+  - **One-way from the sim.** Each frame main.cpp hands the frame's `Sound`s (ADR-037) to `spawnFx`
+    before clearing them. `Sound` gained `from` (where the blow came from: `Combatant::hitFrom`, set
+    next to `hitWith` in `strike` and `strikePlayer`; a guard's noises: straight ahead of it; an
+    arrow's thunk: back along its flight) and `plated` (an iron cuirass or the guard). `Fx` has its
+    own RNG; the sim never reads it. `hitFrom` is written, never read, by the sim.
+  - **What each hit throws** (`fx.cpp`): a body hit throws its creature's new `blood` (data: `red`,
+    `splinters`, `dust`; the default follows `body`, so the dummy splinters; the ghoul is `dust`):
+    6 to 12 bits by the hit's stance damage, 22 on a death, 14 more on a crit. They come out where
+    the blow lands, halfway to the hitter (at most 0.8 blocks out), spraying wide and up. Plate adds
+    2 to 3 sparks. A block sparks (10); a small shield (the oak buckler) throws splinters and 2 sparks;
+    bare arms a puff of dust. A parry 18 sparks, a perfect guard 10, a bounce 8, a guard break 16. An
+    arrow into terrain throws chips of the block, and sparks off stone.
+  - **Particles** are flat-coloured voxel cubes, one colour all their life (ART.md). They fall; drops
+    and chips that land on an opaque voxel lie flat until they fade (blood 6 s, chips 1.5 s, the last
+    quarter shrinking); sparks glow and die where they land or after 0.15 to 0.3 s. At most 4096: a new
+    one replaces the oldest. Nothing spawns over 48 blocks from the eye. They advance by frame time
+    while the sim runs (a benchmark: one tick a frame).
+  - **The smear** is the one exception to the voxel look, at the user's request: a smooth white ribbon,
+    alpha-blended, no texture, unlit. Per body, `trailFx` takes the held item's pose each frame and the
+    weapon's edge (`bladeEdge`: the blade's line in its model, so the knife's is short and the
+    greatsword's long). While the body strikes (`swingsBlade`: from the hold point to 8% of the move
+    past the impact) and the tip moves at least 6 blocks/s, each new edge joins its samples, starting
+    from where the blade was. A sample fades out over 0.12 s, held during hit-stop. The ribbon is
+    smoothed with Catmull-Rom (4 steps between samples), 85% opaque at the blade, fading by age and
+    toward the hilt (20%). Fists, teeth, bows and throws leave none.
+  - **Drawing:** two small pipelines. Particles: one instanced draw (36 vertices a cube, 32 bytes an
+    instance with the light where it is), lit as a model's voxel, sparks unshaded. The ribbon: one
+    draw after the water, alpha-blended, no depth write, both sides. Both stream through a cycled
+    transfer buffer (`Renderer::stream`, which the plants' instances now use too).
+  - **Debug window, Effects tab:** each effect on or off, amount, lifetimes, the smear's speed and
+    length, reach, the cap, live particle and smear counts, the effects' time a frame, and buttons that
+    throw each burst in front of the player.
+- **Alternatives considered:**
+  - Voxel cubes for the smear too: the first design. The user preferred a simple white smear.
+  - Particles as model instances (one draw each, like arrows): a draw call per drop and a model per
+    colour; one instanced draw is cheaper and takes any colour.
+  - Effects in the sim (like the bursts' puffs): they'd be saved state that changes nothing, and their
+    random numbers would shift the fight replays.
+  - Deriving hits in main.cpp from state changes: a block and a hit look alike from outside (as for
+    sound, ADR-037).
+  - Ground decals for blood: a second system for what a resting, flattened drop already shows.
+  - A smear on the whole move: windups and recoveries smeared too; the strike window reads cleaner.
+- **Consequences:**
+  - The smear isn't voxel-styled; docs/ART.md's rules hold for everything else.
+  - New data: the creatures' `blood`. `Sound` and `Combatant` gained a field each (not saved).
+  - The renderer has two more pipelines; plants share the new streaming helper.
+  - Seen from the side, some drops hide behind the body hit; the Amount slider tunes it in play.
+  - Effects are made for every NPC within 48 blocks of the eye, in sight or not.
+  - A death by poison sprays from the side of the last blow (a body never struck: straight up).
+  - Smears are kept per body address: an erased NPC can hand its smear to the one moved into its
+    place for a frame (a jump of over 1.5 blocks starts none). Past the cap, new particles take the
+    slots in turn, which is mostly but not strictly the oldest.
+  - A stalled frame advances the effects by at most 0.05 s, so bits don't fall through the ground.
+  - **Performance:** A/B in the arena (a copy of `worlds/arena.flyw`): 22 NPCs (bandits,
+    wolves, ghouls, two chiefs) on the player in plate, who swings every 20 ticks; fixed camera,
+    1500 frames, 6 alternating runs each against 44a080e. Runs with a 1-second window hitch (one each
+    side) set aside. Mean frame 1.21 ms before (1.05 to 1.35) and 1.22 ms after (1.16 to 1.28); p99 medians
+    3.5 and 3.9 ms, within the run-to-run spread (2.0 to 4.5 both). At most 166 particles and 88 smear
+    triangles at once; the effects' CPU time at most 0.004 ms a frame. At 4x the amounts (654
+    particles) mean 1.12 to 1.19 ms; at 40x (4096, the cap, full the whole run) 1.23 to 1.28 ms and
+    0.036 ms of CPU. Measured before the review fixes (a dt clamp, the break between smears), which add
+    no work.
+  - **Tested:** `hitEffects()` in core_test: where a blow came from reaches the hurt sound, plate is
+    known (the guard, a cuirass, and through a real hit on a guard), a guard's noises come from ahead, a
+    body never struck sprays from itself; each noise's burst by count,
+    colour and glow (blood, splinters, dust, plate sparks without doubling on a crit, sword, heater,
+    buckler and bare-armed blocks, parry, perfect guard, bounce, guard break, arrows into stone, dirt
+    and a burst), the spray direction and the hit point (halfway to the hitter, at most 0.8 out), each
+    toggle and the amount, reach; flight under gravity, pausing, drops landing flat on the ground and
+    fading at 6 s, sparks dying where they land (even long-lived ones), bits born inside the ground
+    going, a stalled frame counting as 0.05 s, the shrinking; the cap replacing the oldest and a lowered cap; the
+    smear (a fast blade starts one from where it was, frames between ticks add nothing, slow or idle
+    blades, not swinging, a jump, the toggle, hit-stop holding it and letting go once the body isn't
+    drawn, fading, brightest at the tip, two swings with no band across the gap, the sword's tip,
+    forgetting a body, no edge for a bow, edges sized by weapon, the strike window and no smear for a
+    parry, drink, shot, reload or throw); and
+    the same fight with and without effects ending in the same state and RNG. The data check rejects a
+    bad `blood`.
+    Mutation-checked: each of 72 rules broken alone fails a test (where a blow came from, plate,
+    the creatures' blood and its data check, every burst's count, kind, place and direction, each toggle,
+    the amount, reach, the cap, gravity, landing and lying, fading, the smear's window, speed rule, start,
+    gap, hit-stop hold, fading, hilt fade and forgetting, the edges, the stall clamp).

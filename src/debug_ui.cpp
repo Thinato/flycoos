@@ -23,6 +23,47 @@
 #include "stream.h"
 #include "text.h"
 
+// Hit effects (ADR-058): each effect on or off, the amounts and lifetimes, what's live, and bursts to try.
+static void effectsTab(Fx& fx, const Session& session, const RenderStats& stats) {
+    FxSettings& s = fx.set;
+    ImGui::Checkbox("Sparks", &s.sparks);
+    ImGui::SameLine();
+    ImGui::Checkbox("Blood", &s.blood);
+    ImGui::SameLine();
+    ImGui::Checkbox("Chips", &s.chips);
+    ImGui::SameLine();
+    ImGui::Checkbox("Blade smear", &s.trails);
+    ImGui::SliderFloat("Amount", &s.amount, 0, 4, "x %.2f");
+    ImGui::SliderFloat("Blood on the ground", &s.bloodSeconds, 0.2f, 30, "%.1f s");
+    ImGui::SliderFloat("Chips on the ground", &s.chipSeconds, 0.2f, 10, "%.1f s");
+    ImGui::SliderFloat("Sparks", &s.sparkSeconds, 0.05f, 1, "%.2f s");
+    ImGui::SliderFloat("Smear fades over", &s.trailSeconds, 0.03f, 0.5f, "%.2f s");
+    ImGui::SliderFloat("Smear from tip speed", &s.trailSpeed, 0, 20, "%.1f blocks/s");
+    ImGui::SliderFloat("Reach from the eye", &s.reach, 5, 100, "%.0f blocks");
+    ImGui::SliderInt("Cap", &s.cap, 0, 16384);
+    int resting = 0;
+    for (const Particle& p : fx.particles) resting += p.resting;
+    ImGui::Text("Particles %d / %d (%d on the ground), drawn %zu", int(fx.particles.size()), s.cap, resting, stats.particlesDrawn);
+    ImGui::Text("Smears %d, %zu triangles; effects %.3f ms a frame", int(fx.trails.size()), stats.ribbonTriangles, double(fx.ms));
+    const Player& p = session.player;
+    glm::vec3 ahead = p.pos + glm::vec3(std::sin(p.yaw), 0, std::cos(p.yaw)) * 2.0f;  // a burst 2 blocks in front, as if hit from here
+    auto test = [&](const char* label, Noise what, int kind, ItemId with = NoItem) {
+        if (ImGui::Button(label)) spawnFx(fx, {what, ahead, kind, Air, Move::None, with, 20, p.pos, false}, p.pos);
+    };
+    test("Hurt (blood)", Noise::Hurt, -1);
+    ImGui::SameLine();
+    test("Death (blood)", Noise::Death, -1);
+    ImGui::SameLine();
+    test("Dummy (splinters)", Noise::Hurt, int(EntityKind::TrainingDummy));
+    ImGui::SameLine();
+    test("Ghoul (dust)", Noise::Hurt, int(EntityKind::Ghoul));
+    test("Block (sparks)", Noise::Block, -1, p.inv.equipped[SlotMainHand] ? p.inv.equipped[SlotMainHand] : Shortsword);
+    ImGui::SameLine();
+    test("Parry (sparks)", Noise::Parry, -1);
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) fx.particles.clear(), fx.trails.clear(), fx.oldest = 0;
+}
+
 // Sound (ADR-037): the volumes, what's playing, the ambience's look around, and every sound to try.
 static void audioTab(Audio& a, const Ambience* amb) {
     auto knob = [](const char* label, std::atomic<float>& v, float most) {  // the mixer reads them on its thread
@@ -1111,6 +1152,7 @@ void DebugUI::window(GameSettings& game, RenderSettings& render, Session& sessio
         if (ImGui::BeginTabItem("World")) { worldTab(game, session, stats, actions, stream); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Save")) { saveTab(savePath, saveStatus, saveNotes, autosave, saveLocked, actions); ImGui::EndTabItem(); }
         if (audio && ImGui::BeginTabItem("Audio")) { audioTab(*audio, ambience); ImGui::EndTabItem(); }
+        if (fx && ImGui::BeginTabItem("Effects")) { effectsTab(*fx, session, stats); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Stats")) {
             statsTab(frameMs_, frameIndex_);
             ImGui::Text("Sim ticks this frame %d (60 Hz), drawn %.2f into the next", ticks, tickAlpha);
