@@ -97,6 +97,8 @@ system is summarized in ADR-035.
 
 - [ ] Controls refactor, especially the PS5 controller: fewer button combinations (Triangle + R1 to
   two-hand, hold-vs-tap), simpler gestures for one action, rebinding
+  - Throwables on a pad: the throw is the touchpad press only (none on Xbox or Switch pads), and
+    readying another kind needs the Bags window (ADR-053)
 - [ ] Button prompts on the HUD: the button each action uses, e.g. a D-pad-down glyph at the
   flask's bottom left, the two-hand button by the 2H tag; keyboard or pad glyphs by the last device used
 - [ ] Accessibility: hold-to-toggle options (guard, sprint), input buffer and timing assists, readable prompts
