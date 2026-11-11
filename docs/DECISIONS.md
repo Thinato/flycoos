@@ -2648,7 +2648,8 @@
 ## ADR-056: Lasting deaths: nothing respawns, and quests need their people
 
 - **Status:** accepted (2026-11-11); supersedes ADR-018's and ADR-023's respawning (`respawn_seconds`).
-  The roadmap item's other half, a spawner for random populations out of view, is ADR-057's (next).
+  The roadmap item's other half, a spawner for random populations out of view, is on
+  docs/WORLD_ROADMAP.md.
 - **Context:**
   - Every NPC came back at its home, healed, 5 to 120 seconds after it died. Hakon the Red, the
     story's one named enemy, rose again after two minutes; the quest text said so ("from Hakon
@@ -2696,8 +2697,8 @@
     every marker's dead slots) and, per corpse, whether it stays and why; Quests shows each quest's needs
     and who of them is dead.
 - **Alternatives considered:**
-  - Respawning only common enemies on a long timer: the user chose nothing, with ADR-057's spawner
-    to fill the world back up (the procedural world makes up for what's lost).
+  - Respawning only common enemies on a long timer: the user chose nothing, with the spawner
+    (docs/WORLD_ROADMAP.md) to fill the world back up (the procedural world makes up for what's lost).
   - A dummy that respawns: the user wants it never to fall.
   - Deriving a quest's needs from its `talked_to` triggers: Maren Holt is one, and the quest doesn't
     need her. An explicit list says what the author means.
@@ -2705,7 +2706,8 @@
     keeping the corpse is the same promise with nothing new.
 - **Consequences:**
   - The story world empties as the player fights through it: three raiders, three wolves, two ghouls
-    and a boar, once each. ADR-057's spawner (mainly for the endless world) is what brings life back.
+    and a boar, once each. The spawner (docs/WORLD_ROADMAP.md, mainly for the endless world) is what
+    brings life back.
   - The endless world's five starting NPCs die for good in that save too.
   - A villager can be killed by a stray swing or a bomb in the village, and its quest goes with it.
   - The helm itself can still be destroyed from the bags (Ctrl+right-click), which leaves the quest

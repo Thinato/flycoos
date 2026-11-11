@@ -47,7 +47,9 @@ reach them.
 - An endless procedural world streamed around the player (ADR-031, 2026-11-07) ✅, the base for
   procedural quests, monsters and dungeons, so play doesn't wait on the story; the story world stays
 - A hand-authored story world: the fixed-size 1024×192×1024 world, generated once and then shaped
-  in the in-game editor (`--world worlds/story.flyw`). Story markers in the world file ✅
+  in the in-game editor (`--world worlds/story.flyw`). Story markers in the world file ✅.
+  Deprecated 2026-11-11: play moves to the endless world, combat tests to the arena. The world's
+  own plan is docs/WORLD_ROADMAP.md
 - Seas, rivers and lakes at their own levels; soft stone and snow lines (ADR-032) ✅
 - Biomes (grassland, desert, tundra, swamp), caves; LOD for distant terrain
 - Shadow maps for sun and moon; clouds; wind-animated foliage
