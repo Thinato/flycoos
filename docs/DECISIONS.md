@@ -3079,14 +3079,16 @@
     `phaseAt` and `roar`. `Entity` gained `phase`, `Player` a `roar` for the pose, `AiState` gained `Roar`,
     `Model` gained `ModelBarrowLord`. None of it is saved.
   - **Limits:**
-    - The boss AI still keeps a sword's length (ADR-049's limit), closer than the greataxe needs.
+    - The boss AI still keeps a sword's length (ADR-049's limit), closer than the greataxe needs (fixed in the
+      follow-ups below).
     - His 1.5x drawing is wider than the body's box (0.8): up close the model can overlap the player's.
     - A hit during the roar shows nothing.
     - His charge has no telegraph pose (ADR-057's charge pose is the boar's): he stands, turning after the
-      player, with the windup sound, then runs with the axe held out.
+      player, with the windup sound, then runs with the axe held out (fixed in the follow-ups below).
     - A roaring boss keeps its attack token, so in a pack the others wait out the roar too.
     - Damage numbers over the boss start at a nameplate's height (2.5), inside his crown: hud.cpp's
-      `top` has no case for him (left alone to keep the merge with the damage-number work clean).
+      `top` has no case for him (left alone to keep the merge with the damage-number work clean; fixed in
+      the follow-ups below).
     - The Entities tab's live attack tuning edits only a kind's first phase.
     - The territory is a circle on the map; nothing marks it in the world (no fog gate: the world roadmap).
   - **Performance:** the bar is a handful of rectangles and a line of text, only during a boss fight; no
@@ -3107,6 +3109,34 @@
     giving up, leaving, the hit from outside and the reset at home, the boss bar's choice and values, every
     data check, the save, and Ketil's numbers). Two rules were dropped as redundant: a stance clamp in
     `enterPhase` (updateCombat already clamps) and a roar guard on the stagger check (now in `criticalTarget`).
+- **Follow-ups (2026-11-12)** (the user asked for all three limits above to go, as one small change):
+  - **Long weapons keep their length.** `swingReach(body)` is the held weapon class's reach, the one `inReach`
+    hits within (a sword's and fists' are `kPunchReach`, 2). An NPC swings from just inside it (reach - 0.2), holds a little inside that (reach - 0.5),
+    spirals in to it with a pack, and goes on with a string while the player is within reach + 1. Every
+    shipped class but the great weapons reaches 2 blocks, so only a long-weapon NPC changes: Ketil now
+    swings from about 2.3 blocks and stands about 2 off (1.5 before). It applies to any NPC given a long weapon.
+  - **Text over bodies starts over their drawn top.** `overheadHeight(model)` is the larger of the old
+    hand-tuned heights (a humanoid 2.5, the chief 2.8, the boar 1.6, the wolf 1.9) and the top of the
+    model's parts, times its draw scale (`drawScale`, now shared with `poseModel`), plus 0.4. Every shipped
+    body keeps its height but Ketil's (3.0, over his crown at 2.6). hud.cpp's nameplate, speech and
+    damage-number base reads it (one line: ADR-060's `damageNumbers` is unchanged).
+  - **A humanoid charge telegraphs.** Any humanoid with a charge attack turns a shoulder in, drops low and
+    sets a foot back through its windup, head down, then leans into the run (model.cpp). The boar keeps
+    its own pose.
+  - **Re-pinned:** `storyNpcs()`'s boss bot now also steps in when its foe stands off out of its reach (the
+    greataxe outreaches the sword; it stood still before, and could no longer hit him). Against Ketil it wins
+    1 of 12 rather than 3, with about the same health left on average (-52 against -48), so his band is
+    "won 1 to 8, a mean between -80 and 30". The story fights (chief 33, wolves 31, ghouls 33), every
+    pinned replay and the attack-token circling are unchanged (no shipped NPC but Ketil holds a long weapon).
+  - **Tested:** `bossFollowUps()` in core_test: the reach by weapon (bare, sword, knife, greataxe,
+    greatsword); the overhead heights (the tuned ones kept, Ketil's over his drawn head, the player's and
+    the chief's too); Ketil's charge telegraph (head lower, torso and feet moved; the boar's pose its own);
+    a greatsword bandit swinging from farther and holding farther off than a knife bandit, and its string
+    going on at 3.2 blocks where a knife's ends. Mutation-checked: 10 of 11 rules broken alone fail a test.
+    The survivor, the pack's spiral radius, is equivalent in effect: an NPC walks that spiral only while out
+    of reach, and stops at its hold distance before it gets there.
+  - **Limits:** an NPC doesn't step back to its length when it's already closer (after a leap lands on the
+    player, Ketil stays where he landed). His charge's run lean fades out with the move, after the hit too.
 
 ## ADR-060: Flashes and typed damage numbers: a charge glow, parry and riposte flashes, a glyph per damage type
 

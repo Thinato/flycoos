@@ -50,6 +50,19 @@ static const PartSpec kWolf[PartCount] = {
 static bool quadruped(Model m) { return m == ModelBoar || m == ModelWolf; }
 static const PartSpec* specs(Model m) { return m == ModelDummy ? kDummy : m == ModelBoar ? kBoar : m == ModelWolf ? kWolf : kHumanoid; }
 
+// The chief is bigger and bulkier, the ghoul gaunt, the boss towers (ADR-059); only the drawing scales, not the body's box.
+static glm::vec3 drawScale(Model m) {
+    return m == ModelChief ? glm::vec3(1.25f, 1.12f, 1.25f) : m == ModelGhoul ? glm::vec3(0.82f, 1.06f, 0.82f)
+         : m == ModelBarrowLord ? glm::vec3(1.5f, 1.45f, 1.5f) : glm::vec3(1);
+}
+
+float overheadHeight(Model m) {
+    float top = 0;  // the drawn top of its parts, standing (voxels)
+    for (int p = 0; p < PartCount; ++p) top = std::max(top, specs(m)[p].center.y + float(specs(m)[p].size.y) / 2);
+    float tuned = m == ModelBoar ? 1.6f : m == ModelWolf ? 1.9f : m == ModelChief ? 2.8f : 2.5f;  // (the heights before, by eye)
+    return std::max(tuned, top * kVoxel * drawScale(m).y + 0.4f);
+}
+
 // Grey flanks under a brown saddle (plain greys read blue in the sky's light), pale chest and jaw,
 // brown legs, dark ears, paws and tail tip.
 static Block wolfVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
@@ -954,6 +967,14 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
         posture(0, 0.3f * k, 2 * k);
         off[FootL].z += k, off[FootR].z -= k;
     }
+    if (p.move == Move::Charge) {  // a charge (ADR-059's follow-ups): through the telegraph a shoulder turned in and dropped, a foot back; leaning into the run
+        const MoveSpec& m = spec(p);
+        float u = moveProgress(p), k = smooth(u / m.holdAt) * smooth((1 - u) / 0.2f);
+        bool running = u >= m.holdAt && p.hold <= 0;  // (and fading out after it: no sinking back into the telegraph)
+        posture(0.6f * k, (running ? 0.45f : 0.3f) * k, (running ? 0.5f : 1.5f) * k);
+        off[FootL].z += 1.5f * k, off[FootR].z -= 1.5f * k;
+        rot[Head].x += 0.25f * k;
+    }
     if (float k = p.roar > 0 ? smooth(p.roar / 0.15f) * smooth((1 - p.roar) / 0.15f) : 0; k > 0) {  // a boss's roar (ADR-059): arms flung wide, head back
         for (auto [h, side] : {std::pair{HandL, 1.0f}, std::pair{HandR, -1.0f}})
             off[h] = glm::mix(off[h], glm::vec3(8 * side, 17, 1) - kHumanoid[h].center, k);
@@ -1111,12 +1132,7 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
 
     glm::mat4 base = glm::translate(glm::mat4(1), drawPos(p, alpha));
     base = glm::rotate(base, drawYaw(p, alpha), {0, 1, 0});
-    // The chief is bigger and bulkier, the ghoul gaunt; only the drawing scales, not the body's box.
-    glm::vec3 scale = model == ModelChief       ? glm::vec3(1.25f, 1.12f, 1.25f)
-                      : model == ModelGhoul      ? glm::vec3(0.82f, 1.06f, 0.82f)
-                      : model == ModelBarrowLord ? glm::vec3(1.5f, 1.45f, 1.5f)  // the boss towers (ADR-059)
-                                                 : glm::vec3(1);
-    base = glm::scale(base, kVoxel * scale);
+    base = glm::scale(base, kVoxel * drawScale(model));
     std::array<glm::mat4, PartCount> out;
     for (int i = 0; i < PartCount; ++i) {
         bool tilted = !(model == ModelDummy && i == FootR);

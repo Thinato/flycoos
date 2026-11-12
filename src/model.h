@@ -42,6 +42,9 @@ glm::mat4 tumblePose(glm::vec3 at, float spin);
 glm::mat4 burstPose(glm::vec3 at, float radius, float u);
 Model shieldModel(ItemId shield);
 // How tall a body of `model` stands, in blocks (its hit box: hitBox).
+// Where text over a body starts (blocks above its feet): its nameplate, speech balloon and damage numbers. Above its
+// drawn top, scale and all, so a towering body's numbers don't start inside its head (ADR-059's follow-ups).
+float overheadHeight(Model m);
 constexpr float bodyHeight(Model m) {
     return m == ModelBoar || m == ModelWolf ? 1.1f : m == ModelChief ? 2.0f : m == ModelBarrowLord ? 2.6f : 1.8f;
 }

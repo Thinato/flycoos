@@ -595,7 +595,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
     float dist = glm::length(toTarget), range = glm::distance(target.pos, e.body.pos);  // range: in 3D (a cliff, another floor)
     glm::vec2 dir = dist > 1e-3f ? toTarget / dist : glm::vec2(0, 1);
     // In reach as inReach() counts it (about level), so a player up a pillar counts toward giving up.
-    bool fighter = t.temper != Temper::Harmless, inReach = dist < kPunchReach - 0.2f && std::abs(target.pos.y - e.body.pos.y) < kHeight;
+    bool fighter = t.temper != Temper::Harmless;
     // Sight (ADR-055): nothing solid from its eyes to the player's chest. Looked up once per update, and only when asked.
     int seen = -1;
     auto sees = [&] {
@@ -614,6 +614,10 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
     // (or closeIn, if that's farther: no flip-flopping between the two).
     if (ItemId& hand = e.body.inv.equipped[SlotMainHand]; t.sidearm && !e.body.punching())
         hand = e.angry() && dist < (hand == t.sidearm ? std::max(t.keepMin, gAi.closeIn) : gAi.closeIn) ? t.sidearm : t.weapon;
+    // Its weapon's reach (a sword's kPunchReach; a great weapon's more), after an archer's swap: where it swings from and holds
+    // (ADR-059's follow-ups). In reach as inReach() counts it (about level), so a player up a pillar counts toward giving up.
+    float reach = swingReach(e.body);
+    bool inReach = dist < reach - 0.2f && std::abs(target.pos.y - e.body.pos.y) < kHeight;
     if (fighter) answer(e, g, target, dir, dist, dt, in);
     if (e.attack >= int(t.attacks.size())) dropAttack(e);  // (defs reloaded with fewer)
     bool waits = target.heldBy && target.heldBy != e.id;  // another holds the player: the rest wait (ADR-057)
@@ -702,7 +706,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                     if (there) e.strafe = -e.strafe;  // blocked: the other way round
                 }
                 return in;
-            } else if (inReach && dist < kPunchReach - 0.5f) {  // a sword's length off: holds there, facing it, until it can swing
+            } else if (inReach && dist < reach - 0.5f) {  // its weapon's length off: holds there, facing it, until it can swing
                 turnToward(e.body, dir, dt);
                 return in;
             } else {
@@ -712,7 +716,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                     float off = std::remainder(e.side - at, 2 * std::numbers::pi_v<float>);
                     bool there = std::abs(off) < 0.4f;
                     float a = there ? e.side : at + std::clamp(off, -0.8f, 0.8f);
-                    float r = there ? kPunchReach - 0.5f : std::max(dist - 1.5f, 2.5f);  // spirals in
+                    float r = there ? reach - 0.5f : std::max(dist - 1.5f, 2.5f);  // spirals in
                     glm::vec2 to = xz(target.pos) + glm::vec2(std::sin(a), std::cos(a)) * r - xz(e.body.pos);
                     if (glm::length(to) > 0.05f) go = glm::normalize(to);
                 }
@@ -747,7 +751,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                 if (e.body.moveTime < holdTime(e.body) || e.body.hold > gMelee.trackSeconds) turnToward(e.body, dir, dt);
                 return in;
             }
-            if (e.string > 1 && !waits && e.body.punching() && target.alive() && dist < kPunchReach + 1) {  // a string, the target near:
+            if (e.string > 1 && !waits && e.body.punching() && target.alive() && dist < reach + 1) {  // a string, the target near:
                 if (moveProgress(e.body) >= spec(e.body).chain) nextInString(e, dir);  // the next hit from this one's chain point
                 return in;
             }
@@ -1069,6 +1073,8 @@ bool startPunch(Player& b, glm::vec2 aim, float windup) {
     b.swingTimer += swingTime(sheet(b, skillOf(b.swingWeapon)), weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
     return true;
 }
+
+float swingReach(const Player& b) { return weaponClass(classOf(b.weapon())).reach; }
 
 bool inReach(const Player& a, glm::vec3 target) {
     const WeaponClassDef& w = weaponClass(classOf(a.weapon()));  // a sword's: 2 blocks, 60 degrees; great weapons more (ADR-049)

@@ -317,8 +317,10 @@ are. Leave it, or fall, and it goes home, back to full health and its first phas
 - **Ketil the Unburied,** a towering barrow lord with a greataxe. In his first phase he swings slow
   strings, **sweeps** all round when you stand close or behind him, and **leaps** onto you from 6 to 14
   blocks. Below half health he roars, then swings longer, quicker strings with more delayed hits, adds a
-  **charge** from afar and a **grab** that no guard stops, hits harder and chills (frost). He takes three
-  parries to open, and only heavy hits make him flinch. In the arena, spawn him from the debug window.
+  **charge** from afar (he drops a shoulder and sets a foot back first) and a **grab** that no guard stops,
+  hits harder and chills (frost). He takes three parries to open, and only heavy hits make him flinch. He
+  keeps his greataxe's length from you, so step in to hit him with a sword. Any enemy with a long weapon
+  does the same. In the arena, spawn him from the debug window.
 
 Each weapon swings by its class (ADR-044): **daggers** slash and stab quickly but barely shake a
 foe's stance; the **sword** is the all-rounder; **axes** chop hard; **maces** smash, wear down

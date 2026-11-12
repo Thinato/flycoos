@@ -171,7 +171,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
 
     for (const Entity& e : entities) {
         Model model = e.type().model;
-        float top = model == ModelBoar ? 1.6f : model == ModelWolf ? 1.9f : model == ModelChief ? 2.8f : 2.5f;
+        float top = overheadHeight(model);  // above its drawn top, scale and all
         glm::vec3 head = drawPos(e.body, tickAlpha) + glm::vec3(0, top, 0);  // above the model
         glm::vec3 toHead = head - eye;
         float dist = glm::length(toHead);

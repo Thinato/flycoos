@@ -1105,7 +1105,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   markers save it: never renumber or reuse one). Reload defs in the Data tab, then place it with a
   spawn marker: the editor's Entity list, `mark`/`edit_marker` and the MCP schemas all read the
   loaded kinds. Code changes only for: a new body (a `Model` value and its painter in `model.cpp`,
-  its name in `kModelIds` in `defs.cpp`, its nameplate height in `hud.cpp` if it isn't humanoid
+  its name in `kModelIds` in `defs.cpp`, its nameplate height in `overheadHeight` (model.cpp) if its drawn top doesn't give it
   height); new loot (an item record, plus its icon in `inventory_ui.cpp`); or a kind that code must
   name (an `EntityKind` constant at its save id and its string id in `kEntityKindNames`, which
   loading checks).
@@ -1127,7 +1127,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   first three lights, holding its windup pose until `attack_windup` x 0.85..1.35 has passed, turning
   after the player until 0.12 s before the strike, then committed), the hit lands once at the impact
   frame if the player is still in reach and in front, then it stands `attack_recover` and chases
-  again; waiting for its next swing in reach it holds a sword's length off; the weapon's swing time
+  again; waiting for its next swing in reach it holds its weapon's length off (`swingReach`: a sword's
+  2 blocks, a great weapon's more; ADR-059's follow-ups); the weapon's swing time
   gates the cadence (the boar's swing is a head-down gore: drawn back, then lunging). A hit that
   makes it reel (ADR-035) puts it in `Stagger` (reason `flinched` or `stance_broken`) until it
   steadies, cancelling its windup; then it fights on. It gives

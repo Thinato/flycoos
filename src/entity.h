@@ -375,6 +375,9 @@ void rest(Player& b);
 // swing time since the last). It holds its windup pose so the hit lands `windup` seconds in (no
 // sooner than the move's own impact frame).
 bool startPunch(Player& attacker, glm::vec2 aim, float windup = 0);
+// How far `b`'s swings reach (blocks between feet): its weapon class's (a sword's and fists' kPunchReach), as inReach. An NPC swings
+// from just inside it and holds a little inside that (ADR-059's follow-ups: a greataxe keeps its length).
+float swingReach(const Player& b);
 // Whether a swing from `attacker` reaches feet position `target`: in reach, within 60 degrees of facing, about level.
 bool inReach(const Player& attacker, glm::vec3 target);
 // What a punch from `attacker` hits: the nearest living, attackable entity in reach.

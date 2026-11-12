@@ -2645,7 +2645,8 @@ static void storyNpcs() {
     // health left when the player goes down.
     Grid g = meadow();
     // (Another weapon in hand, ADR-049: it attacks when its light lands first.)
-    // (Against a boss, ADR-059: a flask when below 40 health with no strike due, and a roll out of a sweep.)
+    // (Against a boss, ADR-059: a flask when below 40 health with no strike due, a roll out of a sweep, and a step in
+    // when the boss stands off out of reach.)
     auto fight = [&](EntityKind kind, int count, bool geared, uint32_t seed, ItemId weapon = Shortsword, bool drinks = false) {
         Player player;
         player.pos = {20.5f, 4, 32.5f};
@@ -2708,8 +2709,11 @@ static void storyNpcs() {
                 still.roll = true, still.move = {from.y, -from.x};
                 melee.attack = melee.guard = false;
             }
+            // Against a boss it also steps in when its foe stands off out of its reach (a greataxe outreaches the sword).
+            bool stepIn = drinks && !still.roll && safe && !player.punching() && glm::length(flat(*foe)) >= reach;
+            if (stepIn) still.move = to;
             updateMelee(player, melee, still, 1 / 60.0f);
-            if (still.roll || player.rollTime < player.rollLength + 0.5f) updatePlayer(player, g, still, 1 / 60.0f);  // a roll moves it (else no physics, as before)
+            if (stepIn || still.roll || player.rollTime < player.rollLength + 0.5f) updatePlayer(player, g, still, 1 / 60.0f);  // a roll moves it (else no physics, as before)
             updateCombat(player, es, 1 / 60.0f, rng);
             if (!player.alive()) return -std::ranges::fold_left(es, 0.0f, [](float n, const Entity& e) { return n + e.body.health; });
         }
@@ -2756,8 +2760,8 @@ static void storyNpcs() {
         CHECK(won[0] >= 10 && won[1] >= 6 && won[2] >= 10);
     }
     CHECK(fight(EntityKind::Wolf, 3, true, 1) < 0);  // a pack of three is too much alone
-    {  // The first boss, Ketil (ADR-059), in Iron with the sword: standing and trading he always wins; drinking the three flasks
-       // and rolling out of his sweeps it's won now and then, narrowly. A player who also rolls his leaps and charges does better.
+    {  // The first boss, Ketil (ADR-059), in Iron with the sword: standing and trading he always wins; drinking the three flasks,
+       // rolling out of his sweeps and stepping in to reach him it's won now and then, narrowly. A player who also rolls his leaps and charges does better.
         float sum = 0;
         int won = 0, wonDry = 0;
         for (uint32_t seed = 1; seed <= kSeeds; ++seed) {
@@ -2765,7 +2769,9 @@ static void storyNpcs() {
             sum += r, won += r > 0, wonDry += fight(EntityKind(9), 1, true, seed) > 0;
         }
         std::println("boss fight: Ketil the Unburied, health left on average {:.0f}, won {} of {} (without flasks {})", sum / kSeeds, won, kSeeds, wonDry);
-        CHECK(wonDry == 0 && won >= 2 && won <= 8 && sum / kSeeds < 30);
+        // (Re-pinned for his greataxe's reach, ADR-059's follow-ups: the player has to step in to hit him, so it wins
+        // 1 of 12 rather than 3, with about the same health left on average, -52 against -48.)
+        CHECK(wonDry == 0 && won >= 1 && won <= 8 && sum / kSeeds > -80 && sum / kSeeds < 30);
     }
     // Their hits on that player: punch or sword + the attributes by its scaling x speed, less armor / (armor + 40 x level).
     std::mt19937 rng(3);
@@ -11972,8 +11978,8 @@ static void bosses() {
     heal = false;
     player.health = 0;
     bool down = false;
-    sim(300, [&](int) { down |= b->state == AiState::Return && reason(*b) == "target_down"; });
-    CHECK(down && b->state == AiState::Return && !bossBar(es, player));
+    sim(300, [&](int) { down |= b->state == AiState::Return && reason(*b) == "target_down"; });  // (once its attack under way is done)
+    CHECK(down && (b->state == AiState::Return || reason(*b) == "home") && !bossBar(es, player));  // (keeping its greataxe's length it may be home already)
     sim(15 * 60, none);
     CHECK(b->state == AiState::Wander && b->phase == 0 && b->body.health == float(maxHealth(sheet(b->body))));
 
@@ -12079,6 +12085,134 @@ static void bosses() {
     setDefs(std::move(shipped));
 }
 
+// ADR-059's follow-ups: NPCs keep their weapon's reach, text starts over a body's drawn top, a humanoid's charge
+// telegraphs.
+static void bossFollowUps() {
+    namespace fs = std::filesystem;
+    // The reach: a weapon class's, at least a sword's.
+    Player bare, b;
+    CHECK(swingReach(bare) == kPunchReach);
+    for (auto [id, want] : {std::pair{"iron_shortsword", 2.0f}, {"rusty_knife", 2.0f}, {"short_bow", 2.0f}, {"barrow_greataxe", 2.5f}, {"iron_greatsword", 2.6f}}) {
+        b.inv.equipped[SlotMainHand] = defs().itemById.at(id);
+        CHECK(swingReach(b) == want);
+    }
+    // Text over bodies: the tuned heights stay; the boss's is over his drawn top (1.8 x 1.45 blocks).
+    CHECK(overheadHeight(ModelPlayer) == 2.5f && overheadHeight(ModelVillager) == 2.5f && overheadHeight(ModelGhoul) == 2.5f &&
+          overheadHeight(ModelChief) == 2.8f && overheadHeight(ModelBoar) == 1.6f && overheadHeight(ModelWolf) == 1.9f);
+    CHECK(overheadHeight(ModelBarrowLord) > 1.8f * 1.45f + 0.3f && overheadHeight(ModelBarrowLord) < 3.2f);
+    {  // drawn: the boss's head top is under where its text starts, the player's too
+        Player body;
+        for (Model m : {ModelPlayer, ModelBarrowLord, ModelChief}) {
+            auto parts = poseModel(body, m);
+            glm::ivec3 size = buildPart(m, Head).size;
+            float top = -1e9f;
+            for (int c = 0; c < 8; ++c)
+                top = std::max(top, glm::vec3(parts[Head] * glm::vec4(c & 1 ? size.x : 0, c & 2 ? size.y : 0, c & 4 ? size.z : 0, 1)).y);
+            CHECK(top < overheadHeight(m) - 0.3f);
+        }
+    }
+    // A humanoid's charge (Ketil's second phase): through the telegraph its torso turns and drops and its head goes down;
+    // the boar's own pose is unchanged.
+    {
+        Grid flat({32, 8, 32});
+        for (int z = 0; z < 32; ++z)
+            for (int x = 0; x < 32; ++x) flat.set({x, 0, z}, Stone);
+        Player p;
+        p.teleport({16.5f, 1, 10.5f});
+        std::vector<Entity> es;
+        Entity& k = spawnAhead(es, flat, p, EntityKind(9), 3, 10);
+        enterPhase(k, 1);
+        auto idle = poseModel(k.body, ModelBarrowLord);
+        CHECK(k.type().attacks[2].type == AttackType::Charge);
+        startAttack(k, 2, glm::vec2(0, -1));
+        k.body.moveTime = holdTime(k.body);  // at its hold point, telegraphing
+        CHECK(k.body.move == Move::Charge && k.body.hold > 0);
+        auto wound = poseModel(k.body, ModelBarrowLord);
+        CHECK(wound[Head][3].y < idle[Head][3].y - 0.05f && wound[Torso] != idle[Torso] && wound[FootL][3] != idle[FootL][3]);
+        Entity& boar = spawnAhead(es, flat, p, EntityKind::Boar, 4, 10);
+        auto boarIdle = poseModel(boar.body, ModelBoar);
+        startAttack(boar, 0, glm::vec2(0, -1));
+        boar.body.moveTime = holdTime(boar.body);
+        auto boarWound = poseModel(boar.body, ModelBoar);
+        CHECK(boarWound[Head][3].y < boarIdle[Head][3].y);  // (head down, its own pose)
+    }
+    // NPCs keep their weapon's reach: a bandit with a greatsword swings from farther and holds farther off than one with a knife.
+    fs::path dir = fs::temp_directory_path() / "flycoos_reach_test";
+    fs::create_directories(dir);
+    copyWeaponClasses(dir);
+    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json", dir / "items.json", fs::copy_options::overwrite_existing);
+    std::ostringstream text;
+    text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
+    std::string creatures = text.str();
+    creatures.erase(creatures.rfind(']'));
+    std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,
+        {"id": "knifer", "save_id": 10, "copy_from": "bandit", "parry": null, "dodge": null, "back_off": null, "combo": null, "attacks": null},
+        {"id": "longsword", "save_id": 11, "copy_from": "knifer", "weapon": "iron_greatsword"},
+        {"id": "stringer", "save_id": 12, "copy_from": "longsword", "combo": 4},
+        {"id": "knife_stringer", "save_id": 13, "copy_from": "knifer", "combo": 4}])";
+    Defs test, shipped;
+    std::string error;
+    CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
+    if (!error.empty()) std::println(stderr, "FAIL reach data: {}", error);
+    fs::remove_all(dir);
+    CHECK(test.creatures.size() == 14);
+    if (test.creatures.size() != 14) return;
+    setDefs(std::move(test));
+    Grid g({48, 8, 48});
+    for (int z = 0; z < 48; ++z)
+        for (int x = 0; x < 48; ++x) g.set({x, 0, z}, Stone);
+    std::mt19937 rng(4);
+    auto approach = [&](EntityKind kind, float& swungFrom, float& heldAt) {  // the distance its first swing starts from, and the nearest it comes once settled
+        Player player;
+        player.teleport({24.5f, 1, 14.5f});
+        player.onGround = true;
+        std::vector<Entity> es;
+        Entity& e = spawnAhead(es, g, player, kind, 5, 8);
+        setState(e, AiState::Chase, "forced");
+        swungFrom = heldAt = -1;
+        for (int i = 0; i < 6 * 60; ++i) {
+            player.health = 100;
+            updateEntities(es, g, player, kTick);
+            separate(player, g, es);
+            updateCombat(player, es, kTick, rng);
+            float d = glm::distance(glm::vec2(e.body.pos.x, e.body.pos.z), glm::vec2(player.pos.x, player.pos.z));
+            if (swungFrom < 0 && e.state == AiState::Windup) swungFrom = d;
+            if (swungFrom >= 0 && i > 3 * 60) heldAt = heldAt < 0 ? d : std::min(heldAt, d);  // (settled: its nearest)
+        }
+    };
+    float knifeFrom, knifeHeld, longFrom, longHeld;
+    approach(EntityKind(10), knifeFrom, knifeHeld);
+    approach(EntityKind(11), longFrom, longHeld);
+    CHECK(knifeFrom > 0 && knifeFrom < kPunchReach - 0.2f && knifeHeld > 0 && knifeHeld < kPunchReach - 0.4f);  // a sword's length, as before
+    CHECK(longFrom >= kPunchReach - 0.2f && longFrom < 2.6f - 0.2f && longHeld >= 1.8f && longHeld < 2.6f);  // its greatsword's (it comes in about 1.4 and 1.9)
+    // A string goes on while the player is within its reach + 1: 3.2 off, a greatsword's next hit comes, a knife's doesn't.
+    auto stringAt = [&](EntityKind kind) {
+        Player player;
+        player.teleport({24.5f, 1, 14.5f});
+        player.onGround = true;
+        std::vector<Entity> es;
+        Entity& e = spawnAhead(es, g, player, kind, 6, 1.6f);
+        setState(e, AiState::Chase, "forced");
+        bool started = false, next = false;
+        for (int i = 0; i < 4 * 60 && !next; ++i) {
+            player.health = 100;
+            updateEntities(es, g, player, kTick);
+            updateCombat(player, es, kTick, rng);
+            if (!started && e.state == AiState::Windup && e.attack < 0) started = true, e.string = 3;
+            if (started) {  // the player steps back to 3.2 blocks in front of it
+                glm::vec2 fwd(std::sin(e.body.yaw), std::cos(e.body.yaw));
+                player.teleport(e.body.pos + glm::vec3(fwd.x, 0, fwd.y) * 3.2f);
+            }
+            std::string_view why = e.history[(e.transitions - 1) % e.history.size()].reason;
+            next |= started && e.state == AiState::Windup && (why == "combo" || why == "delayed");
+        }
+        CHECK(started);
+        return next;
+    };
+    CHECK(stringAt(EntityKind(12)) && !stringAt(EntityKind(13)));
+    setDefs(std::move(shipped));
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -12150,6 +12284,7 @@ int main() {
     lastingDeaths();
     creatureAttacks();
     bosses();
+    bossFollowUps();
     session();
     timedSpawns();
     ticks();
