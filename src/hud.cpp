@@ -148,6 +148,7 @@ void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world
         // box march the camera uses, with a thin box).
         const char* speech = e.speech();
         if (speech) balloon(dl, ImVec2(p.x, p.y - line - 10), speech, std::min(1.0f, e.speechTimer / 0.4f));
+        if (e.type().boss && e.body.alive()) continue;  // a boss has its bar at the bottom instead (drawBossBar, ADR-059)
         if (dist > kNameplateRange || cameraClearance(world, eye, toHead / dist, dist, 0.05f) < dist - 0.5f) {
             if (!speech && &e == target) hint(dl, p, 1, e);
             continue;
@@ -289,4 +290,50 @@ void drawNotice(const char* text, float age) {
     float alpha = std::min(1.0f, kNoticeSeconds - age);  // fades out over the last second
     ImVec2 screen = ImGui::GetIO().DisplaySize, size = ImGui::CalcTextSize(text);
     shadowText(ImGui::GetBackgroundDrawList(), ImVec2(screen.x / 2 - size.x / 2, screen.y * 0.08f), uiColor(1, 1, 1, alpha), alpha, text);
+}
+
+void drawBossBar(const std::vector<Entity>& entities, const Player& player) {
+    static uint32_t shown = 0;           // the boss the bar was last for (its id)
+    static std::string name;
+    static float chip = 1, chipWait = 0;  // the lagging chip of recent damage, and how long it holds before it drains
+    static float fade = 0, health = 0, stance = 0, flash = 0;
+    float dt = ImGui::GetIO().DeltaTime;
+    std::optional<BossBar> b = bossBar(entities, player);
+    if (b) {
+        if (b->boss->id != shown) shown = b->boss->id, chip = b->health, chipWait = 0;
+        name = b->boss->displayName();
+        if (b->health < health - 1e-4f) chipWait = 0.6f;  // fresh damage: the chip holds a moment
+        health = b->health, stance = b->stance, fade = 1;
+        flash = b->boss->body.broken ? flash + dt : 0;
+    } else {  // a boss just killed: its bar lingers, empty, and fades; otherwise (it left the fight) it goes at once
+        auto it = std::ranges::find(entities, shown, &Entity::id);
+        bool killed = it != entities.end() && !it->body.alive();
+        if (killed) health = stance = 0;
+        fade = killed ? std::max(0.0f, fade - dt / 2) : 0;
+    }
+    if (fade <= 0) return;
+    if (chipWait > 0) chipWait -= dt;
+    else chip = std::max(health, chip - 0.5f * dt);
+    chip = std::max(chip, health);  // (healed: no chip)
+
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    ImVec2 screen = ImGui::GetIO().DisplaySize;
+    float w = std::min(620.0f, screen.x * 0.6f), x = screen.x / 2 - w / 2, y = screen.y - 130;  // above the player's bars
+    float a = std::min(fade * 2, 1.0f);
+    dl->AddRectFilled(ImVec2(x - 8, y - 30), ImVec2(x + w + 8, y + 32), uiColor(0, 0, 0, 0.3f * a), 6);  // a backing: readable over sand or snow
+    ImFont* font = titleFont ? titleFont : ImGui::GetFont();  // the name in the region titles' font, a little large
+    float size = 22;
+    ImVec2 at(std::round(x), std::round(y - size - 4));
+    dl->AddText(font, size, ImVec2(at.x + 2, at.y + 2), uiColor(0, 0, 0, 0.8f * a), name.c_str());
+    dl->AddText(font, size, at, uiColor(0.95f, 0.9f, 0.8f, a), name.c_str());
+    ImVec2 lo(x, y), hi(x + w, y + 10);
+    dl->AddRectFilled(lo, hi, uiColor(0.05f, 0.05f, 0.05f, 0.75f * a), 2);
+    if (chip > health) dl->AddRectFilled(ImVec2(x + w * health, lo.y), ImVec2(x + w * chip, hi.y), uiColor(0.95f, 0.93f, 0.85f, a), 2);
+    if (health > 0) dl->AddRectFilled(lo, ImVec2(x + w * health, hi.y), uiColor(0.62f, 0.1f, 0.08f, a), 2);
+    dl->AddRect(lo, hi, uiColor(0, 0, 0, a), 2);
+    // Its stance under it: fills as hits wear it down toward a break, flashes while broken (open to a riposte).
+    float pulse = flash > 0 ? 0.5f + 0.5f * std::cos(flash * 12) : 0;
+    ImU32 amber = uiColor(1, 0.6f + 0.4f * pulse, 0.12f + 0.88f * pulse, a);
+    bar(dl, ImVec2(screen.x / 2, y + 17), ImVec2(w, 6), stance, amber, a);
+    if (b) statusBars(dl, ImVec2(screen.x / 2, y + 27), ImVec2(w * 0.4f, 4), 6, b->boss->body, a, false);  // its build-ups (frost, bleed, poison)
 }

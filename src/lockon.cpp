@@ -27,7 +27,7 @@ bool inSight(const Grid& world, glm::vec3 eye, glm::vec3 p) {
 
 glm::vec3 lockPoint(const Entity& e) {
     Model m = e.type().model;
-    float chest = m == ModelBoar || m == ModelWolf ? 0.7f : m == ModelChief ? 1.4f : 1.1f;
+    float chest = m == ModelBoar || m == ModelWolf ? 0.7f : m == ModelChief ? 1.4f : m == ModelBarrowLord ? 1.7f : 1.1f;
     return e.body.pos + glm::vec3(0, chest, 0);
 }
 

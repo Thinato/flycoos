@@ -432,9 +432,247 @@ void loadItems(const File& f, Defs& d) {
 constexpr std::pair<Model, const char*> kModelIds[] = {
     {ModelPlayer, "player"}, {ModelVillager, "villager"}, {ModelDummy, "dummy"}, {ModelBoar, "boar"}, {ModelBandit, "bandit"},
     {ModelWolf, "wolf"},     {ModelGuard, "guard"},       {ModelChief, "chief"}, {ModelGhoul, "ghoul"},
+    {ModelBarrowLord, "barrow_lord"},
 };
 // kEntityKindNames (story.h) are the ids code names (EntityKind constants) and the records they must be.
 static_assert(std::size(kEntityKindNames) == size_t(EntityKind::Count));
+
+// One creature record (its copy_from resolved), every field checked; its name aside (loadCreatures). A boss's phases
+// (ADR-059) are records too: this one merge-patched with each phase's fields.
+EntityType parseCreature(const Record& r, const Defs& d) {
+    auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
+    auto flag = [&](const char* key) {
+        if (!r.fields.contains(key)) return false;
+        if (!r.fields[key].is_boolean()) throw r.fail(key, "must be true or false");
+        return r.fields[key].get<bool>();
+    };
+    auto item = [&](const char* key) {
+        if (!given(key)) return NoItem;
+        const json& v = r.fields[key];
+        auto it = v.is_string() ? d.itemById.find(v.get<std::string>()) : d.itemById.end();
+        if (it == d.itemById.end()) throw r.fail(key, std::format("unknown item {}", v.dump()));
+        return it->second;
+    };
+    EntityType t{};
+    t.level = int(r.number(r.fields, "level", 1, 100));
+    if (!r.fields.contains("stats") || !r.fields["stats"].is_object())
+        throw r.fail("stats", "must be an object {stamina, strength, agility, intellect, spirit}");
+    const json& st = r.fields["stats"];
+    for (const auto& [k, v] : st.items())
+        if (k != "stamina" && k != "strength" && k != "agility" && k != "intellect" && k != "spirit") throw r.fail("stats." + k, "unknown field");
+    t.stats = {int(r.number(st, "stats.stamina", 1, 1000)), int(r.number(st, "stats.strength", 0, 1000)),
+               int(r.number(st, "stats.agility", 0, 1000)), int(r.number(st, "stats.intellect", 0, 1000)),
+               int(r.number(st, "stats.spirit", 0, 1000))};
+    t.attackable = flag("attackable"), t.wanders = flag("wanders"), t.talks = flag("talks");
+    const json* m = r.fields.contains("model") && r.fields["model"].is_string() ? &r.fields["model"] : nullptr;
+    auto model = std::ranges::find(kModelIds, m ? m->get<std::string>() : "", [](auto& p) { return std::string_view(p.second); });
+    if (model == std::end(kModelIds)) throw r.fail("model", "must be one of player, villager, dummy, boar, bandit, wolf, guard, chief, ghoul, barrow_lord");
+    t.model = model->first;
+    const json* tp = r.fields.contains("temper") && r.fields["temper"].is_string() ? &r.fields["temper"] : nullptr;
+    auto temper = std::ranges::find(kTemperNames, tp ? tp->get<std::string>() : "");
+    if (temper == std::end(kTemperNames)) throw r.fail("temper", "must be one of harmless, passive, aggressive");
+    t.temper = Temper(temper - std::begin(kTemperNames));
+    t.aggroRange = float(r.number(r.fields, "aggro_range", 0, 64, 0, false));
+    if (t.aggroRange > 0 && t.temper != Temper::Aggressive) throw r.fail("aggro_range", "only aggressive creatures attack on sight");
+    t.wanderRadius = float(r.number(r.fields, "wander_radius", 0, kMaxMarkerRadius, 0, false));
+    t.chaseSpeed = float(r.number(r.fields, "chase_speed", 0, 30, 0, false));
+    if (t.chaseSpeed <= 0 && t.temper != Temper::Harmless) throw r.fail("chase_speed", "missing (a creature that fights chases)");
+    t.weapon = item("weapon");
+    if (t.weapon && d.items[t.weapon].slot != SlotMainHand) throw r.fail("weapon", std::format("'{}' is not a main_hand item", d.itemIds[t.weapon]));
+    bool shoots = t.weapon && d.weaponClasses[size_t(d.items[t.weapon].weaponClass)].ranged;
+    t.loot = item("loot");
+    t.lootChance = float(r.number(r.fields, "loot_chance", 0, 1, 0, false));
+    if (t.lootChance > 0 && !t.loot) throw r.fail("loot_chance", "no 'loot' to drop");
+    t.rareLoot = item("rare_loot");  // rolled when `loot` isn't dropped (ADR-049)
+    t.rareChance = float(r.number(r.fields, "rare_loot_chance", 0, 1, 0, false));
+    if (t.rareChance > 0 && !t.rareLoot) throw r.fail("rare_loot_chance", "no 'rare_loot' to drop");
+    if (t.rareLoot && t.rareChance == 0) throw r.fail("rare_loot", "needs a rare_loot_chance");
+    if (t.rareLoot && t.lootChance >= 1) throw r.fail("rare_loot", "never dropped: loot_chance is 1");
+    t.immortal = flag("immortal");  // nothing respawns (ADR-056): a training dummy takes hits and no damage instead
+    if (t.immortal && !t.attackable) throw r.fail("immortal", "only attackable creatures are hit");
+    if (t.immortal && (t.loot || t.rareLoot)) throw r.fail("immortal", "it never dies to drop its loot");
+    // The AI's numbers (ADR-020): only for creatures that fight; the defaults are the AI before them.
+    for (const char* key : {"chase_range", "reaggro_cooldown", "give_up_seconds", "attack_windup",
+                            "attack_recover", "attack_cooldown", "flee_health"})
+        if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");
+    if (t.temper != Temper::Harmless && !t.wanders) throw r.fail("wanders", "must be true for a creature that fights (the AI moves it)");
+    // Pursuit (ADR-055): no leash from home; a chase ends past chase_range (from the NPC), out of sight or stuck.
+    t.chaseRange = float(r.number(r.fields, "chase_range", 8, 128, std::max(32.0f, 2 * t.aggroRange), false));
+    if (t.chaseRange <= t.aggroRange) throw r.fail("chase_range", "must be more than aggro_range (or it flaps at the edge)");
+    t.reaggroCooldown = float(r.number(r.fields, "reaggro_cooldown", 0, 60, 3, false));
+    t.giveUpSeconds = float(r.number(r.fields, "give_up_seconds", 0.5, 60, 5, false));
+    // A swing holds its windup pose until the hit is due (ADR-035): long enough to see coming.
+    t.windup = float(r.number(r.fields, "attack_windup", 0.05, 2, kDefaultWindup, false));
+    t.recover = float(r.number(r.fields, "attack_recover", 0, 2, kDefaultRecover, false));
+    t.cooldown = float(r.number(r.fields, "attack_cooldown", 0, 10, 0, false));
+    t.fleeHealth = float(r.number(r.fields, "flee_health", 0, 0.95, 0, false));
+    // Stance and poise (ADR-035): what it takes to break its stance, and the smallest hit that makes it flinch.
+    t.stance = float(r.number(r.fields, "stance", 0, 1000, 30, false));
+    t.poise = float(r.number(r.fields, "poise", 0, 1000, 0, false));
+    t.hitStance = float(r.number(r.fields, "hit_stance", 0, 1000, 15, false));
+    if (given("hit_stance") && t.temper == Temper::Harmless) throw r.fail("hit_stance", "harmless creatures don't fight");
+    if ((given("stance") || given("poise")) && !t.attackable) throw r.fail(given("stance") ? "stance" : "poise", "only attackable creatures are hit");
+    // Parries (ADR-036): whether its attacks can be parried, and how many it takes to open it to a riposte.
+    for (const char* key : {"parryable", "parries"})
+        if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");
+    t.parryable = !r.fields.contains("parryable") || flag("parryable");
+    t.parries = int(r.number(r.fields, "parries", 1, 10, 1));
+    if (given("parries") && !t.parryable) throw r.fail("parries", "it can't be parried");
+    // Character XP for killing one (ADR-027); by default only fighters that can be hurt give any.
+    bool gives = t.attackable && t.temper != Temper::Harmless;
+    t.xp = int(r.number(r.fields, "xp", 0, 100000, gives ? defaultKillXp(t.level) : 0));
+    if (t.xp && !t.attackable) throw r.fail("xp", "a creature that can't be hurt is never killed");
+    // Its sounds (ADR-037): a voice (the start of its sound names), its pitch, what its body sounds like hit.
+    t.voice = given("voice") ? r.text("voice") : "";
+    if (!std::ranges::all_of(t.voice, [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; }))
+        throw r.fail("voice", "must be lowercase letters and _ (it names sound files)");
+    t.voicePitch = float(r.number(r.fields, "voice_pitch", 0.5, 2, 1, false));
+    if (given("voice_pitch") && t.voice.empty()) throw r.fail("voice_pitch", "no 'voice' to pitch");
+    std::string body = given("body") ? r.text("body") : "flesh";
+    if (body != "flesh" && body != "wood") throw r.fail("body", "must be flesh or wood");
+    t.wooden = body == "wood";
+    std::string blood = given("blood") ? r.text("blood") : t.wooden ? "splinters" : "red";  // ADR-058
+    if (blood != "red" && blood != "splinters" && blood != "dust") throw r.fail("blood", "must be red, splinters or dust");
+    t.blood = blood == "red" ? Blood::Red : blood == "splinters" ? Blood::Splinters : Blood::Dust;
+    // Damage types (ADR-040): what its own attacks do (with no weapon: teeth, tusks, claws, fists) and
+    // what it resists (0.2: takes 20% less) or is weak to (-0.3: 30% more).
+    if (given("damage") && t.temper == Temper::Harmless) throw r.fail("damage", "harmless creatures don't fight");
+    if (given("damage") && t.weapon) throw r.fail("damage", "its weapon decides (only creatures without one have their own)");
+    t.damage = given("damage") ? damageType(r, r.fields["damage"], "damage") : DamageType::Strike;
+    if (given("resist") && !t.attackable) throw r.fail("resist", "only attackable creatures are hit");
+    t.resist = perType(r, given("resist") ? r.fields["resist"] : json(), "resist", -1, 0.9, 0);
+    if (given("mods")) t.mods = readMods(r, r.fields["mods"], "mods");  // its own (ADR-046): a bite that bleeds, a resist
+    // Tactics (ADR-042, ADR-043): strings of hits, delayed ones, and answers to the player's attacks.
+    for (const char* key : {"combo", "delay", "guard", "parry", "dodge", "back_off", "shield"})
+        if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");
+    t.combo = int(r.number(r.fields, "combo", 1, 4, 1));
+    t.delay = float(r.number(r.fields, "delay", 0, 1, 0, false));
+    if (t.delay > 0 && t.combo < 2) throw r.fail("delay", "only a hit after the first is delayed (needs a 'combo' of 2 or more)");
+    t.shield = item("shield");
+    if (t.shield && (t.model == ModelDummy || t.model == ModelBoar || t.model == ModelWolf)) throw r.fail("shield", "only creatures with hands hold one");
+    if (t.shield && d.items[t.shield].shield.size == ShieldSize::None) throw r.fail("shield", std::format("'{}' is not a shield", d.itemIds[t.shield]));
+    t.guard = float(r.number(r.fields, "guard", 0, 1, 0, false));
+    t.parry = float(r.number(r.fields, "parry", 0, 1, 0, false));
+    t.dodge = float(r.number(r.fields, "dodge", 0, 1, 0, false));
+    t.backOff = float(r.number(r.fields, "back_off", 0, 1, 0, false));
+    if (t.guard > 0 && !t.weapon && !t.shield) throw r.fail("guard", "bare-handed creatures don't guard (it needs a 'weapon' or a 'shield')");
+    float parriesWith = t.shield ? d.items[t.shield].shield.parry : t.weapon ? d.items[t.weapon].parry : 0;
+    if (t.parry > 0 && parriesWith <= 0) throw r.fail("parry", "nothing it holds parries (a shield that does, or a weapon with 'parry')");
+    if (t.guard + t.parry + t.dodge > 1) throw r.fail("dodge", "guard + parry + dodge are chances of one answer: at most 1 together");
+    // An archer (ADR-051): a ranged weapon goes with the range band it keeps, its aim and what it fights with up close.
+    for (const char* key : {"keep_range", "aim_error", "sidearm"})
+        if (given(key) && !shoots) throw r.fail(key, "only for a creature whose 'weapon' shoots (a bow)");
+    if (shoots && !given("keep_range")) throw r.fail("keep_range", "missing (a creature whose weapon shoots keeps its distance: [min, max] blocks)");
+    if (shoots) {
+        const json& k = r.fields["keep_range"];
+        if (!k.is_array() || k.size() != 2 || !k[0].is_number() || !k[1].is_number()) throw r.fail("keep_range", "must be [min, max] blocks");
+        t.keepMin = k[0].get<float>(), t.keepMax = k[1].get<float>();
+        if (!(t.keepMin >= 2 && t.keepMin < t.keepMax && t.keepMax <= 40)) throw r.fail("keep_range", "must be 2 <= min < max <= 40");
+        if (t.parry > 0 || t.guard > 0) throw r.fail(t.parry > 0 ? "parry" : "guard", "a bow doesn't guard or parry");
+        if (t.shield) throw r.fail("shield", "a bow is held in both hands");
+        if (d.weaponClasses[size_t(d.items[t.weapon].weaponClass)].loads) throw r.fail("weapon", "creatures can't reload a crossbow yet (ADR-052)");
+    }
+    t.aimError = float(r.number(r.fields, "aim_error", 0, 0.5, 0, false));
+    t.sidearm = item("sidearm");
+    if (t.sidearm && (d.items[t.sidearm].slot != SlotMainHand || d.weaponClasses[size_t(d.items[t.sidearm].weaponClass)].ranged))
+        throw r.fail("sidearm", std::format("'{}' is not a main_hand weapon that swings", d.itemIds[t.sidearm]));
+    // Its attacks beyond its swings (ADR-057): each a type (code) and its numbers.
+    if (given("attacks")) {
+        const json& list = r.fields["attacks"];
+        if (t.temper == Temper::Harmless) throw r.fail("attacks", "harmless creatures don't fight");
+        if (!list.is_array() || list.size() > kMaxAttacks) throw r.fail("attacks", std::format("must be a list of at most {} attacks", kMaxAttacks));
+        for (size_t i = 0; i < list.size(); ++i) {
+            const json& v = list[i];
+            std::string f = std::format("attacks[{}]", i);
+            if (!v.is_object()) throw r.fail(f, "must be an object {type, range, ...}");
+            const json* ty = v.contains("type") && v["type"].is_string() ? &v["type"] : nullptr;
+            auto type = std::ranges::find(kAttackTypeIds, ty ? ty->get<std::string>() : "");
+            if (type == std::end(kAttackTypeIds)) throw r.fail(f + ".type", "must be one of charge, leap, area, grab");
+            CreatureAttack a;
+            a.type = AttackType(type - std::begin(kAttackTypeIds));
+            std::vector<std::string_view> fields{"type", "range", "cooldown", "chance", "windup", "recover", "power", "stance", "hyperarmor"};
+            switch (a.type) {
+            case AttackType::Charge: fields.insert(fields.end(), {"block_stamina", "speed", "seconds"}); break;
+            case AttackType::Leap: fields.insert(fields.end(), {"block_stamina", "height", "reach"}); break;
+            case AttackType::Area: fields.insert(fields.end(), {"block_stamina", "radius"}); break;
+            case AttackType::Grab: fields.insert(fields.end(), {"reach", "hits", "interval"}); break;  // (no guard takes it)
+            case AttackType::Count: break;
+            }
+            for (const auto& [k, x] : v.items())
+                if (std::ranges::find(fields, std::string_view(k)) == fields.end())
+                    throw r.fail(f + "." + k, std::format("unknown field (for a {})", kAttackTypeIds[size_t(a.type)]));
+            const json* range = v.contains("range") ? &v["range"] : nullptr;
+            if (!range || !range->is_array() || range->size() != 2 || !(*range)[0].is_number() || !(*range)[1].is_number())
+                throw r.fail(f + ".range", "must be [min, max] blocks");
+            a.rangeMin = (*range)[0].get<float>(), a.rangeMax = (*range)[1].get<float>();
+            if (!(a.rangeMin >= 0 && a.rangeMin < a.rangeMax && a.rangeMax <= 40)) throw r.fail(f + ".range", "must be 0 <= min < max <= 40");
+            auto num = [&](const char* key, double lo, double hi, double def) { return float(r.number(v, f + "." + key, lo, hi, def, false)); };
+            a.cooldown = num("cooldown", 0, 120, 6);
+            a.chance = num("chance", 0, 1, 1);
+            a.windup = num("windup", 0.1, 3, 0.8);
+            a.recover = num("recover", 0, 3, 0.8);
+            a.power = num("power", 0, 10, 1);
+            a.stance = num("stance", 0, 1000, 20);
+            a.blockStamina = num("block_stamina", 0, 10, 1);
+            if (v.contains("hyperarmor") && !v["hyperarmor"].is_boolean()) throw r.fail(f + ".hyperarmor", "must be true or false");
+            a.hyperarmor = v.value("hyperarmor", false);
+            switch (a.type) {
+            case AttackType::Charge: a.speed = num("speed", 1, 40, kRequired), a.seconds = num("seconds", 0.1, 5, kRequired); break;
+            case AttackType::Leap: a.height = num("height", 2, 20, 8), a.reach = num("reach", 0.5, 6, 1.8); break;
+            case AttackType::Area: a.radius = num("radius", 0.5, 10, kRequired); break;
+            case AttackType::Grab:
+                a.reach = num("reach", 0.5, 4, 1.6), a.interval = num("interval", 0.1, 2, 0.45);
+                a.hits = int(r.number(v, f + ".hits", 1, 10, 3));
+                break;
+            case AttackType::Count: break;
+            }
+            t.attacks.push_back(a);
+        }
+    }
+    // A boss (ADR-059): its bar while it fights, a territory it fights to the end in, and its phases after the first.
+    t.boss = flag("boss");
+    if (t.boss && (t.temper == Temper::Harmless || !t.attackable)) throw r.fail("boss", "a boss fights and can be hit");
+    t.territory = float(r.number(r.fields, "territory", 0, kMaxMarkerRadius, 0, false));
+    if (t.territory > 0 && t.temper == Temper::Harmless) throw r.fail("territory", "harmless creatures don't fight");
+    if (given("phases")) {
+        const json& list = r.fields["phases"];
+        if (t.temper == Temper::Harmless || !t.attackable) throw r.fail("phases", "only creatures that fight and can be hit have phases");
+        if (!list.is_array() || list.empty() || list.size() >= kMaxPhases)
+            throw r.fail("phases", std::format("must be a list of 1 to {} phases (after the first)", kMaxPhases - 1));
+        float last = 1;
+        for (size_t i = 0; i < list.size(); ++i) {
+            const json& v = list[i];
+            std::string f = std::format("phases[{}]", i);
+            if (!v.is_object()) throw r.fail(f, "must be an object {at, roar, ...}");
+            static constexpr std::string_view kPhaseFields[] = {"at", "roar", "attacks", "combo", "delay", "attack_windup", "attack_recover",
+                                                                "attack_cooldown", "chase_speed", "stance", "poise", "hit_stance", "parries",
+                                                                "guard", "parry", "dodge", "back_off", "mods"};
+            for (const auto& [k, x] : v.items())
+                if (std::ranges::find(kPhaseFields, std::string_view(k)) == std::end(kPhaseFields))
+                    throw r.fail(f + "." + k, "unknown field (a phase changes only its fighting numbers)");
+            float at = float(r.number(v, f + ".at", 0.01, 0.99, kRequired, false));
+            if (at >= last) throw r.fail(f + ".at", "must be below the phase before's (phases come as health falls)");
+            last = at;
+            // The phase is the record merge-patched with its fields, checked as any record (a field set to null takes the default).
+            json patch = v, merged = r.fields;
+            patch.erase("at"), patch.erase("roar"), merged.erase("phases");
+            merged.merge_patch(patch);
+            EntityType p;
+            try {
+                p = parseCreature(Record{r.file, r.index, std::move(merged)}, d);
+            } catch (const Bad& e) {
+                throw Bad(std::format("{} (in {})", e.what(), f));
+            }
+            for (const Modifier& m : v.contains("mods") ? p.mods : std::vector<Modifier>{})  // (its own: inherited ones were the first phase's)
+                if (m.stat == Stat::Stamina || m.stat == Stat::MaxHealth)
+                    throw r.fail(f + ".mods", "a phase can't change max health (its thresholds are shares of it)");
+            p.phaseAt = at;
+            p.roar = float(r.number(v, f + ".roar", 0, 10, 2, false));
+            t.phases.push_back(std::move(p));
+        }
+    }
+    return t;
+}
 
 void loadCreatures(const File& f, Defs& d) {
     SaveIds saves{.first = 0};
@@ -445,198 +683,11 @@ void loadCreatures(const File& f, Defs& d) {
                  "reaggro_cooldown", "give_up_seconds", "attack_windup", "attack_recover", "attack_cooldown",
                  "flee_health", "xp", "stance", "poise", "hit_stance", "parryable", "parries", "voice", "voice_pitch", "body", "blood", "damage",
                  "resist", "combo", "delay", "guard", "parry", "dodge", "back_off", "shield", "mods", "keep_range", "aim_error", "sidearm",
-                 "attacks"});
+                 "attacks", "boss", "territory", "phases"});
         size_t save = saves.claim(r);
         auto given = [&](const char* key) { return r.fields.contains(key) && !r.fields[key].is_null(); };
-        auto flag = [&](const char* key) {
-            if (!r.fields.contains(key)) return false;
-            if (!r.fields[key].is_boolean()) throw r.fail(key, "must be true or false");
-            return r.fields[key].get<bool>();
-        };
-        auto item = [&](const char* key) {
-            if (!given(key)) return NoItem;
-            const json& v = r.fields[key];
-            auto it = v.is_string() ? d.itemById.find(v.get<std::string>()) : d.itemById.end();
-            if (it == d.itemById.end()) throw r.fail(key, std::format("unknown item {}", v.dump()));
-            return it->second;
-        };
-        EntityType t{};
         std::string name = given("name") ? r.text("name") : "";  // none: a random villager name
-        t.level = int(r.number(r.fields, "level", 1, 100));
-        if (!r.fields.contains("stats") || !r.fields["stats"].is_object())
-            throw r.fail("stats", "must be an object {stamina, strength, agility, intellect, spirit}");
-        const json& st = r.fields["stats"];
-        for (const auto& [k, v] : st.items())
-            if (k != "stamina" && k != "strength" && k != "agility" && k != "intellect" && k != "spirit") throw r.fail("stats." + k, "unknown field");
-        t.stats = {int(r.number(st, "stats.stamina", 1, 1000)), int(r.number(st, "stats.strength", 0, 1000)),
-                   int(r.number(st, "stats.agility", 0, 1000)), int(r.number(st, "stats.intellect", 0, 1000)),
-                   int(r.number(st, "stats.spirit", 0, 1000))};
-        t.attackable = flag("attackable"), t.wanders = flag("wanders"), t.talks = flag("talks");
-        const json* m = r.fields.contains("model") && r.fields["model"].is_string() ? &r.fields["model"] : nullptr;
-        auto model = std::ranges::find(kModelIds, m ? m->get<std::string>() : "", [](auto& p) { return std::string_view(p.second); });
-        if (model == std::end(kModelIds)) throw r.fail("model", "must be one of player, villager, dummy, boar, bandit, wolf, guard, chief, ghoul");
-        t.model = model->first;
-        const json* tp = r.fields.contains("temper") && r.fields["temper"].is_string() ? &r.fields["temper"] : nullptr;
-        auto temper = std::ranges::find(kTemperNames, tp ? tp->get<std::string>() : "");
-        if (temper == std::end(kTemperNames)) throw r.fail("temper", "must be one of harmless, passive, aggressive");
-        t.temper = Temper(temper - std::begin(kTemperNames));
-        t.aggroRange = float(r.number(r.fields, "aggro_range", 0, 64, 0, false));
-        if (t.aggroRange > 0 && t.temper != Temper::Aggressive) throw r.fail("aggro_range", "only aggressive creatures attack on sight");
-        t.wanderRadius = float(r.number(r.fields, "wander_radius", 0, kMaxMarkerRadius, 0, false));
-        t.chaseSpeed = float(r.number(r.fields, "chase_speed", 0, 30, 0, false));
-        if (t.chaseSpeed <= 0 && t.temper != Temper::Harmless) throw r.fail("chase_speed", "missing (a creature that fights chases)");
-        t.weapon = item("weapon");
-        if (t.weapon && d.items[t.weapon].slot != SlotMainHand) throw r.fail("weapon", std::format("'{}' is not a main_hand item", d.itemIds[t.weapon]));
-        bool shoots = t.weapon && d.weaponClasses[size_t(d.items[t.weapon].weaponClass)].ranged;
-        t.loot = item("loot");
-        t.lootChance = float(r.number(r.fields, "loot_chance", 0, 1, 0, false));
-        if (t.lootChance > 0 && !t.loot) throw r.fail("loot_chance", "no 'loot' to drop");
-        t.rareLoot = item("rare_loot");  // rolled when `loot` isn't dropped (ADR-049)
-        t.rareChance = float(r.number(r.fields, "rare_loot_chance", 0, 1, 0, false));
-        if (t.rareChance > 0 && !t.rareLoot) throw r.fail("rare_loot_chance", "no 'rare_loot' to drop");
-        if (t.rareLoot && t.rareChance == 0) throw r.fail("rare_loot", "needs a rare_loot_chance");
-        if (t.rareLoot && t.lootChance >= 1) throw r.fail("rare_loot", "never dropped: loot_chance is 1");
-        t.immortal = flag("immortal");  // nothing respawns (ADR-056): a training dummy takes hits and no damage instead
-        if (t.immortal && !t.attackable) throw r.fail("immortal", "only attackable creatures are hit");
-        if (t.immortal && (t.loot || t.rareLoot)) throw r.fail("immortal", "it never dies to drop its loot");
-        // The AI's numbers (ADR-020): only for creatures that fight; the defaults are the AI before them.
-        for (const char* key : {"chase_range", "reaggro_cooldown", "give_up_seconds", "attack_windup",
-                                "attack_recover", "attack_cooldown", "flee_health"})
-            if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");
-        if (t.temper != Temper::Harmless && !t.wanders) throw r.fail("wanders", "must be true for a creature that fights (the AI moves it)");
-        // Pursuit (ADR-055): no leash from home; a chase ends past chase_range (from the NPC), out of sight or stuck.
-        t.chaseRange = float(r.number(r.fields, "chase_range", 8, 128, std::max(32.0f, 2 * t.aggroRange), false));
-        if (t.chaseRange <= t.aggroRange) throw r.fail("chase_range", "must be more than aggro_range (or it flaps at the edge)");
-        t.reaggroCooldown = float(r.number(r.fields, "reaggro_cooldown", 0, 60, 3, false));
-        t.giveUpSeconds = float(r.number(r.fields, "give_up_seconds", 0.5, 60, 5, false));
-        // A swing holds its windup pose until the hit is due (ADR-035): long enough to see coming.
-        t.windup = float(r.number(r.fields, "attack_windup", 0.05, 2, kDefaultWindup, false));
-        t.recover = float(r.number(r.fields, "attack_recover", 0, 2, kDefaultRecover, false));
-        t.cooldown = float(r.number(r.fields, "attack_cooldown", 0, 10, 0, false));
-        t.fleeHealth = float(r.number(r.fields, "flee_health", 0, 0.95, 0, false));
-        // Stance and poise (ADR-035): what it takes to break its stance, and the smallest hit that makes it flinch.
-        t.stance = float(r.number(r.fields, "stance", 0, 1000, 30, false));
-        t.poise = float(r.number(r.fields, "poise", 0, 1000, 0, false));
-        t.hitStance = float(r.number(r.fields, "hit_stance", 0, 1000, 15, false));
-        if (given("hit_stance") && t.temper == Temper::Harmless) throw r.fail("hit_stance", "harmless creatures don't fight");
-        if ((given("stance") || given("poise")) && !t.attackable) throw r.fail(given("stance") ? "stance" : "poise", "only attackable creatures are hit");
-        // Parries (ADR-036): whether its attacks can be parried, and how many it takes to open it to a riposte.
-        for (const char* key : {"parryable", "parries"})
-            if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");
-        t.parryable = !r.fields.contains("parryable") || flag("parryable");
-        t.parries = int(r.number(r.fields, "parries", 1, 10, 1));
-        if (given("parries") && !t.parryable) throw r.fail("parries", "it can't be parried");
-        // Character XP for killing one (ADR-027); by default only fighters that can be hurt give any.
-        bool gives = t.attackable && t.temper != Temper::Harmless;
-        t.xp = int(r.number(r.fields, "xp", 0, 100000, gives ? defaultKillXp(t.level) : 0));
-        if (t.xp && !t.attackable) throw r.fail("xp", "a creature that can't be hurt is never killed");
-        // Its sounds (ADR-037): a voice (the start of its sound names), its pitch, what its body sounds like hit.
-        t.voice = given("voice") ? r.text("voice") : "";
-        if (!std::ranges::all_of(t.voice, [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; }))
-            throw r.fail("voice", "must be lowercase letters and _ (it names sound files)");
-        t.voicePitch = float(r.number(r.fields, "voice_pitch", 0.5, 2, 1, false));
-        if (given("voice_pitch") && t.voice.empty()) throw r.fail("voice_pitch", "no 'voice' to pitch");
-        std::string body = given("body") ? r.text("body") : "flesh";
-        if (body != "flesh" && body != "wood") throw r.fail("body", "must be flesh or wood");
-        t.wooden = body == "wood";
-        std::string blood = given("blood") ? r.text("blood") : t.wooden ? "splinters" : "red";  // ADR-058
-        if (blood != "red" && blood != "splinters" && blood != "dust") throw r.fail("blood", "must be red, splinters or dust");
-        t.blood = blood == "red" ? Blood::Red : blood == "splinters" ? Blood::Splinters : Blood::Dust;
-        // Damage types (ADR-040): what its own attacks do (with no weapon: teeth, tusks, claws, fists) and
-        // what it resists (0.2: takes 20% less) or is weak to (-0.3: 30% more).
-        if (given("damage") && t.temper == Temper::Harmless) throw r.fail("damage", "harmless creatures don't fight");
-        if (given("damage") && t.weapon) throw r.fail("damage", "its weapon decides (only creatures without one have their own)");
-        t.damage = given("damage") ? damageType(r, r.fields["damage"], "damage") : DamageType::Strike;
-        if (given("resist") && !t.attackable) throw r.fail("resist", "only attackable creatures are hit");
-        t.resist = perType(r, given("resist") ? r.fields["resist"] : json(), "resist", -1, 0.9, 0);
-        if (given("mods")) t.mods = readMods(r, r.fields["mods"], "mods");  // its own (ADR-046): a bite that bleeds, a resist
-        // Tactics (ADR-042, ADR-043): strings of hits, delayed ones, and answers to the player's attacks.
-        for (const char* key : {"combo", "delay", "guard", "parry", "dodge", "back_off", "shield"})
-            if (given(key) && t.temper == Temper::Harmless) throw r.fail(key, "harmless creatures don't fight");
-        t.combo = int(r.number(r.fields, "combo", 1, 4, 1));
-        t.delay = float(r.number(r.fields, "delay", 0, 1, 0, false));
-        if (t.delay > 0 && t.combo < 2) throw r.fail("delay", "only a hit after the first is delayed (needs a 'combo' of 2 or more)");
-        t.shield = item("shield");
-        if (t.shield && (t.model == ModelDummy || t.model == ModelBoar || t.model == ModelWolf)) throw r.fail("shield", "only creatures with hands hold one");
-        if (t.shield && d.items[t.shield].shield.size == ShieldSize::None) throw r.fail("shield", std::format("'{}' is not a shield", d.itemIds[t.shield]));
-        t.guard = float(r.number(r.fields, "guard", 0, 1, 0, false));
-        t.parry = float(r.number(r.fields, "parry", 0, 1, 0, false));
-        t.dodge = float(r.number(r.fields, "dodge", 0, 1, 0, false));
-        t.backOff = float(r.number(r.fields, "back_off", 0, 1, 0, false));
-        if (t.guard > 0 && !t.weapon && !t.shield) throw r.fail("guard", "bare-handed creatures don't guard (it needs a 'weapon' or a 'shield')");
-        float parriesWith = t.shield ? d.items[t.shield].shield.parry : t.weapon ? d.items[t.weapon].parry : 0;
-        if (t.parry > 0 && parriesWith <= 0) throw r.fail("parry", "nothing it holds parries (a shield that does, or a weapon with 'parry')");
-        if (t.guard + t.parry + t.dodge > 1) throw r.fail("dodge", "guard + parry + dodge are chances of one answer: at most 1 together");
-        // An archer (ADR-051): a ranged weapon goes with the range band it keeps, its aim and what it fights with up close.
-        for (const char* key : {"keep_range", "aim_error", "sidearm"})
-            if (given(key) && !shoots) throw r.fail(key, "only for a creature whose 'weapon' shoots (a bow)");
-        if (shoots && !given("keep_range")) throw r.fail("keep_range", "missing (a creature whose weapon shoots keeps its distance: [min, max] blocks)");
-        if (shoots) {
-            const json& k = r.fields["keep_range"];
-            if (!k.is_array() || k.size() != 2 || !k[0].is_number() || !k[1].is_number()) throw r.fail("keep_range", "must be [min, max] blocks");
-            t.keepMin = k[0].get<float>(), t.keepMax = k[1].get<float>();
-            if (!(t.keepMin >= 2 && t.keepMin < t.keepMax && t.keepMax <= 40)) throw r.fail("keep_range", "must be 2 <= min < max <= 40");
-            if (t.parry > 0 || t.guard > 0) throw r.fail(t.parry > 0 ? "parry" : "guard", "a bow doesn't guard or parry");
-            if (t.shield) throw r.fail("shield", "a bow is held in both hands");
-            if (d.weaponClasses[size_t(d.items[t.weapon].weaponClass)].loads) throw r.fail("weapon", "creatures can't reload a crossbow yet (ADR-052)");
-        }
-        t.aimError = float(r.number(r.fields, "aim_error", 0, 0.5, 0, false));
-        t.sidearm = item("sidearm");
-        if (t.sidearm && (d.items[t.sidearm].slot != SlotMainHand || d.weaponClasses[size_t(d.items[t.sidearm].weaponClass)].ranged))
-            throw r.fail("sidearm", std::format("'{}' is not a main_hand weapon that swings", d.itemIds[t.sidearm]));
-        // Its attacks beyond its swings (ADR-057): each a type (code) and its numbers.
-        if (given("attacks")) {
-            const json& list = r.fields["attacks"];
-            if (t.temper == Temper::Harmless) throw r.fail("attacks", "harmless creatures don't fight");
-            if (!list.is_array() || list.size() > kMaxAttacks) throw r.fail("attacks", std::format("must be a list of at most {} attacks", kMaxAttacks));
-            for (size_t i = 0; i < list.size(); ++i) {
-                const json& v = list[i];
-                std::string f = std::format("attacks[{}]", i);
-                if (!v.is_object()) throw r.fail(f, "must be an object {type, range, ...}");
-                const json* ty = v.contains("type") && v["type"].is_string() ? &v["type"] : nullptr;
-                auto type = std::ranges::find(kAttackTypeIds, ty ? ty->get<std::string>() : "");
-                if (type == std::end(kAttackTypeIds)) throw r.fail(f + ".type", "must be one of charge, leap, area, grab");
-                CreatureAttack a;
-                a.type = AttackType(type - std::begin(kAttackTypeIds));
-                std::vector<std::string_view> fields{"type", "range", "cooldown", "chance", "windup", "recover", "power", "stance", "hyperarmor"};
-                switch (a.type) {
-                case AttackType::Charge: fields.insert(fields.end(), {"block_stamina", "speed", "seconds"}); break;
-                case AttackType::Leap: fields.insert(fields.end(), {"block_stamina", "height", "reach"}); break;
-                case AttackType::Area: fields.insert(fields.end(), {"block_stamina", "radius"}); break;
-                case AttackType::Grab: fields.insert(fields.end(), {"reach", "hits", "interval"}); break;  // (no guard takes it)
-                case AttackType::Count: break;
-                }
-                for (const auto& [k, x] : v.items())
-                    if (std::ranges::find(fields, std::string_view(k)) == fields.end())
-                        throw r.fail(f + "." + k, std::format("unknown field (for a {})", kAttackTypeIds[size_t(a.type)]));
-                const json* range = v.contains("range") ? &v["range"] : nullptr;
-                if (!range || !range->is_array() || range->size() != 2 || !(*range)[0].is_number() || !(*range)[1].is_number())
-                    throw r.fail(f + ".range", "must be [min, max] blocks");
-                a.rangeMin = (*range)[0].get<float>(), a.rangeMax = (*range)[1].get<float>();
-                if (!(a.rangeMin >= 0 && a.rangeMin < a.rangeMax && a.rangeMax <= 40)) throw r.fail(f + ".range", "must be 0 <= min < max <= 40");
-                auto num = [&](const char* key, double lo, double hi, double def) { return float(r.number(v, f + "." + key, lo, hi, def, false)); };
-                a.cooldown = num("cooldown", 0, 120, 6);
-                a.chance = num("chance", 0, 1, 1);
-                a.windup = num("windup", 0.1, 3, 0.8);
-                a.recover = num("recover", 0, 3, 0.8);
-                a.power = num("power", 0, 10, 1);
-                a.stance = num("stance", 0, 1000, 20);
-                a.blockStamina = num("block_stamina", 0, 10, 1);
-                if (v.contains("hyperarmor") && !v["hyperarmor"].is_boolean()) throw r.fail(f + ".hyperarmor", "must be true or false");
-                a.hyperarmor = v.value("hyperarmor", false);
-                switch (a.type) {
-                case AttackType::Charge: a.speed = num("speed", 1, 40, kRequired), a.seconds = num("seconds", 0.1, 5, kRequired); break;
-                case AttackType::Leap: a.height = num("height", 2, 20, 8), a.reach = num("reach", 0.5, 6, 1.8); break;
-                case AttackType::Area: a.radius = num("radius", 0.5, 10, kRequired); break;
-                case AttackType::Grab:
-                    a.reach = num("reach", 0.5, 4, 1.6), a.interval = num("interval", 0.1, 2, 0.45);
-                    a.hits = int(r.number(v, f + ".hits", 1, 10, 3));
-                    break;
-                case AttackType::Count: break;
-                }
-                t.attacks.push_back(a);
-            }
-        }
+        EntityType t = parseCreature(r, d);
         if (d.creatures.size() <= save) d.creatures.resize(save + 1), d.creatureIds.resize(save + 1), d.creatureNames.resize(save + 1);
         d.creatures[save] = t;
         d.creatureIds[save] = r.id();
@@ -648,7 +699,10 @@ void loadCreatures(const File& f, Defs& d) {
         if (k >= d.creatureIds.size() || d.creatureIds[k] != kEntityKindNames[k])
             throw Bad(std::format("{}: save_id {} must be '{}' (code names it), not '{}'", f.path, k, kEntityKindNames[k],
                                   k < d.creatureIds.size() ? d.creatureIds[k] : "missing"));
-    for (size_t s = 0; s < d.creatures.size(); ++s) d.creatures[s].name = d.creatureNames[s].empty() ? nullptr : d.creatureNames[s].c_str();
+    for (size_t s = 0; s < d.creatures.size(); ++s) {
+        d.creatures[s].name = d.creatureNames[s].empty() ? nullptr : d.creatureNames[s].c_str();
+        for (EntityType& p : d.creatures[s].phases) p.name = d.creatures[s].name;
+    }
 }
 
 // ---- Skills and talents (ADR-027). Both files are optional: without skills.json skills never

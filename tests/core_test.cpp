@@ -1036,6 +1036,8 @@ static std::string codeItemCreatures() {
         for (size_t at; (at = text.find(bow)) != std::string::npos;) text.erase(at, text.find(',', text.find("loot_chance", at)) + 1 - at);
     if (size_t at = text.find(R"( "weapon": "short_bow",)"); at != std::string::npos)  // the archer's bow and all that goes with it: a bandit with fists
         text.erase(at, text.find(',', text.find("\"sidearm\"", at)) + 1 - at);
+    if (size_t at = text.find(R"( "weapon": "barrow_greataxe",)"); at != std::string::npos)  // the boss's greataxe (ADR-059): a boss with fists
+        text.erase(at, text.find(',', text.find("loot_chance", at)) + 1 - at);
     for (size_t at; (at = text.find(R"("shield": ")")) != std::string::npos;) {
         size_t from = text.rfind(',', at);
         text.erase(from, text.find('}', at) - from);
@@ -1569,7 +1571,7 @@ static void commands() {
     // catalog: what the MCP bridge builds its schemas from, read from the loaded defs
     c = run(R"({"cmd": "catalog"})");
     const nlohmann::json& cat = c.response["result"];
-    CHECK(ok(c) && cat["entities"].size() == size_t(EntityKind::Count) && cat["entities"][6]["id"] == "bandit_chief" &&
+    CHECK(ok(c) && cat["entities"].size() == size_t(EntityKind::Count) + 1 && cat["entities"][6]["id"] == "bandit_chief" &&
           cat["entities"][6]["loot"] == "Iron Helm" && cat["entities"][6]["temper"] == "aggressive" && cat["entities"][1]["name"].is_null() &&
           cat["entities"][1]["wander_radius"] == 12 && cat["materials"].size() == BlockCount && cat["solid_materials"].size() == BlockCount - 8 &&
           cat["materials"][Ember] == "Ember" && cat["materials"][Lantern] == "Lantern" &&
@@ -2290,7 +2292,7 @@ static void markers() {
     CHECK(checkMarker(g, bad));
     bad = poi, bad.kind = MarkerKind(9);
     CHECK(checkMarker(g, bad));
-    bad = poi, bad.entity = EntityKind::Count;
+    bad = poi, bad.entity = EntityKind(defs().creatures.size());
     CHECK(checkMarker(g, bad));
     bad = poi, bad.count = 0;
     CHECK(checkMarker(g, bad));
@@ -2441,7 +2443,7 @@ static void markers() {
     CHECK(seal(u32(1) + good).empty() && loaded && loaded->size() == 1 && (*loaded)[0].name == "Well");
     for (const std::string& hostile : {
              u32(1) + one(4, 7, "Well", {10, 4, 10}, 8, 1, 1),            // unknown kind
-             u32(1) + one(4, 1, "Den", {10, 4, 10}, 8, 9, 1),             // unknown entity
+             u32(1) + one(4, 1, "Den", {10, 4, 10}, 8, 10, 1),            // unknown entity (the shipped run 0..9)
              u32(1) + one(4, 1, "Den", {10, 4, 10}, 8, 3, 200),           // huge count
              u32(1) + one(4, 1, "Den", {10, 4, 10}, 8, 3, 0),             // no count
              u32(1) + one(4, 2, "Well", {NAN, 4, 10}, 8, 1, 1),           // NaN
@@ -2643,7 +2645,8 @@ static void storyNpcs() {
     // health left when the player goes down.
     Grid g = meadow();
     // (Another weapon in hand, ADR-049: it attacks when its light lands first.)
-    auto fight = [&](EntityKind kind, int count, bool geared, uint32_t seed, ItemId weapon = Shortsword) {
+    // (Against a boss, ADR-059: a flask when below 40 health with no strike due, and a roll out of a sweep.)
+    auto fight = [&](EntityKind kind, int count, bool geared, uint32_t seed, ItemId weapon = Shortsword, bool drinks = false) {
         Player player;
         player.pos = {20.5f, 4, 32.5f};
         player.onGround = true, player.offGround = 0;  // standing (no physics here)
@@ -2683,6 +2686,7 @@ static void storyNpcs() {
             });
             bool safe = std::ranges::none_of(alive, [&](const Entity& e) { return due(e) < first; });  // a light lands first
             melee.attack = safe && glm::length(flat(*foe)) < reach && player.stamina > 15;
+            if (drinks && safe && player.health < 40 && player.flasks > 0 && !player.punching()) melee.drink = true, melee.attack = false;
             if (Entity* broken = criticalTarget(es, player)) melee.riposte = true, melee.aim = flat(*broken);
             // A foe's own attack about to land that a guard can't take (a grab) or barely can (a charge, a sweep: ADR-057):
             // a careful player rolls through it, sideways, instead of guarding or attacking.
@@ -2694,6 +2698,7 @@ static void storyNpcs() {
                 switch (a.type) {
                 case AttackType::Charge: return go <= 0 && (dist - gAi.chargeContact) / a.speed < 0.2f;
                 case AttackType::Grab: return go <= 0.05f && dist < a.reach + 1;
+                case AttackType::Area: return drinks && go <= 0.05f && dist < a.radius + 0.5f;  // (against a boss it rolls out of a sweep too)
                 default: return false;  // a guard takes a leap or a sweep (as a swing: guarded above when in reach)
                 }
             };
@@ -2751,6 +2756,17 @@ static void storyNpcs() {
         CHECK(won[0] >= 10 && won[1] >= 6 && won[2] >= 10);
     }
     CHECK(fight(EntityKind::Wolf, 3, true, 1) < 0);  // a pack of three is too much alone
+    {  // The first boss, Ketil (ADR-059), in Iron with the sword: standing and trading he always wins; drinking the three flasks
+       // and rolling out of his sweeps it's won now and then, narrowly. A player who also rolls his leaps and charges does better.
+        float sum = 0;
+        int won = 0, wonDry = 0;
+        for (uint32_t seed = 1; seed <= kSeeds; ++seed) {
+            float r = fight(EntityKind(9), 1, true, seed, Shortsword, true);
+            sum += r, won += r > 0, wonDry += fight(EntityKind(9), 1, true, seed) > 0;
+        }
+        std::println("boss fight: Ketil the Unburied, health left on average {:.0f}, won {} of {} (without flasks {})", sum / kSeeds, won, kSeeds, wonDry);
+        CHECK(wonDry == 0 && won >= 2 && won <= 8 && sum / kSeeds < 30);
+    }
     // Their hits on that player: punch or sword + the attributes by its scaling x speed, less armor / (armor + 40 x level).
     std::mt19937 rng(3);
     Player armored;
@@ -3556,10 +3572,10 @@ static void npcAi() {
     CHECK(boar->state != AiState::Dead && reason(*boar, boar->state == AiState::Wander ? 0 : 1) == "respawned");
 
     // Fleeing: a test-only kind, a boar that runs below half health, then goes home and heals.
-    setDefs(plainDefs(R"(,{"id": "coward", "save_id": 9, "copy_from": "boar", "flee_health": 0.5})"));
+    setDefs(plainDefs(R"(,{"id": "coward", "save_id": 10, "copy_from": "boar", "flee_health": 0.5})"));
     fs::remove_all(dir);
     player.pos = home + glm::vec3(-3, 0, 0);
-    Entity* coward = spawn(EntityKind(9));
+    Entity* coward = spawn(EntityKind(10));
     CHECK(coward->type().fleeHealth == 0.5f);
     damage(*coward, 10);
     sim(1, none);
@@ -4766,88 +4782,88 @@ static void dataFiles() {
     auto writeCreatures = [&](std::string_view text) { std::ofstream(dir / "creatures.json") << text; };
     std::string scarecrow = creatures;
     scarecrow.replace(scarecrow.find(R"("id": "dummy")"), std::string_view(R"("id": "dummy")").size(), R"("id": "scarecrow")");
-    CHECK(shipped.creatures.size() == size_t(EntityKind::Count) && shipped.creatureById.at("ghoul") == EntityKind::Ghoul &&
+    CHECK(shipped.creatures.size() == size_t(EntityKind::Count) + 1 && shipped.creatureById.at("ghoul") == EntityKind::Ghoul &&
           shipped.creatures[1].name == nullptr && shipped.creatureIds[1] == "villager");
-    writeCreatures(creatures + R"(,{"id": "townsfolk", "save_id": 9, "copy_from": "villager", "chase_range": null}])");
+    writeCreatures(creatures + R"(,{"id": "townsfolk", "save_id": 10, "copy_from": "villager", "chase_range": null}])");
     CHECK(loadDefs(dir, grown, error));  // null is no AI number: fine on a harmless kind
     if (!error.empty()) std::println(stderr, "FAIL null AI key: {}", error);
-    writeCreatures(creatures + R"(,{"id": "boar_sow", "save_id": 9, "copy_from": "boar", "name": null, "stats": {"stamina": 14}, "loot": "wolf_pelt"}])");
-    CHECK(loadDefs(dir, grown, error) && grown.creatures.size() == 10 && grown.creatureById.at("boar_sow") == EntityKind(9));
+    writeCreatures(creatures + R"(,{"id": "boar_sow", "save_id": 10, "copy_from": "boar", "name": null, "stats": {"stamina": 14}, "loot": "wolf_pelt"}])");
+    CHECK(loadDefs(dir, grown, error) && grown.creatures.size() == 11 && grown.creatureById.at("boar_sow") == EntityKind(10));
     if (!error.empty()) std::println(stderr, "FAIL grown creatures: {}", error);
-    const EntityType& sow = grown.creatures[9];
+    const EntityType& sow = grown.creatures[10];
     CHECK(sow.name == nullptr && sow.stats.stamina == 14 && sow.stats.strength == 2 && sow.model == ModelBoar &&
           sow.temper == Temper::Passive && sow.loot == WolfPelt && sow.lootChance == 0.75f && !sow.immortal);
     for (auto [text, want] : std::initializer_list<std::pair<std::string, std::string_view>>{
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "loot": "boar_hide"}])",
-              "record 9 'a': field 'loot': unknown item \"boar_hide\""},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "weapon": 3}])", "field 'weapon': unknown item 3"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "weapon": "boar_skin"}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "loot": "boar_hide"}])",
+              "record 10 'a': field 'loot': unknown item \"boar_hide\""},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "bandit", "weapon": 3}])", "field 'weapon': unknown item 3"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "bandit", "weapon": "boar_skin"}])",
               "field 'weapon': 'boar_skin' is not a main_hand item"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "model": "dragon"}])", "record 9 'a': field 'model': must be one of"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "model": "sword"}])", "field 'model': must be one of"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "temper": "angry"}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "model": "dragon"}])", "record 10 'a': field 'model': must be one of"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "model": "sword"}])", "field 'model': must be one of"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "temper": "angry"}])",
               "field 'temper': must be one of harmless, passive, aggressive"},
              {creatures + R"(,{"id": "a", "save_id": 3, "copy_from": "boar"}])", "field 'save_id': 3 is already 'bandit'"},
              {creatures + R"(,{"id": "a", "save_id": -1, "copy_from": "boar"}])", "field 'save_id': -1 is out of range 0..255"},
-             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar"}])", "no record has save_id 9 (save ids run 0..10"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "aggro_range": 5}])",
+             {creatures + R"(,{"id": "a", "save_id": 11, "copy_from": "boar"}])", "no record has save_id 10 (save ids run 0..11"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "aggro_range": 5}])",
               "field 'aggro_range': only aggressive creatures attack on sight"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "loot": null}])", "field 'loot_chance': no 'loot' to drop"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "rare_loot_chance": 0.5}])", "field 'rare_loot_chance': no 'rare_loot' to drop"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "rare_loot": "wolf_pelt"}])", "field 'rare_loot': needs a rare_loot_chance"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "loot_chance": 1, "rare_loot": "wolf_pelt", "rare_loot_chance": 0.5}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "loot": null}])", "field 'loot_chance': no 'loot' to drop"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "rare_loot_chance": 0.5}])", "field 'rare_loot_chance': no 'rare_loot' to drop"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "rare_loot": "wolf_pelt"}])", "field 'rare_loot': needs a rare_loot_chance"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "loot_chance": 1, "rare_loot": "wolf_pelt", "rare_loot_chance": 0.5}])",
               "field 'rare_loot': never dropped: loot_chance is 1"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "rare_loot": "boar_hide", "rare_loot_chance": 0.5}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "rare_loot": "boar_hide", "rare_loot_chance": 0.5}])",
               "field 'rare_loot': unknown item \"boar_hide\""},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "rare_loot": "wolf_pelt", "rare_loot_chance": 2}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "rare_loot": "wolf_pelt", "rare_loot_chance": 2}])",
               "field 'rare_loot_chance': 2 is out of range"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "stats": {"luck": 3}}])", "field 'stats.luck': unknown field"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "stats": {"stamina": null}}])", "field 'stats.stamina': missing"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "attackable": 1}])", "field 'attackable': must be true or false"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "stats": {"stamina": 0}}])", "field 'stats.stamina': 0 is out of range 1..1000"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "chase_speed": null}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "stats": {"luck": 3}}])", "field 'stats.luck': unknown field"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "stats": {"stamina": null}}])", "field 'stats.stamina': missing"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "attackable": 1}])", "field 'attackable': must be true or false"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "stats": {"stamina": 0}}])", "field 'stats.stamina': 0 is out of range 1..1000"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "chase_speed": null}])",
               "field 'chase_speed': missing (a creature that fights chases)"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "loot_chance": 1.5}])", "field 'loot_chance': 1.5 is out of range"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "health": 50}])", "record 9 'a': field 'health': unknown field"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "model": "boar", "temper": "passive"}])", "field 'level': missing"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "respawn_seconds": 30}])", "field 'respawn_seconds': unknown field"},  // (ADR-056)
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "immortal": 1}])", "field 'immortal': must be true or false"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "dummy", "attackable": false}])", "field 'immortal': only attackable creatures are hit"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "immortal": true}])", "field 'immortal': it never dies to drop its loot"},
-             {creatures + R"(,{"id": "wolf", "save_id": 9, "copy_from": "boar"}])", "record 9 'wolf': field 'id': duplicate of record 4"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "chase_range": 24}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "loot_chance": 1.5}])", "field 'loot_chance': 1.5 is out of range"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "health": 50}])", "record 10 'a': field 'health': unknown field"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "model": "boar", "temper": "passive"}])", "field 'level': missing"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "respawn_seconds": 30}])", "field 'respawn_seconds': unknown field"},  // (ADR-056)
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "immortal": 1}])", "field 'immortal': must be true or false"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "dummy", "attackable": false}])", "field 'immortal': only attackable creatures are hit"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "immortal": true}])", "field 'immortal': it never dies to drop its loot"},
+             {creatures + R"(,{"id": "wolf", "save_id": 10, "copy_from": "boar"}])", "record 10 'wolf': field 'id': duplicate of record 4"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "bandit", "chase_range": 24}])",
               "field 'chase_range': must be more than aggro_range"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "leash_radius": 20}])", "field 'leash_radius': unknown field"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "flee_health": 1}])", "field 'flee_health': 1 is out of range 0..0.95"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "attack_windup": 0}])", "field 'attack_windup': 0 is out of range"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "chase_range": 40}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "leash_radius": 20}])", "field 'leash_radius': unknown field"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "flee_health": 1}])", "field 'flee_health': 1 is out of range 0..0.95"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "attack_windup": 0}])", "field 'attack_windup': 0 is out of range"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "villager", "chase_range": 40}])",
               "field 'chase_range': harmless creatures don't fight"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "give_up_seconds": "soon"}])", "field 'give_up_seconds': must be a number"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "attackable": false, "stance": 10}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "give_up_seconds": "soon"}])", "field 'give_up_seconds': must be a number"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "villager", "attackable": false, "stance": 10}])",
               "field 'stance': only attackable creatures are hit"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "dummy", "hit_stance": 10}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "dummy", "hit_stance": 10}])",
               "field 'hit_stance': harmless creatures don't fight"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "dummy", "parries": 2}])", "field 'parries': harmless creatures don't fight"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "parries": 2}])", "field 'parries': it can't be parried"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "damage": "pierce"}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "dummy", "parries": 2}])", "field 'parries': harmless creatures don't fight"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "parries": 2}])", "field 'parries': it can't be parried"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "bandit", "damage": "pierce"}])",
               "field 'damage': its weapon decides (only creatures without one have their own)"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "dummy", "damage": "slash"}])", "field 'damage': harmless creatures don't fight"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "wolf", "damage": "bite"}])", "field 'damage': must be one of slash, strike, pierce"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "blood": "green"}])", "field 'blood': must be red, splinters or dust"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "attackable": false, "resist": 0.2}])", "field 'resist': only attackable creatures are hit"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "wolf", "resist": {"slash": 2}}])", "field 'resist.slash': 2 is out of range -1..0.9"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "parryable": 1}])", "field 'parryable': must be true or false"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "villager", "combo": 2}])", "field 'combo': harmless creatures don't fight"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "combo": 5}])", "field 'combo': 5 is out of range 1..4"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "combo": null, "delay": 0.3}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "dummy", "damage": "slash"}])", "field 'damage': harmless creatures don't fight"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "wolf", "damage": "bite"}])", "field 'damage': must be one of slash, strike, pierce"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "blood": "green"}])", "field 'blood': must be red, splinters or dust"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "villager", "attackable": false, "resist": 0.2}])", "field 'resist': only attackable creatures are hit"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "wolf", "resist": {"slash": 2}}])", "field 'resist.slash': 2 is out of range -1..0.9"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "bandit", "parryable": 1}])", "field 'parryable': must be true or false"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "villager", "combo": 2}])", "field 'combo': harmless creatures don't fight"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "bandit", "combo": 5}])", "field 'combo': 5 is out of range 1..4"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "bandit", "combo": null, "delay": 0.3}])",
               "field 'delay': only a hit after the first is delayed"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "shield": "boar_skin"}])", "field 'shield': 'boar_skin' is not a shield"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "wolf", "shield": "boar_skin"}])", "field 'shield': only creatures with hands hold one"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "ghoul", "guard": 0.5}])", "field 'guard': bare-handed creatures don't guard"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit_chief", "parry": 0.2}])", "field 'parry': nothing it holds parries"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "bandit", "guard": 0.5, "parry": 0.5}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "bandit", "shield": "boar_skin"}])", "field 'shield': 'boar_skin' is not a shield"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "wolf", "shield": "boar_skin"}])", "field 'shield': only creatures with hands hold one"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "ghoul", "guard": 0.5}])", "field 'guard': bare-handed creatures don't guard"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "bandit_chief", "parry": 0.2}])", "field 'parry': nothing it holds parries"},
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "bandit", "guard": 0.5, "parry": 0.5}])",
               "field 'dodge': guard + parry + dodge are chances of one answer"},
-             {creatures + R"(,{"id": "a", "save_id": 9, "copy_from": "boar", "wanders": false}])",
+             {creatures + R"(,{"id": "a", "save_id": 10, "copy_from": "boar", "wanders": false}])",
               "field 'wanders': must be true for a creature that fights"},
              {scarecrow + "]",
               "save_id 0 must be 'dummy' (code names it), not 'scarecrow'"},
@@ -4860,13 +4876,13 @@ static void dataFiles() {
             std::println(stderr, "FAIL creature defs error: got \"{}\", want \"{}\"", error, want), ++failures;
     }
     // Reloading may add creatures but never drop or repurpose one: spawn markers hold their save ids.
-    writeCreatures(creatures + R"(,{"id": "boar_sow", "save_id": 9, "copy_from": "boar"}])");
-    CHECK(reloadDefs(dir, error) && defs().creatures.size() == 10 && std::string_view(typeOf(EntityKind(9)).name) == "Boar");
-    writeCreatures(creatures + R"(,{"id": "boar_runt", "save_id": 9, "copy_from": "boar"}])");
-    CHECK(!reloadDefs(dir, error) && error.find("creature save_id 9 is now 'boar_runt', was 'boar_sow'") != std::string::npos);
+    writeCreatures(creatures + R"(,{"id": "boar_sow", "save_id": 10, "copy_from": "boar"}])");
+    CHECK(reloadDefs(dir, error) && defs().creatures.size() == 11 && std::string_view(typeOf(EntityKind(10)).name) == "Boar");
+    writeCreatures(creatures + R"(,{"id": "boar_runt", "save_id": 10, "copy_from": "boar"}])");
+    CHECK(!reloadDefs(dir, error) && error.find("creature save_id 10 is now 'boar_runt', was 'boar_sow'") != std::string::npos);
     writeCreatures(creatures + "]");
-    CHECK(!reloadDefs(dir, error) && error.find("9 creatures, fewer than the 10 loaded") != std::string::npos);
-    CHECK(defs().creatures.size() == 10 && defs().creatureIds[9] == "boar_sow");
+    CHECK(!reloadDefs(dir, error) && error.find("10 creatures, fewer than the 11 loaded") != std::string::npos);
+    CHECK(defs().creatures.size() == 11 && defs().creatureIds[10] == "boar_sow");
     // A kind only data has works end to end: marked by its id, listed, saved, loaded and spawned.
     Grid g({32, 32, 32});  // world files hold whole chunks
     for (int z = 0; z < 32; ++z)
@@ -4877,10 +4893,10 @@ static void dataFiles() {
     PrefabLibrary prefabs = loadPrefabs("no-such-folder");
     auto run = [&](std::string_view request) { return runCommand(request, g, instances, marks, history, prefabs, GameView{}).response; };
     nlohmann::json r = run(R"({"cmd": "mark", "args": {"kind": "spawn", "x": 10, "z": 10, "entity": "boar_sow"}})");
-    CHECK(r["ok"] == true && marks.size() == 1 && marks[0].entity == EntityKind(9) && r["result"]["marker"]["entity"] == "boar_sow" &&
+    CHECK(r["ok"] == true && marks.size() == 1 && marks[0].entity == EntityKind(10) && r["result"]["marker"]["entity"] == "boar_sow" &&
           marks[0].radius == 10);
     r = run(R"({"cmd": "catalog"})");
-    CHECK(r["result"]["entities"].size() == 10 && r["result"]["entities"][9]["id"] == "boar_sow");
+    CHECK(r["result"]["entities"].size() == 11 && r["result"]["entities"][10]["id"] == "boar_sow");
     std::string sowWorld = (dir / "sow.flyw").string();
     std::string saved = saveWorld(sowWorld.c_str(), g, 1, instances, marks);
     CHECK(saved.empty());
@@ -4891,7 +4907,7 @@ static void dataFiles() {
     CHECK(loadWorld(sowWorld.c_str(), back, seed, instances, loaded).empty() && loaded && *loaded == marks);
     std::vector<Entity> sows;
     if (loaded) syncSpawns(sows, back, *loaded, 1, {}, 0.5f);
-    CHECK(sows.size() == 1 && sows[0].kind == EntityKind(9) && std::string_view(sows[0].name) == "Boar");
+    CHECK(sows.size() == 1 && sows[0].kind == EntityKind(10) && std::string_view(sows[0].name) == "Boar");
     setDefs(std::move(shipped));  // the other tests see exactly the shipped items and creatures
     // Without that kind the world is refused, saying why.
     CHECK(loadWorld(sowWorld.c_str(), back, seed, instances, loaded) == "bad marker 1: unknown entity kind");
@@ -5852,6 +5868,10 @@ static void progression() {
         float downTime = float(toDown) * std::max(swingTime(sheet(npc, skillOf(foe.weapon)), weaponAttack(foe.weapon)), foe.windup + foe.recover + foe.cooldown);
         std::println("level band: level {} {}: {} swings ({:.1f} s) to kill it, it needs {} ({:.1f} s) to down the player", foe.level,
                      d.creatureIds[k], toKill, killTime, toDown, downTime);
+        if (foe.boss) {  // a boss (ADR-059) is meant to be a long fight that trading blows loses: it takes reading its moves
+            CHECK(toKill > 16 && downTime < killTime);
+            continue;
+        }
         CHECK(toKill >= 6 && toKill <= 16);  // never a one-shot, never a slog
         // A same-level fight alone is won. The exception: guards are the village's watch, meant to be
         // tougher than anything a player of their level should take on (passive: they never start it).
@@ -6314,16 +6334,16 @@ static void enemies() {
     std::string creatures = text.str();
     creatures.erase(creatures.rfind(']'));
     std::ofstream(dir / "creatures.json") << creatures << R"(,
-        {"id": "duelist", "save_id": 9, "copy_from": "guard", "guard": 1, "parry": null},
-        {"id": "fencer", "save_id": 10, "copy_from": "bandit", "parry": 1, "dodge": null, "back_off": null},
-        {"id": "dancer", "save_id": 11, "copy_from": "bandit", "dodge": 1, "parry": null, "back_off": 1}])";
+        {"id": "duelist", "save_id": 10, "copy_from": "guard", "guard": 1, "parry": null},
+        {"id": "fencer", "save_id": 11, "copy_from": "bandit", "parry": 1, "dodge": null, "back_off": null},
+        {"id": "dancer", "save_id": 12, "copy_from": "bandit", "dodge": 1, "parry": null, "back_off": 1}])";
     Defs test, shipped;
     std::string error;
     CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
     if (!error.empty()) std::println(stderr, "FAIL enemies data: {}", error);
     fs::remove_all(dir);
     setDefs(std::move(test));
-    const EntityKind kDuelist = EntityKind(9), kFencer = EntityKind(10), kDancer = EntityKind(11);
+    const EntityKind kDuelist = EntityKind(10), kFencer = EntityKind(11), kDancer = EntityKind(12);
 
     auto fresh = [&] {
         Player p;
@@ -8626,7 +8646,7 @@ static void bows() {
         creatures.erase(creatures.rfind(']'));
         std::string error;
         for (auto [extra, want] : {
-                 std::pair{R"("copy_from": "bandit", "weapon": "short_bow", "parry": null)", "record 9 'archer': field 'keep_range': missing"},
+                 std::pair{R"("copy_from": "bandit", "weapon": "short_bow", "parry": null)", "record 10 'archer': field 'keep_range': missing"},
                  {R"("copy_from": "bandit", "keep_range": [7, 16])", "field 'keep_range': only for a creature whose 'weapon' shoots"},
                  {R"("copy_from": "bandit", "aim_error": 0.1)", "field 'aim_error': only for a creature whose 'weapon' shoots"},
                  {R"("copy_from": "bandit", "sidearm": "rusty_knife")", "field 'sidearm': only for a creature whose 'weapon' shoots"},
@@ -8643,15 +8663,15 @@ static void bows() {
                  {R"("copy_from": "bandit_archer", "shield": "heater_shield")", "field 'shield': a bow is held in both hands"},
                  {R"("copy_from": "bandit_archer", "weapon": "light_crossbow")", "field 'weapon': creatures can't reload a crossbow yet"},
                  {R"("copy_from": "bandit_archer", "keep_range": [3, 5], "aim_error": 0, "sidearm": null)", ""}}) {
-            std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,{"id": "archer", "save_id": 9, )" << extra << "}]";
+            std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,{"id": "archer", "save_id": 10, )" << extra << "}]";
             Defs t;
             error.clear();
             bool loaded = loadDefs(dir, t, error);
-            CHECK(*want ? !loaded && error.contains(want) : loaded && t.creatures[9].keepMin == 3 && t.creatures[9].keepMax == 5 && !t.creatures[9].sidearm);
+            CHECK(*want ? !loaded && error.contains(want) : loaded && t.creatures[10].keepMin == 3 && t.creatures[10].keepMax == 5 && !t.creatures[10].sidearm);
             if (*want ? !error.contains(want) : !loaded) std::println(stderr, "FAIL archer data '{}': {}", extra, error);
         }
         // An NPC that always parries guards a drawn bow instead: an arrow can't be parried (a sword's swing it parries).
-        std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,{"id": "fencer", "save_id": 9, "copy_from": "bandit", "parry": 1, "dodge": null, "back_off": null}])";
+        std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,{"id": "fencer", "save_id": 10, "copy_from": "bandit", "parry": 1, "dodge": null, "back_off": null}])";
         Defs test, shipped;
         CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
         fs::remove_all(dir);
@@ -8666,7 +8686,7 @@ static void bows() {
             s.player.teleport({8.5f, 4, 16.5f});
             s.player.yaw = std::numbers::pi_v<float> / 2;
             s.player.inv.equipped[SlotMainHand] = shooting ? defs().itemById.at("short_bow") : Shortsword;
-            Entity& fencer = spawnAhead(s.entities, s.world, s.player, EntityKind(9), 3, 2.5f);
+            Entity& fencer = spawnAhead(s.entities, s.world, s.player, EntityKind(10), 3, 2.5f);
             setState(fencer, AiState::Chase, "test");
             fencer.body.swingTimer = 5;  // not about to swing itself
             if (mode == 2) {  // (on the ground first: a throw doesn't start in the air)
@@ -9030,14 +9050,14 @@ static void archers() {
     text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
     std::string creatures = text.str();
     creatures.erase(creatures.rfind(']'));
-    std::ofstream(dir / "creatures.json") << creatures << R"(,{"id": "sharp", "save_id": 9, "copy_from": "bandit_archer", "aim_error": 0, "dodge": null}])";
+    std::ofstream(dir / "creatures.json") << creatures << R"(,{"id": "sharp", "save_id": 10, "copy_from": "bandit_archer", "aim_error": 0, "dodge": null}])";
     Defs test, shipped;
     std::string error;
     CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
     if (!error.empty()) std::println(stderr, "FAIL archer defs: {}", error);
     fs::remove_all(dir);
     setDefs(std::move(test));
-    const EntityKind kSharp = EntityKind(9);
+    const EntityKind kSharp = EntityKind(10);
     const EntityType& archer = typeOf(EntityKind::BanditArcher);
     CHECK(archer.weapon == bow && archer.keepMin == 7 && archer.keepMax == 16 && archer.aimError == 0.07f && archer.sidearm == Knife &&
           archer.loot == bow && archer.model == ModelBandit && archer.guard == 0 && archer.parry == 0 && archer.cooldown > 0);
@@ -10834,15 +10854,15 @@ static void creatureAttacks() {
                  {R"("copy_from": "bandit", "attacks": [{"type": "leap", "range": [1, 5], "hyperarmor": 1}])", "field 'attacks[0].hyperarmor': must be true or false"},
                  {R"("copy_from": "villager", "attacks": [{"type": "leap", "range": [1, 5]}])", "field 'attacks': harmless creatures don't fight"},
                  {R"("copy_from": "bandit", "attacks": [{"type": "grab", "range": [0, 2]}])", ""}}) {
-            std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,{"id": "brute", "save_id": 9, )" << extra << "}]";
+            std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,{"id": "brute", "save_id": 10, )" << extra << "}]";
             Defs t;
             error.clear();
             bool loaded = loadDefs(dir, t, error);
-            bool ok = want.empty() ? loaded && t.creatures[9].attacks.size() == 1 : !loaded && error.contains(want) && error.contains("record 9 'brute'");
+            bool ok = want.empty() ? loaded && t.creatures[10].attacks.size() == 1 : !loaded && error.contains(want) && error.contains("record 10 'brute'");
             CHECK(ok);
             if (!ok) std::println(stderr, "FAIL attack data '{}': {}", extra, error);
             if (loaded && want.empty()) {  // the defaults
-                const CreatureAttack& a = t.creatures[9].attacks[0];
+                const CreatureAttack& a = t.creatures[10].attacks[0];
                 CHECK(a.type == AttackType::Grab && a.reach == 1.6f && a.hits == 3 && a.interval == 0.45f && a.cooldown == 6 && a.chance == 1 &&
                       a.windup == 0.8f && a.recover == 0.8f && a.power == 1 && a.stance == 20 && a.blockStamina == 1 && !a.hyperarmor);
             }
@@ -10850,23 +10870,23 @@ static void creatureAttacks() {
     }
     // Test-only kinds that always attack (chance 1) once (a long cooldown); `sometimes` attacks half the time.
     std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,
-        {"id": "charger", "save_id": 9, "copy_from": "boar", "attacks": [{"type": "charge", "range": [5, 14], "cooldown": 30, "windup": 0.6,
+        {"id": "charger", "save_id": 10, "copy_from": "boar", "attacks": [{"type": "charge", "range": [5, 14], "cooldown": 30, "windup": 0.6,
          "recover": 1, "power": 4, "stance": 35, "block_stamina": 2, "hyperarmor": true, "speed": 14, "seconds": 1.2}]},
-        {"id": "leaper", "save_id": 10, "copy_from": "wolf", "dodge": null, "back_off": null, "attacks": [{"type": "leap", "range": [4, 12],
+        {"id": "leaper", "save_id": 11, "copy_from": "wolf", "dodge": null, "back_off": null, "attacks": [{"type": "leap", "range": [4, 12],
          "cooldown": 30, "windup": 0.5, "recover": 0.6, "power": 1.5, "stance": 18, "hyperarmor": true, "height": 7, "reach": 1.8}]},
-        {"id": "sweeper", "save_id": 11, "copy_from": "bandit_chief", "guard": null, "back_off": null, "combo": null, "delay": null,
+        {"id": "sweeper", "save_id": 12, "copy_from": "bandit_chief", "guard": null, "back_off": null, "combo": null, "delay": null,
          "attacks": [{"type": "area", "range": [0, 3], "cooldown": 30, "windup": 0.8, "recover": 1, "power": 1.5, "stance": 30,
          "block_stamina": 2.5, "radius": 3.2}]},
-        {"id": "grabber", "save_id": 12, "copy_from": "ghoul", "combo": null, "delay": null, "attacks": [{"type": "grab", "range": [0, 2.2],
+        {"id": "grabber", "save_id": 13, "copy_from": "ghoul", "combo": null, "delay": null, "attacks": [{"type": "grab", "range": [0, 2.2],
          "cooldown": 30, "windup": 0.8, "recover": 1, "power": 0.6, "stance": 0, "reach": 1.7, "hits": 3, "interval": 0.45}]},
-        {"id": "sometimes", "save_id": 13, "copy_from": "bandit", "parry": null, "dodge": null, "back_off": null, "combo": null,
+        {"id": "sometimes", "save_id": 14, "copy_from": "bandit", "parry": null, "dodge": null, "back_off": null, "combo": null,
          "attacks": [{"type": "leap", "range": [4, 9], "chance": 0.5, "cooldown": 5, "windup": 0.5, "height": 7}]}])";
     Defs test, shipped;
     CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
     if (!error.empty()) std::println(stderr, "FAIL attacks data: {}", error);
     fs::remove_all(dir);
     setDefs(std::move(test));
-    const EntityKind kCharger = EntityKind(9), kLeaper = EntityKind(10), kSweeper = EntityKind(11), kGrabber = EntityKind(12), kSometimes = EntityKind(13);
+    const EntityKind kCharger = EntityKind(10), kLeaper = EntityKind(11), kSweeper = EntityKind(12), kGrabber = EntityKind(13), kSometimes = EntityKind(14);
     const ItemId heater = defs().itemById.at("heater_shield");
 
     Grid g({64, 16, 64});
@@ -11367,6 +11387,444 @@ static void creatureAttacks() {
     setDefs(std::move(shipped));
 }
 
+// Bosses (ADR-059): Ketil's data and the phases' checks; a phase change at its threshold, the roar (stagger-proof, no
+// damage), after a stagger, to the deepest phase reached; each phase's moves; the territory (aggro only inside, no
+// search or giving up inside, home to full health and the first phase); the boss bar's rules and stance values;
+// lasting death; a grab let go at a phase change; the save; the same fight twice.
+static void bosses() {
+    namespace fs = std::filesystem;
+    const EntityKind kKetil = EntityKind(9);
+    {  // Ketil the Unburied, as shipped.
+        const EntityType& k = typeOf(kKetil);
+        CHECK(defs().creatureIds[9] == "barrow_lord" && k.name && std::string_view(k.name) == "Ketil the Unburied" && k.boss && k.territory == 36 &&
+              k.model == ModelBarrowLord && k.parries == 3 && k.stance == 260 && k.phaseAt == 1 && k.roar == 0 && k.phases.size() == 1);
+        CHECK(k.attacks.size() == 2 && k.attacks[0].type == AttackType::Area && k.attacks[1].type == AttackType::Leap && k.combo == 2 &&
+              k.windup == 0.75f && k.mods.empty() && k.weapon == defs().itemById.at("barrow_greataxe") && k.loot == k.weapon && k.lootChance == 1);
+        const EntityType& p = k.phases[0];
+        CHECK(p.phaseAt == 0.5f && p.roar == 2 && p.attacks.size() == 4 && p.attacks[0].type == AttackType::Area && p.attacks[1].type == AttackType::Leap &&
+              p.attacks[2].type == AttackType::Charge && p.attacks[3].type == AttackType::Grab && p.windup == 0.5f && p.combo == 3 && p.delay == 0.45f &&
+              p.chaseSpeed == 5.5f && p.mods.size() == 2 && p.mods[0].stat == Stat::Damage && p.mods[1].stat == Stat::Frost);
+        CHECK(p.boss && p.territory == 36 && p.stance == k.stance && p.poise == k.poise && p.weapon == k.weapon && p.stats.stamina == k.stats.stamina &&
+              p.level == k.level && p.model == k.model && p.name == k.name && p.phases.empty());  // the rest is the first phase's
+        for (size_t c = 0; c < defs().creatures.size(); ++c)
+            if (c != 9) CHECK(!defs().creatures[c].boss && defs().creatures[c].phases.empty() && defs().creatures[c].territory == 0);
+    }
+    fs::path dir = fs::temp_directory_path() / "flycoos_bosses_test";
+    fs::create_directories(dir);
+    copyWeaponClasses(dir);
+    fs::copy_file(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "items.json", dir / "items.json", fs::copy_options::overwrite_existing);
+    std::ostringstream text;
+    text << std::ifstream(fs::path(FLYCOOS_SOURCE_DIR) / "data" / "creatures.json").rdbuf();
+    std::string creatures = text.str();
+    creatures.erase(creatures.rfind(']'));
+    std::string error;
+    {  // The data's checks: file, record and field in every message.
+        std::string four = R"([{"at": 0.8}, {"at": 0.6}, {"at": 0.4}, {"at": 0.2}])";
+        for (auto [extra, want] : {
+                 std::pair<std::string, std::string>{R"("copy_from": "villager", "boss": true)", "field 'boss': a boss fights and can be hit"},
+                 {R"("copy_from": "dummy", "boss": true)", "field 'boss': a boss fights and can be hit"},
+                 {R"("copy_from": "bandit", "boss": 1)", "field 'boss': must be true or false"},
+                 {R"("copy_from": "villager", "territory": 10)", "field 'territory': harmless creatures don't fight"},
+                 {R"("copy_from": "bandit", "territory": -1)", "field 'territory': -1 is out of range"},
+                 {R"("copy_from": "villager", "phases": [{"at": 0.5}])", "field 'phases': only creatures that fight and can be hit have phases"},
+                 {R"("copy_from": "bandit", "phases": {"at": 0.5})", "field 'phases': must be a list of 1 to 3 phases"},
+                 {R"("copy_from": "bandit", "phases": [])", "field 'phases': must be a list of 1 to 3 phases"},
+                 {R"("copy_from": "bandit", "phases": )" + four, "field 'phases': must be a list of 1 to 3 phases"},
+                 {R"("copy_from": "bandit", "phases": [3])", "field 'phases[0]': must be an object"},
+                 {R"("copy_from": "bandit", "phases": [{"roar": 1}])", "field 'phases[0].at': missing"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 1}])", "field 'phases[0].at': 1 is out of range"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0}])", "field 'phases[0].at': 0 is out of range"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5}, {"at": 0.6}])", "field 'phases[1].at': must be below the phase before's"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5}, {"at": 0.5}])", "field 'phases[1].at': must be below the phase before's"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5, "model": "wolf"}])", "field 'phases[0].model': unknown field (a phase changes only"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5, "stats": {"stamina": 50}}])", "field 'phases[0].stats': unknown field"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5, "phases": []}])", "field 'phases[0].phases': unknown field"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5, "roar": 11}])", "field 'phases[0].roar': 11 is out of range"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5, "combo": 9}])", "field 'combo': 9 is out of range 1..4 (in phases[0])"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5, "attacks": [{"type": "kick", "range": [1, 2]}]}])",
+                  "field 'attacks[0].type': must be one of charge, leap, area, grab (in phases[0])"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5, "mods": [{"stat": "max_health", "increased": 0.5}]}])",
+                  "field 'phases[0].mods': a phase can't change max health"},
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5, "mods": [{"stat": "stamina", "flat": 5}]}])", "field 'phases[0].mods': a phase can't change max health"},
+                 {R"("copy_from": "bandit", "mods": [{"stat": "stamina", "flat": 5}], "phases": [{"at": 0.5}])", ""},  // (inherited: fine)
+                 {R"("copy_from": "bandit", "phases": [{"at": 0.5, "combo": null, "delay": null, "attacks": null}])", ""}}) {
+            std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,{"id": "bad", "save_id": 10, )" << extra << "}]";
+            Defs t;
+            error.clear();
+            bool loaded = loadDefs(dir, t, error);
+            bool ok = want.empty() ? loaded : !loaded && error.contains(want) && error.contains("record 10 'bad'");
+            CHECK(ok);
+            if (!ok) std::println(stderr, "FAIL boss data '{}': {}", extra, error);
+            if (loaded && want.empty() && extra.contains("null")) {  // a field set to null takes its default; the rest is inherited; the roar's default
+                const EntityType& b = t.creatures[10];
+                CHECK(b.phases.size() == 1 && b.phases[0].combo == 1 && b.phases[0].delay == 0 && b.phases[0].attacks.empty() && b.phases[0].roar == 2 &&
+                      b.phases[0].chaseSpeed == 5.5f && b.phases[0].parry == b.parry && !b.boss && b.territory == 0 && b.attacks.size() == 1);
+            }
+        }
+    }
+    // Test-only bosses: `lord` with a leap, then a charge and a grab (each always taken), then quick swings; `keeper` with
+    // a small territory; `wanderer` with phases and no territory (it pursues as any enemy).
+    std::ofstream(dir / "creatures.json", std::ios::trunc) << creatures << R"(,
+        {"id": "lord", "save_id": 10, "copy_from": "barrow_lord", "combo": null, "delay": null,
+         "attacks": [{"type": "leap", "range": [6, 14], "cooldown": 30, "windup": 0.5, "height": 8}],
+         "phases": [{"at": 0.5, "roar": 1, "chase_speed": 7, "stance": 200, "mods": [{"stat": "damage", "more": 0.5}],
+                     "attacks": [{"type": "charge", "range": [8, 20], "cooldown": 30, "windup": 0.5, "speed": 12, "seconds": 1},
+                                 {"type": "grab", "range": [0, 2.2], "cooldown": 30, "windup": 0.5, "reach": 1.9, "hits": 5, "interval": 0.5}]},
+                    {"at": 0.25, "roar": 0.5, "attack_windup": 0.3}]},
+        {"id": "keeper", "save_id": 11, "copy_from": "lord", "territory": 10},
+        {"id": "wanderer", "save_id": 12, "copy_from": "lord", "boss": null, "territory": null}])";
+    Defs test, shipped;
+    CHECK(loadDefs(dir, test, error) && loadDefs(fs::path(FLYCOOS_SOURCE_DIR) / "data", shipped, error));
+    if (!error.empty()) std::println(stderr, "FAIL bosses data: {}", error);
+    fs::remove_all(dir);
+    if (test.creatures.size() != 13) return;
+    setDefs(std::move(test));
+    const EntityKind kLord = EntityKind(10), kKeeper = EntityKind(11), kWanderer = EntityKind(12);
+    CHECK(typeOf(kLord).phases.size() == 2 && typeOf(kLord).phases[1].attacks.size() == 1 && typeOf(kLord).phases[1].attacks[0].type == AttackType::Leap);  // each phase patches the first
+
+    Grid g({160, 16, 160});
+    auto field = [&] {
+        for (int z = 0; z < 160; ++z)
+            for (int x = 0; x < 160; ++x) {
+                for (int y = 0; y < 3; ++y) g.set({x, y, z}, Dirt);
+                g.set({x, 3, z}, Grass);
+                for (int y = 4; y < 16; ++y) g.set({x, y, z}, Air);
+            }
+    };
+    field();
+    Player player;
+    std::mt19937 rng(11);
+    std::vector<Entity> es;
+    es.reserve(4);
+    const glm::vec3 home{80.5f, 4, 80.5f};
+    const std::vector<Marker> markers = {{.id = 1, .kind = MarkerKind::Spawn, .pos = home, .radius = 3, .entity = kLord}};
+    auto spawn = [&](EntityKind kind, bool fighting = true) {
+        es.clear();
+        syncSpawns(es, g, {{.id = 1, .kind = MarkerKind::Spawn, .pos = home, .radius = 3, .entity = kind}}, 1, player.pos, 0.5f);
+        CHECK(es.size() == 1);
+        es[0].body.teleport(home);
+        if (fighting) setState(es[0], AiState::Chase, "forced");
+        return &es[0];
+    };
+    auto reason = [](const Entity& e, uint32_t back = 0) {
+        return std::string_view(e.history[(e.transitions - 1 - back) % e.history.size()].reason);
+    };
+    bool heal = true;  // the player's health back to full every tick (its hits aside)
+    auto sim = [&](int ticks, auto&& each) {
+        for (int i = 0; i < ticks; ++i) {
+            each(i);
+            if (heal && player.alive()) player.health = 100;
+            updateEntities(es, g, player, kTick);
+            separate(player, g, es);
+            updateCombat(player, es, kTick, rng);
+        }
+    };
+    auto none = [](int) {};
+    auto to = [&](Entity& e, float share) {  // its health down to `share` of its max, through damage()
+        int most = maxHealth(sheet(e.body));
+        CHECK(damage(e, int(std::ceil(e.body.health - share * float(most)))));
+    };
+    auto reset = [&](glm::vec3 at) {
+        player = Player{};
+        player.teleport(at);
+        player.onGround = true;
+        heal = true;
+    };
+
+    // The phase change: at its threshold it roars (stagger-proof, taking no damage), then fights with the phase's numbers.
+    reset(home + glm::vec3(0, 0, -3));
+    Entity* b = spawn(kLord);
+    sim(1, none);
+    CHECK(b->phase == 0 && b->state == AiState::Chase && b->body.tuning.runSpeed == typeOf(kLord).chaseSpeed && b->body.innate.empty());
+    to(*b, 0.51f);
+    sim(1, none);
+    CHECK(b->phase == 0 && b->state != AiState::Roar);  // just above it: no
+    to(*b, 0.5f);
+    sim(1, none);
+    CHECK(b->state == AiState::Roar && reason(*b) == "phase_2" && b->phase == 1 && &b->type() == &typeOf(kLord).phases[0]);
+    CHECK(b->body.tuning.runSpeed == 7 && b->body.innate.size() == 1 && b->body.innate[0].stat == Stat::Damage && std::string_view(b->body.innate[0].source) == "innate" &&
+          b->body.roar > 0 && !b->body.punching() && b->body.stance == 200);  // (its stance no more than the phase's)
+    float hp = b->body.health;
+    CHECK(!damage(*b, 10) && b->body.health == hp);  // no damage...
+    staggerHit(*b, 1000, false);
+    CHECK(b->body.stagger == 0 && !b->body.broken && b->body.stance == 200);  // ...no stance damage, no flinch...
+    staggerHit(*b, 0, true);
+    CHECK(b->body.stagger == 0);  // ...no knock-down
+    b->body.hitTime = 99;
+    player.teleport(b->body.pos - glm::vec3(std::sin(b->body.yaw), 0, std::cos(b->body.yaw)) * 1.5f);
+    player.yaw = b->body.yaw;
+    CHECK(behind(*b, player) && !opensToCritical(*b, player));  // ...and no backstab...
+    player.inv.equipped[SlotMainHand] = defs().itemById.at("iron_shortsword");
+    startMove(player, Move::Riposte, glm::vec2(std::sin(b->body.yaw), std::cos(b->body.yaw)));
+    holdCritical(es, player);
+    CHECK(player.hitPending && b->body.stagger == 0);  // ...nor held by one already on its way
+    player = Player{}, player.teleport(home + glm::vec3(0, 0, -3)), player.onGround = true;
+    bool steady = true;
+    sim(54, [&](int) { steady &= b->state == AiState::Roar && b->body.roar > 0 && b->body.roar <= 1; });
+    CHECK(steady && b->body.health == hp);
+    sim(8, none);
+    CHECK(b->angry() && b->state != AiState::Roar && (reason(*b) == "roared" || reason(*b, 1) == "roared") && b->body.roar == 0 && b->phase == 1);
+    CHECK(damage(*b, 1) && b->body.health == hp - 1);  // hurt again
+    for (float& w : b->attackWait) w = 5;
+    to(*b, 0.25f);  // the next phase: its numbers, and its attacks ready
+    sim(1, none);
+    CHECK(b->state == AiState::Roar && reason(*b) == "phase_3" && b->phase == 2 && b->type().windup == 0.3f && b->body.tuning.runSpeed == typeOf(kLord).chaseSpeed &&
+          b->body.innate.empty() && b->attackWait == decltype(b->attackWait){});
+
+    // A swing on its way when the threshold is crossed stops.
+    reset(home + glm::vec3(0, 0, -1.8f));
+    b = spawn(kLord);
+    bool swinging = false;
+    for (int i = 0; i < 300 && !swinging; ++i) {
+        sim(1, none);
+        swinging = b->state == AiState::Windup && b->attack < 0 && b->body.punching();
+    }
+    to(*b, 0.5f);
+    sim(1, none);
+    CHECK(swinging && b->phase == 1 && b->state == AiState::Roar && !b->body.punching());
+    // Straight to the deepest phase its health reached; a forced roar from the debug window just fights on.
+    reset(home + glm::vec3(0, 0, -3));
+    b = spawn(kLord);
+    to(*b, 0.2f);
+    sim(1, none);
+    CHECK(b->state == AiState::Roar && reason(*b) == "phase_3" && b->phase == 2 && phaseFor(*b) == 2);
+    sim(40, none);
+    CHECK(b->state == AiState::Chase && reason(*b) == "roared");
+    // A stagger plays out first: a broken stance, then the roar.
+    b = spawn(kLord);
+    sim(1, none);
+    staggerHit(*b, 300, false);
+    to(*b, 0.4f);
+    sim(1, none);
+    CHECK(b->state == AiState::Stagger && b->body.broken && b->phase == 0);
+    sim(int(gMelee.breakSeconds * 60) + 2, none);
+    CHECK(b->state == AiState::Roar && reason(*b) == "phase_2" && reason(*b, 1) == "steadied" && b->phase == 1);
+    // Not out of a fight: one wounded while calm roars only once it fights.
+    reset(home + glm::vec3(0, 0, -30));
+    b = spawn(kLord, false);
+    b->body.health = 0.4f * float(maxHealth(sheet(b->body)));
+    sim(30, none);
+    CHECK(b->phase == 0 && b->state == AiState::Wander);
+    player.teleport(home + glm::vec3(0, 0, -15));
+    sim(1, none);
+    CHECK(b->state == AiState::Roar && reason(*b) == "phase_2" && reason(*b, 1) == "saw_target");
+    // Nor when a hit from outside its territory brings it out: it goes home, healed.
+    reset(home + glm::vec3(-15, 0, 0));
+    b = spawn(kKeeper, false);
+    to(*b, 0.4f);
+    sim(1, none);
+    CHECK(b->phase == 0 && b->state == AiState::Wander && reason(*b) == "home" && reason(*b, 1) == "left_territory" &&
+          b->body.health == float(maxHealth(sheet(b->body))));
+
+    // Each phase its own moves: from 10 blocks the first leaps, the second charges (its list has no leap).
+    reset(home + glm::vec3(0, 0, -10));
+    b = spawn(kLord);
+    int t0 = 0;
+    sim(30, [&](int i) { if (!t0 && b->state == AiState::Windup) t0 = i + 1; player.teleport(b->body.pos + glm::vec3(0, 0, -10)); });
+    CHECK(t0 > 0 && reason(*b) == "leap" && b->attack == 0 && b->body.move == Move::Leap);
+    reset(home + glm::vec3(0, 0, -10));
+    b = spawn(kLord);
+    to(*b, 0.45f);
+    sim(1, none);
+    CHECK(b->state == AiState::Roar && b->attack == -1);
+    int charged = 0;
+    sim(90, [&](int i) {
+        if (!charged && b->state == AiState::Windup) charged = i + 1;
+        if (!charged) player.teleport(b->body.pos + glm::vec3(0, 0, -10));
+    });
+    CHECK(charged > 55 && reason(*b, b->state == AiState::Windup ? 0 : 1) == "charge" && b->type().attacks[0].type == AttackType::Charge);  // (after the roar)
+    CHECK(std::string_view(attackBlocked(*b, g, player, 2)) == "none");  // two attacks in this phase
+    // Close in, the second phase grabs; a phase change lets the player go.
+    reset(home + glm::vec3(0, 0, -1.6f));
+    b = spawn(kLord);
+    to(*b, 0.45f);
+    bool held = false;
+    sim(200, [&](int) {
+        if (!held) player.teleport(b->body.pos + glm::vec3(std::sin(b->body.yaw), 0, std::cos(b->body.yaw)) * 1.5f);
+        held |= player.heldBy == b->id;
+        if (held && b->phase == 1 && b->state == AiState::Windup) to(*b, 0.2f);
+    });
+    CHECK(held && b->phase == 2 && player.heldBy == 0);
+
+    // The territory: it notices the player only inside it...
+    reset(home + glm::vec3(-15, 0, 0));
+    b = spawn(kKeeper, false);
+    sim(120, none);
+    CHECK(!b->angry());  // in sight and aggro range, outside its 10
+    player.teleport(home + glm::vec3(-9, 0, 0));
+    sim(1, none);
+    CHECK(b->angry() && (reason(*b) == "saw_target" || reason(*b, 1) == "saw_target"));
+    // ...always knows where they are inside it: behind a wall it doesn't search, up a pillar it doesn't give up...
+    reset(home + glm::vec3(-20, 0, 0));
+    b = spawn(kLord);
+    for (int z = 70; z <= 90; ++z)
+        for (int y = 4; y < 8; ++y) g.set({70, y, z}, Stone);
+    bool lost = false;
+    sim(15 * 60, [&](int) {
+        player.teleport(home + glm::vec3(-20, 0, 0));
+        lost |= b->state == AiState::Search || b->state == AiState::Return;
+    });
+    CHECK(!lost && b->unseen == 0 && b->angry());
+    field();
+    for (int y = 4; y < 10; ++y) g.set({90, y, 80}, Stone);
+    reset({90.5f, 10, 80.5f});
+    b = spawn(kLord);
+    sim(15 * 60, [&](int) { lost |= b->state == AiState::Return || b->state == AiState::Search; });
+    CHECK(!lost && b->angry() && b->lostTime > typeOf(kLord).giveUpSeconds);
+    field();
+    // ...and doesn't give up across its territory, past its chase range from it (60 blocks, its chase range 40).
+    reset(home + glm::vec3(30, 0, 0));
+    b = spawn(kLord);
+    b->body.teleport(home + glm::vec3(-30, 0, 0));
+    sim(1, none);
+    CHECK(glm::distance(b->body.pos, player.pos) > typeOf(kLord).chaseRange && b->state == AiState::Chase);
+    // ...the same kind without a territory pursues as any enemy does: out of reach, it gives up.
+    b = spawn(kWanderer);
+    sim(15 * 60, none);
+    CHECK(b->state != AiState::Chase && b->transitions > 1);
+    // A player who leaves it sends it home (a hit from outside doesn't call it back), full health and its first phase again.
+    reset(home + glm::vec3(0, 0, -3));
+    b = spawn(kLord);
+    to(*b, 0.45f);
+    sim(80, none);
+    CHECK(b->phase == 1 && b->state != AiState::Roar);
+    player.teleport(home + glm::vec3(37, 0, 0));
+    sim(300, none);  // (an attack under way plays out, and its recovery)
+    CHECK(b->state == AiState::Wander && reason(*b) == "home" && reason(*b, 1) == "left_territory" && b->phase == 0 &&
+          b->body.health == float(maxHealth(sheet(b->body))) && b->body.tuning.runSpeed == typeOf(kLord).chaseSpeed);  // (it was home: no walk)
+    b->body.teleport(home + glm::vec3(20, 0, 0));
+    player.teleport(home + glm::vec3(25, 0, 0));
+    to(*b, 0.45f);  // drawn out by hand, wounded, and back in its second phase
+    setState(*b, AiState::Chase, "forced");
+    sim(71, none);
+    CHECK(b->phase == 1);
+    player.teleport(home + glm::vec3(60, 0, 0));
+    sim(300, none);
+    CHECK(b->state == AiState::Return && reason(*b) == "left_territory");
+    float before = b->body.health;
+    uint32_t walked = b->transitions;
+    CHECK(damage(*b, 5));
+    sim(1, none);
+    CHECK(b->state == AiState::Return && b->body.health == before - 5 && b->transitions == walked);  // not called back from outside (not even for a tick)
+    sim(20 * 60, none);
+    CHECK(b->state == AiState::Wander && reason(*b) == "home" && b->phase == 0 && b->body.health == float(maxHealth(sheet(b->body))));
+    // The player falls: it goes home, healed, in its first phase.
+    reset(home + glm::vec3(0, 0, -3));
+    b = spawn(kLord);
+    to(*b, 0.45f);
+    sim(80, none);
+    b->body.teleport(home + glm::vec3(10, 0, 0));
+    player.teleport(home + glm::vec3(10, 0, -3));
+    heal = false;
+    player.health = 0;
+    bool down = false;
+    sim(300, [&](int) { down |= b->state == AiState::Return && reason(*b) == "target_down"; });
+    CHECK(down && b->state == AiState::Return && !bossBar(es, player));
+    sim(15 * 60, none);
+    CHECK(b->state == AiState::Wander && b->phase == 0 && b->body.health == float(maxHealth(sheet(b->body))));
+
+    // The boss bar: the nearest boss fighting the player, its health and its stance worn toward a break.
+    reset(home + glm::vec3(0, 0, -30));
+    b = spawn(kLord, false);
+    b->calmTimer = 99;
+    sim(1, none);
+    CHECK(!bossBar(es, player));  // calm: none
+    setState(*b, AiState::Chase, "forced");
+    std::optional<BossBar> bar = bossBar(es, player);
+    CHECK(bar && bar->boss == b && bar->health == 1 && bar->stance == 0);
+    staggerHit(*b, 65, false);
+    to(*b, 0.75f);
+    bar = bossBar(es, player);
+    CHECK(bar && std::abs(bar->stance - 0.25f) < 1e-5f && std::abs(bar->health - 0.75f) < 0.01f);  // 65 of its 260
+    staggerHit(*b, 300, false);
+    bar = bossBar(es, player);
+    CHECK(b->body.broken && b->body.stance == b->type().stance && bar && bar->stance == 1);  // broken: full (its stance is back underneath)
+    b->body.broken = false;
+    bar = bossBar(es, player);
+    CHECK(bar && bar->stance == 0);
+    setState(*b, AiState::Roar, "forced");
+    CHECK(bossBar(es, player));  // roaring
+    setState(*b, AiState::Search, "forced");
+    CHECK(bossBar(es, player));  // searching (forced: it never does inside its territory)
+    setState(*b, AiState::Return, "forced");
+    CHECK(!bossBar(es, player));
+    setState(*b, AiState::Chase, "forced");
+    Entity& far = spawnAhead(es, g, player, kLord, 3, 20);  // a second boss, farther
+    setState(far, AiState::Chase, "forced");
+    Entity& near = spawnAhead(es, g, player, kLord, 4, 5);
+    CHECK(bossBar(es, player) && bossBar(es, player)->boss == &far);  // the first is 30 off, the second 20 (the third, 5 off, is calm)
+    setState(near, AiState::Chase, "forced");
+    CHECK(bossBar(es, player) && bossBar(es, player)->boss == &near);
+    Entity& bandit = spawnAhead(es, g, player, EntityKind::Bandit, 5, 2);
+    setState(bandit, AiState::Chase, "forced");
+    CHECK(bossBar(es, player)->boss == &near);  // a plain fighter has none, even nearest
+    damage(near, 100000);
+    CHECK(bossBar(es, player) && bossBar(es, player)->boss == &far);  // dead: the next
+    player.health = 0;
+    CHECK(!bossBar(es, player));
+    std::vector<Entity> bandits;
+    setState(spawnAhead(bandits, g, player, EntityKind::Bandit, 6, 3), AiState::Chase, "forced");
+    player.health = 100;
+    CHECK(!bossBar(bandits, player));
+
+    // Lasting death: a dead boss from a marker is recorded and never comes back; its corpse keeps its greataxe.
+    reset(home + glm::vec3(0, 0, -3));
+    es.clear();
+    syncSpawns(es, g, markers, 1, player.pos, 0.5f);
+    CHECK(es.size() == 1 && es[0].kind == kLord);
+    damage(es[0], 100000);
+    sim(1, none);
+    DeadSlots dead;
+    player.teleport(home + glm::vec3(70, 0, 0));
+    buryDead(es, dead, g, player);
+    CHECK(es.size() == 1 && es[0].state == AiState::Dead && es[0].loot == defs().itemById.at("barrow_greataxe") && dead.at(1) == 1u);
+    es.clear();
+    syncSpawns(es, g, markers, 1, player.pos, 0.5f, dead);
+    CHECK(es.empty());
+
+    // The save: a boss's fight starts over (full health, its first phase); a phased creature without a territory loads in its phase.
+    {
+        std::string path = (fs::temp_directory_path() / "flycoos_bosses.flys").string();
+        std::vector<Marker> ms = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {24.5f, 4, 8.5f}},
+                                  {.id = 2, .kind = MarkerKind::Spawn, .pos = {8.5f, 4, 52.5f}, .radius = 3, .entity = kLord},
+                                  {.id = 3, .kind = MarkerKind::Spawn, .pos = {24.5f, 4, 52.5f}, .radius = 3, .entity = kWanderer}};
+        auto make = [&] {
+            Session s{.world = meadow(), .seed = 5};
+            s.markers = ms;
+            startSession(s);
+            return s;
+        };
+        Session a = make();
+        CHECK(a.entities.size() == 2);
+        for (Entity& e : a.entities) to(e, 0.3f), enterPhase(e, phaseFor(e));
+        CHECK(savePlayer(path.c_str(), a, "w.flyw", 7).empty());
+        Session c = make();
+        SaveReport r;
+        CHECK(loadPlayer(path.c_str(), c, 7, r).empty() && r.npcs == 2);
+        for (const Entity& e : c.entities) {
+            int most = maxHealth(sheet(e.body));
+            if (e.kind == kLord) CHECK(e.body.health == float(most) && e.phase == 0);
+            else CHECK(e.body.health < 0.31f * float(most) && e.phase == 1 && e.body.tuning.runSpeed == 7 && e.state != AiState::Roar);
+        }
+        fs::remove(path);
+    }
+
+    // The same fight twice is the same fight: the player trading blows through both phases.
+    auto fight = [&] {
+        reset(home + glm::vec3(0, 0, -2));
+        rng.seed(11);
+        Entity* f = spawn(kLord);
+        for (int i = 0; i < 40 * 60; ++i) {
+            if (i % 40 == 0) strike(player, *f, {1.5f, 25, player.pos}, rng);
+            sim(1, none);
+        }
+        return std::tuple{f->body.health, f->phase, f->state, f->body.pos, f->transitions, player.health, rng()};
+    };
+    auto first = fight();
+    CHECK(std::get<1>(first) == 2 && fight() == first);  // (it reached its last phase)
+    setDefs(std::move(shipped));
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -11436,6 +11894,7 @@ int main() {
     pursuit();
     lastingDeaths();
     creatureAttacks();
+    bosses();
     session();
     timedSpawns();
     ticks();

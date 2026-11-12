@@ -308,6 +308,18 @@ Some have an attack of their own (ADR-057), each with a clear windup:
   distance. Caught, you're held and bitten three times, then thrown down. Hitting it hard enough to
   make it flinch lets you go. While one holds you, the others wait.
 
+**Bosses** (ADR-059) are big enemies with a bar of their own at the bottom of the screen while they fight
+you: their name, their health (a pale chip shows the damage you just did) and, under it, their stance
+filling up toward a break (it pulses while broken: riposte now). They fight in **phases**: at a share of
+their health they roar for a moment, taking no damage and no stagger, then fight harder with new numbers
+and new moves. A boss has a **territory**: inside it, it fights you to the end and always knows where you
+are. Leave it, or fall, and it goes home, back to full health and its first phase. A dead boss stays dead.
+- **Ketil the Unburied,** a towering barrow lord with a greataxe. In his first phase he swings slow
+  strings, **sweeps** all round when you stand close or behind him, and **leaps** onto you from 6 to 14
+  blocks. Below half health he roars, then swings longer, quicker strings with more delayed hits, adds a
+  **charge** from afar and a **grab** that no guard stops, hits harder and chills (frost). He takes three
+  parries to open, and only heavy hits make him flinch. In the arena, spawn him from the debug window.
+
 Each weapon swings by its class (ADR-044): **daggers** slash and stab quickly but barely shake a
 foe's stance; the **sword** is the all-rounder; **axes** chop hard; **maces** smash, wear down
 stance the fastest and strike (ghouls are weak to it). The Iron Hand Axe and Iron Mace have no
@@ -418,7 +430,7 @@ unless a text field has focus.
 | Player | The region you're in, health, the five attributes and what derives from them (max health, regen, attack damage and speed, combat state), armor K (damage reduction = armor / (armor + K x attacker level)) with the current armor and its reduction vs level 1 and 2, position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
 | Items | Give any item or the whole Iron armor set, see what's equipped and in the bag slots, empty the inventory |
 | Data | The loaded item definitions (save id, id, slot, attack, bag size, armor); Reload defs re-reads data/ and keeps the old ones on an error |
-| Entities | Spawn (ADR-054): how many of which kind, 5 blocks ahead or at x, z from the world's middle (the arena's centre), with a button per named point (the arena's zones), and remove them again. Every NPC: health and attributes, traits and temper, aggro and chase ranges, whether it sees you and when it last did (ADR-055), angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers (the dead too). Lasting deaths (ADR-056): how far off a corpse goes, how many lie, every marker's dead, and per corpse whether it stays and why. Creature attacks (ADR-057): their knobs, every kind's attack numbers live (until Reload defs), and per NPC each attack's readiness or why not, a "now" button and the one under way |
+| Entities | Spawn (ADR-054): how many of which kind, 5 blocks ahead or at x, z from the world's middle (the arena's centre), with a button per named point (the arena's zones), and remove them again. Every NPC: health and attributes, traits and temper, aggro and chase ranges, whether it sees you and when it last did (ADR-055), angry or calm (toggle), drop chance and what its corpse holds, position, wander state; hit for 10 or kill (attackable only), make talk, the spawn marker it came from, respawn NPCs at their markers (the dead too). Lasting deaths (ADR-056): how far off a corpse goes, how many lie, every marker's dead, and per corpse whether it stays and why. Creature attacks (ADR-057): their knobs, every kind's attack numbers live (until Reload defs), and per NPC each attack's readiness or why not, a "now" button and the one under way. Bosses (ADR-059): spawn each at the world's middle (the arena's centre), whom the boss bar is for, and per boss its phase, health, territory, every phase's threshold, roar and numbers, and a "jump" to each phase |
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | In the endless world, streaming: the window, columns at each stage, what the last frame installed and lit (and how long that took), a worker's time per column, the light budget per frame, the player's column's stage. Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
 | Audio | Mute, volume (all and per bus: effects, ambience, interface), random pitch and volume spread, hearing distance, the voices playing, the ambience's readings (water, trees, fire around) and its loops' volumes, the latest sounds, sounds with no takes, and a button per sound to play it (ADR-037) |
@@ -461,13 +473,13 @@ src/server.*     localhost command server thread (newline-delimited JSON)
 src/mesher.*     greedy mesher with ambient occlusion -> 8-byte packed quads
 src/player.*     movement physics (+ fly/noclip tuning), camera collision, character models, procedural animation
 src/stats.h      the five attributes and the stats derived from them
-src/entity.*     NPCs: dummy, villager, boar, bandit, wolf, guard, bandit chief, ghoul (traits, temper, AI, talking, loot), attacks and damage
+src/entity.*     NPCs: dummy, villager, boar, bandit, wolf, guard, bandit chief, ghoul, the boss Ketil (traits, temper, AI, phases, talking, loot), attacks and damage
 src/defs.*       data definitions: the two-pass loader of data/*.json
 src/save.*       player saves (.flys): player, inventory, NPCs by spawn marker and slot, quests and flags
 src/quest.*      quests: the per-tick event drain, stages, triggers and actions, dialogue conditions
 src/item.*       items, inventory (equipment, backpack, bags), move/equip rules
 src/inventory_ui.*  Character (C), Bags (B), Journal (J) and Progress (K) windows
-src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, place names
+src/hud.*        in-game overlay: nameplates, speech balloons, damage numbers, talk/loot hint, player health, the boss bar, knocked-out message, place names
 src/renderer.*   SDL3 GPU (Metal) renderer: pipelines, uploads, culling, day/night lighting
 src/debug_ui.*   Dear ImGui debug window (toggle with .), and the debug note box
 src/notes.*      debug notes: the game state a note keeps, debug_notes/notes.jsonl

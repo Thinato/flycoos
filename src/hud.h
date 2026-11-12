@@ -21,6 +21,10 @@ unsigned uiColor(float r, float g, float b, float a = 1);
 void drawHud(const glm::mat4& view, float fovY, glm::vec3 eye, const Grid& world, const Player& player,
              const std::vector<Entity>& entities, const Entity* target, float tickAlpha, const Entity* locked = nullptr,
              bool rest = false);
+// The boss bar (ADR-059), at the bottom over the player's bars: the name and health of the boss fighting the player
+// (bossBar), a chip of recent damage that drains after a moment, and its stance filling toward a break. A killed boss's
+// bar lingers empty and fades; one that leaves the fight takes its bar with it.
+void drawBossBar(const std::vector<Entity>& entities, const Player& player);
 // Place names: the label of every poi whose radius the player is within (fading in over its outer
 // quarter), and `region`'s name for a few seconds after the player walked into it `regionSeconds` ago.
 void drawPlaces(const glm::mat4& view, float fovY, const Player& player, const std::vector<Marker>& markers,

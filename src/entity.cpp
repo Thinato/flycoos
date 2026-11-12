@@ -115,11 +115,9 @@ Entity makeEntity(EntityKind kind, uint32_t rngSeed, glm::vec3 pos, glm::vec3 fa
     e.body.stats = t.stats;
     e.body.level = t.level;
     e.body.tuning.walkSpeed = 2;  // a stroll
-    e.body.tuning.runSpeed = t.chaseSpeed;
     e.body.inv.equipped[SlotMainHand] = t.weapon;
     e.body.inv.equipped[SlotOffHand] = t.shield;
-    e.body.innate = t.mods;
-    for (Modifier& m : e.body.innate) m.source = "innate";  // (not its kind's name: defs may be reloaded under it)
+    enterPhase(e, 0);  // its run speed and own modifiers
     e.body.health = float(maxHealth(sheet(e.body)));
     e.body.stance = t.stance;
     e.body.breathPhase = kTau * rand01(e.rng);
@@ -316,6 +314,7 @@ static void dropAttack(Entity& e) {
 void setState(Entity& e, AiState to, const char* reason) {
     AiState from = e.state;
     if (from == AiState::Windup) e.body.hitPending = false;  // exit: a windup cut short never lands (it has landed if it ran out)
+    if (from == AiState::Roar) e.body.roar = 0;  // (its pose ends)
     e.history[e.transitions++ % e.history.size()] = {from, to, reason, e.stateTime};
     e.state = to;
     e.stateTime = 0;
@@ -393,6 +392,37 @@ void startAttack(Entity& e, size_t i, glm::vec2 aim) {
     b.moveScale = 1;  // its own timing: weapon speed doesn't change it
     b.hold = std::max(0.0f, a.windup * (0.85f + 0.5f * rand01(e.attackRng)) - holdTime(b));  // the telegraph varies, as a swing's (ADR-035)
     b.noise(Noise::Windup);
+}
+
+void enterPhase(Entity& e, int n) {
+    e.phase = std::clamp(n, 0, int(typeOf(e.kind).phases.size()));
+    const EntityType& t = e.type();
+    e.body.tuning.runSpeed = t.chaseSpeed;
+    e.body.innate = t.mods;
+    for (Modifier& m : e.body.innate) m.source = "innate";  // (not its kind's name: defs may be reloaded under it)
+    e.attackWait.fill(0);  // a new phase opens with its attacks ready (its stance tops out at the phase's in updateCombat)
+}
+
+int phaseFor(const Entity& e) {
+    const std::vector<EntityType>& phases = typeOf(e.kind).phases;
+    if (phases.empty()) return 0;  // (most creatures: no sheet to build)
+    float share = e.body.health / float(maxHealth(sheet(e.body)));
+    int n = 0;
+    for (size_t i = 0; i < phases.size(); ++i)
+        if (share <= phases[i].phaseAt) n = int(i) + 1;
+    return n;
+}
+
+std::optional<BossBar> bossBar(const std::vector<Entity>& entities, const Player& player) {
+    const Entity* best = nullptr;
+    for (const Entity& e : entities)
+        if (e.type().boss && e.body.alive() && e.hunting() && player.alive() &&
+            (!best || glm::distance(e.body.pos, player.pos) < glm::distance(best->body.pos, player.pos)))
+            best = &e;
+    if (!best) return std::nullopt;
+    const EntityType& t = best->type();
+    float stance = best->body.broken ? 1 : t.stance > 0 ? std::clamp(1 - best->body.stance / t.stance, 0.0f, 1.0f) : 0;
+    return BossBar{best, std::clamp(best->body.health / float(maxHealth(sheet(best->body))), 0.0f, 1.0f), stance};
 }
 
 namespace {
@@ -573,8 +603,10 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
         return seen == 1;
     };
     if (fighter && (e.events & EventDamaged)) e.lastSeen = target.pos, e.unseen = 0;  // a hit tells it where the player is, even one it reels from
+    // A boss's territory (ADR-059): within it, it always knows where the player is; it fights them to the end there.
+    bool territorial = t.territory > 0, inside = territorial && glm::length(xz(target.pos - e.home)) <= t.territory;
     if (fighter && e.hunting()) {  // fighting or searching: where it last saw the player
-        if (range < t.chaseRange && sees()) e.lastSeen = target.pos, e.unseen = 0;
+        if (inside || (range < t.chaseRange && sees())) e.lastSeen = target.pos, e.unseen = 0;
         else e.unseen += dt;
     }
     Input in;
@@ -590,6 +622,15 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
         if (!e.body.alive() && e.state != AiState::Dead) setState(e, AiState::Dead, "died");
         else if (e.body.alive() && e.body.stagger > 0 && e.state != AiState::Stagger && e.state != AiState::Return && e.state != AiState::Flee)
             setState(e, AiState::Stagger, e.body.broken ? "stance_broken" : "flinched");
+        else if (int n = phaseFor(e); n > e.phase && e.body.alive() && e.hunting() && e.state != AiState::Stagger && (!territorial || inside)) {
+            // A boss's next phase (ADR-059), once a stagger has played out: it roars, then fights with the phase's numbers.
+            static constexpr const char* kPhaseReasons[] = {"phase_1", "phase_2", "phase_3", "phase_4"};
+            static_assert(std::size(kPhaseReasons) == kMaxPhases);
+            setState(e, AiState::Roar, kPhaseReasons[n]);
+            interrupt(e.body, 0, false);  // (a swing on its way stops; setState dropped an attack)
+            enterPhase(e, n);
+            e.body.noise(Noise::Windup);
+        }
         switch (e.state) {
         case AiState::Dead:  // lies where it fell
             if (!e.body.alive()) return in;
@@ -605,7 +646,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             }
             // Aggro range is in 3D (a player high above, or a floor below, is out of it) and needs sight (ADR-055).
             // ponytail: no field of view; it sees all round (add one with stealth).
-            if (t.temper == Temper::Aggressive && target.alive() && e.calmTimer <= 0 && range < t.aggroRange && sees()) {
+            if (t.temper == Temper::Aggressive && target.alive() && e.calmTimer <= 0 && range < t.aggroRange && (!territorial || inside) && sees()) {
                 e.lastSeen = target.pos, e.unseen = 0;  // (not a fight yet: nothing above noted it)
                 setState(e, AiState::Chase, "saw_target");
                 continue;
@@ -622,9 +663,10 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
         case AiState::Chase:  // runs at the target (around it to its side, with others) until in reach, then winds up a swing
             if (!fighter) setState(e, AiState::Wander, "harmless");  // forced from the debug window
             else if (!target.alive()) setState(e, AiState::Return, "target_down");
-            else if (range >= t.chaseRange) setState(e, AiState::Return, "target_far");  // no leash from home (ADR-055)
+            else if (territorial && !inside) setState(e, AiState::Return, "left_territory");  // a boss fights to the end only in its territory (ADR-059)
+            else if (!territorial && range >= t.chaseRange) setState(e, AiState::Return, "target_far");  // no leash from home (ADR-055)
             else if (e.unseen > 0 && e.unseen >= gAi.sightGrace) setState(e, AiState::Search, "lost_sight");  // (> 0: a grace of 0 can't flap)
-            else if (e.lostTime >= t.giveUpSeconds) setState(e, AiState::Return, "lost_target");
+            else if (!territorial && e.lostTime >= t.giveUpSeconds) setState(e, AiState::Return, "lost_target");
             else if (e.body.health < t.fleeHealth * float(maxHealth(sheet(e.body)))) setState(e, AiState::Flee, "low_health");
             else if (in.roll || e.body.move == Move::Parry || e.body.rolling()) return in;  // dodging, or in a parry
             else if (t.keepMax > 0 && ranged(e.body)) {  // an archer's bow out: it keeps its distance (ADR-051)
@@ -711,6 +753,14 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             }
             setState(e, AiState::Recover, e.body.move == Move::Shot ? "shot" : "swung");
             continue;
+        case AiState::Roar:  // a boss's new phase (ADR-059): stands roaring, stagger-proof and taking no damage, then fights on
+            if (e.stateTime == 0 || e.stateTime < e.type().roar) {  // (a tick at least: the rest of this update read the old phase)
+                e.body.roar = std::clamp(e.stateTime / std::max(e.type().roar, 1e-3f), 1e-3f, 1.0f);
+                return {};  // (stands: nothing answer() meant to do)
+            }
+            e.events = 0;
+            setState(e, AiState::Chase, "roared");
+            continue;
         case AiState::Stagger:  // reels (a stance break: open to a riposte), then fights on
             if (e.body.stagger > 0) return in;
             e.events = 0;  // the hit that staggered it is answered by fighting
@@ -763,7 +813,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                 setState(e, AiState::Flee, "damaged");
                 continue;
             }
-            if (fighter && (e.events & EventDamaged) &&
+            if (fighter && (e.events & EventDamaged) && (!territorial || inside) &&  // (a boss isn't drawn out of its territory)
                 (inReach || std::string_view(e.history[(e.transitions - 1) % e.history.size()].reason) != "lost_target")) {
                 e.events = 0;
                 setState(e, AiState::Chase, "damaged");
@@ -772,9 +822,13 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             if (glm::length(toHome) <= std::max(e.wanderRadius, 1.0f)) {
                 // Heals only after walking back: one that gives up at home (hit from beyond its chase range)
                 // arrives in the same update, with stateTime still 0, and keeps its wounds.
-                if (e.stateTime > 0) e.body.health = float(maxHealth(sheet(e.body)));
+                // A boss starts over, even one that never left home (ADR-059): no wounds to poke at from outside its territory.
+                bool reset = (e.stateTime > 0 || territorial) && e.phase;
+                if (e.stateTime > 0 || territorial) e.body.health = float(maxHealth(sheet(e.body)));
+                if (reset) enterPhase(e, 0);
                 e.calmTimer = t.reaggroCooldown;
                 setState(e, AiState::Wander, "home");
+                if (reset) return in;  // (`t` is the old phase's for the rest of this update)
                 continue;
             }
             if (e.lostTime >= t.giveUpSeconds) {  // stuck on the way: wandering may get it unstuck
@@ -995,7 +1049,7 @@ bool hurt(Player& b, int amount, bool crit, Status kind) {
 
 bool damage(Entity& e, int amount, bool crit, Status kind) {
     const EntityType& t = e.type();
-    if (!t.attackable || !e.body.alive()) return false;
+    if (!t.attackable || !e.body.alive() || e.state == AiState::Roar) return false;  // (a roaring boss takes none, ADR-059)
     if (t.immortal) e.body.health += float(std::max(amount, 0));  // takes none (ADR-056); hurt() still shows the number and counts the hit
     if (!hurt(e.body, amount, crit, kind)) return false;
     if (kind != Status::Poison) e.events |= EventDamaged;  // poison's ticks don't call it back
@@ -1047,6 +1101,7 @@ bool behind(const Entity& e, const Player& a) {
 bool opensToCritical(const Entity& e, const Player& a) {
     const Player& b = e.body;
     if (bystander(e.type())) return false;  // (a villager near a fight mustn't pull the player's attack onto it, ADR-056)
+    if (e.state == AiState::Roar) return false;  // (stagger-proof, ADR-059)
     return b.broken || (behind(e, a) && !b.punching() && !b.rolling() && b.stagger == 0 && b.hitTime >= gMelee.backstabWait);
 }
 
@@ -1056,7 +1111,8 @@ Entity* criticalTarget(std::vector<Entity>& entities, const Player& a, bool caug
     for (Entity& e : entities) {
         float dist = glm::distance(xz(e.body.pos), xz(a.pos));
         const Player& b = e.body;
-        bool open = caught ? b.broken || (behind(e, a) && !b.rolling() && b.hitTime >= gMelee.backstabWait) : opensToCritical(e, a);
+        bool open = caught ? e.state != AiState::Roar && (b.broken || (behind(e, a) && !b.rolling() && b.hitTime >= gMelee.backstabWait))
+                           : opensToCritical(e, a);  // (a roaring boss is stagger-proof, ADR-059: not held either)
         if (e.type().attackable && e.body.alive() && open && inReach(a, e.body.pos) && dist < bestDist) best = &e, bestDist = dist;
     }
     return best;
@@ -1075,6 +1131,7 @@ static bool armored(const Player& b) {
 void staggerHit(Entity& e, float stance, bool critical) {
     const EntityType& t = e.type();
     Player& b = e.body;
+    if (e.state == AiState::Roar) return;  // a boss roaring into its next phase is stagger-proof (ADR-059)
     if (critical) {  // knocked down, its stance back
         interrupt(b, 0, false);
         b.stagger = b.staggerLength = gMelee.downSeconds;

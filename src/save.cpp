@@ -529,6 +529,8 @@ void apply(const SaveData& d, Session& s, uint32_t worldHash, SaveReport& r) {
         e->body.teleport(glm::distance(glm::vec2(n.pos.x, n.pos.z), glm::vec2(e->home.x, e->home.z)) <= range
                              ? inWorld(n.pos) : e->body.pos);
         e->body.health = std::min(n.health, float(maxHealth(sheet(e->body))));
+        if (e->type().territory > 0 && e->body.alive()) e->body.health = float(maxHealth(sheet(e->body)));  // a boss's fight starts over (ADR-059)
+        enterPhase(*e, phaseFor(*e));  // (a phase isn't saved: its health says which)
         e->body.deadTime = n.deadTime;
         e->loot = n.loot;
         if (!e->body.alive()) setState(*e, AiState::Dead, "loaded");  // alive ones start calm (the FSM isn't saved)

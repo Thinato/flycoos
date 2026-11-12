@@ -690,6 +690,22 @@ static void entitiesTab(Session& session, DebugActions& actions, SpawnSettings& 
         if (spawn.made < spawn.count) ImGui::TextColored({1, 0.6f, 0.3f, 1}, "spawned %d of %d (no ground there)", spawn.made, spawn.count);
         else ImGui::TextDisabled("spawned %d", spawn.made);
     }
+    for (size_t k = 0; k < defs().creatures.size(); ++k) {  // bosses (ADR-059): one at the world's middle (the arena's centre)
+        const EntityType& t = defs().creatures[k];
+        if (!t.boss) continue;
+        ImGui::PushID(int(k) + 1000);
+        if (ImGui::Button(std::format("Spawn {} at the centre", t.name ? t.name : defs().creatureIds[k]).c_str())) {
+            glm::ivec2 c = worldMiddle(session.world);
+            spawnGroup(entities, session.world, EntityKind(k), 1, glm::vec3(c.x, float(groundUnderTrees(session.world, c.x, c.y) + 1), c.y), player.pos,
+                       SDL_rand_bits());
+        }
+        ImGui::SetItemTooltip("Its territory is %.0f blocks round where it stands; the arena's start is outside it.", double(t.territory));
+        ImGui::PopID();
+    }
+    if (std::optional<BossBar> bar = bossBar(entities, player))
+        ImGui::Text("Boss bar: %s, health %.0f%%, stance worn %.0f%%", bar->boss->displayName().c_str(), double(bar->health * 100), double(bar->stance * 100));
+    else
+        ImGui::TextDisabled("Boss bar: none (no boss fighting you)");
     ImGui::Separator();
     if (ImGui::TreeNode("Fighting AI: tokens, strings, answers (ADR-042, ADR-043)")) {
         AiTuning& a = gAi;
@@ -846,6 +862,32 @@ static void entitiesTab(Session& session, DebugActions& actions, SpawnSettings& 
                 if (e.body.move == Move::Shot)
                     ImGui::Text("drawing %.0f%%%s", double(drawOf(e.body) * 100), e.body.hitPending ? "" : "   loosed");
             }
+        }
+        if (const EntityType& kind = typeOf(e.kind); (kind.boss || !kind.phases.empty()) &&
+                                                     ImGui::TreeNode("boss", "Boss: phase %d of %zu (ADR-059)", e.phase + 1, kind.phases.size() + 1)) {
+            int most = maxHealth(sheet(e.body));
+            ImGui::Text("health %.0f / %d (%.0f%%)   territory %.0f (you %.0f from its home: %s)%s", double(e.body.health), most,
+                        double(e.body.health / float(most) * 100), double(kind.territory), double(glm::length(glm::vec2(player.pos.x - e.home.x, player.pos.z - e.home.z))),
+                        glm::length(glm::vec2(player.pos.x - e.home.x, player.pos.z - e.home.z)) <= kind.territory ? "inside" : "outside",
+                        e.state == AiState::Roar ? std::format("   ROARING {:.1f} / {:.1f} s", e.stateTime, t.roar).c_str() : "");
+            for (int n = 0; n <= int(kind.phases.size()); ++n) {
+                const EntityType& p = n ? kind.phases[size_t(n) - 1] : kind;
+                ImGui::PushID(n + 200);
+                if (ImGui::SmallButton("jump")) {  // its health to just under the phase's threshold: fighting, it roars into a later one; else it's there at once
+                    e.body.health = n ? std::nextafter(p.phaseAt * float(most), 0.0f) : float(most);
+                    if (!e.hunting() || n <= e.phase) enterPhase(e, n);
+                }
+                ImGui::SetItemTooltip("Its health to this phase's threshold (phase 1: full). Fighting, it roars into the phase; else it's there at once.");
+                ImGui::SameLine();
+                std::string mods;
+                for (const Modifier& m : p.mods) mods += std::format(" {}{:+g}{}", kStatIds[size_t(m.stat)], m.value, m.kind == ModKind::Flat ? "" : m.kind == ModKind::More ? " more" : " inc");
+                ImGui::Text("%s%d at %.0f%%%s: windup %.2f  recover %.2f  combo %d (%.0f%% delayed)  chase %.1f  poise %.0f  stance %.0f  parries %d  %zu attacks%s",
+                            n == e.phase ? "> " : "  ", n + 1, double(p.phaseAt * 100), n ? std::format(", roars {:.1f} s", p.roar).c_str() : "", p.windup,
+                            p.recover, p.combo, double(p.delay * 100), p.chaseSpeed, double(p.poise), double(p.stance), p.parries, p.attacks.size(),
+                            mods.c_str());
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
         }
         if (e.transitions && ImGui::TreeNode("transitions", "Last %u transitions", std::min(e.transitions, uint32_t(e.history.size())))) {
             for (uint32_t k = 0; k < std::min(e.transitions, uint32_t(e.history.size())); ++k) {  // newest first

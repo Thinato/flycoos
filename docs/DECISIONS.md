@@ -2990,3 +2990,120 @@
     the creatures' blood and its data check, every burst's count, kind, place and direction, each toggle,
     the amount, reach, the cap, gravity, landing and lying, fading, the smear's window, speed rule, start,
     gap, hit-stop hold, fading, hilt fade and forgetting, the edges, the stall clamp).
+
+## ADR-059: Bosses: phases, a roar between them, a territory and a boss bar
+
+- **Status:** accepted (2026-11-12)
+- **Context:**
+  - The roadmap's enemies section: "Bosses: phases, unique movesets, stance bars shown". Enemies had a
+    fixed set of numbers, a nameplate and a hidden stance. ADR-036 already lets a kind take several parries.
+  - Pursuit (ADR-055) ends a chase out of sight or past the chase range, and the walk home could be long.
+    A boss mustn't wander off mid-fight, or be worn down from somewhere it can't follow.
+  - Foundations (docs/TALENTS.md): numbers live in the data, and every hit goes through the stat pipeline
+    and `resolveHit`. No per-kind code.
+- **Decision** (the user's calls: the barrow lord Ketil the Unburied with a greataxe; a 2 s roar at the phase
+  change, stagger-proof and taking no damage; a 36-block territory, and leaving it or dying sends him home
+  to full health and his first phase; a chip of recent damage on the bar, and no marks at the thresholds):
+  - **Phases are data.** A creature may list up to 3 `phases` after its first. Each has `at` (the share of
+    max health it starts at, below the one before), `roar` (seconds, 0..10, default 2) and any of the
+    fighting numbers: `attacks`, `combo`, `delay`, `attack_windup`, `attack_recover`, `attack_cooldown`,
+    `chase_speed`, `stance`, `poise`, `hit_stance`, `parries`, `guard`, `parry`, `dodge`, `back_off`,
+    `mods`. Anything else fails, and so do `mods` on stamina or max health (the thresholds are shares of it).
+  - **A phase is a whole record.** The loader merge-patches the creature's record with the phase's fields
+    and parses it like any record (`parseCreature`), so every check applies, and a field set to null takes
+    its default. Each phase patches the first phase, not the one before. `Entity::type()` returns the
+    current phase's numbers, so every reader (attacks, strings, windups, poise, the stat sheet through
+    `innate`) uses them with no new code. `enterPhase` refreshes what a body copies at spawn: its run speed,
+    its own modifiers (the stat pipeline) and its attacks' cooldowns (ready). Its stance already tops out at
+    the phase's (updateCombat).
+  - **The change.** Fighting (and, with a territory, the player inside it), a creature whose health falls
+    to a phase's `at` goes to the deepest phase it has reached, once a stagger or knock-down has played out. It enters a new AI state, `Roar` (reason
+    `phase_2`...): its swing stops, it stands with arms flung wide and its voice's windup sound, takes no
+    damage, no stance damage, can't flinch, be knocked down or backstabbed, then `Chase` (`roared`). A grab
+    lets go (the grabber's move stopped). `Roar` counts as fighting.
+  - **The territory** (`territory`, blocks from home): it notices the player only inside it. Inside it
+    always knows where the player is (no search), and doesn't give up when it can't reach them. A player
+    who leaves it sends it home (`left_territory`), and a hit from outside doesn't call it back. Home, or
+    already there, it heals fully and goes back to its first phase. A fallen player (`target_down`) ends
+    the fight the same way. A save keeps no phase: a boss loads at full health in its first phase (its
+    fight starts over); a creature with phases and no territory loads in the phase its health says.
+  - **The boss bar** (`boss`): `bossBar` picks the nearest living boss fighting the player (chasing,
+    winding up, recovering, reeling, searching or roaring) while the player is up. hud.cpp's
+    `drawBossBar` draws it at the bottom, over the player's bars, on a faint dark backing: the name in the
+    region titles' font, a dark red health bar 620 wide, a pale chip of recent damage that holds 0.6 s then
+    drains, under it the stance worn toward a break in amber (full and pulsing while broken), and under
+    that its status build-ups. A killed boss's bar lingers empty and fades over
+    2 s; one that leaves the fight takes it at once. A living boss has no nameplate.
+  - **Ketil the Unburied** (`barrow_lord`, save id 9): a barrow lord drawn 1.5x (a bone face with ember
+    eyes, an iron crown, a dark mantle over rusted mail), with the Barrow Greataxe in both hands (its
+    swings are the greataxe class's). Level 5, 240 health, stance 260, poise 30 (only heavy hits make
+    him flinch), 3 parries to open him, the ghoul's voice pitched down, grave dust when hit, mail that
+    sparks. He drops the greataxe and gives 400 XP. His territory is 36 blocks, his aggro range 20.
+
+    | Phase | Swings | Attacks (from, chance, cooldown) | Other |
+    |---|---|---|---|
+    | 1 (100–50%) | strings of 2, 30% delayed; windup 0.75 s, recovery 0.6 s | sweep (0–3, 35%, 8 s; radius 3.8, blocks x2.5); leap slam (6–14, 50%, 9 s; reach 2.4, hyperarmor) | chases at 4.5 |
+    | 2 (below 50%), after a 2 s roar | strings of 3, 45% delayed; windup 0.5 s, recovery 0.45 s | sweep (35% → 50%, 6 s; radius 4.2); leap (60%, 6 s); charge (8–18, 60%, 8 s; 13 b/s for 1 s, hyperarmor); grab (0–2.4, 35%, 10 s; 2 crushing hits 0.6 s apart) | chases at 5.5; +15% damage (more); his hits build frost |
+
+    Why: the first phase teaches two specials, the sweep against hugging or circling behind him and the
+    leap against keeping away (a flask at range). The second presses at every range: a charge for
+    distance, a grab against turtling behind a guard, and longer, quicker, more often delayed strings
+    against early rolls.
+  - **Debug window:** the Entities tab spawns each boss at the world's middle (the arena's centre; the
+    arena's start is outside his territory) and shows whom the boss bar is for. Per boss, a Boss node:
+    its phase, health and territory (and whether you're inside), each phase's threshold, roar and numbers,
+    and a "jump" button per phase (its health to the threshold: fighting, it roars into it).
+- **Alternatives considered:**
+  - Per-phase overrides read field by field (a phase struct with optional numbers): every reader would
+    need to ask it, and every new number would need wiring. A whole record per phase reuses the parser,
+    its checks and every reader.
+  - Phases that patch the phase before: shorter data for three phases, but a phase's numbers would hang
+    on the whole chain. Patching the first keeps each readable on its own.
+  - A new attack type for the boss (a follow-up chaining one attack into another): the four types, the
+    strings and the delays were enough. Add one if a later boss needs it.
+  - A boss in the arena world as a marker: it would stand in the middle of the test stage, and once
+    killed stay dead there. The debug window spawns it instead; lasting death works for a marker boss in
+    any world (`buryDead`, ADR-056) and is tested.
+  - Keeping the phase in the save: a boss's fight starts over on load anyway, as it does when the player
+    leaves; health tells the rest.
+- **Consequences:**
+  - A boss fight is a fight to the end inside the territory. Leaving it, or falling, resets it.
+  - **Balance:** the story-fight player in Iron with the sword loses to Ketil every time standing and
+    trading. Drinking its three flasks and rolling out of his sweeps it wins 3 of 12, narrowly (a mean of
+    -48: Ketil's health left when it loses). A player who also rolls his leaps and charges does better.
+    The level band test gives a boss its own rule: more than 16 swings to kill, and he wins a trade.
+  - **Re-pinned:** the tests' own creature kinds moved from save id 9 up by one (the boss is 9); the
+    shipped table is one longer than `EntityKind` (the boss is data only, no code names it); the code-items
+    test data drops his greataxe as it does other non-code items. No pinned fight changed.
+  - **Data and state:** creatures gained `boss`, `territory` and `phases`; `EntityType` gained `phases`,
+    `phaseAt` and `roar`. `Entity` gained `phase`, `Player` a `roar` for the pose, `AiState` gained `Roar`,
+    `Model` gained `ModelBarrowLord`. None of it is saved.
+  - **Limits:**
+    - The boss AI still keeps a sword's length (ADR-049's limit), closer than the greataxe needs.
+    - His 1.5x drawing is wider than the body's box (0.8): up close the model can overlap the player's.
+    - A hit during the roar shows nothing.
+    - His charge has no telegraph pose (ADR-057's charge pose is the boar's): he stands, turning after the
+      player, with the windup sound, then runs with the axe held out.
+    - A roaring boss keeps its attack token, so in a pack the others wait out the roar too.
+    - Damage numbers over the boss start at a nameplate's height (2.5), inside his crown: hud.cpp's
+      `top` has no case for him (left alone to keep the merge with the damage-number work clean).
+    - The Entities tab's live attack tuning edits only a kind's first phase.
+    - The territory is a circle on the map; nothing marks it in the world (no fog gate: the world roadmap).
+  - **Performance:** the bar is a handful of rectangles and a line of text, only during a boss fight; no
+    A/B was run.
+  - **Tested:** `bosses()` in core_test: Ketil's numbers and both phases (a phase inherits the rest);
+    the data's checks; the change at the threshold and not above it (and not while calm, nor for a hit from outside the
+    territory), the roar (no damage, no stance damage,
+    no flinch, no knock-down, no backstab, its pose), its length, the next phase's numbers and ready
+    attacks; straight to the deepest phase; a stagger first; none out of a fight; each phase's attacks
+    (the first leaps from 10 blocks, the second charges); a grab let go at a phase change; the territory
+    (no aggro outside, no search behind a wall, no giving up below a pillar; without one it gives up);
+    leaving it at home and from afar (not called back from outside, healed, first phase); the player
+    falling; the boss bar (calm, fighting, health, stance worn, broken, roaring, searching, returning, the
+    nearest of two, a plain fighter, dead, a fallen player); lasting death from a marker (recorded, never
+    respawned, keeps the greataxe); the save; the same fight twice. `storyNpcs()` holds Ketil to his band.
+    Mutation-checked: each of 55 rules broken alone fails a test (the phase threshold, the deepest phase,
+    what a phase change refreshes, the roar's guards, length, reason and pose, the territory's aggro, sight,
+    giving up, leaving, the hit from outside and the reset at home, the boss bar's choice and values, every
+    data check, the save, and Ketil's numbers). Two rules were dropped as redundant: a stance clamp in
+    `enterPhase` (updateCombat already clamps) and a roar guard on the stagger check (now in `criticalTarget`).

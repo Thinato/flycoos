@@ -23,7 +23,9 @@ enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelBoar, ModelBandit, Mod
              ModelBow, ModelBowDrawn, ModelArrow,  // a bow (its string drawn back) and its arrow (ADR-050)
              ModelCrossbow, ModelCrossbowSpanned, ModelBolt,  // a crossbow (spanned: loaded, or the reload past its seat) and its bolt (ADR-052)
              ModelThrowingKnife, ModelBomb, ModelPoisonPot,   // throwables (ADR-053), in the left hand and in flight
-             ModelBurst, ModelPoisonBurst, ModelCount };      // a bomb's and a pot's burst, a puff that swells and goes
+             ModelBurst, ModelPoisonBurst,  // a bomb's and a pot's burst, a puff that swells and goes
+             ModelBarrowLord,               // the first boss (ADR-059): a towering barrow lord
+             ModelCount };
 Grid buildPart(Model model, Part part);
 Model heldModel(ItemId weapon);
 // What `p` has in hand drawn as: heldModel, but a bow with its string well back is ModelBowDrawn (ADR-050),
@@ -40,7 +42,9 @@ glm::mat4 tumblePose(glm::vec3 at, float spin);
 glm::mat4 burstPose(glm::vec3 at, float radius, float u);
 Model shieldModel(ItemId shield);
 // How tall a body of `model` stands, in blocks (its hit box: hitBox).
-constexpr float bodyHeight(Model m) { return m == ModelBoar || m == ModelWolf ? 1.1f : m == ModelChief ? 2.0f : 1.8f; }
+constexpr float bodyHeight(Model m) {
+    return m == ModelBoar || m == ModelWolf ? 1.1f : m == ModelChief ? 2.0f : m == ModelBarrowLord ? 2.6f : 1.8f;
+}
 // Whether `model` wearing `inv` has plate over its chest (an iron cuirass, the guard's): hits on it spark (ADR-058).
 bool plated(Model model, const Inventory& inv);
 // A held weapon's edge in its part grid (ADR-058): the line from `base` to `tip` its swings sweep; none (false)

@@ -159,6 +159,7 @@ struct Combatant {
     float sinceMove = 99;
     float stagger = 0, staggerLength = 0;  // seconds left reeling from a hit (no acting), of how many
     bool broken = false;                   // the reeling is a stance break (NPCs) or guard break (the player)
+    float roar = 0;                        // NPCs: how far through a boss's roar into its next phase (ADR-059), 0..1; 0: not roaring
     float stance = 0;                      // NPCs: stance damage left before it breaks (EntityType::stance)
     float stanceWait = 0;                  // seconds until it starts coming back
     // The player's (melee.cpp): stamina, the guard, and button presses waiting for their moment.

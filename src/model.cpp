@@ -332,7 +332,7 @@ Model shieldModel(ItemId shield) {
 
 static_assert(bodyHeight(ModelPlayer) == kHeight);
 
-bool plated(Model model, const Inventory& inv) { return model == ModelGuard || partModels(model, inv)[Torso] == ModelIronArmor; }
+bool plated(Model model, const Inventory& inv) { return model == ModelGuard || model == ModelBarrowLord || partModels(model, inv)[Torso] == ModelIronArmor; }
 
 bool bladeEdge(Model held, glm::vec3& base, glm::vec3& tip) {  // voxel centres across, from the guard to past the tip
     switch (held) {
@@ -415,6 +415,26 @@ static Block ghoulVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
     }
 }
 
+// The barrow lord (ADR-059): a skull with ember eyes under an iron crown, a dark mantle over rusted mail, bony
+// hands in iron cuffs.
+static Block barrowLordVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
+    bool front = v.z == s.z - 1;
+    switch (part) {
+    case Head:
+        if (v.y == s.y - 1) return v.x % 3 == 0 ? Iron : Air;  // the crown's points
+        if (v.y == s.y - 2) return Iron;                         // its band
+        if (front && (v.y == 3 || v.y == 4) && (v.x == 2 || v.x == 3 || v.x == s.x - 4 || v.x == s.x - 3)) return Ember;
+        if (front && v.y == 1 && v.x >= 2 && v.x <= s.x - 3) return v.x % 2 ? Eye : Tusk;  // teeth
+        return v.z <= 2 && v.y >= 2 ? DarkHair : Tusk;  // a skull, the mantle's hood at the back
+    case Torso:
+        if (v.y >= s.y - 2 || v.z == 0) return DarkHair;  // the mantle over the shoulders and down the back
+        if (v.y == 2) return Belt;
+        return front && v.x == s.x - 1 - v.y ? Belt : Iron;  // a strap across rusted mail
+    case HandL: case HandR: return v.y == s.y - 1 ? Iron : Tusk;
+    default: return Iron;
+    }
+}
+
 Grid buildPart(Model model, Part part) {
     if (model == ModelSword || model == ModelDagger || model == ModelAxe || model == ModelMace || model == ModelGreatsword || model == ModelGreataxe) {
         if (part != Head) return Grid({1, 1, 1});
@@ -456,6 +476,8 @@ Grid buildPart(Model model, Part part) {
                     b = chiefVoxel(part, {x, y, z}, s);
                 } else if (model == ModelGhoul) {
                     b = ghoulVoxel(part, {x, y, z}, s);
+                } else if (model == ModelBarrowLord) {
+                    b = barrowLordVoxel(part, {x, y, z}, s);
                 } else if (model == ModelIronArmor) {
                     b = armorVoxel(part, {x, y, z}, s);
                 } else if (part == Head) {
@@ -932,6 +954,13 @@ static void animate(const Player& p, bool armed, glm::vec3 (&off)[PartCount], gl
         posture(0, 0.3f * k, 2 * k);
         off[FootL].z += k, off[FootR].z -= k;
     }
+    if (float k = p.roar > 0 ? smooth(p.roar / 0.15f) * smooth((1 - p.roar) / 0.15f) : 0; k > 0) {  // a boss's roar (ADR-059): arms flung wide, head back
+        for (auto [h, side] : {std::pair{HandL, 1.0f}, std::pair{HandR, -1.0f}})
+            off[h] = glm::mix(off[h], glm::vec3(8 * side, 17, 1) - kHumanoid[h].center, k);
+        posture(0, -0.2f * k, 1 * k);
+        rot[Head].x -= 0.5f * k;
+        off[Head].z -= 0.8f * k;
+    }
     if (float r = reel(p); r > 0) {
         if (p.broken) {  // stance broken: sunk to a knee, hunched, arms hanging
             posture(0, 0.6f * r, 4 * r);
@@ -1083,7 +1112,10 @@ std::array<glm::mat4, PartCount> poseModel(const Player& p, Model model, glm::ma
     glm::mat4 base = glm::translate(glm::mat4(1), drawPos(p, alpha));
     base = glm::rotate(base, drawYaw(p, alpha), {0, 1, 0});
     // The chief is bigger and bulkier, the ghoul gaunt; only the drawing scales, not the body's box.
-    glm::vec3 scale = model == ModelChief ? glm::vec3(1.25f, 1.12f, 1.25f) : model == ModelGhoul ? glm::vec3(0.82f, 1.06f, 0.82f) : glm::vec3(1);
+    glm::vec3 scale = model == ModelChief       ? glm::vec3(1.25f, 1.12f, 1.25f)
+                      : model == ModelGhoul      ? glm::vec3(0.82f, 1.06f, 0.82f)
+                      : model == ModelBarrowLord ? glm::vec3(1.5f, 1.45f, 1.5f)  // the boss towers (ADR-059)
+                                                 : glm::vec3(1);
     base = glm::scale(base, kVoxel * scale);
     std::array<glm::mat4, PartCount> out;
     for (int i = 0; i < PartCount; ++i) {

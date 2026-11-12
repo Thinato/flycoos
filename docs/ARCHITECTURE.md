@@ -50,14 +50,14 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch`; `Skill` and the progression formulas (skill XP per use and per level, character XP and level costs, default kill XP; ADR-027) |
 | `src/progress.h/.cpp` | Progression (ADR-027): `SkillDef`/`TalentDef` (filled by the loader), `Progress` (character XP, skill levels, talent ranks), `addSkillXp`/`addCharacterXp`, `canLearn`/`learn`/`respec`, `talentPoints`, `progressModifiers` (what `collect` adds) |
 | `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel` by weapon class, `partModels`), procedural animation (`poseModel`; swing poses per weapon class, ADR-044). Core (no GPU), since NPC traits name their `Model` |
-| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), lasting deaths (`DeadSlots`, `buryDead`; ADR-056), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043), creature attacks (`CreatureAttack`, `attackBlocked`, `startAttack`, `pickAttack`, `attackStep`, `attackLands`: charges, leaps, sweeps, grabs; ADR-057) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
+| `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), lasting deaths (`DeadSlots`, `buryDead`; ADR-056), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043), creature attacks (`CreatureAttack`, `attackBlocked`, `startAttack`, `pickAttack`, `attackStep`, `attackLands`: charges, leaps, sweeps, grabs; ADR-057), bosses (phases: `Entity::type()` is the current phase's, `enterPhase`, `phaseFor`, the `Roar` state; the territory; `bossBar`; ADR-059) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the dead recorded and far corpses buried (`buryDead`), the quest drain, the knocked-out player's respawn, skill and level-up toasts) |
 | `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`, `WEAR`, `REST`, `GRIP`, `ARRW`, `THRW`, `DEAD`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
 | `src/quest.h/.cpp` | Quests (ADR-026): `GameEvent` (`Killed`, `ItemCountChanged`, `TalkedTo`, `RegionEntered`), the quest data types the loader fills (`QuestDef`, `Stage`, `Trigger`, `Action`, `Condition`, `QuestLine`), `QuestState`; `updateQuests` (the once-per-tick drain, then failing quests whose needs died), `setQuestStage`/`resetQuest(s)`, the condition evaluator (`passes`, `passesAll`, `pickLine`), `npcDead`/`deadNeed` (ADR-056), `countItem`, `checkQuestMarkers` |
 | `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` and `data/quests/*.json` (records by string id, `copy_from`, field and range checks, quest references resolved to handles, warnings), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C), Bags (B), Journal (J) and Progress (K) windows: slots, drag and drop, right-click equip, tooltips, attributes; quests with the current entry and checked objectives; level, skills and the talent trees |
-| `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, knocked-out message, poi labels and the region name (`drawPlaces`, in Alagard, `titleFont`, which DebugUI loads from `data/fonts/`) |
+| `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, the boss bar (`drawBossBar`, ADR-059), knocked-out message, poi labels and the region name (`drawPlaces`, in Alagard, `titleFont`, which DebugUI loads from `data/fonts/`) |
 | `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, the world's `Light` (filled by `uploadWorld`, relit by `updateWorld`), uploads of the core's chunk and model meshes, instanced plants (each frame's near ones, per model), hit effects (instanced particle cubes and the smear ribbon, ADR-058; `stream` uploads per-frame buffers), render targets, frustum culling, day/night lighting, screenshots |
 | `src/text.h` | `validName`: UTF-8 display text without control, bidi or zero-width characters (marker names and lines, item names) |
 | `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh, light and remesh times, light memory), for the debug and editor UIs without `renderer.h` |
@@ -1058,6 +1058,16 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   | Bandit Chief | area | 0–2.6 | 30%, 7 s | 0.95 s, 0.5 s | x1.4, 30 | radius 3.2, blocks x2.5 |
   | Barrow Ghoul | grab | 0–2.2 | 35%, 9 s | 0.9 s, 0.6 s | x0.6 a bite, 0 | reach 1.7, 3 bites 0.45 s apart |
 
+  Bosses (ADR-059): `boss` (true: the boss bar while it fights, no nameplate; fighters that can be hit),
+  `territory` (0..64 blocks from home; fighters), `phases` (fighters that can be hit): a list of 1 to 3,
+  each `{at (0.01..0.99, required, below the one before), roar (0..10 s, 2), ...}` plus any of `attacks`,
+  `combo`, `delay`, `attack_windup`, `attack_recover`, `attack_cooldown`, `chase_speed`, `stance`, `poise`,
+  `hit_stance`, `parries`, `guard`, `parry`, `dodge`, `back_off`, `mods` (not on stamina or max health).
+  A phase is the record merge-patched with those fields and checked as a record (an error says `(in
+  phases[N])`); null takes the default. Ketil the Unburied (`barrow_lord`) is the one boss: phase 1 a
+  sweep and a leap slam, phase 2 (at 50%, a 2 s roar) also a charge and a grab, longer and quicker
+  strings, +15% damage and frost (table in ADR-059).
+
   | Kind | Combo (delay) | Guard / parry / dodge | Backs off | Shield |
   |---|---|---|---|---|
   | Bandit | 2 | – / 15% (knife) / 20% | 30% | – |
@@ -1190,6 +1200,20 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   ghoul's raised arms and reach, the bandit's crouch and chop. The Entities tab's "Creature attacks"
   node edits `gAi` and every kind's numbers live (`tuneDefs()`); per NPC it shows each attack's
   readiness or why not, a "now" button and the one under way.
+- **Bosses** (ADR-059): `Entity::phase` picks the kind's numbers (`type()`: its phase's record). Each
+  update, once not reeling and while fighting, `phaseFor` (the deepest phase whose `phaseAt` its health
+  share has reached) above the current one puts it in `Roar` (reason `phase_2`...): the swing stops,
+  `enterPhase` sets run speed, `innate` mods, ready attacks and stance from the phase, and it stands
+  `roar` seconds (`Player::roar`, 0..1, poses it) taking no damage (`damage`), no stance damage
+  (`staggerHit`) and no backstab (`opensToCritical`, `criticalTarget`), then `Chase` (`roared`). A `territory` gates aggro
+  to the player being inside it (from home, XZ), keeps `lastSeen` fresh inside (no `Search`), drops
+  `target_far` and `lost_target`, and sends it home when the player leaves (`left_territory`); a hit from
+  outside doesn't call it back. Home (even with no walk) it heals and `enterPhase(e, 0)`. On load a
+  territorial boss is healed, and every NPC's phase is `phaseFor` (save.cpp). `bossBar` is the nearest
+  living boss that's `hunting()` while the player is up: health share and stance worn (1 while broken);
+  hud.cpp's `drawBossBar` draws it with a damage chip (its own static state). The Entities tab spawns
+  bosses at the world's middle and has a Boss node per boss (phase, territory, each phase's numbers,
+  "jump").
 - **Loot:** a kill rolls the kind's drop into `Entity::loot`. The corpse lies where it fell (ADR-056:
   until the player is `gAi.corpseGone`, 64 blocks, away and can't see it, and never while it holds
   loot); E within 3.5 blocks moves the loot into the bags, else into its empty equip slot (it

@@ -103,7 +103,16 @@ struct EntityType {
     float aimError = 0;
     ItemId sidearm;
     std::vector<CreatureAttack> attacks;  // its attacks beyond its swings (ADR-057), at most kMaxAttacks
+    // A boss (ADR-059): its bar at the bottom of the screen while it fights the player, instead of a nameplate.
+    bool boss = false;
+    float territory = 0;  // > 0: it fights a player within this of its home (XZ) to the end, always knowing where they are; one who leaves or falls sends it home
+    // Its phases after the first (ADR-059), each this record merge-patched with the phase's fields (combat numbers only):
+    // it enters one once its health is at most `phaseAt` of its max, roaring `roar` seconds first. Entity::type() is the current one's.
+    std::vector<EntityType> phases;
+    float phaseAt = 1;    // a phase's: the share of max health it starts at
+    float roar = 0;       // a phase's: seconds it roars on entering it, stagger-proof and taking no damage
 };
+constexpr size_t kMaxPhases = 4;  // a boss's, its first included
 // From the loaded defs (defs.h); `kind` must be one of theirs (checkMarker refuses others).
 const EntityType& typeOf(EntityKind kind);
 // A bystander (a villager): harmless and walking about. It can be hit (ADR-056), but only on purpose: no lock-on,
@@ -115,8 +124,9 @@ inline bool bystander(const EntityType& t) { return t.temper == Temper::Harmless
 // home ignoring the player, then heals. Flee: runs from the player for a while, then returns.
 // Stagger: reels from a hit (a flinch, or a stance break), then fights on (ADR-035). Search: lost sight
 // of the player mid-chase, goes to where it last saw them and looks around, then gives up (ADR-055).
-enum class AiState : uint8_t { Idle, Wander, Talk, Chase, Windup, Recover, Return, Flee, Dead, Stagger, Search, Count };
-inline constexpr const char* kAiStateNames[] = {"idle", "wander", "talk", "chase", "windup", "recover", "return", "flee", "dead", "stagger", "search"};
+// Roar: a boss entering a new phase (ADR-059), stagger-proof and taking no damage, then it fights on.
+enum class AiState : uint8_t { Idle, Wander, Talk, Chase, Windup, Recover, Return, Flee, Dead, Stagger, Search, Roar, Count };
+inline constexpr const char* kAiStateNames[] = {"idle", "wander", "talk", "chase", "windup", "recover", "return", "flee", "dead", "stagger", "search", "roar"};
 static_assert(std::size(kAiStateNames) == size_t(AiState::Count));
 // What happened to an entity since its last AI update (bits of Entity::events).
 enum AiEvent : uint8_t { EventDamaged = 1 };
@@ -209,12 +219,17 @@ struct Entity {
     bool leapt = false;    // its leap has left the ground...
     float leapAt = 0;      // ...this far into its Windup
     int bites = 0;         // its grab's bites on the player it holds so far
+    int phase = 0;         // a boss's phase (ADR-059): 0 its first, n its kind's phases[n - 1]; change it with enterPhase
     std::mt19937 rng;
     std::mt19937 attackRng;  // its own attacks' chances and telegraphs (ADR-057), apart from `rng`
 
-    const EntityType& type() const { return typeOf(kind); }
+    const EntityType& type() const {  // its kind's numbers, a boss's in its phase (ADR-059)
+        const EntityType& t = typeOf(kind);
+        return phase > 0 && size_t(phase) <= t.phases.size() ? t.phases[size_t(phase) - 1] : t;
+    }
     bool angry() const {
-        return state == AiState::Chase || state == AiState::Windup || state == AiState::Recover || state == AiState::Stagger;
+        return state == AiState::Chase || state == AiState::Windup || state == AiState::Recover || state == AiState::Stagger ||
+               state == AiState::Roar;
     }
     bool hunting() const { return angry() || state == AiState::Search; }  // fighting, or searching for the player (ADR-055)
     const char* speech() const;  // current balloon text, null when silent
@@ -286,6 +301,18 @@ void updateEntities(std::vector<Entity>& entities, const Grid& world, const Play
 const char* attackBlocked(const Entity& e, const Grid& world, const Player& target, size_t i);
 // Starts `e`'s attack `i` toward `aim` (XZ), whether or not it may (the debug window's "now"): its Windup, telegraphed.
 void startAttack(Entity& e, size_t i, glm::vec2 aim);
+// A boss's phases (ADR-059). enterPhase puts `e` in phase `n` (0: its first) at once, with no roar: its run speed and own
+// modifiers become the phase's, its attacks are ready. phaseFor is the latest phase its health has reached (0..phases).
+void enterPhase(Entity& e, int n);
+int phaseFor(const Entity& e);
+// What the boss bar shows (ADR-059): the nearest living boss fighting the player (hunting it, or roaring), while the
+// player is up. `health` is the share of max health left, `stance` the share of its stance worn down toward a break
+// (full while it's broken).
+struct BossBar {
+    const Entity* boss = nullptr;
+    float health = 0, stance = 0;
+};
+std::optional<BossBar> bossBar(const std::vector<Entity>& entities, const Player& player);
 // Whether nothing solid stands between `from`'s eyes (1.5 above its feet) and `target`'s chest (1.1): how an NPC
 // sees the player (ADR-055). ponytail: one ray, no field of view; a sliver of cover hides the whole body.
 bool canSee(const Grid& world, const Player& from, const Player& target);

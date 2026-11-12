@@ -988,6 +988,7 @@ static int run(SDL_Window* window, const Options& opt) {
             const Entity* target = lootTarget(entities, player);
             if (!target) target = talkTarget(entities, player);
             drawHud(fp.view, fp.fovY, fp.eye, world, player, entities, target, alpha, lockedEntity(lock, entities), canRest(session));
+            drawBossBar(entities, player);
             drawPlaces(fp.view, fp.fovY, player, markers, region, float(session.elapsed - session.regionSince));
             drawNotice(notice.c_str(), float(double(SDL_GetTicksNS() - noticeAt) * 1e-9));
         }
