@@ -10267,7 +10267,9 @@ static void hitEffects() {
     CHECK(wood.size() == 8 && glowing(wood) == 2);  // a buckler's splinters, a spark or two
     auto arms = burst({.what = Noise::Block, .from = from});
     CHECK(arms.size() == 5 && glowing(arms) == 0);
-    CHECK(glowing(burst({.what = Noise::Parry, .from = from})) == 18 && glowing(burst({.what = Noise::PerfectGuard, .from = from})) == 10);
+    FxSettings unflashed;  // ADR-060's shards are tested in flashes()
+    unflashed.flashes = false;
+    CHECK(glowing(burst({.what = Noise::Parry, .from = from}, unflashed)) == 18 && glowing(burst({.what = Noise::PerfectGuard, .from = from})) == 10);
     CHECK(glowing(burst({.what = Noise::Bounce, .from = from})) == 8 && burst({.what = Noise::GuardBreak, .with = buckler, .from = from}).size() == 24);
     auto stone = burst({.what = Noise::Thunk, .ground = Stone, .from = from});
     CHECK(stone.size() == 8 && glowing(stone) == 3 && std::ranges::count_if(stone, ofBlock(Stone)) == 5);
@@ -10292,6 +10294,7 @@ static void hitEffects() {
     {  // blood flies, lands on the ground and lies there its while; sparks die where they land, within their life
         Grid g = meadow();  // grass at y 3: the ground's top at 4
         Fx fx;
+        fx.set.flashes = false;  // ADR-060's shards are tested in flashes()
         spawnFx(fx, {.what = Noise::Death, .pos = {10, 4, 10}, .kind = bandit, .from = {9, 4, 10}}, {10, 6, 10});
         spawnFx(fx, {.what = Noise::Parry, .pos = {20, 4, 20}, .from = {20, 4, 21}}, {10, 6, 10});
         CHECK(fx.particles.size() == 40);
@@ -10412,6 +10415,7 @@ static void hitEffects() {
     }
     {  // feeding the effects never changes the sim: the same fight with and without them
         size_t most = 0, smear = 0;  // the most bits and smear triangles at once
+        float glow = 0;              // the strongest charge glow
         auto fight = [&](bool effects, Fx& fx) {
             Session s{.world = meadow(), .seed = 9};
             s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}}};
@@ -10420,7 +10424,8 @@ static void hitEffects() {
             damage(b, 1);  // it fights back
             for (int i = 0; i < 600; ++i) {
                 SimInput in;
-                in.attack = i % 40 == 0;
+                in.heavy = i % 160 == 40, in.heavyHeld = i % 160 >= 40 && i % 160 < 130;  // charged heavies too (ADR-060)
+                in.attack = i % 40 == 0 && !in.heavyHeld;
                 in.guard = i % 200 > 150;
                 step(s, in, kTick);
                 if (effects) {
@@ -10429,6 +10434,8 @@ static void hitEffects() {
                         glm::mat4 held(0);
                         poseModel(*p, p == &s.player ? ModelPlayer : ModelBandit, &held);
                         if (held != glm::mat4(0)) trailFx(fx, p, heldModel(*p), held, swingsBlade(*p), p->freeze > 0 && p->punching());
+                        chargeFx(fx, *p, heldModel(*p), held, p->pos, kTick);
+                        glow = std::max(glow, chargeTint(*p, fx.set).a);
                     }
                     updateFx(fx, s.world, kTick);
                     most = std::max(most, fx.particles.size()), smear = std::max(smear, fx.ribbon.size() / 3);
@@ -10443,6 +10450,253 @@ static void hitEffects() {
         CHECK(a.entities.size() == b.entities.size() && a.entities[0].body.pos == b.entities[0].body.pos &&
               a.entities[0].body.health == b.entities[0].body.health);
         CHECK(most >= 6 && smear > 0 && unused.particles.empty());  // the effects did run
+        CHECK(glow >= FxSettings{}.glowFull - 1e-4f);  // a heavy charged in full
+    }
+}
+
+// ADR-060: a charging heavy's glow and motes, the parry, riposte and crit flashes, and damage numbers by type.
+static void flashes() {
+    const int bandit = int(EntityKind::Bandit);
+    auto glowing = [](const std::vector<Particle>& ps) { return int(std::ranges::count(ps, true, &Particle::glow)); };
+    auto near = [](glm::vec3 a, glm::vec3 b) { return glm::distance(a, b) < 1e-4f; };
+    glm::vec3 from(-1, 0, 0);
+    {  // a hit's number keeps its type and whether a guard let it through; a riposte is marked by its stance
+        Session s{.world = meadow(), .seed = 3};
+        s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}}};
+        startSession(s);
+        for (int i = 0; i < 30; ++i) step(s, {}, kTick);
+        s.entities.reserve(8);
+        Entity& b = spawnAhead(s.entities, s.world, s.player, EntityKind::Bandit, 1, 1.5f);
+        b.body.buildup = {}, b.body.innate.push_back({Stat::BleedResist, ModKind::Flat, 1e6f});
+        // The newest number (older ones aged first: no tick runs between these hits).
+        auto latest = [](const Player& p) { return *std::ranges::min_element(p.numbers, {}, &DamageNumber::age); };
+        auto older = [](Player& p) { for (DamageNumber& n : p.numbers) n.age += 0.1f; };
+        auto heal = [](Player& p) { p.health = float(maxHealth(sheet(p))); };
+        Strike st{1, 10, s.player.pos, DamageType::Pierce};
+        st.canCrit = false;
+        strike(s.player, b, st, s.rng);
+        CHECK(latest(b.body).type == DamageType::Pierce && !latest(b.body).guarded && latest(b.body).age == 0);
+        st.type = DamageType::Strike;
+        older(b.body), heal(b.body);
+        strike(s.player, b, st, s.rng);
+        CHECK(latest(b.body).type == DamageType::Strike);
+        st.riposte = true;
+        older(b.body), heal(b.body), b.body.stagger = 0;
+        strike(s.player, b, st, s.rng);
+        CHECK(b.body.hitStance == kRiposteStance && latest(b.body).crit);
+        s.sounds.clear();
+        step(s, {}, kTick);
+        CHECK(std::ranges::any_of(s.sounds, [](const Sound& h) { return h.what == Noise::Crit && h.amount == kRiposteStance; }));
+        // An NPC's guard (a buckler stops 85% of slashes) lets some through: its number is a guarded one.
+        Entity& g = spawnAhead(s.entities, s.world, s.player, EntityKind::Guard, 3, 1.5f);
+        g.body.yaw = std::atan2(s.player.pos.x - g.body.pos.x, s.player.pos.z - g.body.pos.z);
+        g.body.inv.equipped[SlotOffHand] = defs().itemById.at("oak_buckler");
+        g.body.guarding = true, g.body.stamina = gMelee.staminaMax, g.body.buildup = {};
+        int before = int(std::ranges::count(g.body.numbers, 0.0f, &DamageNumber::age));
+        Strike heavy{8, 10, s.player.pos, DamageType::Slash};
+        heavy.canCrit = false;
+        strike(s.player, g, heavy, s.rng);
+        CHECK(g.body.made(Noise::Block) && std::ranges::count(g.body.numbers, 0.0f, &DamageNumber::age) == before + 1 && latest(g.body).guarded &&
+              latest(g.body).type == DamageType::Slash);
+        // The player's guard (a sword stops 75%): the hit's number on the player is guarded and of its type.
+        Player p = s.player;
+        p.inv.equipped[SlotOffHand] = NoItem, p.inv.equipped[SlotMainHand] = Shortsword;
+        p.guarding = true, p.guardTime = 1, p.stamina = gMelee.staminaMax, p.buildup = {};
+        p.innate.push_back({Stat::BleedResist, ModKind::Flat, 1e6f});
+        glm::vec3 ahead = p.pos + glm::vec3(std::sin(p.yaw), 0, std::cos(p.yaw));
+        strikePlayer(b, p, {6, 5, ahead, DamageType::Strike}, s.rng);
+        CHECK(p.made(Noise::Block) && latest(p).guarded && latest(p).type == DamageType::Strike && latest(p).amount > 0);
+        p.guarding = false;
+        older(p), heal(p);
+        strikePlayer(b, p, {6, 5, ahead, DamageType::Pierce}, s.rng);
+        CHECK(!latest(p).guarded && latest(p).type == DamageType::Pierce);
+        older(p);
+        CHECK(hurt(p, 3, false, Status::Count, DamageType::Strike, true) && latest(p).guarded && latest(p).amount == 3);
+        older(p);
+        CHECK(hurt(p, 2, false, Status::Poison) && latest(p).kind == Status::Poison && !latest(p).guarded);
+    }
+    {  // the number's style: who was hit by colour, its type by glyph, a crit orange, a guarded hit steel grey, statuses as before
+        glm::vec3 hit(1, 0.85f, 0.3f), status(0.9f, 0.1f, 0.4f);
+        auto style = [&](DamageNumber n, NumberSettings set = {}) { return numberStyle(n, hit, status, set); };
+        NumberStyle slash = style({.amount = 5}), strikes = style({.amount = 5, .type = DamageType::Strike}), pierce = style({.amount = 5, .type = DamageType::Pierce});
+        CHECK(slash.glyph == Glyph::Slash && strikes.glyph == Glyph::Strike && pierce.glyph == Glyph::Pierce);
+        CHECK(slash.rgb == hit && strikes.rgb == hit && slash.scale == 1 && !slash.bang);
+        NumberStyle crit = style({.amount = 5, .crit = true, .type = DamageType::Pierce});
+        CHECK(crit.rgb == kCritRgb && crit.scale == 1.5f && crit.bang && crit.glyph == Glyph::Pierce);
+        NumberStyle guarded = style({.amount = 5, .type = DamageType::Strike, .guarded = true});
+        CHECK(guarded.rgb == kGuardedRgb && guarded.scale == NumberSettings{}.guardedScale && guarded.glyph == Glyph::Shield && !guarded.bang);
+        NumberSettings plain;
+        plain.guarded = false;
+        CHECK(style({.amount = 5, .type = DamageType::Strike, .guarded = true}, plain).glyph == Glyph::Strike &&
+              style({.amount = 5, .guarded = true}, plain).rgb == hit);
+        plain = {}, plain.glyphs = false;
+        CHECK(style({.amount = 5}, plain).glyph == Glyph::None && style({.amount = 5, .guarded = true}, plain).glyph == Glyph::None &&
+              style({.amount = 5, .guarded = true}, plain).rgb == kGuardedRgb);
+        NumberStyle bleed = style({.amount = 9, .kind = Status::Bleed}), poison = style({.amount = 1, .kind = Status::Poison}),
+                    frost = style({.amount = 9, .kind = Status::Frost, .guarded = true});
+        CHECK(bleed.rgb == status && bleed.bang && bleed.scale == 1.3f && bleed.glyph == Glyph::None);
+        CHECK(poison.scale == 0.75f && !poison.bang && poison.glyph == Glyph::None && frost.rgb == status && frost.scale == 1.3f);
+    }
+    int who = 0;  // the body that made a sound: its flash's
+    auto spawned = [&](Sound h, FxSettings set = {}) {
+        if (h.what != Noise::Hurt) h.body = &who;
+        Fx fx;
+        fx.set = set;
+        spawnFx(fx, h, {});
+        return fx;
+    };
+    {  // a parry: the parrier's guard flashes cold white, 10 big shards over its 18 sparks, a disc
+        Fx fx = spawned({.what = Noise::Parry, .kind = -1, .from = from});
+        CHECK(glowing(fx.particles) == 28 && std::ranges::count_if(fx.particles, [](const Particle& p) { return p.size > 0.1f && p.life == 0.25f; }) == 10);
+        CHECK(fx.flashes.size() == 1 && fx.flashes[0].on == FlashOn::Guard && fx.flashes[0].colour == kParryRgb && fx.flashes[0].strength == 1 &&
+              fx.flashes[0].body == &who && fx.discs.size() == 1);
+        CHECK(fx.discs[0].pos.y > 1 && fx.discs[0].pos.x < 0);  // at the guard held up toward the blow
+        FxSettings off;
+        off.flashes = false;
+        Fx none = spawned({.what = Noise::Parry, .from = from}, off);
+        CHECK(glowing(none.particles) == 18 && none.flashes.empty() && none.discs.empty());
+        off = {}, off.disc = false;
+        Fx noDisc = spawned({.what = Noise::Parry, .from = from}, off);
+        CHECK(noDisc.flashes.size() == 1 && noDisc.discs.empty() && glowing(noDisc.particles) == 28);
+        CHECK(spawned({.what = Noise::PerfectGuard, .from = from}).flashes.empty() && spawned({.what = Noise::Block, .with = Shortsword, .from = from}).flashes.empty());
+    }
+    {  // a riposte or backstab: the body flashes warm in full, 14 shards, a disc; a random crit the body at half, nothing else
+        Fx fx = spawned({.what = Noise::Crit, .kind = bandit, .amount = kRiposteStance, .from = from});
+        CHECK(fx.flashes.size() == 1 && fx.flashes[0].on == FlashOn::Body && fx.flashes[0].colour == kRiposteRgb && fx.flashes[0].body == &who &&
+              fx.flashes[0].strength == FxSettings{}.flashStrength && fx.discs.size() == 1);
+        CHECK(glowing(fx.particles) == 14 && fx.particles.size() == 28);  // and the crit's blood
+        Fx random = spawned({.what = Noise::Crit, .kind = bandit, .amount = 20, .from = from});
+        CHECK(random.flashes.size() == 1 && random.flashes[0].strength == 0.5f * FxSettings{}.flashStrength && random.discs.empty() &&
+              glowing(random.particles) == 0);
+        Fx onPlayer = spawned({.what = Noise::Crit, .kind = -1, .amount = kRiposteStance, .from = from});  // NPCs don't riposte: a random crit
+        CHECK(onPlayer.discs.empty() && onPlayer.flashes.size() == 1 && onPlayer.flashes[0].strength < FxSettings{}.flashStrength);
+        CHECK(spawned({.what = Noise::Hurt, .kind = bandit, .amount = kRiposteStance, .from = from}).flashes.empty());
+        FxSettings off;
+        off.flashes = false;
+        Fx none = spawned({.what = Noise::Crit, .kind = bandit, .amount = kRiposteStance, .from = from}, off);
+        CHECK(none.flashes.empty() && none.discs.empty() && glowing(none.particles) == 0);
+        Fx nobody;  // a sound with no body (the debug window's bursts): no flash, the rest as ever
+        spawnFx(nobody, {.what = Noise::Crit, .kind = bandit, .amount = kRiposteStance, .from = from}, {});
+        CHECK(nobody.flashes.empty() && nobody.discs.size() == 1 && glowing(nobody.particles) == 14);
+    }
+    {  // a heavy's full charge: a ring of 12 gold motes rising about the chest; a bow's or crossbow's: none
+        Fx fx = spawned({.what = Noise::Charged, .kind = -1, .move = Move::Heavy1});
+        CHECK(fx.particles.size() == 12 && glowing(fx.particles) == 12 && std::ranges::all_of(fx.particles, [](const Particle& p) {
+                  return p.gravity < 0 && p.life == 0.4f && p.pos.y > 0.8f && p.pos.y < 1.4f && (p.colour == kChargedRgb || p.colour == kChargeRgb);
+              }));
+        CHECK(spawned({.what = Noise::Charged, .move = Move::Heavy2}).particles.size() == 12);
+        CHECK(spawned({.what = Noise::Charged, .move = Move::Shot}).particles.empty() && spawned({.what = Noise::Charged, .move = Move::Light1}).particles.empty());
+        FxSettings off;
+        off.motes = false;
+        CHECK(spawned({.what = Noise::Charged, .move = Move::Heavy1}, off).particles.empty());
+        off = {}, off.glow = false;
+        CHECK(spawned({.what = Noise::Charged, .move = Move::Heavy1}, off).particles.empty());
+    }
+    {  // a body's flashes, by what they light, fade as their age squared; the strongest wins
+        Fx fx;
+        int b = 0, c = 0, d = 0;
+        fx.flashes = {{.body = &b, .strength = 0.75f}, {.body = &d, .on = FlashOn::Guard}};
+        Flash f = fx.flashes[0];
+        CHECK(near(glm::vec3(flashTint(fx, &b, FlashOn::Body)), f.colour * kBright) && flashTint(fx, &b, FlashOn::Body).a == f.strength);
+        CHECK(flashTint(fx, &b, FlashOn::Guard).a == 0 && flashTint(fx, &c, FlashOn::Body).a == 0 && flashTint(fx, &d, FlashOn::Guard).a == 1);
+        Grid g = meadow();
+        updateFx(fx, g, 0);
+        CHECK(flashTint(fx, &b, FlashOn::Body).a == f.strength);  // paused
+        updateFx(fx, g, f.length / 4), updateFx(fx, g, f.length / 4);  // (a frame counts at most 0.05 s)
+        CHECK(std::abs(flashTint(fx, &b, FlashOn::Body).a - f.strength * 0.25f) < 1e-4f);
+        fx.flashes.push_back({.body = &b, .strength = 0.6f});
+        fx.flashes.push_back({.body = &b, .strength = 0.1f});
+        CHECK(flashTint(fx, &b, FlashOn::Body).a == 0.6f);  // the strongest
+        for (int i = 0; i < 6; ++i) updateFx(fx, g, f.length / 4);
+        CHECK(fx.flashes.empty() && flashTint(fx, &b, FlashOn::Body).a == 0);
+        // Through a real fight's sound: a riposte's Crit carries the struck body, whose tint flashes.
+        Session s{.world = meadow(), .seed = 3};
+        s.markers = {{.id = 1, .kind = MarkerKind::PlayerSpawn, .pos = {10.5f, 4, 10.5f}}};
+        startSession(s);
+        Entity& e = spawnAhead(s.entities, s.world, s.player, EntityKind::Bandit, 1, 1.5f);
+        Strike rip{1, 10, s.player.pos};
+        rip.riposte = true;
+        strike(s.player, e, rip, s.rng);
+        s.sounds.clear();
+        step(s, {}, kTick);
+        Fx real;
+        for (const Sound& h : s.sounds) spawnFx(real, h, s.player.pos);
+        CHECK(flashTint(real, &s.entities[0].body, FlashOn::Body).a == FxSettings{}.flashStrength && flashTint(real, &s.player, FlashOn::Body).a == 0);
+    }
+    {  // the disc: a fan facing the eye, white in the middle to clear at the rim, growing as it fades, gone at its time
+        Fx fx;
+        fx.eye = {0, 1, -10};
+        fx.discs = {{{0, 1, 0}, 0}};
+        Grid g = meadow();
+        updateFx(fx, g, 0);
+        CHECK(fx.ribbon.size() == 48 && fx.ribbon[0].alpha > 0.8f && fx.ribbon[1].alpha == 0 && fx.ribbon[2].alpha == 0);
+        glm::vec3 centre = fx.ribbon[0].pos;
+        CHECK(centre.z < 0 && centre.z > -1);  // pulled toward the eye, out of the bodies
+        float r0 = glm::distance(fx.ribbon[1].pos, centre);
+        CHECK(std::abs(r0 - 0.6f * FxSettings{}.discSize) < 1e-3f && std::ranges::all_of(fx.ribbon, [&](const RibbonVertex& v) {
+                  return std::abs(v.pos.z - centre.z) < 1e-4f && std::abs(glm::distance(v.pos, centre) - (v.alpha > 0 ? 0 : r0)) < 1e-3f;
+              }));  // facing the eye, round
+        updateFx(fx, g, FxSettings{}.discSeconds / 2);
+        CHECK(glm::distance(fx.ribbon[1].pos, fx.ribbon[0].pos) > r0 && fx.ribbon[0].alpha < 0.5f);
+        updateFx(fx, g, FxSettings{}.discSeconds);
+        CHECK(fx.discs.empty() && fx.ribbon.empty());
+    }
+    {  // the charge glow: gold rising with the charge, white-gold in full until the hit, fading after or when let go early
+        Player p;
+        startMove(p, Move::Heavy1, {0, 1});
+        FxSettings set;
+        CHECK(chargeTint(p, set).a == 0);  // not yet charging
+        p.moveTime = holdTime(p), p.holding = true, p.charge = gMelee.chargeSeconds / 2;
+        glm::vec4 half = chargeTint(p, set);
+        CHECK(near(glm::vec3(half), kChargeRgb) && std::abs(half.a - (set.glowLow + set.glowHigh) / 2) < 1e-4f);
+        p.charge = gMelee.chargeSeconds * 0.01f;
+        CHECK(std::abs(chargeTint(p, set).a - set.glowLow) < 0.01f);
+        p.charge = gMelee.chargeSeconds, p.charged = true, p.holding = false;
+        glm::vec4 full = chargeTint(p, set);
+        CHECK(near(glm::vec3(full), kChargedRgb * kBright) && full.a == set.glowFull);
+        p.moveTime = impactTime(p);
+        CHECK(chargeTint(p, set).a == set.glowFull);  // until the hit
+        p.moveTime = impactTime(p) + set.glowFade / 2;
+        CHECK(std::abs(chargeTint(p, set).a - set.glowFull / 2) < 1e-3f);
+        p.moveTime = impactTime(p) + set.glowFade * 1.01f;
+        CHECK(chargeTint(p, set).a == 0);
+        p.charged = false, p.charge = gMelee.chargeSeconds / 2, p.moveTime = holdTime(p) + set.glowFade / 2;  // let go early
+        CHECK(std::abs(chargeTint(p, set).a - half.a / 2) < 1e-3f);
+        p.moveTime = holdTime(p) + set.glowFade * 1.01f;
+        CHECK(chargeTint(p, set).a == 0);
+        p.moveTime = holdTime(p), p.holding = true;
+        set.glow = false;
+        CHECK(chargeTint(p, set).a == 0);
+        set = {};
+        Player light;
+        startMove(light, Move::Light1, {0, 1});
+        light.moveTime = holdTime(light), light.holding = true, light.charge = 0.3f;
+        CHECK(chargeTint(light, set).a == 0 && chargeTint(Player{}, set).a == 0);  // a light doesn't charge; nor an idle body
+        // Motes rise off the blade while it charges, about moteRate a second at full.
+        Fx fx;
+        Model sword = heldModel(Shortsword);
+        glm::vec3 b0, t0;
+        CHECK(bladeEdge(sword, b0, t0));
+        p.charged = true, p.moveTime = holdTime(p);
+        for (int i = 0; i < 600; ++i) chargeFx(fx, p, sword, glm::mat4(1), {50, 50, 50}, kTick);  // 10 s (motes live 0.35 s: no update, they stay)
+        CHECK(std::abs(float(fx.particles.size()) - 10 * fx.set.moteRate) <= 40);
+        CHECK(std::ranges::all_of(fx.particles, [&](const Particle& m) {
+            return m.glow && m.gravity < 0 && m.life == 0.35f && glm::distance(m.pos, b0) < glm::distance(b0, t0) + 0.3f;  // on the blade, not the hand
+        }));
+        fx.particles.clear();
+        p.charged = false, p.charge = gMelee.chargeSeconds * 0.01f, p.holding = true;  // just started: fewer, by the glow's share
+        for (int i = 0; i < 600; ++i) chargeFx(fx, p, sword, glm::mat4(1), {50, 50, 50}, kTick);
+        CHECK(std::abs(float(fx.particles.size()) - 10 * fx.set.moteRate * fx.set.glowLow / fx.set.glowFull) <= 40);
+        fx.particles.clear();
+        p.charged = true;
+        for (int i = 0; i < 60; ++i) chargeFx(fx, p, ModelBow, glm::mat4(1), {50, 50, 50}, kTick);  // no blade: from the hand
+        CHECK(!fx.particles.empty() && std::ranges::all_of(fx.particles, [](const Particle& m) { return glm::distance(m.pos, glm::vec3(50)) < 0.2f; }));
+        fx.particles.clear();
+        chargeFx(fx, p, sword, glm::mat4(1), {}, 0);
+        for (int i = 0; i < 60; ++i) chargeFx(fx, light, sword, glm::mat4(1), {}, kTick);
+        fx.set.motes = false;
+        for (int i = 0; i < 60; ++i) chargeFx(fx, p, sword, glm::mat4(1), {}, kTick);
+        CHECK(fx.particles.empty());  // paused, a light, motes off
     }
 }
 
@@ -11867,6 +12121,7 @@ int main() {
     crossbows();
     throwables();
     hitEffects();
+    flashes();
     arena();
     sounds();
     combat();

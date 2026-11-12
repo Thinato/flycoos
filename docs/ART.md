@@ -2,8 +2,10 @@
 
 How voxels get their colour. These rules hold for every block, model and future asset; the
 renderer implements them (ADR-028, `kTones` in `src/world.h`, `albedoOf` in `shaders/world.metal`).
-One deliberate exception, at the user's request: the white smear behind a swinging blade (ADR-058) is a
-smooth see-through ribbon, not voxels. Hit sparks, blood and chips are voxels and follow the rules.
+Two deliberate exceptions, at the user's request: the white smear behind a swinging blade (ADR-058) is a
+smooth see-through ribbon, not voxels, and so is the soft white disc of a parry or riposte flash (ADR-060).
+Hit sparks, blood, chips, flash shards and charge motes are voxels and follow the rules; a charging
+weapon's glow and a body's flash tint whole models, one flat colour per voxel.
 
 ## The rules
 

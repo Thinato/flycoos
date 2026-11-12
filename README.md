@@ -377,6 +377,14 @@ splinters, a bare-armed block a puff of dust, an arrow into terrain chips of wha
 bladed swing, yours and the enemies', leaves a white smear behind the blade while it strikes, sized
 by the weapon. The debug window's Effects tab turns each effect on or off and tunes it.
 
+**Flashes and typed damage numbers** (ADR-060): the big moments read at a glance. Hold a heavy and
+your weapon glows gold, brighter as it charges, with gold motes rising off the blade; fully charged it
+turns white-hot until the hit. A parry flashes your shield white and throws bright shards and a soft
+white flash. A riposte or backstab flashes the enemy's whole body; a random critical hit flashes it
+more faintly. Damage numbers show the hit's type as a small sign on the left: a slash, a star for
+strike, a spike for pierce. Damage that gets past a guard shows in steel grey with a little shield.
+Numbers over enemies are yellow and yours are red, as before.
+
 **Archers** (ADR-051): the **Bandit Archer** (at the bandit camp near the start, or F6) keeps 7 to
 16 blocks from you and shoots. Watch for the tell: it raises its bow and holds the draw, creaking,
 for most of a second, and stops turning just before it lets go, so a late sidestep or a roll beats
@@ -434,7 +442,7 @@ unless a text field has focus.
 | Camera | Field of view, distance (up to 80 for overviews), terrain collision, HUD on/off, mouse sensitivity |
 | World | In the endless world, streaming: the window, columns at each stage, what the last frame installed and lit (and how long that took), a worker's time per column, the light budget per frame, the player's column's stage. Time of day, time speed (0 = paused), seed + regenerate, generation timings and quad counts |
 | Audio | Mute, volume (all and per bus: effects, ambience, interface), random pitch and volume spread, hearing distance, the voices playing, the ambience's readings (water, trees, fire around) and its loops' volumes, the latest sounds, sounds with no takes, and a button per sound to play it (ADR-037) |
-| Effects | Hit feedback (ADR-058): sparks, blood, chips and the blade smear on or off, amount, lifetimes, the smear's speed rule, reach and cap, live particle and smear counts and their time a frame, and buttons that throw each burst in front of you |
+| Effects | Hit feedback (ADR-058): sparks, blood, chips and the blade smear on or off, amount, lifetimes, the smear's speed rule, reach and cap, live particle and smear counts and their time a frame, and buttons that throw each burst in front of you. The charge glow, motes, flashes and disc (ADR-060): on or off, strengths, lengths and buttons to fire each; the damage numbers' glyphs, guarded style and outline, and buttons that show each kind of number |
 | Save | The player save's path, when it was written and its size, Save / Load / Delete, whether quitting saves (and why not), the last result and what the last load restored or dropped |
 | Stats | Frame-time graph of the last 240 frames, average and worst frame |
 
@@ -486,7 +494,7 @@ src/notes.*      debug notes: the game state a note keeps, debug_notes/notes.jso
 src/stream.*     the endless world: chunk columns generated on worker threads, lit and meshed around the player
 src/editor_ui.*  Editor panel, crosshair and brush preview (F1)
 src/audio.*      sound (ADR-037): loading data/sounds, the mixer, what each noise sounds like, ambience
-src/fx.*         hit feedback (ADR-058): sparks, blood, chips and the blade's white smear, from the sim's sounds
+src/fx.*         hit feedback (ADR-058): sparks, blood, chips and the blade's white smear, from the sim's sounds; the charge glow, flashes and damage numbers' looks (ADR-060)
 src/main.cpp     window, input, camera, main loop, benchmark mode, runs remote commands
 data/            definition files: items.json, creatures.json (ADR-018), weapon_classes.json (ADR-044), quests/*.json (ADR-026); fonts/alagard.ttf (region titles);
                  sounds/*.ogg (ADR-037: <name>_<n>.ogg are one sound's takes)

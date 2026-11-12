@@ -3107,3 +3107,103 @@
     giving up, leaving, the hit from outside and the reset at home, the boss bar's choice and values, every
     data check, the save, and Ketil's numbers). Two rules were dropped as redundant: a stance clamp in
     `enterPhase` (updateCombat already clamps) and a roar guard on the stagger check (now in `criticalTarget`).
+
+## ADR-060: Flashes and typed damage numbers: a charge glow, parry and riposte flashes, a glyph per damage type
+
+- **Status:** accepted (2026-11-12)
+- **Context:**
+  - Two roadmap Feel lines: "Charge glow; a riposte and parry flash" and "Damage numbers by type".
+  - A charging heavy looked like any held windup. A parry and a riposte had a sound, sparks and blood,
+    but nothing that said "this is the big moment" at a glance.
+  - Damage numbers showed who was hit (yellow on enemies, red on you) and crits (orange, "!"), not the
+    hit's damage type (ADR-040), nor whether a guard took part of it.
+  - It builds on ADR-058's effects: presentation only, fed by the sim's sounds, with its own RNG.
+- **Decision** (the user's calls: shards, the body or shield flash and a soft white disc, no screen flash;
+  ripostes and backstabs in full, random crits a half-strength body flash only; guarded damage steel
+  grey, smaller, with a shield glyph; the type as a glyph left of the number, colours still saying who
+  was hit):
+  - **A tint per model instance.** `ModelInstance::tint` (sRGB, above 1 brighter; a strength 0..1). The
+    renderer pushes it as `voxel_fs`'s second fragment uniform for each model draw (chunks: zero, pushed
+    once). The shader mixes the shaded colour toward the tonemapped tint. A voxel still has one flat
+    colour, so ART.md holds: a glowing model is like a light source.
+  - **The charge glow** (`chargeTint`, from the body's state each frame, like `swingsBlade`): while a heavy
+    (`charges()`, now in melee.h) is held at its hold point, its weapon turns gold (1, 0.55, 0.08), from 60%
+    as the charge starts to 95% just before it's full. Fully charged it turns white-hot (white-gold x
+    `kBright` 1.4, 100%) until the hit, then fades over 0.1 s. Let go early, it fades over 0.1 s.
+    `chargeFx` sends gold motes (glowing voxel cubes, 0.07 blocks, rising, 0.35 s) up off the blade's edge,
+    up to 25 a second by the glow's share; a body with no blade sends them from its hand. A full charge's
+    sound (not a bow's draw or a crossbow's bolt) throws a ring of 12 motes about the chest.
+  - **Flashes** come from sounds, like the bursts. `Sound` gained `body`, the body that made it (set
+    where the sim gathers its noises; the sim never reads it), so a flash lands on the right body.
+    `flashTint` gives a body's tint: its flashes fade as their age squared over 0.15 s, the strongest
+    wins. The tint mixes in fog like everything else.
+    - **A parry:** the parrier's shield flashes cold white (0.85, 0.93, 1; its weapon when it has no
+      shield), 10 big glowing shards fly out over the 18 sparks, and a soft white disc.
+    - **A riposte or backstab** (a crit on an NPC whose `amount` is `kRiposteStance`, the 100 that
+      `strike` already gave a riposte's `hitStance`): the body flashes warm gold-white (1, 0.85, 0.55) at
+      75%, 14 shards and a disc.
+    - **A random crit:** the body flashes at half of that, nothing else. A crit on you is always a random
+      one (NPCs don't riposte).
+  - **The disc** is the second exception to the voxel look, after the smear: a fan of 16 triangles
+    facing the eye, white in the middle to clear at the rim, growing from 60% to 100% of 0.9 blocks as it
+    fades over 0.1 s. It's pulled half a block toward the eye so the bodies don't cut it. It joins the
+    smear's ribbon: no new pipeline.
+  - **Damage numbers by type.** `DamageNumber` gained `type` and `guarded`; `hurt` and `damage` take them,
+    and `strike` and `strikePlayer` pass the strike's type and whether a guard took part of it.
+    `numberStyle` (fx.cpp, so tests reach it) maps a number to its look; the HUD draws it.
+    - A glyph left of the number, in its colour, drawn as a shape (the font has none): slash a tapered
+      diagonal swipe, strike a six-point star, pierce a notched spike.
+    - Colours keep meaning who was hit: yellow on enemies, red on you, a crit orange, 1.5x, "!".
+    - Damage that got past a guard: steel grey (0.72, 0.78, 0.86), 0.85x, a heater-shield glyph. A guard
+      that stops all of it still shows nothing.
+    - Status numbers as ADR-046: no glyph.
+    - Numbers and glyphs get a dark outline (four offsets, plus the drop shadow), so yellow reads on snow
+      and sky.
+  - **Debug window, Effects tab:** the glow, motes, flashes and disc on or off; the glow's three
+    strengths and fade, the mote rate, the flash's length and strength, the disc's life and size; live
+    flash and disc counts and the player's glow; buttons for a parry flash, a full charge's ring, a
+    riposte and a crit flash on the nearest NPC; the numbers' glyphs, guarded style and outline on or
+    off, the glyph and guarded sizes, and buttons that show a slash, strike, pierce, crit or guarded
+    number over the nearest NPC or you (`gNumbers`).
+- **Alternatives considered:**
+  - A full-screen white flash: reads from anywhere, but it's a photosensitivity risk and hides the
+    fight. The user chose the local disc.
+  - Voxel-only flashes (shards and the body flash): stay in the art rules, but read as particles, not
+    light. The user chose the disc on top.
+  - Colouring numbers by type (slash pale gold, strike tan, pierce teal): the type shows from afar, but
+    you'd lose red for the hits you take, and the colours clash with the status numbers'.
+  - A per-vertex tint (a new vertex output): every voxel draw would pay for it on Apple's tiled GPU
+    (about 15% for one output, as world.metal notes). A uniform per model draw costs nothing for chunks.
+  - Finding the flash's body afterwards (the nearest body of the sound's kind within a block): no sim
+    change, but it can pick a neighbour, or none after a stalled frame. The review preferred the pointer.
+- **Consequences:**
+  - The renderer's opaque fragment shader takes a second uniform. The disc is a second non-voxel effect
+    (docs/ART.md lists it).
+  - `DamageNumber` has two more fields, `Sound` one (not saved). `hurt` and `damage` take two more
+    defaulted arguments.
+  - Flashes are kept by body address, like the smears: an erased NPC can hand its last 0.15 s of flash to
+    the one moved into its place.
+  - A riposte is known by its stance (`kRiposteStance`). A second hit on the same body in the same tick
+    would make it look like a random crit; no stance in the data reaches 100 by itself today.
+  - The arena's sand is the hardest background for the gold: the glow is strong (60% and up) so it
+    reads there, against the sky and against the walls.
+  - **Performance:** A/B in the arena (a copy of `worlds/arena.flyw`), ADR-058's crowd: 22 NPCs on the
+    player in plate, who now holds a charged heavy every 100 ticks (70 held); fixed camera, 1500 frames,
+    6 alternating runs each against 2df0b37, no hitches. Mean frame 1.27 ms before (1.08 to 1.39, sd 0.14)
+    and 1.22 ms after (1.05 to 1.38, sd 0.14); p99 medians 3.7 and 2.8 ms. The difference is noise. At 40x
+    the amounts (4083 particles, the cap nearly full) 1.32 to 1.42 ms, effects' CPU at most 0.16 ms in one
+    frame (0.04 typical).
+  - **Tested:** `flashes()` in core_test: a hit's number keeps its type and guarded flag (an NPC's guard, the
+    player's guard, an open hit), a riposte is marked by its stance and its crit sound; `numberStyle` for
+    each type, a crit, a guarded hit, each toggle and the statuses; a parry's flash, shards and disc and
+    each toggle; a riposte's, a random crit's, a crit on the player, a sound with no body; a full charge's
+    ring and not a bow's or a light's; `flashTint` (by what it lights, fades as the square, paused,
+    strongest, gone at its length, and through a real riposte's sound on the struck body); the disc (facing the eye,
+    pulled toward it, growing and fading, gone); `chargeTint` through a charge, full, the hit, the fade and
+    an early let-go, lights and idle bodies; `chargeFx`'s rate by the glow, motes on the blade, from the
+    hand without one, none paused or off. The same fight with and without effects (now with charged
+    heavies) ends in the same state and RNG. Mutation-checked: each of 70 rules broken alone fails a test (the
+    number's type and guarded flag through hurt, damage, strike and strikePlayer, the riposte's stance, heavy 2
+    charging, the riposte test, every flash's body, colour, strength, shards, disc and toggle, the sound's body,
+    the ring, every number style rule, the tint's fade, part and brightness, every charge glow rule, the motes'
+    rate, place, rise and life, the flashes' and discs' ageing, the disc's fade, growth, pull and facing).

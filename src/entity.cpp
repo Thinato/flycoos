@@ -1036,22 +1036,22 @@ bool takeLoot(Entity& e, Inventory& inv) {
     return true;
 }
 
-bool hurt(Player& b, int amount, bool crit, Status kind) {
+bool hurt(Player& b, int amount, bool crit, Status kind, DamageType type, bool guarded) {
     if (amount <= 0 || !b.alive()) return false;
     b.health = std::max(0.0f, b.health - float(amount));
     if (kind == Status::Count) b.lastDamage = amount, b.lastCrit = crit;  // the last hit's (a status's has its number)
     if (kind != Status::Poison) b.hitTime = 0;  // a poisoned back can still be stabbed
     b.combatTimer = kCombatSeconds;
-    *std::ranges::max_element(b.numbers, {}, &DamageNumber::age) = {amount, 0, crit, kind};
+    *std::ranges::max_element(b.numbers, {}, &DamageNumber::age) = {amount, 0, crit, kind, type, guarded};
     if (!b.alive()) b.effects.clear(), b.buildup = {};  // death ends them (ADR-046)
     return true;
 }
 
-bool damage(Entity& e, int amount, bool crit, Status kind) {
+bool damage(Entity& e, int amount, bool crit, Status kind, DamageType type, bool guarded) {
     const EntityType& t = e.type();
     if (!t.attackable || !e.body.alive() || e.state == AiState::Roar) return false;  // (a roaring boss takes none, ADR-059)
     if (t.immortal) e.body.health += float(std::max(amount, 0));  // takes none (ADR-056); hurt() still shows the number and counts the hit
-    if (!hurt(e.body, amount, crit, kind)) return false;
+    if (!hurt(e.body, amount, crit, kind, type, guarded)) return false;
     if (kind != Status::Poison) e.events |= EventDamaged;  // poison's ticks don't call it back
     if (!e.body.alive()) {  // the usual drop, else (ADR-049) a rare one; rand01 may return 1
         if (t.lootChance >= 1 || rand01(e.rng) < t.lootChance) e.loot = t.loot;
@@ -1306,7 +1306,7 @@ void strike(Player& player, Entity& target, const Strike& s, std::mt19937& rng, 
         full = int(std::lround(float(full) * (1 - guard->negation)));
         stance = 0;  // a guard takes the stance damage on its stamina
     }
-    bool landed = damage(target, full, crit && !guard);  // a blocked crit is marked as the block
+    bool landed = damage(target, full, crit && !guard, Status::Count, s.type, guard.has_value());  // a blocked crit is marked as the block
     if (landed || guard) {  // statuses build up by what a guard let through, a light hit's too (ADR-046)
         std::string_view with = player.swingWeapon ? itemType(player.swingWeapon).name : "Fists";
         auto bursts = buildUp(player, b, guard ? 1 - guard->negation : 1, with, s.buildup ? &*s.buildup : nullptr);
@@ -1321,7 +1321,7 @@ void strike(Player& player, Entity& target, const Strike& s, std::mt19937& rng, 
     b.hitWith = player.swingWeapon;
     b.hitFrom = s.from;
     if (killed && events) events->push_back(Killed{target.kind, target.spawn.id});
-    b.hitStance = s.riposte ? 100 : stance;
+    b.hitStance = s.riposte ? kRiposteStance : stance;
     if (!killed) staggerHit(target, stance, s.riposte);
     if (!guard && s.melee) {  // hit-stop: heavier hits, longer, and longer or shorter by the weapon class (ADR-044)
         player.freeze = b.freeze = std::min(0.04f + 0.003f * stance, 0.12f) * weaponClass(classOf(player.swingWeapon)).hitStop;
@@ -1365,7 +1365,7 @@ void strikePlayer(Entity& e, Player& player, const Strike& s, std::mt19937& rng,
     } else if (full > 0 && !hyperarmor(player) && s.stance >= playerPoise(player)) {
         interrupt(player, gMelee.flinchSeconds, false);
     }
-    bool landed = hurt(player, full, crit && !guarded);
+    bool landed = hurt(player, full, crit && !guarded, Status::Count, s.type, guarded);
     if (landed || guarded) {  // statuses build up by what the guard let through, a light hit's too (ADR-046)
         auto bursts = buildUp(e.body, player, through, e.type().name ? e.type().name : e.name.c_str());
         for (size_t k = 0; k < bursts.size(); ++k) landed |= hurt(player, bursts[k], false, Status(k));

@@ -27,7 +27,6 @@ void endMove(Combatant& c, Move last) {
     c.hold = 0;
 }
 
-bool charges(Move m) { return m == Move::Heavy1 || m == Move::Heavy2; }
 bool jumpAttack(Move m) { return m == Move::JumpLight || m == Move::JumpHeavy; }
 // In the air for a jump attack (flying doesn't count: it would never land).
 bool airborne(const Player& p) { return !p.onGround && !p.inWater && !p.tuning.fly && !p.tuning.noclip; }

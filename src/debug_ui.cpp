@@ -24,7 +24,7 @@
 #include "text.h"
 
 // Hit effects (ADR-058): each effect on or off, the amounts and lifetimes, what's live, and bursts to try.
-static void effectsTab(Fx& fx, const Session& session, const RenderStats& stats) {
+static void effectsTab(Fx& fx, Session& session, const RenderStats& stats) {
     FxSettings& s = fx.set;
     ImGui::Checkbox("Sparks", &s.sparks);
     ImGui::SameLine();
@@ -61,7 +61,65 @@ static void effectsTab(Fx& fx, const Session& session, const RenderStats& stats)
     ImGui::SameLine();
     test("Parry (sparks)", Noise::Parry, -1);
     ImGui::SameLine();
-    if (ImGui::Button("Clear")) fx.particles.clear(), fx.trails.clear(), fx.oldest = 0;
+    if (ImGui::Button("Clear")) fx.particles.clear(), fx.trails.clear(), fx.flashes.clear(), fx.discs.clear(), fx.oldest = 0;
+
+    // ADR-060: the charge glow, the flashes and the damage numbers.
+    ImGui::SeparatorText("Charge glow and flashes");
+    ImGui::Checkbox("Charge glow", &s.glow);
+    ImGui::SameLine();
+    ImGui::Checkbox("Motes", &s.motes);
+    ImGui::SameLine();
+    ImGui::Checkbox("Flashes", &s.flashes);
+    ImGui::SameLine();
+    ImGui::Checkbox("Disc", &s.disc);
+    ImGui::SliderFloat("Glow as it starts", &s.glowLow, 0, 1, "%.2f");
+    ImGui::SliderFloat("Glow nearly full", &s.glowHigh, 0, 1, "%.2f");
+    ImGui::SliderFloat("Glow fully charged", &s.glowFull, 0, 1, "%.2f");
+    ImGui::SliderFloat("Glow fades over", &s.glowFade, 0.01f, 0.5f, "%.2f s");
+    ImGui::SliderFloat("Motes a second", &s.moteRate, 0, 100, "%.0f");
+    ImGui::SliderFloat("Flash fades over", &s.flashSeconds, 0.03f, 0.6f, "%.2f s");
+    ImGui::SliderFloat("Riposte flash", &s.flashStrength, 0, 1, "%.2f");
+    ImGui::SliderFloat("Disc lasts", &s.discSeconds, 0.03f, 0.5f, "%.2f s");
+    ImGui::SliderFloat("Disc radius", &s.discSize, 0.1f, 3, "%.2f blocks");
+    ImGui::Text("Flashes %d, discs %d; the player's charge glow %.2f", int(fx.flashes.size()), int(fx.discs.size()), double(chargeTint(p, s).a));
+    auto fire = [&](const char* label, Noise what, int kind, const Player& body, float amount, Move move = Move::None) {
+        if (ImGui::Button(label)) spawnFx(fx, {what, body.pos, kind, Air, move, NoItem, amount, p.pos, false, &body}, p.pos);
+    };
+    Entity* near = nullptr;  // the nearest NPC: what a riposte or crit flashes
+    for (Entity& e : session.entities)
+        if (!near || glm::distance(e.body.pos, p.pos) < glm::distance(near->body.pos, p.pos)) near = &e;
+    fire("Parry flash", Noise::Parry, -1, p, 0);
+    ImGui::SameLine();
+    fire("Full charge ring", Noise::Charged, -1, p, 0, Move::Heavy1);
+    if (near) {
+        ImGui::SameLine();
+        fire("Riposte flash", Noise::Crit, int(near->kind), near->body, kRiposteStance);
+        ImGui::SameLine();
+        fire("Crit flash", Noise::Crit, int(near->kind), near->body, 20);
+    }
+
+    ImGui::SeparatorText("Damage numbers");
+    NumberSettings& n = gNumbers;
+    ImGui::Checkbox("Type glyphs", &n.glyphs);
+    ImGui::SameLine();
+    ImGui::Checkbox("Guarded grey", &n.guarded);
+    ImGui::SameLine();
+    ImGui::Checkbox("Outline", &n.outline);
+    ImGui::SliderFloat("Glyph size", &n.glyphSize, 0.2f, 1, "x %.2f");
+    ImGui::SliderFloat("Guarded size", &n.guardedScale, 0.5f, 1.5f, "x %.2f");
+    // Shows a number over the nearest NPC (or the player, "on me") without a hit: the HUD draws what's in numbers.
+    static bool onMe = false;
+    ImGui::Checkbox("On me", &onMe);
+    Player* who = onMe || !near ? &session.player : &near->body;
+    auto show = [&](const char* label, DamageType type, bool crit, bool guarded) {
+        ImGui::SameLine();
+        if (ImGui::Button(label)) *std::ranges::max_element(who->numbers, {}, &DamageNumber::age) = {crit ? 27 : guarded ? 4 : 18, 0, crit, Status::Count, type, guarded};
+    };
+    show("Slash", DamageType::Slash, false, false);
+    show("Strike", DamageType::Strike, false, false);
+    show("Pierce", DamageType::Pierce, false, false);
+    show("Crit", DamageType::Pierce, true, false);
+    show("Guarded", DamageType::Slash, false, true);
 }
 
 // Sound (ADR-037): the volumes, what's playing, the ambience's look around, and every sound to try.

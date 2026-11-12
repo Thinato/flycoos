@@ -68,6 +68,7 @@ static void hear(Session& s, Player& b, int kind) {
     for (int n = 0; n < int(Noise::Count) && b.noises; ++n) {
         if (!(b.noises >> n & 1) || s.sounds.size() >= kMaxSounds) continue;
         Sound h{Noise(n), b.pos, kind, ground, b.move, b.swingWeapon, 0};
+        h.body = &b;
         switch (Noise(n)) {
             case Noise::Step: h.amount = b.gaitAmount; break;
             case Noise::Swing:  // a shield's parry swings the shield

@@ -140,7 +140,7 @@ bool Renderer::init(SDL_Window* window, bool vsync) {
     SDL_free(text);
 
     SDL_GPUShader* voxelVs = shader(src, "voxel_vs", SDL_GPU_SHADERSTAGE_VERTEX, 2, 1);
-    SDL_GPUShader* voxelFs = shader(src, "voxel_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
+    SDL_GPUShader* voxelFs = shader(src, "voxel_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 0);  // Frame, the model's tint
     SDL_GPUShader* waterFs = shader(src, "water_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
     SDL_GPUShader* skyVs = shader(src, "sky_vs", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader* skyFs = shader(src, "sky_fs", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
@@ -597,7 +597,9 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     };
     auto drawModels = [&] {
         SDL_BindGPUVertexStorageBuffers(pass, 0, &models_, 1);
+        glm::vec4 tinted(0);  // the tint pushed last (chunks: none)
         for (const ModelInstance& inst : frame.models) {
+            if (glm::vec4 t(lin(glm::vec3(inst.tint)), inst.tint.a); t != tinted) SDL_PushGPUFragmentUniformData(cmd, 1, &t, sizeof t), tinted = t;
             glm::vec3 center(0);  // of the parts' origins: inside the body, so in the air it stands in
             for (const glm::mat4& m : inst.pose) center += glm::vec3(m[3]) / float(PartCount);
             glm::ivec3 at(glm::floor(center));  // and the voxel above, in case the center is in a step
@@ -608,6 +610,7 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
                 if (count) draw({inst.pose[p], glm::vec4(lit, inst.glow ? 1 : 0, 0, 0), glm::uvec4(first, 0, 0, 0)}, count);
             }
         }
+        if (tinted != glm::vec4(0)) tinted = glm::vec4(0), SDL_PushGPUFragmentUniformData(cmd, 1, &tinted, sizeof tinted);
     };
 
     auto drawPlants = [&] {  // one instanced draw per plant model
@@ -627,6 +630,8 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     };
 
     SDL_BindGPUGraphicsPipeline(pass, opaque_);
+    glm::vec4 untinted(0);
+    SDL_PushGPUFragmentUniformData(cmd, 1, &untinted, sizeof untinted);  // voxel_fs's tint: chunks have none
     drawChunks(0);
     if (settings.character) drawModels();
     if (!plantStage_.empty()) {

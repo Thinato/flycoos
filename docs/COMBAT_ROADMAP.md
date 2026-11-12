@@ -100,8 +100,8 @@ system is summarized in ADR-035.
 - [x] Hit-stop tuned per weapon class (ADR-044)
 - [x] Camera shake on heavy hits (and criticals, big hits taken; ADR-045)
 - [ ] Knockback and launch on big hits; ragdoll-ish falls
-- [ ] Charge glow; a riposte and parry flash
-- [ ] Damage numbers by type; a crit marker (the marker done, ADR-045; status numbers by type, ADR-046)
+- [x] Charge glow; a riposte and parry flash (ADR-060)
+- [x] Damage numbers by type; a crit marker (the marker ADR-045; status numbers ADR-046; hit types and guarded hits ADR-060)
 
 ## Controls and accessibility (after most combat commands exist)
 

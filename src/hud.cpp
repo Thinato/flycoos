@@ -8,6 +8,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 
+#include "fx.h"
 #include "inventory_ui.h"
 #include "lockon.h"
 #include "melee.h"
@@ -64,25 +65,59 @@ static_assert(std::size(kStatusRgb) == size_t(Status::Count));
 
 // Damage numbers over `head`: each pops big, rises and fades over a second. A critical hit's (ADR-045)
 // is bigger, orange and marked "!"; a status's (ADR-046) is in its color, beside the hit's: a bleed or
-// frostbite burst big, poison's ticks small.
+// frostbite burst big, poison's ticks small. A hit's type shows as a glyph left of it, damage a guard let
+// through is steel grey with a shield (ADR-060: numberStyle); a dark outline keeps them readable on snow and sky.
 void damageNumbers(ImDrawList* dl, const glm::mat4& viewProj, ImVec2 screen, glm::vec3 head, const Player& b, glm::vec3 hit) {
+    const NumberSettings& set = gNumbers;
+    // A glyph's outline in a box from -1 to 1 (y down): a tapered swipe, an impact star, a spike, a heater shield.
+    auto shape = [](Glyph g, ImVec2 c, float r, ImVector<ImVec2>& pts) {
+        pts.resize(0);
+        auto at = [&](float x, float y) { pts.push_back(ImVec2(c.x + x * r, c.y + y * r)); };
+        switch (g) {
+            case Glyph::Slash: at(-0.95f, 0.95f), at(-0.3f, -0.3f), at(0.95f, -0.95f), at(0.3f, 0.3f); break;
+            case Glyph::Strike:
+                for (int k = 0; k < 12; ++k) {
+                    float a = float(k) * 3.14159265f / 6 - 3.14159265f / 2, rr = k % 2 ? 0.45f : 1.0f;
+                    at(rr * std::cos(a), rr * std::sin(a));
+                }
+                break;
+            case Glyph::Pierce: at(-0.95f, -0.3f), at(0.95f, 0), at(-0.95f, 0.3f), at(-0.6f, 0); break;
+            case Glyph::Shield: at(-0.8f, -0.85f), at(0.8f, -0.85f), at(0.8f, 0.05f), at(0, 0.95f), at(-0.8f, 0.05f); break;
+            case Glyph::None: break;
+        }
+    };
+    ImVector<ImVec2> pts;
     for (const DamageNumber& n : b.numbers) {
         float t = n.age;
         if (t >= 1) continue;
         glm::vec4 c = viewProj * glm::vec4(head + glm::vec3(0, 0.4f + 1.2f * t, 0), 1);
         if (c.w < 0.1f) continue;  // behind the camera
         bool status = n.kind != Status::Count;
+        NumberStyle st = numberStyle(n, hit, status ? kStatusRgb[size_t(n.kind)] : hit);
         char num[16];
-        std::snprintf(num, sizeof num, n.crit || n.kind == Status::Bleed ? "%d!" : "%d", n.amount);
-        glm::vec3 rgb = status ? kStatusRgb[size_t(n.kind)] : n.crit ? glm::vec3(1, 0.5f, 0.1f) : hit;
-        float scale = n.crit ? 1.5f : n.kind == Status::Poison ? 0.75f : status ? 1.3f : 1;
-        float size = ImGui::GetFontSize() * (2.2f - 0.8f * std::min(t * 4, 1.0f)) * scale, alpha = 1 - t * t;
+        std::snprintf(num, sizeof num, st.bang ? "%d!" : "%d", n.amount);
+        float size = ImGui::GetFontSize() * (2.2f - 0.8f * std::min(t * 4, 1.0f)) * st.scale, alpha = 1 - t * t;
         ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, num);
-        // Beside the hit's number (which is about 1.3 lines wide): bleed and poison right of it, frost left.
-        float gap = ImGui::GetFontSize() * 1.6f, side = !status ? 0 : n.kind == Status::Frost ? -gap - ts.x / 2 : gap + ts.x / 2;
+        float g = st.glyph == Glyph::None ? 0 : ts.y * set.glyphSize, gap = g * 0.3f;  // the glyph's height, and the space after it
+        // Beside the hit's number (which is about 1.3 lines wide, its glyph left of it): bleed and poison right of it,
+        // frost left, past the glyph.
+        float gapSide = ImGui::GetFontSize() * 1.6f, glyphs = set.glyphs ? ImGui::GetFontSize() * 2.2f * set.glyphSize * 1.3f : 0;
+        float side = !status ? 0 : n.kind == Status::Frost ? -gapSide - glyphs - ts.x / 2 : gapSide + ts.x / 2;
         ImVec2 q((c.x / c.w * 0.5f + 0.5f) * screen.x - ts.x / 2 + side, (0.5f - c.y / c.w * 0.5f) * screen.y - ts.y / 2);
-        dl->AddText(ImGui::GetFont(), size, ImVec2(q.x + 2, q.y + 2), uiColor(0, 0, 0, 0.8f * alpha), num);
-        dl->AddText(ImGui::GetFont(), size, q, uiColor(rgb.r, rgb.g, rgb.b, alpha), num);
+        ImU32 ink = uiColor(0, 0, 0, 0.8f * alpha), colour = uiColor(st.rgb.r, st.rgb.g, st.rgb.b, alpha);
+        if (set.outline)
+            for (ImVec2 o : {ImVec2(-1.5f, -1.5f), ImVec2(1.5f, -1.5f), ImVec2(-1.5f, 1.5f), ImVec2(1.5f, 1.5f)})
+                dl->AddText(ImGui::GetFont(), size, ImVec2(q.x + o.x, q.y + o.y), uiColor(0, 0, 0, 0.7f * alpha), num);
+        dl->AddText(ImGui::GetFont(), size, ImVec2(q.x + 2, q.y + 2), ink, num);
+        dl->AddText(ImGui::GetFont(), size, q, colour, num);
+        if (g > 0) {
+            ImVec2 gc(q.x - gap - g / 2, q.y + ts.y * 0.5f);
+            shape(st.glyph, ImVec2(gc.x + 2, gc.y + 2), g / 2, pts);  // its drop shadow
+            dl->AddConcavePolyFilled(pts.Data, pts.Size, ink);
+            shape(st.glyph, gc, g / 2, pts);
+            if (set.outline) dl->AddPolyline(pts.Data, pts.Size, uiColor(0, 0, 0, 0.7f * alpha), ImDrawFlags_Closed, 3.0f);
+            dl->AddConcavePolyFilled(pts.Data, pts.Size, colour);
+        }
     }
 }
 

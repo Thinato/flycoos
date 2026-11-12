@@ -27,6 +27,7 @@ struct Sound {
     // thunk: back along its flight), and whether the body hit wears plate: its effects' (ADR-058).
     glm::vec3 from{};
     bool plated = false;
+    const void* body = nullptr;  // the body that made it (ADR-060: whose flash); the sim never reads it
 };
 constexpr size_t kMaxSounds = 256;  // Session::sounds stops growing here when nobody plays them
 

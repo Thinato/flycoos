@@ -743,7 +743,7 @@ static int run(SDL_Window* window, const Options& opt) {
             player.teleport(to);
         }
         uint64_t fxStart = SDL_GetTicksNS();
-        for (const Sound& h : session.sounds) spawnFx(fx, h, viewEye);  // what the hits threw out (ADR-058)
+        for (const Sound& h : session.sounds) spawnFx(fx, h, viewEye);  // what the hits threw out (ADR-058), the flashes (ADR-060)
         double fxNs = double(SDL_GetTicksNS() - fxStart);
         {  // what this frame's ticks sounded like, heard at the player with the camera's right (ADR-037)
             Listener ear{player.pos, {std::cos(camYaw), -std::sin(camYaw)}};
@@ -880,19 +880,26 @@ static int run(SDL_Window* window, const Options& opt) {
             }
             punchQueued = false;
         }
+        float fxDt = editor.active || noteOpen ? 0 : dt;  // effects run on frame time while the sim runs
         auto pushModel = [&](const Player& body, Model model) {  // with whatever it holds
             glm::mat4 held(0), shield(0), flask(0), arrow(0);
             fp.models.push_back({partModels(model, body.inv), poseModel(body, model, &held, alpha, &shield, &flask, &arrow)});
+            fp.models.back().tint = flashTint(fx, &body, FlashOn::Body);  // a riposte's or a crit's flash (ADR-060)
             if (held != glm::mat4(0)) trailFx(fx, &body, heldModel(body), held, body.alive() && swingsBlade(body), body.freeze > 0 && body.punching());  // its blade's smear (ADR-058)
-            auto push = [&](Model m, const glm::mat4& pose) {
+            chargeFx(fx, body, heldModel(body), held, glm::vec3(fp.models.back().pose[HandR][3]), fxDt);  // a charging heavy's motes
+            auto push = [&](Model m, const glm::mat4& pose, glm::vec4 tint = {}) {
                 if (pose == glm::mat4(0)) return;
                 ModelInstance item;
                 item.parts.fill(m);
                 item.pose.fill(pose);
+                item.tint = tint;
                 fp.models.push_back(item);
             };
-            push(heldModel(body), held);
-            push(shieldModel(body.inv.equipped[SlotOffHand]), shield);
+            // The weapon glows while a heavy charges; a parry flashes the shield, else the weapon (ADR-060).
+            glm::vec4 guardFlash = flashTint(fx, &body, FlashOn::Guard), charge = chargeTint(body, fx.set);
+            bool shielded = shield != glm::mat4(0);
+            push(heldModel(body), held, !shielded && guardFlash.a > charge.a ? guardFlash : charge);
+            push(shieldModel(body.inv.equipped[SlotOffHand]), shield, guardFlash);
             push(body.move == Move::Throw ? throwableModel(body.throwing) : body.flasks > 0 ? ModelFlask : ModelFlaskEmpty, flask);  // or a throwable (ADR-053)
             push(loads(body) ? ModelBolt : ModelArrow, arrow);  // a crossbow's bolt (ADR-052)
         };
@@ -908,7 +915,8 @@ static int run(SDL_Window* window, const Options& opt) {
             fp.models.push_back(item);
         }
         fxStart = SDL_GetTicksNS();
-        updateFx(fx, world, editor.active || noteOpen ? 0 : dt);  // frame time while the sim runs (a benchmark's: a tick)
+        fx.eye = fp.eye;  // the flashes' discs face it
+        updateFx(fx, world, fxDt);  // frame time while the sim runs (a benchmark's: a tick)
         fx.ms = float((fxNs + double(SDL_GetTicksNS() - fxStart)) * 1e-6);
         fp.fx = &fx;
         for (const Burst& b : session.bursts) {  // a bomb's or a pot's puff (ADR-053)

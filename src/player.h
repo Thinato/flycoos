@@ -109,12 +109,15 @@ struct TimedEffect {
     std::vector<Modifier> mods;  // their source is the effect's name
     float tick = 0;              // seconds to its next tick of damage (poison)
 };
-// A damage number over a body (the HUD's): a hit's, or a status's (`kind`; Count: a hit).
+// A damage number over a body (the HUD's): a hit's, or a status's (`kind`; Count: a hit). A hit's damage type and
+// whether a guard took part of it (ADR-060) pick its glyph.
 struct DamageNumber {
     int amount = 0;
     float age = 99;  // seconds since; shown for one
     bool crit = false;
     Status kind = Status::Count;
+    DamageType type = DamageType::Slash;
+    bool guarded = false;
 };
 
 constexpr int kQuiver = 30;  // arrows a quiver holds (ADR-050): a rest fills it, picking arrows up tops it up

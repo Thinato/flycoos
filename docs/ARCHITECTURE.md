@@ -42,7 +42,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/melee.h/.cpp` | Melee (ADR-035): `MoveSpec` (windup, hold point, impact, chain and cancel points, damage, stance, stamina, lunge), the weapon classes' movesets (`WeaponClassDef`, `weaponClass`, `spec`; loaded from data/weapon_classes.json, ADR-044), `MeleeTuning gMelee` (stamina, the guard, timings; the debug Player tab edits it), `updateMelee` (the player's buttons each tick: tap or hold, the input buffer, the chain, charging, the guard, stamina; it rewrites the body's `Input`), `startMove`/`advanceMove`/`interrupt`, `invulnerable`, `hyperarmor`, `guards`, `playerPoise`; shields and the parry (ADR-036): `shieldOf`, `guardOf`, `guardAgainst`, `parries`, `bounces`; `parryOf` (a knife or fists parry too) and `perfectGuard` (ADR-041); `damageOf` (ADR-040) |
 | `src/projectile.h/.cpp` | Projectiles (ADR-050): `Projectile` (an arrow: tip, velocity, the bow, power, stance, stuck), `RangedTuning gRanged` (gravity, speeds by draw, the draw time, expiry, pickup, the aim walk; the debug Player tab edits it), `drawOf`, `shotOrigin`, `shotVelocity` (straight at a point, lobbed onto it, or along the facing), `segmentBox`, `hitBox`, `loose` (the release: an arrow from the quiver, or a crossbow's loaded bolt at `boltSpeed`, ADR-052; an archer's, ADR-051: at the player along its facing, off by its aim error), throwables (ADR-053: `fillPouch`, `cycleThrowable`, `hurl` at a throw's release, `burst` and the `Burst` puffs in `Session::bursts`) and `updateProjectiles` (gravity, a swept voxel ray and body boxes, hits through `strike()`, or for an archer's arrow (`Projectile::owner`) only the player's box, through `strikePlayer()`; a bomb or pot bursting on the first thing it meets; sticking, pickup into the quiver or the pouch, expiry) |
 | `src/audio.h/.cpp` | Sound (ADR-037): `Audio` (loads `data/sounds/*.ogg` with stb_vorbis into groups of takes; `play` picks a take never twice running with a little random pitch and volume; `mix` is the device thread's stereo mix: up to 48 resampled voices, three buses, a soft limiter), `place` (falloff and pan from the listener), `layersOf`/`hear` (what a `Sound` from the sim plays), `updateAmbience` (looping beds faded by what's around). No device here: main.cpp's `Speaker` feeds `mix` to SDL3's audio stream |
-| `src/fx.h/.cpp` | Hit feedback (ADR-058), presentation only: `Fx` (particles, smears, its own RNG, `FxSettings`), `spawnFx` (the burst a `Sound` makes, by noise and creature), `trailFx` (a body's blade edge each frame, `bladeEdge` in model.h), `swingsBlade`, `updateFx` (flight, landing, ageing, the cap, the smear ribbon's triangles), `drawnSize` |
+| `src/fx.h/.cpp` | Hit feedback (ADR-058), presentation only: `Fx` (particles, smears, its own RNG, `FxSettings`), `spawnFx` (the burst a `Sound` makes, by noise and creature), `trailFx` (a body's blade edge each frame, `bladeEdge` in model.h), `swingsBlade`, `updateFx` (flight, landing, ageing, the cap, the smear ribbon's triangles), `drawnSize`. The big moments (ADR-060): flashes and discs (`flashTint`), the charge glow (`chargeTint`, `chargeFx`), and damage numbers' looks (`numberStyle`, `gNumbers`) |
 | `src/lockon.h/.cpp` | Lock-on (ADR-033): `pickTarget` (nearest the middle of the view, in range and sight; never a villager, ADR-056), `switchTarget` (the next one that way on screen), `updateLock` (lets go past the break range or out of sight, passes on after a kill), `lockPoint`. main.cpp turns the camera to it and sets `Input::face`; the HUD draws the dot |
 | `src/stream.h/.cpp` | `Stream` (ADR-031): keeps a streamed grid centred on the player. Worker threads generate the chunk columns coming in (nearest first); each frame `update` installs them, lights those whose 8 neighbours are in (within a time budget) and hands out the chunk slots to mesh once their 8 neighbours are lit, and to empty for the columns that left. `follow` moves the window |
 | `src/mesher.h/.cpp` | Greedy mesher with per-corner AO and per-face light (`meshRegion`; plants become `PlantInstance`s, not faces), `Quad` packing/unpacking, the world's chunk meshes (`meshChunks`, and `remeshChunks` after an edit) that the renderer uploads |
@@ -57,15 +57,15 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/defs.h/.cpp` | Data definitions (ADR-018): `Defs` registry, the two-pass `loadDefs` over `data/*.json` and `data/quests/*.json` (records by string id, `copy_from`, field and range checks, quest references resolved to handles, warnings), `dataDir`, the current registry (`defs`/`setDefs`/`reloadDefs`) |
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C), Bags (B), Journal (J) and Progress (K) windows: slots, drag and drop, right-click equip, tooltips, attributes; quests with the current entry and checked objectives; level, skills and the talent trees |
-| `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers, talk/loot hint, player health, the boss bar (`drawBossBar`, ADR-059), knocked-out message, poi labels and the region name (`drawPlaces`, in Alagard, `titleFont`, which DebugUI loads from `data/fonts/`) |
-| `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, the world's `Light` (filled by `uploadWorld`, relit by `updateWorld`), uploads of the core's chunk and model meshes, instanced plants (each frame's near ones, per model), hit effects (instanced particle cubes and the smear ribbon, ADR-058; `stream` uploads per-frame buffers), render targets, frustum culling, day/night lighting, screenshots |
+| `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers (a glyph per damage type, ADR-060), talk/loot hint, player health, the boss bar (`drawBossBar`, ADR-059), knocked-out message, poi labels and the region name (`drawPlaces`, in Alagard, `titleFont`, which DebugUI loads from `data/fonts/`) |
+| `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, the world's `Light` (filled by `uploadWorld`, relit by `updateWorld`), uploads of the core's chunk and model meshes, instanced plants (each frame's near ones, per model), hit effects (instanced particle cubes and the smear ribbon, ADR-058; `stream` uploads per-frame buffers), a tint per model instance (ADR-060), render targets, frustum culling, day/night lighting, screenshots |
 | `src/text.h` | `validName`: UTF-8 display text without control, bidi or zero-width characters (marker names and lines, item names) |
 | `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh, light and remesh times, light memory), for the debug and editor UIs without `renderer.h` |
 | `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
 | `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Progression, Items, Entities, Quests, Data, Camera, World, Save, Audio, Effects (ADR-058), Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/notes.h/.cpp` | Debug notes (F2 with `--debug`): `noteContext` turns the session into JSON (world, clock, player place/motion/combat/stats/gear, camera, region, nearby NPCs with AI history, quests, flags, latest events); `saveNote` appends it with the text, its id (line number) and `"status": "open"` to `debug_notes/notes.jsonl` and writes the screenshot next to it. main.cpp opens the box (`noteWindow`, debug_ui), stops stepping the simulation while it's open and takes the state and an offscreen snapshot the frame it opens |
 | `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor) into `SimInput`, orbit camera, main loop around `step`, remote commands, benchmark stats |
-| `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs`, `water_fs`, `sky_vs`, `sky_fs`, `plant_vs`/`plant_fs`, `particle_vs`/`particle_fs` and `ribbon_vs`/`ribbon_fs` (hit effects, ADR-058) |
+| `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs` (with a model's tint, ADR-060), `water_fs`, `sky_vs`, `sky_fs`, `plant_vs`/`plant_fs`, `particle_vs`/`particle_fs` and `ribbon_vs`/`ribbon_fs` (hit effects, ADR-058) |
 
 ## World
 
@@ -903,8 +903,9 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - At 0 health a body falls over and can't be hit. NPCs stay dead (ADR-056): nothing respawns, and the
   training dummy is immortal instead (its hits show their numbers and take no health). The player is
   knocked out: no movement or attacks, then back at the player spawn (marker, else the world spawn) with full health after 5 s.
-- HUD: a damage number pops above whoever was hit and rises for a second (the latest hit only):
-  gold over NPCs, red over the player.
+- HUD: a damage number pops above whoever was hit and rises for a second (the latest four):
+  gold over NPCs, red over the player, with a glyph for the hit's damage type; steel grey with a
+  shield where a guard let it through (ADR-060).
 
 ## Items and inventory
 
@@ -1369,6 +1370,24 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   colour, glow, flat, the light where it is) and draws them in one instanced call of 36 vertices each
   after the models, lit like a model voxel (sparks glow). The ribbon (16 bytes a vertex) is one draw
   after the water: unlit white, alpha-blended, no depth write, both sides.
+
+## The big moments: glow, flashes, typed numbers (`fx.h`, ADR-060)
+
+- **Tints:** `ModelInstance::tint` (sRGB, above 1 brighter; a strength). The renderer pushes it as
+  `voxel_fs`'s second fragment uniform per model draw (chunks get zero once); the shader mixes the
+  shaded colour toward the tonemapped tint. Each voxel keeps one flat colour.
+- **The charge glow:** main.cpp asks `chargeTint(body)` for each body's held weapon: gold rising while a
+  heavy charges at its hold point, white-hot when full until the hit, fading after or when let go.
+  `chargeFx` sends gold motes up off the blade (from the hand without one). A full charge's sound
+  throws a ring of motes.
+- **Flashes:** `spawnFx` makes them from sounds: a parry (the guard: the shield, else the weapon; shards
+  and a disc), a riposte or backstab (a crit on an NPC with `kRiposteStance`; the body; shards and a
+  disc), a random crit (the body at half). Each lands on `Sound::body`, the body that made the sound
+  (set in `hear`, never read by the sim). `flashTint(body, on)` fades them as their age squared. The disc
+  is a fan of triangles facing `Fx::eye`, added to the ribbon.
+- **Typed numbers:** `hurt` writes the hit's `DamageType` and whether a guard took part of it into the
+  `DamageNumber`. `numberStyle` gives its colour, size, glyph and "!"; `damageNumbers` (hud.cpp) draws
+  the glyph left of the number as a shape, both outlined. Settings: the global `gNumbers`.
 
 ## Day/night
 

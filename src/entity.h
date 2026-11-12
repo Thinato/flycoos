@@ -334,11 +334,13 @@ bool takeLoot(Entity& e, Inventory& inv);
 // Returns whether it applied. `crit`: a critical hit (ADR-045); `kind`: a status's damage (ADR-046),
 // not a hit's (Count): it shows its own number and leaves lastDamage alone. Poison's ticks aren't hits:
 // they leave hitTime alone (and damage() doesn't call a fighter back for them). A death ends its status
-// build-up and timed effects.
-bool hurt(Player& body, int amount, bool crit = false, Status kind = Status::Count);
+// build-up and timed effects. `type` and `guarded` (a guard let it through) go on its number (ADR-060).
+bool hurt(Player& body, int amount, bool crit = false, Status kind = Status::Count, DamageType type = DamageType::Slash,
+          bool guarded = false);
 // hurt() for attackable entities only, an immortal one keeping its health. Tells it (EventDamaged: a fighter fights
 // back, a harmless wanderer flees); a kill rolls the loot.
-bool damage(Entity& e, int amount, bool crit = false, Status kind = Status::Count);
+bool damage(Entity& e, int amount, bool crit = false, Status kind = Status::Count, DamageType type = DamageType::Slash,
+            bool guarded = false);
 
 // The status effects' knobs (ADR-046), live from the debug window's Player tab. Shares are of the
 // afflicted body's max health; status damage skips armor and damage taken.
@@ -422,6 +424,7 @@ void awardHitXp(Combatant& player, Entity& npc, bool playerHit, bool killed);
 // the attacker's swingWeapon, its guard from `from` (part of the damage and its stamina; empty, it
 // breaks), status build-up, the noises, XP (awardHitXp), Killed into `events`, staggerHit. A swing's
 // (`melee`) also freezes both bodies (hit-stop), bounces off a greatshield's guard and shakes the camera.
+constexpr float kRiposteStance = 100;  // a riposte's or backstab's hitStance (and its sounds' amount): its effects know it by this
 struct Strike {
     float power = 1;        // x the hit before armor: the move's damage (a heavy, a charge, a riposte, a draw)
     float stance = 0;       // its stance damage

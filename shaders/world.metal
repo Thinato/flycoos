@@ -249,10 +249,13 @@ static float4 shade(constant Frame& f, VOut in, float3 albedo) {
     return float4(tonemap(applyFog(f, glows ? albedo * 1.3 : light(f, in, albedo), in.worldPos)), 1.0);
 }
 
-fragment float4 voxel_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]]) {
+// `tint` (models, ADR-060): rgb linear it turns toward, unshaded, by a: a charging heavy's glow, a flash. Chunks: 0.
+// Above 1 is brighter (a flash, a full charge): the tonemap takes it toward white.
+fragment float4 voxel_fs(VOut in [[stage_in]], constant Frame& f [[buffer(0)]], constant float4& tint [[buffer(1)]]) {
     float3 albedo = 0.0;
     if (uint(f.debug.x) == 0) albedo = albedoOf(f, in);  // `mode` is uniform, so this branch is coherent and cheap
-    return shade(f, in, albedo);
+    float4 c = shade(f, in, albedo);
+    return float4(mix(c.rgb, tonemap(applyFog(f, tint.rgb, in.worldPos)), tint.a), 1.0);  // one colour per voxel still: models are flat
 }
 
 fragment float4 wire_fs(VOut in [[stage_in]]) {

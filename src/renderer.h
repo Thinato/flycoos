@@ -20,6 +20,7 @@ struct ModelInstance {
     std::array<Model, PartCount> parts;  // the model each part is drawn from (worn armor swaps some)
     std::array<glm::mat4, PartCount> pose;
     bool glow = false;                   // drawn in its own colours, unshaded (a burst's fire, ADR-053)
+    glm::vec4 tint{0};                   // rgb (sRGB; above 1 brighter) it turns toward, unshaded, by a (0..1): a charge's glow, a flash (ADR-060)
 };
 
 struct FrameParams {

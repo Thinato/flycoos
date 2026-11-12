@@ -145,6 +145,8 @@ struct MeleeInput {
     bool toss = false;                        // G / touchpad: throw the readied throwable, pressed since the last tick (ADR-053)
 };
 
+// A heavy that charges while its button is held (heavy 1 and 2).
+inline bool charges(Move m) { return m == Move::Heavy1 || m == Move::Heavy2; }
 // The move's length, its impact frame and its hold point, in seconds.
 inline float moveLength(const Combatant& c) { return spec(c).seconds * c.moveScale; }
 inline float impactTime(const Combatant& c) { return spec(c).impact * moveLength(c); }
