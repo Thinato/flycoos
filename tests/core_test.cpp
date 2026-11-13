@@ -12217,7 +12217,7 @@ static void bossFollowUps() {
 // poses, hands and features don't move.
 static void roundedModels() {
     const ModelShape shipped = gModelShape;
-    CHECK(shipped.round && shipped.chunky && shipped.radius == 3);  // the look chosen for the game
+    CHECK(shipped.round && shipped.chunky && shipped.radius == 3 && shipped.torsoRadius == 1.5f);  // the look chosen for the game
     auto solid = [](const Grid& g) { return std::ranges::count_if(g.cells, [](Block b) { return b != Air; }); };
     auto count = [](const Grid& g, Block b) { return std::ranges::count(g.cells, b); };
     auto same = [](const Grid& a, const Grid& b) { return a.size == b.size && a.cells == b.cells; };
@@ -12227,7 +12227,24 @@ static void roundedModels() {
     CHECK(buildPart(ModelPlayer, HandL).size == glm::ivec3(4) && buildPart(ModelPlayer, FootR).size == glm::ivec3(4, 3, 5));
     // Each part is exactly its rounded box: radius 3 on the head and torso, 2 on the 4-voxel hands, 1.5 on the boots.
     Grid head = buildPart(ModelPlayer, Head);
-    CHECK(solid(head) == 968 && solid(buildPart(ModelPlayer, Torso)) == 244);
+    CHECK(solid(head) == 968);
+    // Humanoid torsos (worn armor's too) are squarer, for armor: only their 8 corners go, the edges stay.
+    for (Model m : {ModelPlayer, ModelIronArmor, ModelBandit, ModelChief, ModelBarrowLord}) {
+        Grid t = buildPart(m, Torso);
+        glm::ivec3 s = t.size;
+        CHECK(solid(t) == s.x * s.y * s.z - 8 && t.get({0, 0, 0}) == Air && t.get({s.x - 1, s.y - 1, s.z - 1}) == Air);
+        CHECK(t.get({1, 0, 0}) != Air && t.get({0, 1, 0}) != Air && t.get({0, 0, 1}) != Air);
+        CHECK(softRadius(m, Torso) == 1.5f);  // and the soft light bends only their edges
+    }
+    CHECK(softRadius(ModelPlayer, Head) == 0 && softRadius(ModelWolf, Torso) == 0 && softRadius(ModelDummy, Torso) == 0);
+    CHECK(softRadius(ModelGhoul, Torso) == 1.5f && softRadius(ModelGuard, Torso) == 1.5f && softRadius(ModelVillager, Torso) == 1.5f);
+    gModelShape.round = false;  // rounding off: the torso's soft light is the other parts' again
+    CHECK(softRadius(ModelPlayer, Torso) == 0);
+    gModelShape = shipped;
+    CHECK(solid(buildPart(ModelWolf, Torso)) < 7 * 6 * 13 - 8);  // a creature's body stays round
+    gModelShape.torsoRadius = 1;  // the debug window's least: a full box
+    CHECK(solid(buildPart(ModelPlayer, Torso)) == 8 * 7 * 6);
+    gModelShape = shipped;
     CHECK(solid(buildPart(ModelPlayer, HandR)) == 32 && solid(buildPart(ModelPlayer, FootL)) == 52);
     CHECK(head.get({0, 0, 0}) == Air && head.get({10, 9, 9}) == Air && head.get({1, 0, 0}) == Air && head.get({0, 1, 0}) == Air);  // corners and edges gone
     CHECK(head.get({5, 0, 5}) != Air && head.get({0, 5, 5}) != Air && head.get({5, 5, 9}) != Air && head.get({5, 9, 5}) != Air);  // faces kept
@@ -12283,7 +12300,7 @@ static void roundedModels() {
     long oldSizes = total();
     gModelShape = shipped;
     CHECK(rounded == 62);  // every body's parts but the dummy's thin arms, post and cross-shaped base
-    CHECK(shippedTotal == 15771 && roundest == 14401 && oldSizes == 11770);  // the shapes, pinned (radius 3; 4.5; 4.5 on the old sizes)
+    CHECK(shippedTotal == 16431 && roundest == 14651 && oldSizes == 12020);  // the shapes, pinned (radius 3; 4.5; 4.5 on the old sizes)
     CHECK(isBody(ModelPlayer) && isBody(ModelIronArmor) && isBody(ModelWolf) && isBody(ModelBarrowLord) && isBody(ModelDummy));
     CHECK(!isBody(ModelSword) && !isBody(ModelGreataxe) && !isBody(ModelTower) && !isBody(ModelBow) && !isBody(ModelBurst));
     // The wolf: its skull, snout and body rounded, its ears and tail as they were.

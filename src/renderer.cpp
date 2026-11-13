@@ -30,7 +30,7 @@ struct FrameUniforms {
 };
 struct DrawUniforms {
     glm::mat4 model;
-    glm::vec4 modelLight;  // x models: light + 1 (0: a chunk); y > 0: it glows (ADR-053)
+    glm::vec4 modelLight;  // x models: light + 1 (0: a chunk); y > 0: it glows (ADR-053); z > 0: the soft light's radius (ADR-061)
     glm::uvec4 firstQuad;  // x first quad; models: yzw a body part's grid size (0: not soft-lit); plants: y first instance, zw the world window's low corner x, z (int)
 };
 static_assert(sizeof(FrameUniforms) == 2 * 64 + 15 * 16 + 3 * 128 * 16);
@@ -413,7 +413,8 @@ void Renderer::uploadModels() {
         for (int p = 0; p < PartCount; ++p) {
             Grid part = buildPart(Model(model), Part(p));
             Mesh m = meshRegion(part, {0, 0, 0}, part.size);
-            parts_[size_t(model)][size_t(p)] = {uint32_t(quads.size()), uint32_t(m.opaque.size()), isBody(Model(model)) ? glm::uvec3(part.size) : glm::uvec3(0)};
+            parts_[size_t(model)][size_t(p)] = {uint32_t(quads.size()), uint32_t(m.opaque.size()), isBody(Model(model)) ? glm::uvec3(part.size) : glm::uvec3(0),
+                                             softRadius(Model(model), Part(p))};
             quads.insert(quads.end(), m.opaque.begin(), m.opaque.end());
         }
     for (size_t k = 0; k < plantParts_.size(); ++k) {
@@ -609,8 +610,8 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
             uint8_t a = light_.get(at), b = light_.get(at + glm::ivec3(0, 1, 0));
             float lit = float(std::max(skyLight(a), skyLight(b)) << 4 | std::max(blockLight(a), blockLight(b))) + 1;
             for (size_t p = 0; p < PartCount; ++p) {
-                auto [first, count, size] = parts_[size_t(inst.parts[p])][p];
-                if (count) draw({inst.pose[p], glm::vec4(lit, inst.glow ? 1 : 0, 0, 0), glm::uvec4(first, size)}, count);
+                auto [first, count, size, bend] = parts_[size_t(inst.parts[p])][p];
+                if (count) draw({inst.pose[p], glm::vec4(lit, inst.glow ? 1 : 0, bend, 0), glm::uvec4(first, size)}, count);
             }
         }
         if (tinted != glm::vec4(0)) tinted = glm::vec4(0), SDL_PushGPUFragmentUniformData(cmd, 1, &tinted, sizeof tinted);

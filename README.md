@@ -436,7 +436,7 @@ unless a text field has focus.
 
 | Tab | What's there |
 |---|---|
-| Render | View mode (shaded, greedy quads, chunks, ambient occlusion, normals), wireframe quad edges, sky/fog/water/character toggles, frustum culling on/off or frozen, per-frame chunk/quad/draw-call counts; Models: rounded parts and their corner radius, chunky proportions, soft light, corner shading on bodies |
+| Render | View mode (shaded, greedy quads, chunks, ambient occlusion, normals), wireframe quad edges, sky/fog/water/character toggles, frustum culling on/off or frozen, per-frame chunk/quad/draw-call counts; Models: rounded parts and their corner radius, the torso's radius, chunky proportions, soft light, corner shading on bodies |
 | Player | The region you're in, health, the five attributes and what derives from them (max health, regen, attack damage and speed, combat state), armor K (damage reduction = armor / (armor + K x attacker level)) with the current armor and its reduction vs level 1 and 2, position (editable), velocity, ground/water state, respawn, walk/run/jump speed, gravity, fly, noclip, fly speed |
 | Items | Give any item or the whole Iron armor set, see what's equipped and in the bag slots, empty the inventory |
 | Data | The loaded item definitions (save id, id, slot, attack, bag size, armor); Reload defs re-reads data/ and keeps the old ones on an error |

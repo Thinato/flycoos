@@ -3256,7 +3256,9 @@
     loses its corners; thinner parts such as the dummy's arms lose nothing). The
     wolf's skull, snout and body are rounded apart (its ears and tail stay as they were), the boar's head
     at most 2 (its tusks and eyes sit on the front corners) and the barrow lord's skull under its square
-    crown. Eyes, ember eyes and snouts are never cut. A part keeps its grid size, so poses, swings, the
+    crown. Humanoid torsos (worn cuirasses too) are squarer, by `torsoRadius` (1.5: only their 8 corners go),
+    so armor sits on them well: the user found radius 3 too round there (amended 2026-11-13). Eyes, ember eyes
+    and snouts are never cut. A part keeps its grid size, so poses, swings, the
     blade smear and hit boxes don't move. Held items are never rounded.
   - **The chunky humanoid** (`kChunky`): an 11x10x10 head, 4x4x4 mitten hands, 4x3x5 boots, the same
     torso. The hands' centres are kHumanoid's, since the poses aim them there (grips, bows, crossbows,
@@ -3267,12 +3269,13 @@
     Gauntlet knuckles and sabaton toe caps sit one row below the top, which rounding cuts. The helm's crest is centred by the head's
     width (one voxel on the 11-wide helm).
   - **Soft light on bodies.** Each body part's draw carries its grid size (`Draw.firstQuad.yzw`; 0 for held
-    items). `voxel_vs` bends the face normal toward the part's rounded box (the radius its thinnest half),
+    items). `voxel_vs` bends the face normal toward the part's rounded box (the radius its thinnest half, or
+    `softRadius` in `Draw.modelLight.z`: the humanoid torso's own, so its faces stay flat to the edges),
     so a face shades from its middle out like a pillow. Corner shading in the cut steps is dropped, since it
     read as dark creases. Bit 29 of `blockAndQuad` marks the body, so `voxel_fs` wraps the light round its
     dark side. `Frame.modelShade` carries the settings. There are no new vertex outputs (the quad index for
     the greedy-quads debug view keeps 14 bits).
-  - **Debug window:** Render > Models: rounded parts on/off, corner radius (1 to 4.5), chunky proportions
+  - **Debug window:** Render > Models: rounded parts on/off, corner radius (1 to 4.5), torso radius (1 to 4.5), chunky proportions
     on/off, soft light strength (0 to 1.5; 1 is bend 0.65 and wrap 0.5), corner shading on bodies. Shape
     changes re-mesh every model on the next frame (the renderer compares `gModelShape` with the shape it
     meshed).

@@ -33,11 +33,14 @@ struct ModelShape {
     bool round = true;   // cut each body part to a rounded box
     float radius = 3;    // its corners' radius in voxels, on parts at least 6 thick (thinner ones: less)
     bool chunky = true;  // the chunky humanoid
+    float torsoRadius = 1.5f;  // humanoid torsos: squarer (only their corners cut), so armor sits on them well
     bool operator==(const ModelShape&) const = default;
 };
 inline ModelShape gModelShape;
 // A body (a character or creature, worn armor included), not a held item: bodies are rounded, held items stay crisp.
 bool isBody(Model m);
+// The radius a part's soft light bends its normals by: the humanoid torso's own while rounded, else 0 (its thinnest half).
+float softRadius(Model m, Part part);
 Grid buildPart(Model model, Part part);
 Model heldModel(ItemId weapon);
 // What `p` has in hand drawn as: heldModel, but a bow with its string well back is ModelBowDrawn (ADR-050),

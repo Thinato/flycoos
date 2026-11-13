@@ -664,7 +664,7 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   armor; never held items) to a rounded box: a voxel goes when its centre is outside the box rounded by
   `roundRadius` (by the part's thinnest side: the shape's radius from 6 voxels, up to 2 at 4-5, 1.5 up to 3, which
   takes a 3-voxel cube's corners and nothing from thinner parts). The wolf's skull, snout and body are rounded apart (ears, tail untouched), the boar's head at
-  most 2, the barrow lord's skull under its square crown; eyes and snouts are never cut. A part keeps its
+  most 2, the barrow lord's skull under its square crown, humanoid torsos only at their corners (`torsoRadius`, for armor; `softRadius` gives the soft light the same); eyes and snouts are never cut. A part keeps its
   grid size, so poses don't move. Humanoids are chunky (`kChunky`: an 11x10x10 head, 4x4x4 hands, 4x3x5
   boots), with kHumanoid's hand centres, which the poses aim the hands by. In the shader each body part
   bends its normals toward its rounded box (its grid size rides in `Draw.firstQuad.yzw`; 0 for held items),

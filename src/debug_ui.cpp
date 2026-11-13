@@ -265,7 +265,9 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
         ImGui::SetItemTooltip("Each body part's voxels cut to a rounded box. Held weapons and shields stay crisp.");
         ImGui::BeginDisabled(!gModelShape.round);
         ImGui::SliderFloat("Corner radius", &gModelShape.radius, 1, 4.5f, "%.1f voxels");
-        ImGui::SetItemTooltip("On heads and bodies (6+ voxels thick); 4-5 thick parts take at most 2, 3 thick lose their corners.");
+        ImGui::SetItemTooltip("On heads and creature bodies (6+ voxels thick; humanoid torsos use Torso radius); 4-5 thick parts take at most 2, 3 thick lose their corners.");
+        ImGui::SliderFloat("Torso radius", &gModelShape.torsoRadius, 1, 4.5f, "%.1f voxels");
+        ImGui::SetItemTooltip("Humanoid torsos (armor too): 1.5 cuts only the corners, so armor sits square. 1: none cut.");
         ImGui::EndDisabled();
         ImGui::Checkbox("Chunky proportions", &gModelShape.chunky);
         ImGui::SetItemTooltip("Humanoids: an 11x10x10 head, 4x4x4 mitten hands, bigger boots. Off: the 10x9x9 head, 3x3x3 hands.\n"

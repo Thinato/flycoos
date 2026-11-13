@@ -32,7 +32,7 @@ struct Frame {
 };
 struct Draw {
     float4x4 model;
-    float4 modelLight;    // x models: light + 1 (0: a chunk); y > 0: it glows (ADR-053)
+    float4 modelLight;    // x models: light + 1 (0: a chunk); y > 0: it glows (ADR-053); z > 0: the soft light's radius (ADR-061)
     uint4 firstQuad;      // x: index of this draw's first quad in the storage buffer; models: yzw a body part's grid size (0: not soft-lit); plants: y first instance, zw window low x, z (int)
 };
 
@@ -96,13 +96,13 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     VOut out;
     out.position = f.viewProj * world;
     out.worldPos = world.xyz;
-    // Soft light on a body part (ADR-061): the normal bent toward its rounded box's (the part's grid, the radius its
-    // thinnest half) by modelShade.y, so a face shades like a pillow from the middle out; its cut steps' AO dropped.
+    // Soft light on a body part (ADR-061): the normal bent toward its rounded box's (the part's grid; the radius
+    // modelLight.z if set, the humanoid torso's, else its thinnest half) by modelShade.y, so a face shades like a pillow from the middle out; its cut steps' AO dropped.
     float3 n = kNormals[face];
     bool soft = model && d.firstQuad.y > 0u;
     if (soft && f.modelShade.y > 0.0) {
         float3 hs = float3(d.firstQuad.yzw) * 0.5, rel = v.local - hs;  // (half is a Metal type)
-        float3 inner = max(hs - min(min(hs.x, hs.y), hs.z), 0.0);
+        float3 inner = max(hs - (d.modelLight.z > 0.0 ? d.modelLight.z : min(min(hs.x, hs.y), hs.z)), 0.0);
         float3 bent = rel - clamp(rel, -inner, inner);
         if (length(bent) > 1e-3) n = normalize(mix(n, normalize(bent), f.modelShade.y));
     }

@@ -58,6 +58,7 @@ static const PartSpec kChunky[PartCount] = {
     {{4, 3, 5}, {-2.3f, 1.5f, 0.2f}},  // FootR
 };
 static bool quadruped(Model m) { return m == ModelBoar || m == ModelWolf; }
+static bool humanoidTorso(Model m, Part part) { return part == Torso && isBody(m) && !quadruped(m) && m != ModelDummy; }
 static const PartSpec* specs(Model m) {
     return m == ModelDummy ? kDummy : m == ModelBoar ? kBoar : m == ModelWolf ? kWolf : gModelShape.chunky ? kChunky : kHumanoid;
 }
@@ -487,7 +488,7 @@ static float roundRadius(glm::ivec3 size) {
 }
 // Rounds a body part's main boxes: the whole part, but the wolf's skull, snout and body apart (its ears and tail
 // stay as they are), the boar's head gently (its tusks and eyes sit on the front corners) and the barrow lord's
-// skull under its crown (the crown stays square).
+// skull under its crown (the crown stays square); humanoid torsos only at their corners (torsoRadius), for armor.
 static void roundPart(Grid& g, Model model, Part part) {
     glm::ivec3 s = g.size;
     auto box = [&](glm::ivec3 lo, glm::ivec3 hi) { roundBox(g, lo, hi, roundRadius(hi - lo)); };
@@ -495,8 +496,11 @@ static void roundPart(Grid& g, Model model, Part part) {
     else if (model == ModelWolf && part == Torso) box({0, 0, 4}, {7, 6, 17});
     else if (model == ModelBoar && part == Head) roundBox(g, {0, 0, 0}, s, std::min(2.0f, gModelShape.radius));
     else if (model == ModelBarrowLord && part == Head) box({0, 0, 0}, {s.x, s.y - 2, s.z});
+    else if (humanoidTorso(model, part)) roundBox(g, {0, 0, 0}, s, gModelShape.torsoRadius);  // squarer, for armor
     else box({0, 0, 0}, s);
 }
+
+float softRadius(Model m, Part part) { return gModelShape.round && humanoidTorso(m, part) ? gModelShape.torsoRadius : 0; }
 
 static Grid buildFlatPart(Model model, Part part);
 Grid buildPart(Model model, Part part) {

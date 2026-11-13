@@ -146,7 +146,7 @@ private:
     Light light_;                    // the world's light, kept in step with it by updateWorld
     glm::ivec3 worldLo_{};           // the world's window's low corner (plant cells are modulo 1024)
     uint32_t headroom_ = 65536;      // opaque quads packWorld leaves spare: ~0.5 MB, or ~16 MB for a streamed world
-    struct PartMesh { uint32_t first = 0, count = 0; glm::uvec3 size{0}; };  // its quads; a body part's grid size (else 0: not soft-lit)
+    struct PartMesh { uint32_t first = 0, count = 0; glm::uvec3 size{0}; float bend = 0; };  // its quads; a body part's grid size (else 0: not soft-lit); softRadius
     std::array<std::array<PartMesh, PartCount>, ModelCount> parts_{};
     ModelShape shape_;  // gModelShape the models were meshed with: uploadModels again when it changes (ADR-061)
     std::array<std::pair<uint32_t, uint32_t>, 2 * PlantModelCount> plantParts_{};  // [model * 2 + far], in models_ too
