@@ -502,6 +502,7 @@ data/            definition files: items.json, creatures.json (ADR-018), weapon_
                  sounds/*.ogg (ADR-037: <name>_<n>.ogg are one sound's takes)
 prefabs/         structure prefab files (cottage, tent, camp, well, fence, ruin)
 tools/           flycoos_mcp.py (MCP server bridging Claude Code to the game), test_mcp.py (end-to-end check)
+                 review/: films, review pages, perf A/B, mutation check and the commit gates (see CLAUDE.md)
 shaders/         world.metal (voxel, water, sky), compiled at runtime
 tests/           core_test.cpp: mesher, packing, physics, flight, camera, combat, NPC fights and loot, inventory, generation,
                  world files, edits and undo, remote commands, prefabs and instances, markers and spawns, raycast, data files checks, quests

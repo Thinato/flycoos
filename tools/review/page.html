@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<!-- Review page template (see CLAUDE.md, "Review pages"). Copy it to build/review/RIG/page/index.html, next to the
+     GIFs and strips clip.sh made, fill every TODO, delete the sections you don't need, and open it:
+     open build/review/RIG/page/index.html
+     Write for the user: plain words, what they will SEE, no code names unless they help. -->
+<html><head><meta charset="utf-8"><title>TODO feature review (ADR-TODO)</title>
+<style>
+body{background:#1b1b1d;color:#ddd;font:15px/1.5 -apple-system,system-ui,sans-serif;max-width:1500px;margin:24px auto;padding:0 16px}
+h1{font-size:22px}h2{font-size:18px;margin-top:36px;border-top:1px solid #333;padding-top:16px}
+.row{display:flex;gap:12px;flex-wrap:wrap}.row figure{margin:0;flex:1 1 600px}figcaption{color:#999;font-size:13px}
+.stills figure{flex:1 1 360px}
+img{border-radius:4px;max-width:100%}.strip{margin-top:8px;width:100%}code{color:#e9b86b}
+.tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;margin-right:6px}.old{background:#5a3030}.new{background:#2f5a34}
+table{border-collapse:collapse}td,th{border:1px solid #333;padding:4px 10px;text-align:right}th{background:#26262a}
+</style></head><body>
+<h1>TODO: the feature in one line (ADR-TODO)</h1>
+<p>Every clip was filmed in a copy of the arena (<code>worlds/arena.flyw</code>). Each <span class="tag old">before</span> clip is
+the last commit (TODO hash). Each <span class="tag new">after</span> clip is this change, in the same scene with the same moves.
+TODO: anything scripted the viewer should know (you can't die, the enemy is held back from swinging, the box at the top left shows
+the AI's states). Nothing is committed yet.</p>
+
+<h2>What changes</h2>
+<!-- The patch notes: one bullet per thing the player will notice, then the debug window additions. Numbers where they matter
+     (timings in seconds, damage, distances in blocks). Say what was left out on purpose. -->
+<ul>
+<li><b>TODO headline.</b> TODO what it does, when, how it looks and feels.</li>
+<li><b>Debug window:</b> TODO the new tab or node, and what it lets you tune or trigger.</li>
+</ul>
+
+<!-- One section per scene. A, B, ... match the scene letters given to shoot.sh and clip.sh. -->
+<h2>1. TODO scene title</h2>
+<p>TODO what happens. <span class="tag old">before</span> TODO. <span class="tag new">after</span> TODO.</p>
+<div class="row"><figure><img src="beforeA.gif"><figcaption><span class="tag old">before</span> real speed</figcaption></figure>
+<figure><img src="afterA.gif"><figcaption><span class="tag new">after</span> real speed</figcaption></figure></div>
+<div class="row"><figure><img src="beforeA-slow.gif"><figcaption><span class="tag old">before</span> 4x slow, TODO which moment</figcaption></figure>
+<figure><img src="afterA-slow.gif"><figcaption><span class="tag new">after</span> 4x slow, the same moment</figcaption></figure></div>
+<img class="strip" src="beforeA-strip.jpg"><img class="strip" src="afterA-strip.jpg">
+
+<h2>Close-ups (after)</h2>
+<!-- still.sh frames: the details a GIF goes past too fast. -->
+<div class="row stills">
+<figure><img src="still-TODO.jpg"><figcaption>TODO</figcaption></figure>
+</div>
+
+<h2>Performance</h2>
+<!-- Rendering changes only. perf.sh: the same heavy scene, before and after alternating. Show every run. -->
+<p>TODO the scene (how many enemies, what you do), frames a run, runs each, anything left out and why.</p>
+<table><tr><th>Build</th><th>Mean frame (ms), each run</th><th>Average</th><th>p99 (median)</th></tr>
+<tr><td>before</td><td>TODO</td><td>TODO</td><td>TODO</td></tr>
+<tr><td>after</td><td>TODO</td><td>TODO</td><td>TODO</td></tr></table>
+<p>TODO the verdict: within noise, or the cost and where it goes.</p>
+
+<h2>Questions</h2>
+<!-- Only genuine taste questions, each with the current choice and the alternatives. -->
+<ul>
+<li><b>TODO?</b> TODO.</li>
+</ul>
+</body></html>

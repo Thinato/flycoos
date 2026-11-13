@@ -7,6 +7,9 @@ Milestone 0 is about 1,200 lines of C++ (including tests) and 160 lines of MSL. 
 - **`flycoos`** (executable: `main`, `renderer` + `shaders/world.metal`, `server`): platform, input,
   camera, GPU and the command server.
 - **`tools/flycoos_mcp.py`**: the MCP server Claude Code starts; it forwards tool calls to the game.
+- **`tools/review/`**: review tooling, never linked into the game. `scene_hook.py` patches scripted
+  scenes into a copy of the source for films; the shell scripts build, film, clip and benchmark those copies
+  (`CLAUDE.md`, "Review films").
 
 ```
 main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024×192×1024 bytes)
