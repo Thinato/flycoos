@@ -25,7 +25,19 @@ enum Model { ModelPlayer, ModelVillager, ModelDummy, ModelBoar, ModelBandit, Mod
              ModelThrowingKnife, ModelBomb, ModelPoisonPot,   // throwables (ADR-053), in the left hand and in flight
              ModelBurst, ModelPoisonBurst,  // a bomb's and a pot's burst, a puff that swells and goes
              ModelBarrowLord,               // the first boss (ADR-059): a towering barrow lord
-             ModelCount };
+             ModelCount };  // a new character or creature: add it to isBody (rounded, ADR-061)
+// The characters' shape (ADR-061): each body part's voxels cut to a rounded box, and the chunky humanoid (a
+// bigger head, mitten hands, bigger boots; the hands where they were, so grips and swings don't move). Tuned
+// live in the debug window (Render > Models); the renderer re-meshes the models when it changes.
+struct ModelShape {
+    bool round = true;   // cut each body part to a rounded box
+    float radius = 3;    // its corners' radius in voxels, on parts at least 6 thick (thinner ones: less)
+    bool chunky = true;  // the chunky humanoid
+    bool operator==(const ModelShape&) const = default;
+};
+inline ModelShape gModelShape;
+// A body (a character or creature, worn armor included), not a held item: bodies are rounded, held items stay crisp.
+bool isBody(Model m);
 Grid buildPart(Model model, Part part);
 Model heldModel(ItemId weapon);
 // What `p` has in hand drawn as: heldModel, but a bow with its string well back is ModelBowDrawn (ADR-050),

@@ -25,6 +25,7 @@ struct Frame {
     float4 shadowTint;    // rgb multiplier occluded albedo shades toward, a strength (weaker at night)
     float4 lightParams;   // voxel light: x sun gate, y falloff, z dark ambient, w on (else all open sky)
     float4 emberColor;    // rgb block light color (linear, times strength)
+    float4 modelShade;    // bodies (ADR-061): x light wrap, y normal bend, z AO kept (0 none, 1 all)
     float4 palette[128];
     float4 toneA[128];     // patch variants (ADR-028), rgb linear; w patch size in voxels
     float4 toneB[128];     // rgb linear; w strength (0: plain)
@@ -32,7 +33,7 @@ struct Frame {
 struct Draw {
     float4x4 model;
     float4 modelLight;    // x models: light + 1 (0: a chunk); y > 0: it glows (ADR-053)
-    uint4 firstQuad;      // x: index of this draw's first quad in the storage buffer; plants: y first instance, zw window low x, z (int)
+    uint4 firstQuad;      // x: index of this draw's first quad in the storage buffer; models: yzw a body part's grid size (0: not soft-lit); plants: y first instance, zw window low x, z (int)
 };
 
 struct VOut {
@@ -41,7 +42,7 @@ struct VOut {
     float3 normal;
     float ao;  // aoCurve value: 1 open, lower in corners
     // block id in bits 0-6, the quad's light (sky << 4 | block) in bits 7-14, quad index in bits
-    // 15-29 (for the greedy-quads debug view), bit 30 set for a glowing model (unshaded: a burst's
+    // 15-28 (for the greedy-quads debug view), bit 29 set for a soft-lit body (ADR-061), bit 30 set for a glowing model (unshaded: a burst's
     // fire, ADR-053), bit 31 set for models (flat colour). Packed into one
     // output because every extra vertex output costs bandwidth on tile-based GPUs (~15% here).
     uint blockAndQuad [[flat]];
@@ -95,10 +96,20 @@ vertex VOut voxel_vs(uint vid [[vertex_id]],
     VOut out;
     out.position = f.viewProj * world;
     out.worldPos = world.xyz;
-    out.normal = normalize((d.model * float4(kNormals[face], 0.0)).xyz);
-    out.ao = v.ao;
+    // Soft light on a body part (ADR-061): the normal bent toward its rounded box's (the part's grid, the radius its
+    // thinnest half) by modelShade.y, so a face shades like a pillow from the middle out; its cut steps' AO dropped.
+    float3 n = kNormals[face];
+    bool soft = model && d.firstQuad.y > 0u;
+    if (soft && f.modelShade.y > 0.0) {
+        float3 hs = float3(d.firstQuad.yzw) * 0.5, rel = v.local - hs;  // (half is a Metal type)
+        float3 inner = max(hs - min(min(hs.x, hs.y), hs.z), 0.0);
+        float3 bent = rel - clamp(rel, -inner, inner);
+        if (length(bent) > 1e-3) n = normalize(mix(n, normalize(bent), f.modelShade.y));
+    }
+    out.normal = normalize((d.model * float4(n, 0.0)).xyz);
+    out.ao = soft ? mix(1.0, v.ao, f.modelShade.z) : v.ao;
     bool glow = model && d.modelLight.y > 0.0;
-    out.blockAndQuad = block | lit << 7 | ((d.firstQuad.x + vid / 6) & 0x7FFFu) << 15 | uint(glow) << 30 | uint(model) << 31;  // ponytail: quad index wraps past 32K quads (debug color only)
+    out.blockAndQuad = block | lit << 7 | ((d.firstQuad.x + vid / 6) & 0x3FFFu) << 15 | uint(soft) << 29 | uint(glow) << 30 | uint(model) << 31;  // ponytail: quad index wraps past 16K quads (debug color only)
     return out;
 }
 
@@ -158,7 +169,8 @@ static float3 light(constant Frame& f, VOut in, float3 albedo) {
     // corners and interiors read as a deeper hue instead of grey. Ember light sees the plain albedo.
     float3 tinted = mix(albedo, albedo * f.shadowTint.rgb, f.shadowTint.a * (1.0 - o));
     // No shadow map: direct light needs a view of the sky (fades in over sky light sunGate..1).
-    float diffuse = saturate(dot(n, f.lightDir.xyz)) * smoothstep(f.lightParams.x, 1.0, float(lit >> 4) / 15.0);
+    float wrap = (in.blockAndQuad >> 29 & 1u) != 0u ? f.modelShade.x : 0.0;  // bodies: the light wraps round their dark side (ADR-061)
+    float diffuse = saturate((dot(n, f.lightDir.xyz) + wrap) / (1.0 + wrap)) * smoothstep(f.lightParams.x, 1.0, float(lit >> 4) / 15.0);
     float3 hemi = mix(f.ambientGround.rgb, f.ambientSky.rgb, n.y * 0.5 + 0.5);
     // Direct light is occluded half as much as ambient (0.5 at the fully occluded curve end).
     float sunAO = mix(0.5, 1.0, rawAO(f, in.ao));
@@ -240,7 +252,7 @@ static float4 shade(constant Frame& f, VOut in, float3 albedo) {
     if (mode == 4) return float4(pow(normalize(in.normal) * 0.5 + 0.5, 2.2), 1.0);  // normals as color
     if (mode == 5) return float4(lightLevels(in), 1.0);
     if (mode == 1) {  // greedy quads
-        albedo = idColor((in.blockAndQuad >> 15) & 0x7FFFu);
+        albedo = idColor((in.blockAndQuad >> 15) & 0x3FFFu);
     } else if (mode == 2) {  // chunks: 32^3 cell containing the surface (nudged inside along the normal)
         uint3 cell = uint3(int3(floor((in.worldPos - in.normal * 0.01) / 32.0)));
         albedo = idColor(cell.x * 73856093u ^ cell.y * 19349663u ^ cell.z * 83492791u);
@@ -384,7 +396,7 @@ vertex PlantOut plant_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
     out.position = f.viewProj * float4(out.worldPos, 1.0);
     out.normal = n;
     out.ao = v.ao * mix(0.75, 1.0, saturate(v.local.y / 4.0));  // a little darker near the ground
-    out.blockAndQuad = v.block | (p.y & 255u) << 7 | ((d.firstQuad.x + vid / 6) & 0x7FFFu) << 15;
+    out.blockAndQuad = v.block | (p.y & 255u) << 7 | ((d.firstQuad.x + vid / 6) & 0x3FFFu) << 15;
     out.cell = cell;
     return out;
 }

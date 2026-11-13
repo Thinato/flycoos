@@ -47,8 +47,20 @@ static const PartSpec kWolf[PartCount] = {
     {{3, 6, 3}, {2, 3, -4.5f}},      // FootL: hind left leg
     {{3, 6, 3}, {-2, 3, -4.5f}},     // FootR
 };
+// The chunky humanoid (ADR-061): a bigger head, mitten hands and bigger boots. The hands' centres are kHumanoid's,
+// which the poses aim them by; the head clears the torso and the boots stand on the ground.
+static const PartSpec kChunky[PartCount] = {
+    {{11, 10, 10}, {0, 14.2f, 0.3f}},  // Head
+    {{8, 7, 6}, {0, 5.5f, 0}},         // Torso
+    {{4, 4, 4}, {5.8f, 5.5f, 0.4f}},   // HandL
+    {{4, 4, 4}, {-5.8f, 5.5f, 0.4f}},  // HandR
+    {{4, 3, 5}, {2.3f, 1.5f, 0.2f}},   // FootL
+    {{4, 3, 5}, {-2.3f, 1.5f, 0.2f}},  // FootR
+};
 static bool quadruped(Model m) { return m == ModelBoar || m == ModelWolf; }
-static const PartSpec* specs(Model m) { return m == ModelDummy ? kDummy : m == ModelBoar ? kBoar : m == ModelWolf ? kWolf : kHumanoid; }
+static const PartSpec* specs(Model m) {
+    return m == ModelDummy ? kDummy : m == ModelBoar ? kBoar : m == ModelWolf ? kWolf : gModelShape.chunky ? kChunky : kHumanoid;
+}
 
 // The chief is bigger and bulkier, the ghoul gaunt, the boss towers (ADR-059); only the drawing scales, not the body's box.
 static glm::vec3 drawScale(Model m) {
@@ -379,12 +391,12 @@ static Block armorVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
     case Head:  // helm with a crest; the face shows through an opening in the front
         if (front && v.y >= 2 && v.y <= 5 && v.x >= 2 && v.x <= s.x - 3)
             return (v.y == 3 || v.y == 4) && (v.x == 2 || v.x == s.x - 3) ? Eye : Skin;
-        return (top && (v.x == 4 || v.x == 5)) || (front && v.y == 6) ? Steel : Plate;
+        return (top && std::abs(2 * v.x - (s.x - 1)) <= 1) || (front && v.y == 6) ? Steel : Plate;  // the crest down the middle
     case Torso:  // cuirass over the tunic's skirt: steel collar and breastplate ridge
         if (v.y < 2) return Tunic;
         if (v.y == 2) return Belt;
         return top || (front && (v.x == 3 || v.x == 4)) ? Steel : Plate;
-    default: return front && top ? Steel : Plate;  // gauntlet knuckles, sabaton toe caps
+    default: return front && v.y == s.y - 2 ? Steel : Plate;  // gauntlet knuckles, sabaton toe caps (a row below the top, which rounding cuts)
     }
 }
 
@@ -448,7 +460,53 @@ static Block barrowLordVoxel(Part part, glm::ivec3 v, glm::ivec3 s) {
     }
 }
 
+bool isBody(Model m) {
+    return m == ModelPlayer || m == ModelVillager || m == ModelDummy || m == ModelBoar || m == ModelBandit || m == ModelIronArmor ||
+           m == ModelWolf || m == ModelGuard || m == ModelChief || m == ModelGhoul || m == ModelBarrowLord;
+}
+
+// Rounding (ADR-061): the voxels of g's box [lo, hi) whose centres lie outside the rounded box of radius r go. Eyes
+// and snouts are never cut.
+static void roundBox(Grid& g, glm::ivec3 lo, glm::ivec3 hi, float r) {
+    glm::vec3 half = glm::vec3(hi - lo) * 0.5f;
+    for (int z = lo.z; z < hi.z; ++z)
+        for (int y = lo.y; y < hi.y; ++y)
+            for (int x = lo.x; x < hi.x; ++x) {
+                Block b = g.get({x, y, z});
+                if (b == Air || b == Eye || b == Ember || b == Snout) continue;
+                glm::vec3 p = glm::vec3(x, y, z) + 0.5f - glm::vec3(lo) - half;  // from the box's middle
+                glm::vec3 out = glm::max(glm::abs(p) - glm::max(half - r, 0.0f), 0.0f);  // past the inner box
+                if (glm::length(out) > r + 0.01f) g.set({x, y, z}, Air);
+            }
+}
+// The radius a box of `size` is rounded with, by its thinnest side: the shape's radius from 6, up to 2 at 4 or 5,
+// 1.5 up to 3 (a 3x3x3 hand loses its 8 corners; the dummy's thin arms and post nothing).
+static float roundRadius(glm::ivec3 size) {
+    int thin = std::min({size.x, size.y, size.z});
+    return thin <= 3 ? 1.5f : thin <= 5 ? std::min(2.0f, gModelShape.radius) : gModelShape.radius;
+}
+// Rounds a body part's main boxes: the whole part, but the wolf's skull, snout and body apart (its ears and tail
+// stay as they are), the boar's head gently (its tusks and eyes sit on the front corners) and the barrow lord's
+// skull under its crown (the crown stays square).
+static void roundPart(Grid& g, Model model, Part part) {
+    glm::ivec3 s = g.size;
+    auto box = [&](glm::ivec3 lo, glm::ivec3 hi) { roundBox(g, lo, hi, roundRadius(hi - lo)); };
+    if (model == ModelWolf && part == Head) box({0, 0, 0}, {6, 5, 5}), box({1, 0, 5}, {5, 3, 9});
+    else if (model == ModelWolf && part == Torso) box({0, 0, 4}, {7, 6, 17});
+    else if (model == ModelBoar && part == Head) roundBox(g, {0, 0, 0}, s, std::min(2.0f, gModelShape.radius));
+    else if (model == ModelBarrowLord && part == Head) box({0, 0, 0}, {s.x, s.y - 2, s.z});
+    else box({0, 0, 0}, s);
+}
+
+static Grid buildFlatPart(Model model, Part part);
 Grid buildPart(Model model, Part part) {
+    Grid g = buildFlatPart(model, part);
+    if (gModelShape.round && isBody(model)) roundPart(g, model, part);
+    return g;
+}
+
+// A part's voxels before rounding.
+static Grid buildFlatPart(Model model, Part part) {
     if (model == ModelSword || model == ModelDagger || model == ModelAxe || model == ModelMace || model == ModelGreatsword || model == ModelGreataxe) {
         if (part != Head) return Grid({1, 1, 1});
         switch (model) {
@@ -734,7 +792,7 @@ static Toss toss(const Player& p) {
     if (u < at) return {1 - smooth((u - hold) / (at - hold)), smooth((u - hold) / (at - hold))};
     return {0, 1 - smooth((u - at) / (1 - at))};
 }
-constexpr glm::vec3 kTossBack{6.5f, 14.5f, -3.5f}, kTossOut{2, 10.5f, 9.5f};  // the left hand up behind the shoulder; out in front
+constexpr glm::vec3 kTossBack{7.5f, 14.5f, -3.5f}, kTossOut{2, 10.5f, 9.5f};  // the left hand up behind the shoulder; out in front
 
 // A bow (ADR-050): how far it's raised in front (aiming, or a shot: up by the hold point, lowered over
 // the last of the recovery), how far the string is drawn (most of the way by the hold point, the rest

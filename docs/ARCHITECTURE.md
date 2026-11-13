@@ -52,7 +52,7 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/player.h/.cpp` | `Player` = `Body` (position, velocity, movement tuning, animation state, `teleport`, `drawPos`/`drawYaw`) + `Combatant` (base stats, level, health, swing and damage timers, `Inventory`); `Progress`; `collect`/`sheet` (its modifiers and final stats, optionally with a weapon skill's conditional modifiers), `skillOf`; walking-body physics and collision (`updatePlayer`, player and NPCs), `cameraClearance` |
 | `src/stats.h` | Header only: the five attributes (`Stats`), the stat pipeline (`Stat`, `Modifier`, `StatSheet`, `compute`; ADR-022), the derived-stat, damage and armor formulas and their constants, `Attack`/`kPunch`; `Skill` and the progression formulas (skill XP per use and per level, character XP and level costs, default kill XP; ADR-027) |
 | `src/progress.h/.cpp` | Progression (ADR-027): `SkillDef`/`TalentDef` (filled by the loader), `Progress` (character XP, skill levels, talent ranks), `addSkillXp`/`addCharacterXp`, `canLearn`/`learn`/`respec`, `talentPoints`, `progressModifiers` (what `collect` adds) |
-| `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), held and worn models (`heldModel` by weapon class, `partModels`), procedural animation (`poseModel`; swing poses per weapon class, ADR-044). Core (no GPU), since NPC traits name their `Model` |
+| `src/model.h/.cpp` | Character models: `Model`/`Part` ids, the voxel model catalog (`buildPart`), the bodies' shape (ADR-061: `ModelShape`/`gModelShape`, `isBody`, rounded parts, the chunky humanoid), held and worn models (`heldModel` by weapon class, `partModels`), procedural animation (`poseModel`; swing poses per weapon class, ADR-044). Core (no GPU), since NPC traits name their `Model` |
 | `src/entity.h/.cpp` | NPC entities: per-kind traits, temper and AI numbers (`EntityType`, `typeOf` reads the loaded defs), spawning (`syncSpawns` from spawn markers, `defaultMarkers`), lasting deaths (`DeadSlots`, `buryDead`; ADR-056), the AI state machine (`AiState`, `setState`, `think`; ADR-020), attack tokens and strings of hits (ADR-042), answers to the player's attacks (`answer`: guard, parry, dodge; ADR-043), creature attacks (`CreatureAttack`, `attackBlocked`, `startAttack`, `pickAttack`, `attackStep`, `attackLands`: charges, leaps, sweeps, grabs; ADR-057), bosses (phases: `Entity::type()` is the current phase's, `enterPhase`, `phaseFor`, the `Roar` state; the territory; `bossBar`; ADR-059) and their knobs (`AiTuning gAi`, the debug Entities tab), talking, damage both ways (`resolveHit`), the one XP award (`awardHitXp`), loot |
 | `src/session.h/.cpp` | `Session`: the simulation state (world, instances, markers, player, entities, the damage-roll RNG seeded from the world seed, time of day, the region the player is in, the tick's `GameEvent`s, quest states, flags, the event log and quest toasts); `startSession` (starting gear, spawns, quests reset), `step(Session&, SimInput, dt)` (one `kTick`: NPC quest lines, interaction, swing, movement, NPCs and combat, time of day, region enter, item count changes, the dead recorded and far corpses buried (`buryDead`), the quest drain, the knocked-out player's respawn, skill and level-up toasts) |
 | `src/save.h/.cpp` | Player saves (`.flys`, ADR-025): `savePlayer`/`loadPlayer` (`HEAD`, `PLYR`, `INVT`, `NPCS`, `QUST`, `FLAG`, `PROG`, `WEAR`, `REST`, `GRIP`, `ARRW`, `THRW`, `DEAD`; NPCs keyed by spawn marker id and slot, quests by string id), `savePathFor`, `worldFileChecksum`, `SaveReport` (what a load restored and dropped) |
@@ -61,14 +61,14 @@ main.cpp ──► loadWorld(--world) or generateTerrain() ──► Grid (1024�
 | `src/item.h/.cpp` | `ItemId` save ids, `itemType` (reads the loaded defs), `Inventory` (equipment, bag bar, item slots), moving/equipping rules, the main-hand attack |
 | `src/inventory_ui.h/.cpp` | In-game Character (C), Bags (B), Journal (J) and Progress (K) windows: slots, drag and drop, right-click equip, tooltips, attributes; quests with the current entry and checked objectives; level, skills and the talent trees |
 | `src/hud.h/.cpp` | In-game overlay on ImGui's background draw list: nameplates, speech balloons, damage numbers (a glyph per damage type, ADR-060), talk/loot hint, player health, the boss bar (`drawBossBar`, ADR-059), knocked-out message, poi labels and the region name (`drawPlaces`, in Alagard, `titleFont`, which DebugUI loads from `data/fonts/`) |
-| `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, the world's `Light` (filled by `uploadWorld`, relit by `updateWorld`), uploads of the core's chunk and model meshes, instanced plants (each frame's near ones, per model), hit effects (instanced particle cubes and the smear ribbon, ADR-058; `stream` uploads per-frame buffers), a tint per model instance (ADR-060), render targets, frustum culling, day/night lighting, screenshots |
+| `src/renderer.h/.cpp` | SDL3 GPU device, pipelines, the world's `Light` (filled by `uploadWorld`, relit by `updateWorld`), uploads of the core's chunk and model meshes, instanced plants (each frame's near ones, per model), hit effects (instanced particle cubes and the smear ribbon, ADR-058; `stream` uploads per-frame buffers), a tint per model instance (ADR-060), soft light on bodies (ADR-061: each body part's size in its draw, models re-meshed when `gModelShape` changes), render targets, frustum culling, day/night lighting, screenshots |
 | `src/text.h` | `validName`: UTF-8 display text without control, bidi or zero-width characters (marker names and lines, item names) |
 | `src/render_stats.h` | `RenderStats` (quad, chunk and draw counts, mesh, light and remesh times, light memory), for the debug and editor UIs without `renderer.h` |
 | `src/editor_ui.h/.cpp` | Editor state (`Editor`), the Editor panel, crosshair and brush preview (ring on the ground, or Fill's box), marker pins and region circles |
 | `src/debug_ui.h/.cpp` | Dear ImGui debug window (`.` toggles): Render, Player, Progression, Items, Entities, Quests, Data, Camera, World, Save, Audio, Effects (ADR-058), Stats tabs. Owns the ImGui frame (`begin`/`end`; the HUD draws in between), `GameSettings` and `DebugActions` |
 | `src/notes.h/.cpp` | Debug notes (F2 with `--debug`): `noteContext` turns the session into JSON (world, clock, player place/motion/combat/stats/gear, camera, region, nearby NPCs with AI history, quests, flags, latest events); `saveNote` appends it with the text, its id (line number) and `"status": "open"` to `debug_notes/notes.jsonl` and writes the screenshot next to it. main.cpp opens the box (`noteWindow`, debug_ui), stops stepping the simulation while it's open and takes the state and an offscreen snapshot the frame it opens |
 | `src/main.cpp` | CLI options, world load/save, window, input routing (game vs. debug UI vs. editor) into `SimInput`, orbit camera, main loop around `step`, remote commands, benchmark stats |
-| `shaders/world.metal` | `voxel_vs` (vertex pulling), `voxel_fs` (with a model's tint, ADR-060), `water_fs`, `sky_vs`, `sky_fs`, `plant_vs`/`plant_fs`, `particle_vs`/`particle_fs` and `ribbon_vs`/`ribbon_fs` (hit effects, ADR-058) |
+| `shaders/world.metal` | `voxel_vs` (vertex pulling; a body's bent normals, ADR-061), `voxel_fs` (with a model's tint, ADR-060; light wrapped round a body, ADR-061), `water_fs`, `sky_vs`, `sky_fs`, `plant_vs`/`plant_fs`, `particle_vs`/`particle_fs` and `ribbon_vs`/`ribbon_fs` (hit effects, ADR-058) |
 
 ## World
 
@@ -576,8 +576,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
 - **Debug views:** `Frame.debug.x` selects shaded, greedy quads (color per merged quad), chunks
   (color per 32³ cell), AO only, normals, or light levels (sky blue-white, block orange;
   `--view light`). The branch is on a uniform, so it's coherent. The quad's light and index ride in
-  the existing flat `blockAndQuad` output (block id bits 0-6, light 7-14, quad index 15-29, bit 30
-  set for a glowing model, bit 31 set for models) rather than new ones: on Apple's tile-based GPUs every extra vertex output costs
+  the existing flat `blockAndQuad` output (block id bits 0-6, light 7-14, quad index 15-28, bit 29 set for a
+  soft-lit body (ADR-061), bit 30 set for a glowing model, bit 31 set for models) rather than new ones: on Apple's tile-based GPUs every extra vertex output costs
   bandwidth, and two extra outputs measured ~15% slower frames.
 - **Color:** the swapchain is `SDR_LINEAR` (sRGB format), so all lighting is in linear space. The
   palette is sRGB in `kPalette` and converted at upload. Output goes through an ACES filmic tonemap.
@@ -660,6 +660,16 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   the pose. The rig has no legs, so greaves don't show. A model is lit by the light where its parts'
   origins average out; `ModelInstance::glow` (ADR-053, a burst's puff) draws it in its own colours,
   unshaded (bit 30 of `blockAndQuad`).
+- **Rounded bodies (ADR-061):** `buildPart` cuts every body part (`isBody`: characters, creatures, worn
+  armor; never held items) to a rounded box: a voxel goes when its centre is outside the box rounded by
+  `roundRadius` (by the part's thinnest side: the shape's radius from 6 voxels, up to 2 at 4-5, 1.5 up to 3, which
+  takes a 3-voxel cube's corners and nothing from thinner parts). The wolf's skull, snout and body are rounded apart (ears, tail untouched), the boar's head at
+  most 2, the barrow lord's skull under its square crown; eyes and snouts are never cut. A part keeps its
+  grid size, so poses don't move. Humanoids are chunky (`kChunky`: an 11x10x10 head, 4x4x4 hands, 4x3x5
+  boots), with kHumanoid's hand centres, which the poses aim the hands by. In the shader each body part
+  bends its normals toward its rounded box (its grid size rides in `Draw.firstQuad.yzw`; 0 for held items),
+  the light wraps round its dark side and its cut steps lose their AO (`RenderSettings::modelSoft`,
+  `modelAO`; `Frame.modelShade`); bit 29 of `blockAndQuad` marks it for the fragment shader.
 - **Tuning and flight:** walk/run/jump speed, gravity, fly and noclip live in `Body::tuning` (every `Player` and NPC body has one), so
   the debug UI edits them live. Flight ignores gravity (Space rises, Ctrl sinks, Shift is 2.5×) and
   still collides; noclip moves straight through terrain.

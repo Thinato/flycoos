@@ -36,7 +36,9 @@ W = f'{rig}/mut{worker}'
 os.makedirs(W, exist_ok=True)
 for d in ('src', 'shaders', 'data', 'prefabs', 'tests', 'assets', 'cmake'):
     if os.path.isdir(f'{source}/{d}'):
-        subprocess.run(['rsync', '-a', '--delete', f'{source}/{d}/', f'{W}/{d}/'], check=True)
+        # By content, without times: a file the last run mutated and restored keeps its newer time, so the build
+        # sees it (-a would set it back to the source's older time and leave the last mutant's objects in place).
+        subprocess.run(['rsync', '-rlpD', '--checksum', '--delete', f'{source}/{d}/', f'{W}/{d}/'], check=True)
 for f in ('CMakeLists.txt', 'CMakePresets.json', 'sanitize-ignore.txt'):
     if os.path.exists(f'{source}/{f}'):
         subprocess.run(['cp', f'{source}/{f}', W], check=True)

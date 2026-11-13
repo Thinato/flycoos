@@ -260,6 +260,22 @@ static void renderTab(RenderSettings& r, const RenderStats& s) {
     ImGui::Text("Light %.1f MiB in %d chunks, filled in %.2f s; last relight %.2f ms", double(s.lightBytes) / (1 << 20),
                 s.lightChunks, s.lightSeconds, s.relightMs);
 
+    if (ImGui::TreeNode("Models (ADR-061)")) {  // shape changes re-mesh every model on the next frame
+        ImGui::Checkbox("Rounded parts", &gModelShape.round);
+        ImGui::SetItemTooltip("Each body part's voxels cut to a rounded box. Held weapons and shields stay crisp.");
+        ImGui::BeginDisabled(!gModelShape.round);
+        ImGui::SliderFloat("Corner radius", &gModelShape.radius, 1, 4.5f, "%.1f voxels");
+        ImGui::SetItemTooltip("On heads and bodies (6+ voxels thick); 4-5 thick parts take at most 2, 3 thick lose their corners.");
+        ImGui::EndDisabled();
+        ImGui::Checkbox("Chunky proportions", &gModelShape.chunky);
+        ImGui::SetItemTooltip("Humanoids: an 11x10x10 head, 4x4x4 mitten hands, bigger boots. Off: the 10x9x9 head, 3x3x3 hands.\n"
+                              "Hit boxes and hand positions are the same either way.");
+        ImGui::SliderFloat("Soft light", &r.modelSoft, 0, 1.5f, "%.2f");
+        ImGui::SetItemTooltip("Bodies: normals bent toward their parts' edges, light wrapped round their dark side. 0: flat faces.");
+        ImGui::Checkbox("Corner shading in the cut steps", &r.modelAO);
+        ImGui::TreePop();
+    }
+
     ImGui::SeparatorText("Colour patches (docs/ART.md)");
     ImGui::SliderFloat("Patch strength", &r.patchStrength, 0, 2, "%.2f");
     ImGui::SetItemTooltip("Times every block's strength. 0: each block exactly its palette colour.");

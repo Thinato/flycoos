@@ -63,6 +63,10 @@ struct RenderSettings {
     bool plants = true;
     float plantRadius = 64;
     float sway = 1;  // wind: 0 still
+    // Soft light on bodies (ADR-061): their normals bent toward their parts' rounded edges and the light wrapped round
+    // their dark side, both times modelSoft (0: flat faces); modelAO keeps the corner shading in their cut steps.
+    float modelSoft = 1;
+    bool modelAO = false;
 };
 
 class Renderer {
@@ -142,7 +146,9 @@ private:
     Light light_;                    // the world's light, kept in step with it by updateWorld
     glm::ivec3 worldLo_{};           // the world's window's low corner (plant cells are modulo 1024)
     uint32_t headroom_ = 65536;      // opaque quads packWorld leaves spare: ~0.5 MB, or ~16 MB for a streamed world
-    std::array<std::array<std::pair<uint32_t, uint32_t>, PartCount>, ModelCount> parts_{};  // first quad, quad count
+    struct PartMesh { uint32_t first = 0, count = 0; glm::uvec3 size{0}; };  // its quads; a body part's grid size (else 0: not soft-lit)
+    std::array<std::array<PartMesh, PartCount>, ModelCount> parts_{};
+    ModelShape shape_;  // gModelShape the models were meshed with: uploadModels again when it changes (ADR-061)
     std::array<std::pair<uint32_t, uint32_t>, 2 * PlantModelCount> plantParts_{};  // [model * 2 + far], in models_ too
     // This frame's plants near the eye, grouped by plantParts_ index, uploaded to plantInstances_ every frame.
     std::vector<PlantInstance> plantStage_;

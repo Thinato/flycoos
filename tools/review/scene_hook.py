@@ -8,7 +8,8 @@ in, the scene is set up from FLY_* variables; from then on every second frame is
 as fNNNN.bmp (NNNN counts frames from the scene's start), and a box at the top left shows the scene
 clock, each NPC's AI state and health, and yours.
 
-Positions are blocks from the world's middle (the arena's centre), "x z" or "x y z".
+Positions are blocks from the world's middle (the arena's centre), "x z" or "x y z". Yaws are degrees: a body
+facing yaw Y looks along (sin Y, cos Y) in x, z, so 0 faces +z (toward a camera at larger z) and 90 faces +x.
   Setup
     FLY_PLAYER="x yaw z"      put the player there, facing yaw degrees
     FLY_WEAPON=id             give and wield an item          FLY_GEAR="id id"  give and equip each
@@ -21,6 +22,7 @@ Positions are blocks from the world's middle (the arena's centre), "x z" or "x y
     FLY_GOD=1                 the player can't die            FLY_NOAI=1  hide the AI lines in the box
     FLY_CALM=1                NPCs never swing                FLY_NPCGUARD=1  NPCs guard, never swing
     FLY_NOBLEED=1             no status buildup               FLY_CRIT=1  every hit of yours crits
+    FLY_TURN="yaw"            hold the player facing yaw      FLY_HOLDFACE=1  hold the NPCs at FLY_FACE
     FLY_GUARD=1               guard the whole time            FLY_GUARDS="from to;.."  guard in windows
     FLY_ATTACK="from to every" a light attack at the nearest foe every N frames
     FLY_HEAVY="start hold;.."  press heavy at start, hold it for hold frames
@@ -85,6 +87,7 @@ def walk_list(var, fmt, n, body):
 s = '#include <imgui.h>  // SCENE-HOOK\n' + s
 rep('''    std::vector<double> frameMs;''', r'''    // SCENE-HOOK: scripted scenes (tools/review/scene_hook.py)
     auto env3 = [](const char* n, glm::vec3& v) { const char* e = std::getenv(n); return e && std::sscanf(e, "%f %f %f", &v.x, &v.y, &v.z) == 3; };
+    auto env1 = [](const char* n, float& v) { const char* e = std::getenv(n); return e && std::sscanf(e, "%f", &v) == 1; };
     const char* shotDir = std::getenv("FLY_SHOTS");
     bool sceneReady = false;
     int sceneStart = 0;
@@ -93,7 +96,12 @@ rep('''    std::vector<double> frameMs;''', r'''    // SCENE-HOOK: scripted scen
         glm::vec3 at;
         if (env3("FLY_PLAYER", at)) player.teleport(clearOfTerrain(world, {mid.x + at.x, float(groundTop(world, int(std::floor(mid.x + at.x)), int(std::floor(mid.y + at.z))) + 1), mid.y + at.z})), player.yaw = glm::radians(at.y);
         player.vel = {};
-        if (const char* w = std::getenv("FLY_WEAPON")) giveItem(player.inv, defs().itemById.at(w)), quickMove(player.inv, {SlotRef::Item, 0, 0});
+        if (const char* w = std::getenv("FLY_WEAPON")) {  // given and wielded (found in the bag: its first slot may hold the start gear)
+            ItemId id = defs().itemById.at(w);
+            giveItem(player.inv, id);
+            auto& bag = player.inv.containers[0];
+            quickMove(player.inv, {SlotRef::Item, int(std::ranges::find(bag, id) - bag.begin()), 0});
+        }
         if (const char* g = std::getenv("FLY_GEAR")) {  // "id id id": each given and equipped
             std::string all = g;
             for (size_t from = 0; from < all.size();) {
@@ -122,7 +130,7 @@ rep('''    std::vector<double> frameMs;''', r'''    // SCENE-HOOK: scripted scen
         }
         if (std::getenv("FLY_NODUMMIES")) std::erase_if(entities, [](const Entity& e) { return e.spawn.id != 0; });
         if (std::getenv("FLY_ANGRY")) for (Entity& e : entities) if (!e.spawn.id) setState(e, AiState::Chase, "forced");
-        if (glm::vec3 f; env3("FLY_FACE", f)) for (Entity& e : entities) if (!e.spawn.id) e.body.yaw = glm::radians(f.x);
+        if (float f; env1("FLY_FACE", f)) for (Entity& e : entities) if (!e.spawn.id) e.body.yaw = glm::radians(f);
         @@BOSSSETUP@@
         @@FXSETUP@@
         if (std::getenv("FLY_KILL")) for (Entity& e : entities) if (!e.spawn.id) damage(e, int(std::ceil(e.body.health))), e.loot = NoItem;
@@ -137,6 +145,9 @@ rep('''            if (benchmark) {''', r'''            if (benchmark && std::ge
                 int sf = frame - sceneStart;
                 @@FXSTAT@@
                 if (std::getenv("FLY_CALM")) for (Entity& e : entities) e.body.swingTimer = 1;  // they don't swing
+                if (float t; sceneReady && env1("FLY_TURN", t)) player.yaw = player.prevYaw = glm::radians(t);  // posed: it never turns
+                if (float f; sceneReady && std::getenv("FLY_HOLDFACE") && env1("FLY_FACE", f))
+                    for (Entity& e : entities) if (!e.spawn.id) e.body.yaw = e.body.prevYaw = glm::radians(f);
                 if (const char* at = std::getenv("FLY_ATTACK"); at && sceneReady) {  // "from to every" (frames)
                     int a0 = 0, a1 = 0, every = 30;
                     std::sscanf(at, "%d %d %d", &a0, &a1, &every);

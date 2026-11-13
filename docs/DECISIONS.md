@@ -3237,3 +3237,86 @@
     charging, the riposte test, every flash's body, colour, strength, shards, disc and toggle, the sound's body,
     the ring, every number style rule, the tint's fade, part and brightness, every charge glow rule, the motes'
     rate, place, rise and life, the flashes' and discs' ageing, the disc's fade, growth, pull and facing).
+
+## ADR-061: Rounder characters: rounded body parts, the chunky humanoid, soft light on bodies
+
+- **Status:** accepted (2026-11-12)
+- **Context:**
+  - The user found the characters "too sharp" and wanted a soft, chunky, rounded voxel look.
+  - Every body part was a solid box (head 10x9x9, hands 3x3x3), so every outline had right-angle corners.
+    Each box face had one normal, so each face was one even tone with a jump at every edge, and a lone
+    box never got corner shading.
+  - Phase 1 compared five directions on a page (chamfered edges; rounded with soft light; chunky; soft
+    light alone; rounded in half-size voxels). The user chose "chunky": rounded parts at full voxel size
+    with soft light, plus a bigger head, mitten hands and bigger boots. Weapons and shields stay crisp.
+- **Decision:**
+  - **Rounded parts.** `buildPart` cuts every body part (`isBody`: characters, creatures, worn armor) to a
+    rounded box: a voxel goes when its centre lies outside the box rounded by `roundRadius`. That's the
+    shape's radius (3) on parts at least 6 voxels thick, at most 2 at 4 or 5, and 1.5 up to 3 (a 3-voxel cube
+    loses its corners; thinner parts such as the dummy's arms lose nothing). The
+    wolf's skull, snout and body are rounded apart (its ears and tail stay as they were), the boar's head
+    at most 2 (its tusks and eyes sit on the front corners) and the barrow lord's skull under its square
+    crown. Eyes, ember eyes and snouts are never cut. A part keeps its grid size, so poses, swings, the
+    blade smear and hit boxes don't move. Held items are never rounded.
+  - **The chunky humanoid** (`kChunky`): an 11x10x10 head, 4x4x4 mitten hands, 4x3x5 boots, the same
+    torso. The hands' centres are kHumanoid's, since the poses aim them there (grips, bows, crossbows,
+    flasks, throws); the head sits just clear of the torso, the boots stand on the ground. Hit boxes
+    (`bodyHeight`) are unchanged. `overheadHeight` already reads the drawn top: Ketil's name and numbers rise
+    about 0.17 blocks over his bigger head; everyone else's stay at their tuned heights, which are above
+    their new tops. The throw's wind-up holds the hand one voxel further out, clear of the wider head.
+    Gauntlet knuckles and sabaton toe caps sit one row below the top, which rounding cuts. The helm's crest is centred by the head's
+    width (one voxel on the 11-wide helm).
+  - **Soft light on bodies.** Each body part's draw carries its grid size (`Draw.firstQuad.yzw`; 0 for held
+    items). `voxel_vs` bends the face normal toward the part's rounded box (the radius its thinnest half),
+    so a face shades from its middle out like a pillow. Corner shading in the cut steps is dropped, since it
+    read as dark creases. Bit 29 of `blockAndQuad` marks the body, so `voxel_fs` wraps the light round its
+    dark side. `Frame.modelShade` carries the settings. There are no new vertex outputs (the quad index for
+    the greedy-quads debug view keeps 14 bits).
+  - **Debug window:** Render > Models: rounded parts on/off, corner radius (1 to 4.5), chunky proportions
+    on/off, soft light strength (0 to 1.5; 1 is bend 0.65 and wrap 0.5), corner shading on bodies. Shape
+    changes re-mesh every model on the next frame (the renderer compares `gModelShape` with the shape it
+    meshed).
+  - **Review tooling:** `scene_hook.py` gained `FLY_TURN` (hold the player's facing) and `FLY_HOLDFACE` (hold
+    NPCs at `FLY_FACE`). `FLY_FACE` now reads one number (it wanted three and so never worked), and
+    `FLY_WEAPON` wields the given item, not whatever sat in the bag's first slot.
+- **Alternatives considered:**
+  - Chamfered edges only (radius 2, flat light): cheaper, but the 1-voxel steps read as jaggies with hard
+    light on each sliver.
+  - Soft light alone on today's boxes: the outline stays boxy.
+  - Half-size voxels for the shape (colours from the full-size cells): the smoothest curves, but about 1300
+    quads per character instead of about 530, and a body voxel finer than its held weapon's. The user
+    chose full-size voxels.
+  - Rounding by local erosion (cutting voxels exposed on 2 or 3 axes): works on any shape, but it ate the
+    wolf's tail and thin blades. Boxes named per part give a smooth radius and leave thin features alone.
+  - Smooth normals per fragment (flat in a face's middle, bent near its edges): needs the part's inverse
+    matrix in the fragment shader, and a per-draw fragment push. The per-vertex pillow costs nothing extra.
+- **Consequences:**
+  - About 530 quads per humanoid instead of about 60 (the wolf 546, the boar 430, Ketil 620). The meshes are
+    built once at start-up (and when the debug window changes the shape).
+  - Hands are 4 voxels across: tests that took a hand's middle as 1.5 voxels now read it from the part's size.
+  - Lighting (not colour) varies across a body's face; ART.md rule 6 says so.
+  - Known and accepted: the soft light bends round a part's whole grid, so the wolf's head (skull, snout and
+    ears in one grid) shades as one pillow. The mitten covers the middle of a weapon's 1-voxel crossguard at
+    some angles. A rolling body's lift uses its grid corners, so mid-roll it can float up to about 0.2 blocks.
+    Normals use the model matrix, not its inverse transpose (the chief's and ghoul's slightly uneven scale skews
+    the bend a little). For one frame after the debug window toggles the proportions, the poses and meshes
+    disagree, and dragging the radius slider re-meshes every frame.
+  - **Performance:** A/B in the arena (a copy of `worlds/arena.flyw`): 22 NPCs on the player in plate (8 bandits,
+    2 chiefs, 6 wolves, 5 ghouls, Ketil), fixed camera, 1500 frames, 7 alternating runs each against 5146b26, no
+    hitches. Every run of both builds sat at exactly 8.333 ms: the machine was presenting at 120 Hz that night
+    (an empty scene on the old build did too), so the means can't tell them apart. p99 medians were 9.66 ms
+    before and 9.67 after. The phase-1 prototype, measured unpinned (27 bodies in the arena), cost about 4% of a
+    0.55 ms frame for the same rounding and light (430 quads per humanoid; the chunky ones have 530).
+  - **Tested:** `roundedModels()` in core_test: the chunky sizes; each part is exactly its rounded box (the
+    head 968 voxels, the torso 244, a hand 32, a boot 52; the old sizes' 690 and 19); corners and edges
+    gone, faces and both eyes kept; the radius slider and its cap on thinner parts; rounding off fills every
+    box; no part changes size; eyes, ember eyes and snouts are never cut, at every radius and both
+    proportions; held items are identical with rounding on or off; which models are bodies; the wolf's ears
+    and tail, Ketil's crown; the boar's head capped at 2; the helm's crest; pinned voxel totals for three
+    shapes; the hands' centres and the held weapon the same chunky or not (standing and mid-swing); the head
+    clear of the torso; the boots on the ground; text above the bigger heads (Ketil's higher than before);
+    hit boxes unchanged; gauntlet knuckles and sabaton toe caps kept. Mutation-checked: 65 of 67 mutants caught.
+    Two are equivalent on today's models: ignoring a part's depth when finding its thinnest side changes no
+    body part's radius bracket, and dropping the "bodies only" guard changes nothing, because every held item is under 3
+    voxels thick somewhere or a ball, and radius 1.5 or 2 cuts nothing from those. The guard keeps future held
+    items crisp.

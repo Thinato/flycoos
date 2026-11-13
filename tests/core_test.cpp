@@ -919,7 +919,7 @@ static void items() {
     auto pose = poseModel(p, ModelPlayer, &held);
     glm::vec3 blade = glm::normalize(glm::vec3(held * glm::vec4(0, 1, 0, 0)));
     CHECK(blade.z > 0.95f);
-    glm::vec3 grip(held * glm::vec4(2.5f, 2.5f, 0.5f, 1)), fist(pose[HandR] * glm::vec4(1.5f, 1.5f, 1.5f, 1));
+    glm::vec3 grip(held * glm::vec4(2.5f, 2.5f, 0.5f, 1)), fist(pose[HandR] * glm::vec4(glm::vec3(buildPart(ModelPlayer, HandR).size) * 0.5f, 1));
     CHECK(glm::distance(grip, fist) < 1e-3f);  // gripped at the center of the right hand
     // Unequipping mid-swing doesn't change the swing: it still slashes and lands as a sword hit.
     p.inv = Inventory{};
@@ -7790,7 +7790,7 @@ static void scaling() {
         CHECK(parryOf(p) > 0 && shieldOf(p));
     }
     {  // The pose: two-handed, the left hand on the hilt just below the right, in every pose; the shield on the back.
-        auto center = [](const glm::mat4& m) { return glm::vec3(m * glm::vec4(1.5f, 1.5f, 1.5f, 1)); };  // a hand's middle
+        auto center = [](const glm::mat4& m) { return glm::vec3(m * glm::vec4(glm::vec3(buildPart(ModelPlayer, HandR).size) * 0.5f, 1)); };  // a hand's middle
         Player p = holder();
         p.yaw = 0;
         p.inv.equipped[SlotOffHand] = defs().itemById.at("heater_shield");
@@ -8074,7 +8074,7 @@ static void greatWeapons() {
     }
 
     {  // The pose: both hands on the long grip, the left pommel() below the right, at rest, guarding and mid-swing.
-        auto center = [](const glm::mat4& m) { return glm::vec3(m * glm::vec4(1.5f, 1.5f, 1.5f, 1)); };
+        auto center = [](const glm::mat4& m) { return glm::vec3(m * glm::vec4(glm::vec3(buildPart(ModelPlayer, HandR).size) * 0.5f, 1)); };
         for (auto [w, apartWant] : {std::pair{gs, 0.30f}, std::pair{ga, 0.35f}}) {
             Player p = holder(w);
             p.yaw = 0, p.gripBlend = 1;
@@ -9703,7 +9703,7 @@ static void crossbows() {
         Session s = field();
         Player& p = s.player;
         auto at = [](const glm::mat4& m, glm::vec3 v) { return glm::vec3(m * glm::vec4(v, 1)); };
-        auto hand = [&](const std::array<glm::mat4, PartCount>& parts, int i) { return at(parts[i], glm::vec3(1.5f)); };  // a hand's middle (3 voxels)
+        auto hand = [&](const std::array<glm::mat4, PartCount>& parts, int i) { return at(parts[i], glm::vec3(buildPart(ModelPlayer, HandR).size) * 0.5f); };  // a hand's middle
         glm::mat4 held(0), arrow(0);
         auto parts = poseModel(p, ModelPlayer, &held, 1, nullptr, nullptr, &arrow);
         CHECK(held != glm::mat4(0) && arrow == glm::mat4(0));
@@ -12213,6 +12213,147 @@ static void bossFollowUps() {
     setDefs(std::move(shipped));
 }
 
+// Rounder characters (ADR-061): body parts cut to rounded boxes, the chunky humanoid; held items stay crisp, and
+// poses, hands and features don't move.
+static void roundedModels() {
+    const ModelShape shipped = gModelShape;
+    CHECK(shipped.round && shipped.chunky && shipped.radius == 3);  // the look chosen for the game
+    auto solid = [](const Grid& g) { return std::ranges::count_if(g.cells, [](Block b) { return b != Air; }); };
+    auto count = [](const Grid& g, Block b) { return std::ranges::count(g.cells, b); };
+    auto same = [](const Grid& a, const Grid& b) { return a.size == b.size && a.cells == b.cells; };
+
+    // The chunky humanoid: a bigger head, mitten hands, bigger boots; the same torso.
+    CHECK(buildPart(ModelPlayer, Head).size == glm::ivec3(11, 10, 10) && buildPart(ModelPlayer, Torso).size == glm::ivec3(8, 7, 6));
+    CHECK(buildPart(ModelPlayer, HandL).size == glm::ivec3(4) && buildPart(ModelPlayer, FootR).size == glm::ivec3(4, 3, 5));
+    // Each part is exactly its rounded box: radius 3 on the head and torso, 2 on the 4-voxel hands, 1.5 on the boots.
+    Grid head = buildPart(ModelPlayer, Head);
+    CHECK(solid(head) == 968 && solid(buildPart(ModelPlayer, Torso)) == 244);
+    CHECK(solid(buildPart(ModelPlayer, HandR)) == 32 && solid(buildPart(ModelPlayer, FootL)) == 52);
+    CHECK(head.get({0, 0, 0}) == Air && head.get({10, 9, 9}) == Air && head.get({1, 0, 0}) == Air && head.get({0, 1, 0}) == Air);  // corners and edges gone
+    CHECK(head.get({5, 0, 5}) != Air && head.get({0, 5, 5}) != Air && head.get({5, 5, 9}) != Air && head.get({5, 9, 5}) != Air);  // faces kept
+    CHECK(count(head, Eye) == 4);  // both eyes on the face
+    gModelShape.radius = 4.5f;  // the debug window's radius: on the head, but a 4-voxel hand takes at most 2
+    CHECK(solid(buildPart(ModelPlayer, Head)) == 714 && solid(buildPart(ModelPlayer, HandL)) == 32);
+    gModelShape.radius = 1;
+    CHECK(solid(buildPart(ModelPlayer, Head)) == 1100 && solid(buildPart(ModelPlayer, HandL)) == 64);
+    gModelShape = shipped;
+    // A 3-voxel part (the old 3x3x3 hand) loses only its 8 corners.
+    gModelShape.chunky = false;
+    CHECK(solid(buildPart(ModelPlayer, HandL)) == 19 && solid(buildPart(ModelPlayer, Head)) == 690);
+    gModelShape = shipped;
+
+    // Rounding off: every part is its full box again. Rounding never changes a part's size, so poses don't move.
+    gModelShape.round = false;
+    std::vector<Grid> flatParts;
+    for (int m = 0; m < ModelCount; ++m)
+        for (int p = 0; p < PartCount; ++p) flatParts.push_back(buildPart(Model(m), Part(p)));
+    auto flatOf = [&](int m, int p) -> const Grid& { return flatParts[size_t(m * PartCount + p)]; };
+    for (int p = 0; p < PartCount; ++p) {
+        glm::ivec3 s = flatOf(ModelPlayer, p).size;
+        CHECK(solid(flatOf(ModelPlayer, p)) == s.x * s.y * s.z);
+    }
+    gModelShape = shipped;
+    int rounded = 0;
+    for (int m = 0; m < ModelCount; ++m)
+        for (int p = 0; p < PartCount; ++p) {
+            Grid g = buildPart(Model(m), Part(p));
+            const Grid& f = flatOf(m, p);
+            CHECK(g.size == f.size && solid(g) <= solid(f));
+            CHECK(count(g, Eye) == count(f, Eye) && count(g, Ember) == count(f, Ember) && count(g, Snout) == count(f, Snout));
+            if (!isBody(Model(m))) CHECK(same(g, f));  // held weapons, shields, flasks, arrows: crisp
+            rounded += solid(g) < solid(f);
+        }
+    auto total = [&] {  // every model's voxels; eyes, ember eyes and snouts are never cut
+        long n = 0;
+        for (int m = 0; m < ModelCount; ++m)
+            for (int p = 0; p < PartCount; ++p) {
+                Grid g = buildPart(Model(m), Part(p));
+                gModelShape.round = false;
+                Grid f = buildPart(Model(m), Part(p));
+                gModelShape.round = true;
+                n += solid(g);
+                CHECK(count(g, Eye) == count(f, Eye) && count(g, Ember) == count(f, Ember) && count(g, Snout) == count(f, Snout));
+            }
+        return n;
+    };
+    long shippedTotal = total();
+    gModelShape.radius = 4.5f;
+    long roundest = total();
+    gModelShape.chunky = false;
+    long oldSizes = total();
+    gModelShape = shipped;
+    CHECK(rounded == 62);  // every body's parts but the dummy's thin arms, post and cross-shaped base
+    CHECK(shippedTotal == 15771 && roundest == 14401 && oldSizes == 11770);  // the shapes, pinned (radius 3; 4.5; 4.5 on the old sizes)
+    CHECK(isBody(ModelPlayer) && isBody(ModelIronArmor) && isBody(ModelWolf) && isBody(ModelBarrowLord) && isBody(ModelDummy));
+    CHECK(!isBody(ModelSword) && !isBody(ModelGreataxe) && !isBody(ModelTower) && !isBody(ModelBow) && !isBody(ModelBurst));
+    // The wolf: its skull, snout and body rounded, its ears and tail as they were.
+    Grid wolfHead = buildPart(ModelWolf, Head), wolfTorso = buildPart(ModelWolf, Torso);
+    for (int z = 0; z < wolfHead.size.z; ++z)
+        for (int y = 5; y < wolfHead.size.y; ++y)
+            for (int x = 0; x < wolfHead.size.x; ++x) CHECK(wolfHead.get({x, y, z}) == flatOf(ModelWolf, Head).get({x, y, z}));
+    for (int z = 0; z < 4; ++z)
+        for (int y = 0; y < wolfTorso.size.y; ++y)
+            for (int x = 0; x < wolfTorso.size.x; ++x) CHECK(wolfTorso.get({x, y, z}) == flatOf(ModelWolf, Torso).get({x, y, z}));
+    CHECK(wolfHead.get({0, 0, 0}) == Air && wolfHead.get({1, 0, 8}) == Air && wolfTorso.get({0, 0, 4}) == Air);
+    CHECK(wolfHead.get({0, 2, 2}) != Air && wolfTorso.get({3, 3, 10}) != Air);
+    // The boar's head is rounded gently (radius 2 at most): its tusks keep a voxel on each side of the snout.
+    gModelShape.radius = 4.5f;
+    Grid boarHead = buildPart(ModelBoar, Head);
+    gModelShape = shipped;
+    CHECK(same(boarHead, buildPart(ModelBoar, Head)) && count(boarHead, Tusk) >= 2 && boarHead.get({0, 0, 0}) == Air);
+    // The barrow lord's crown (its head's top two rows) stays square on a rounded skull.
+    Grid lordHead = buildPart(ModelBarrowLord, Head);
+    for (int z = 0; z < lordHead.size.z; ++z)
+        for (int x = 0; x < lordHead.size.x; ++x)
+            for (int y = lordHead.size.y - 2; y < lordHead.size.y; ++y) CHECK(lordHead.get({x, y, z}) == flatOf(ModelBarrowLord, Head).get({x, y, z}));
+    CHECK(lordHead.get({0, 0, 0}) == Air && lordHead.get({0, lordHead.size.y - 3, 0}) == Air);
+    // The helm's crest runs down the middle of the bigger head: one voxel wide (two on the old even-width helm).
+    Grid helm = buildPart(ModelIronArmor, Head);
+    CHECK(helm.get({5, 9, 5}) == Steel && helm.get({4, 9, 5}) == Plate && helm.get({6, 9, 5}) == Plate);
+    // Gauntlet knuckles and sabaton toe caps survive the rounding, on either proportions (and on the guard's hands).
+    for (bool chunky : {true, false}) {
+        gModelShape.chunky = chunky;
+        CHECK(count(buildPart(ModelIronArmor, HandL), Steel) >= 2 && count(buildPart(ModelGuard, HandR), Steel) >= 2);
+        CHECK(count(buildPart(ModelIronArmor, FootL), Steel) >= 3);
+    }
+    gModelShape.chunky = false;
+    helm = buildPart(ModelIronArmor, Head);
+    CHECK(helm.get({4, 8, 5}) == Steel && helm.get({5, 8, 5}) == Steel && helm.get({3, 8, 5}) == Plate && helm.get({6, 8, 5}) == Plate);
+    gModelShape = shipped;
+
+    // Chunky or not, the hands are in the same places (the grips, swings, bows and crossbows aim them there), the
+    // head clears the torso, the boots stand on the ground, and text over a body starts above its bigger head.
+    auto middle = [](const glm::mat4& m, glm::ivec3 size) { return glm::vec3(m * glm::vec4(glm::vec3(size) * 0.5f, 1)); };
+    auto at = [](const glm::mat4& m, glm::vec3 v) { return glm::vec3(m * glm::vec4(v, 1)); };
+    Player p;
+    giveItem(p.inv, Shortsword);
+    quickMove(p.inv, {SlotRef::Item, 0, 0});
+    for (int k = 0; k < 2; ++k) {
+        if (k) startMove(p, Move::Light1, {0, 1}), p.moveTime = impactTime(p);  // standing, then mid-swing
+        glm::mat4 heldChunky(0), heldPlain(0);
+        auto chunky = poseModel(p, ModelPlayer, &heldChunky);
+        gModelShape.chunky = false;
+        auto plain = poseModel(p, ModelPlayer, &heldPlain);
+        for (Part h : {HandL, HandR}) CHECK(glm::distance(middle(chunky[h], {4, 4, 4}), middle(plain[h], {3, 3, 3})) < 1e-4f);
+        CHECK(heldChunky == heldPlain);  // the weapon doesn't move
+        gModelShape = shipped;
+    }
+    Player idle;
+    auto pose = poseModel(idle, ModelPlayer);
+    float headBottom = at(pose[Head], {5.5f, 0, 5}).y, torsoTop = at(pose[Torso], {4, 7, 3}).y, headTop = at(pose[Head], {5.5f, 10, 5}).y;
+    CHECK(headBottom > torsoTop && headBottom - torsoTop < 0.05f);  // just clear of the torso
+    CHECK(std::abs(at(pose[FootL], {2, 0, 2.5f}).y - idle.pos.y) < 0.01f && std::abs(at(pose[FootR], {2, 0, 2.5f}).y - idle.pos.y) < 0.01f);
+    CHECK(overheadHeight(ModelPlayer) > headTop - idle.pos.y + 0.3f);
+    auto lord = poseModel(idle, ModelBarrowLord);
+    float lordTop = at(lord[Head], {5.5f, 10, 5}).y - idle.pos.y;
+    CHECK(overheadHeight(ModelBarrowLord) > lordTop + 0.3f);
+    gModelShape.chunky = false;
+    float plainLord = overheadHeight(ModelBarrowLord);
+    gModelShape = shipped;
+    CHECK(overheadHeight(ModelBarrowLord) > plainLord + 0.1f);  // its numbers rise with its head
+    CHECK(bodyHeight(ModelPlayer) == kHeight && bodyHeight(ModelBarrowLord) == 2.6f);  // hit boxes as they were
+}
+
 int main() {
     // A temp folder of its own (temp_directory_path reads TMPDIR): runs in other worktrees at the
     // same time use the same file names (flycoos_*_test.flyw, flycoos/stale.png).
@@ -12285,6 +12426,7 @@ int main() {
     creatureAttacks();
     bosses();
     bossFollowUps();
+    roundedModels();
     session();
     timedSpawns();
     ticks();

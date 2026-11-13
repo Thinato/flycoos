@@ -28,6 +28,9 @@ weapon's glow and a body's flash tint whole models, one flat colour per voxel.
    materials get faint ones, like weathering. Water, light sources and model-only blocks are plain.
 6. **Models are flat.** Characters, creatures, items and held gear have one flat colour per part,
    even where a part uses a world block such as Wood or Steel. Flat is decided per draw, not per block.
+   Bodies are rounded and softly lit (ADR-061): their parts' corners are cut away, and their light (not
+   their colour) changes gently across a face, as corner shading already does on the world's blocks.
+   Held weapons and shields stay crisp.
 7. **Patch size follows the material.** Grass patches are large; spots in wood and stone are small.
 
 ## Three tones per material

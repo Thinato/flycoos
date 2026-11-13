@@ -24,15 +24,16 @@ struct FrameUniforms {
     glm::vec4 aoCurve, shadowTint;
     glm::vec4 lightParams;  // x sun gate, y light falloff, z dark ambient, w voxel light on
     glm::vec4 emberColor;   // rgb linear, times strength
+    glm::vec4 modelShade;   // bodies (ADR-061): x light wrap, y normal bend, z AO kept (0 none, 1 all)
     glm::vec4 palette[128];
     glm::vec4 toneA[128], toneB[128];  // rgb linear patch variants; toneA.w size (voxels), toneB.w strength
 };
 struct DrawUniforms {
     glm::mat4 model;
     glm::vec4 modelLight;  // x models: light + 1 (0: a chunk); y > 0: it glows (ADR-053)
-    glm::uvec4 firstQuad;  // x first quad; plants: y first instance, zw the world window's low corner x, z (int)
+    glm::uvec4 firstQuad;  // x first quad; models: yzw a body part's grid size (0: not soft-lit); plants: y first instance, zw the world window's low corner x, z (int)
 };
-static_assert(sizeof(FrameUniforms) == 2 * 64 + 14 * 16 + 3 * 128 * 16);
+static_assert(sizeof(FrameUniforms) == 2 * 64 + 15 * 16 + 3 * 128 * 16);
 static_assert(sizeof(DrawUniforms) == 64 + 16 + 16);
 static_assert(sizeof(RibbonVertex) == 16);  // float4 in ribbon_vs
 static_assert(BlockCount <= 128);  // also: shaders/world.metal packs block ids into 7 bits
@@ -406,12 +407,13 @@ void Renderer::uploadChunks(const Grid& world, const std::vector<size_t>& ids) {
 }
 
 void Renderer::uploadModels() {
+    shape_ = gModelShape;
     std::vector<Quad> quads;
     for (int model = 0; model < ModelCount; ++model)
         for (int p = 0; p < PartCount; ++p) {
             Grid part = buildPart(Model(model), Part(p));
             Mesh m = meshRegion(part, {0, 0, 0}, part.size);
-            parts_[size_t(model)][size_t(p)] = {uint32_t(quads.size()), uint32_t(m.opaque.size())};
+            parts_[size_t(model)][size_t(p)] = {uint32_t(quads.size()), uint32_t(m.opaque.size()), isBody(Model(model)) ? glm::uvec3(part.size) : glm::uvec3(0)};
             quads.insert(quads.end(), m.opaque.begin(), m.opaque.end());
         }
     for (size_t k = 0; k < plantParts_.size(); ++k) {
@@ -479,6 +481,7 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
     }
     u.lightParams = {settings.sunGate, settings.lightFalloff, settings.darkAmbient, settings.voxelLight};
     u.emberColor = glm::vec4(lin(settings.emberColor) * settings.emberStrength, 0);
+    u.modelShade = {0.5f * settings.modelSoft, std::min(0.65f * settings.modelSoft, 1.0f), settings.modelAO ? 1 : 0, 0};
     for (int b = 0; b < BlockCount; ++b) {
         int mid = isLeaf(Block(b)) ? leafBlock(kLeafOf[size_t(b)].kind, 2) : b;  // a leaf shade blends from its kind's colour
         auto shaded = [&](const float* own, const float* base) {
@@ -606,8 +609,8 @@ void Renderer::drawScene(SDL_GPUCommandBuffer* cmd, const FrameParams& frame, co
             uint8_t a = light_.get(at), b = light_.get(at + glm::ivec3(0, 1, 0));
             float lit = float(std::max(skyLight(a), skyLight(b)) << 4 | std::max(blockLight(a), blockLight(b))) + 1;
             for (size_t p = 0; p < PartCount; ++p) {
-                auto [first, count] = parts_[size_t(inst.parts[p])][p];
-                if (count) draw({inst.pose[p], glm::vec4(lit, inst.glow ? 1 : 0, 0, 0), glm::uvec4(first, 0, 0, 0)}, count);
+                auto [first, count, size] = parts_[size_t(inst.parts[p])][p];
+                if (count) draw({inst.pose[p], glm::vec4(lit, inst.glow ? 1 : 0, 0, 0), glm::uvec4(first, size)}, count);
             }
         }
         if (tinted != glm::vec4(0)) tinted = glm::vec4(0), SDL_PushGPUFragmentUniformData(cmd, 1, &tinted, sizeof tinted);
@@ -666,6 +669,7 @@ bool Renderer::render(const FrameParams& frame, const RenderSettings& settings, 
                       const char* screenshotPath) {
     windPhase_ = std::fmod(windPhase_ + std::clamp(frame.seconds - windSeconds_, 0.0, 0.25) * 1.4 * settings.sway, 2 * std::numbers::pi);
     windSeconds_ = frame.seconds;
+    if (shape_ != gModelShape) uploadModels();  // the debug window reshaped them (ADR-061)
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
     if (!cmd) {
         std::println(stderr, "command buffer acquire failed: {}", SDL_GetError());
