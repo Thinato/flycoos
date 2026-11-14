@@ -2739,6 +2739,24 @@ static void storyNpcs() {
     CHECK(chiefAsTuned >= 10 && wolvesAsTuned >= 10 && ghoulsAsTuned >= 10);
     float chiefMean = chiefSum / kSeeds, wolvesMean = wolvesSum / kSeeds, ghoulsMean = ghoulsSum / kSeeds;
     std::println("story fights, health left on average: chief {:.0f}, wolves {:.0f}, ghouls {:.0f}", chiefMean, wolvesMean, ghoulsMean);
+    {  // Crowding (ADR-063): of five on the player four swing at once now (two before) and the rest wait closer, so a
+       // crowd is deadlier. This player stands its ground and loses to five either way; the foes it leaves have more health.
+        ItemId gs = defs().itemById.at("iron_greatsword");
+        auto crowd = [&] {
+            float sum = 0;
+            for (uint32_t seed = 0; seed < kSeeds; ++seed) sum += fight(EntityKind::Wolf, 5, true, seed) + fight(EntityKind::Bandit, 5, true, seed, gs);
+            return sum / kSeeds;
+        };
+        CHECK(attackTokens(5) == 4 && attackTokens(2) == 2);
+        float now = crowd();
+        AiTuning tuned = gAi;
+        gAi.attackShare = 0, gAi.hitGap = 0, gAi.waitRing = 3.6f;  // as before: two tokens, the ring 3.6 out
+        float before = crowd();
+        gAi = tuned;
+        std::println("crowds (5 wolves, then 5 bandits against the greatsword): the foes' health left when the player falls {:.0f}, before ADR-063 {:.0f}",
+                     -now, -before);
+        CHECK(now < before - 60);  // (measured: 762 against 620)
+    }
     // About a quarter to a third. Over 48 seeds the chief's mean is 31 (30 without random crits, ADR-045):
     // 12 seeds swing it by about 4 either way.
     CHECK(chiefMean >= 20 && chiefMean <= 35);
@@ -2757,7 +2775,8 @@ static void storyNpcs() {
         }
         std::println("story fights with the {}: health left on average chief {:.0f}, wolves {:.0f}, ghouls {:.0f}; won {} {} {} of {}", itemType(w).name,
                      sum[0] / kSeeds, sum[1] / kSeeds, sum[2] / kSeeds, won[0], won[1], won[2], kSeeds);
-        CHECK(won[0] >= 10 && won[1] >= 6 && won[2] >= 10);
+        // (Re-pinned for ADR-063: the pack's hits spaced 0.4 s apart reshuffled the wolf pairs, and the mace won 5 of 12, from 7.)
+        CHECK(won[0] >= 10 && won[1] >= 5 && won[2] >= 10);
     }
     CHECK(fight(EntityKind::Wolf, 3, true, 1) < 0);  // a pack of three is too much alone
     {  // The first boss, Ketil (ADR-059), in Iron with the sword: standing and trading he always wins; drinking the three flasks,
@@ -6378,8 +6397,8 @@ static void enemies() {
         return glm::normalize(d);
     };
 
-    {  // tokens: of three bandits on the player one swings at a time (attackers 1), the others wait on
-       // the ring; all get turns. With two tokens two swing at once.
+    {  // tokens: of three bandits on the player one swings at a time (attackers 1, no share), the others wait on
+       // the ring; all get turns. With two tokens two swing at once; as tuned (ADR-063: ceil(0.7 x 3)) all three.
         for (uint32_t i = 0; i < 3; ++i) {
             player.yaw = float(i) * 2.1f;
             spawnAhead(es, g, player, EntityKind::Bandit, 11 + i, 5);
@@ -6411,7 +6430,7 @@ static void enemies() {
                 }
             }
         };
-        gAi.attackers = 1;
+        gAi.attackers = 1, gAi.attackShare = 0;
         int most = 0, waiting = 0, onRing = 0;
         run(20, most, waiting, onRing);
         CHECK(most == 1 && strings.size() == 3);
@@ -6424,6 +6443,28 @@ static void enemies() {
         run(10, most, waiting, onRing);
         CHECK(most == 2 && strings.size() == 3);
         gAi = AiTuning{};
+        CHECK(attackTokens(3) == 3);
+        most = 0;
+        strings.clear();
+        {  // ...and their hits land at least hitGap apart (ADR-063; a string's own hits and their own attacks aside)
+            std::map<uint32_t, bool> pending;
+            std::vector<std::pair<int, uint32_t>> hits;  // (tick, who)
+            for (int i = 0; i < 10 * 60; ++i) {
+                tick();
+                for (const Entity& e : es) {
+                    if (pending[e.id] && !e.body.hitPending && e.body.punching() && !attackMove(e.body.move)) hits.emplace_back(i, e.id);
+                    pending[e.id] = e.body.hitPending && e.body.punching();
+                    CHECK(e.token);  // three tokens for three: none gives its own up after its string
+                    if (e.state == AiState::Windup && e.stateTime == 0 && newest(e).reason == std::string_view("in_reach")) ++strings[e.id];
+                    most = std::max(most, int(std::ranges::count(es, AiState::Windup, &Entity::state)));
+                }
+            }
+            int gaps = 0, tight = 0;
+            for (size_t k = 1; k < hits.size(); ++k)
+                if (hits[k].second != hits[k - 1].second) ++gaps, tight += float(hits[k].first - hits[k - 1].first) * kT < gAi.hitGap - 1.5f * kT;
+            CHECK(hits.size() > 12 && gaps > 6 && tight == 0);
+        }
+        CHECK(most == 3 && strings.size() == 3);
         es.clear();
     }
 
@@ -8118,6 +8159,109 @@ static void greatWeapons() {
                 CHECK(std::min({(h * tip).y, (h * beard).y, (h * glm::vec4(3.5f, 0.5f, 0.5f, 1)).y}) - p.pos.y > 0);
             }
         }
+    }
+}
+
+// Crowding (ADR-063): more of a pack swing at once (ceil(0.7 x n), 2 to 4, never more than n; a boss holds a token of
+// its own), and a pack's hits are spaced at least hitGap apart.
+static void crowding() {
+    for (auto [n, want] : {std::pair{0, 0}, {1, 1}, {2, 2}, {3, 3}, {4, 3}, {5, 4}, {6, 4}, {9, 4}}) CHECK(attackTokens(n) == want);
+    gAi.attackShare = 0, gAi.attackers = 1;
+    CHECK(attackTokens(5) == 1);  // the old rule: a fixed count
+    gAi.attackers = 3, gAi.attackersMax = 2;
+    CHECK(attackTokens(5) == 3 && attackTokens(2) == 2);  // at least wins over at most; never more than the pack
+    gAi = AiTuning{};
+    // The gap is the fairness: after a hit's flinch, a roll pressed during it (its first i-frame) or a guard held through it is
+    // up, a tick to spare, before the next hit.
+    CHECK(gAi.hitGap >= gMelee.flinchSeconds + gMelee.iframeFrom + 1 / 60.0f);
+    // spaceHit: clear of every hit due, at least hitGap (0.2 s) from each: here pushed past 0.3, then past 0.6.
+    gAi.hitGap = 0.2f;  // (easier numbers)
+    auto near = [](float a, float b) { return std::abs(a - b) < 1e-5f; };
+    CHECK(near(spaceHit(0.5f, {}), 0.5f) && near(spaceHit(0.9f, {0.5f}), 0.9f) && near(spaceHit(0.5f, {0.45f}), 0.65f));
+    CHECK(near(spaceHit(0.3f, {0.6f, 0.3f}), 0.8f));  // (in time order, whatever order they come in)
+    CHECK(near(spaceHit(0.31f, {0.1f}), 0.31f) && near(spaceHit(0.29f, {0.1f}), 0.3f) && near(spaceHit(0.1f, {0.5f}), 0.1f));
+    CHECK(near(spaceHit(0.1f, {-0.05f}), 0.15f));  // one that just landed counts too
+    CHECK(others({{0.5f, 1}, {0.7f, 2}, {-0.1f, 1}}, 1) == std::vector<float>{0.7f});  // a fighter's own string keeps its rhythm
+    gAi = AiTuning{};
+
+    // A boss with five adds: it holds a token of its own, four of the five adds theirs (without its own: four in all).
+    Grid g({64, 16, 64});
+    for (int z = 0; z < 64; ++z)
+        for (int x = 0; x < 64; ++x)
+            for (int y = 0; y < 4; ++y) g.set({x, y, z}, Stone);
+    Player player;
+    player.pos = {32.5f, 4, 32.5f};
+    player.onGround = true, player.offGround = 0;
+    std::vector<Entity> es;
+    es.reserve(6);
+    for (uint32_t i = 0; i < 5; ++i) player.yaw = float(i) * 1.2f, spawnAhead(es, g, player, EntityKind::Bandit, 20 + i, 2.5f);
+    player.yaw = 3;
+    spawnAhead(es, g, player, EntityKind(9), 30, 5);  // Ketil (ADR-059), the farthest: by distance it'd wait
+    CHECK(es[5].type().boss);
+    for (Entity& e : es) setState(e, AiState::Chase, "test"), e.sinceSwing = 9;
+    es[5].sinceSwing = 0;  // (it just swung: by turns it'd wait too)
+    updateEntities(es, g, player, 1 / 60.0f);
+    CHECK(es[5].pack == 6 && es[5].tokens == 5 && es[5].token);
+    CHECK(std::ranges::count(es, true, &Entity::token) == 5);
+    es.erase(es.begin(), es.begin() + 3);  // the boss and two adds: its own and both of theirs
+    updateEntities(es, g, player, 1 / 60.0f);
+    CHECK(es[2].pack == 3 && es[2].tokens == 3 && std::ranges::count(es, true, &Entity::token) == 3);
+    {  // A swing's due counts its hit-stop (a frozen body's clock stops) and its held windup.
+        Entity& b = es[0];
+        b.body.swingTimer = 0;
+        CHECK(startPunch(b.body, {0, 1}, 0.8f) && pendingDue(b));
+        float plain = *pendingDue(b);
+        CHECK(std::abs(plain - 0.8f) < 1e-4f);
+        b.body.freeze = 0.1f;
+        CHECK(std::abs(*pendingDue(b) - 0.9f) < 1e-4f);
+        b.body.hitPending = false;
+        CHECK(!pendingDue(b));  // landed (or cut): nothing pending
+    }
+    es[0].sinceHit = 0;  // its clock since its last hit runs (a hit long ago no longer holds the others back)
+    updateEntities(es, g, player, 1 / 60.0f);
+    CHECK(es[0].sinceHit > 0.01f);
+    // Out of the fight its counts go: 0 in a pack, 0 tokens.
+    for (Entity& e : es) setState(e, AiState::Wander, "test");
+    updateEntities(es, g, player, 1 / 60.0f);
+    CHECK(es[0].pack == 0 && es[0].tokens == 0);
+
+    // Real packs (4 wolves, whose windups are shorter than the gap; 4 bandits) on a player who stands there, 8 fights of
+    // a minute each: every two hits by different ones land at least hitGap apart (a tick and a half for rounding).
+    for (EntityKind kind : {EntityKind::Wolf, EntityKind::Bandit}) {
+        int gaps = 0, tight = 0;
+        for (uint32_t seed = 0; seed < 8; ++seed) {
+            Grid floor({48, 16, 48});
+            for (int z = 0; z < 48; ++z)
+                for (int x = 0; x < 48; ++x)
+                    for (int y = 0; y < 4; ++y) floor.set({x, y, z}, Stone);
+            Player p;
+            p.pos = {24.5f, 4, 24.5f};
+            p.onGround = true, p.offGround = 0;
+            std::vector<Entity> pack;
+            pack.reserve(4);
+            for (uint32_t i = 0; i < 4; ++i) p.yaw = float(i) * 1.57f + float(seed), spawnAhead(pack, floor, p, kind, 100 * seed + i, 4);
+            for (Entity& e : pack) setState(e, AiState::Chase, "test");
+            std::mt19937 rng(seed);
+            std::map<uint32_t, bool> pending;
+            std::vector<std::pair<int, uint32_t>> hits;  // (tick, whose)
+            for (int i = 0; i < 60 * 60; ++i) {
+                Input still;
+                updateMelee(p, {}, still, 1 / 60.0f);
+                updateEntities(pack, floor, p, 1 / 60.0f);
+                separate(p, floor, pack);
+                updateCombat(p, pack, 1 / 60.0f, rng);
+                p.health = float(maxHealth(sheet(p)));
+                for (const Entity& e : pack) {
+                    if (pending[e.id] && !e.body.hitPending && e.body.punching() && !attackMove(e.body.move)) hits.emplace_back(i, e.id);
+                    pending[e.id] = e.body.hitPending && e.body.punching();
+                }
+            }
+            for (size_t k = 1; k < hits.size(); ++k)
+                if (hits[k].second != hits[k - 1].second)
+                    ++gaps, tight += float(hits[k].first - hits[k - 1].first) / 60 < gAi.hitGap - 1.5f / 60;
+        }
+        CHECK(gaps > 500 && tight == 0);
+        if (tight || gaps <= 500) std::println("FAIL crowding: kind {}: {} of {} gaps too short", int(kind), tight, gaps);
     }
 }
 
@@ -12610,6 +12754,7 @@ int main() {
     scaling();
     greatWeapons();
     cleaving();
+    crowding();
     bows();
     archers();
     crossbows();

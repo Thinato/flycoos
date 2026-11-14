@@ -35,6 +35,7 @@ facing yaw Y looks along (sin Y, cos Y) in x, z, so 0 faces +z (toward a camera 
   Camera and overlay
     FLY_EYE="x y z" FLY_AT="x y z"  a fixed camera (both needed); y is absolute height
     FLY_TXT="x y"             where the box goes               FLY_CORPSES=1  count corpses in the box
+    FLY_TALLY=1               damage you dealt and took so far, in the box (with FLY_GOD too); printed each second
     FLY_FXSTAT=1              print particle counts each second (for perf runs)
     FLY_TAB=1                 open the debug window's Entities tab
 Every run also prints "hitch frame N M ms" for frames over 100 ms.
@@ -93,6 +94,7 @@ rep('''    std::vector<double> frameMs;''', r'''    // SCENE-HOOK: scripted scen
     auto env1 = [](const char* n, float& v) { const char* e = std::getenv(n); return e && std::sscanf(e, "%f", &v) == 1; };
     const char* shotDir = std::getenv("FLY_SHOTS");
     bool sceneReady = false;
+    std::string tallyText;  // FLY_TALLY's line in the box
     int sceneStart = 0;
     auto sceneSetup = [&] {
         glm::vec2 mid(worldMiddle(world));
@@ -145,6 +147,19 @@ rep('''            if (benchmark) {''', r'''            if (benchmark && std::ge
                 if (!sceneReady && frame > 30) sceneSetup(), sceneReady = true, sceneStart = frame;
                 in = {};
                 if (std::getenv("FLY_GUARD")) sim.guard = true;
+                static double dealt = 0, taken = 0;  // FLY_TALLY: from health drops, before FLY_GOD fills it up again
+                if (std::getenv("FLY_TALLY") && sceneReady) {
+                    static std::map<uint32_t, float> was;
+                    static float you = -1;
+                    if (you >= 0 && player.health < you) taken += you - player.health;
+                    for (const Entity& e : entities) {
+                        if (auto it = was.find(e.id); it != was.end() && e.body.health < it->second) dealt += it->second - e.body.health;
+                        was[e.id] = e.body.health;
+                    }
+                    if ((frame - sceneStart) % 60 == 0) std::println("tally {} dealt {:.0f} taken {:.0f}", frame - sceneStart, dealt, taken);
+                    you = std::getenv("FLY_GOD") ? float(maxHealth(sheet(player))) : player.health;
+                }
+                tallyText = std::getenv("FLY_TALLY") ? std::format("\ndealt {:.0f}   taken {:.0f}", dealt, taken) : "";
                 if (std::getenv("FLY_GOD")) player.health = float(maxHealth(sheet(player)));
                 int sf = frame - sceneStart;
                 @@FXSTAT@@
@@ -228,6 +243,7 @@ rep('''            drawNotice(notice.c_str(), float(double(SDL_GetTicksNS() - no
                         if (!e.body.alive()) txt += std::format("  {:.0f} from you, {}", double(glm::distance(e.body.pos, player.pos)), canSee(world, player, e.body) ? "in sight" : "out of sight");
                     }
                 txt += std::format("\nyou: {}", player.stagger > 0 ? "reeling" : player.rolling() ? "rolling" : player.guarding ? "guarding" : "free");
+                txt += tallyText;
                 @@HELDLINE@@
                 @@FXLINE@@
                 if (std::getenv("FLY_CORPSES")) {

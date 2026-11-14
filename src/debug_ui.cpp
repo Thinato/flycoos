@@ -810,9 +810,29 @@ static void entitiesTab(Session& session, DebugActions& actions, SpawnSettings& 
     ImGui::Separator();
     if (ImGui::TreeNode("Fighting AI: tokens, strings, answers (ADR-042, ADR-043)")) {
         AiTuning& a = gAi;
-        ImGui::SliderInt("Attackers at once", &a.attackers, 1, 6);
-        ImGui::SetItemTooltip("Attack tokens: this many fighters on you may swing; the rest circle on the ring and wait.");
+        ImGui::SeparatorText("Crowding (ADR-063)");
+        ImGui::SliderFloat("Attackers share", &a.attackShare, 0, 1, "%.2f of the pack");
+        ImGui::SetItemTooltip("Attack tokens: of a pack of n on you, ceil(share x n) may swing at once; the rest circle on the ring and wait.\n"
+                              "A boss holds a token of its own besides.");
+        ImGui::SliderInt("Attackers at least", &a.attackers, 1, 6);
+        ImGui::SliderInt("Attackers at most", &a.attackersMax, 1, 8);
+        ImGui::Text("Pack of 2..8: %d %d %d %d %d %d %d swing at once", attackTokens(2), attackTokens(3), attackTokens(4), attackTokens(5),
+                    attackTokens(6), attackTokens(7), attackTokens(8));
+        ImGui::SliderFloat("Hits apart", &a.hitGap, 0, 1, "%.2f s");
+        ImGui::SetItemTooltip("A pack's hits land at least this far apart: a swing that would land nearer another's holds its windup longer.\n"
+                              "0.4: after a flinch (0.3 s) a roll pressed during it, or a guard held through it, is up before the next.");
         ImGui::SliderFloat("Waiting ring", &a.waitRing, 2.5f, 8, "%.1f blocks");
+        {  // live: the pack on you now, who swings, and when its hits land
+            int pack = 0, tokens = 0, holding = 0;
+            std::string dues;
+            for (const Entity& e : entities) {
+                if (e.pack == 0) continue;
+                pack = e.pack, tokens = e.tokens, holding += e.token;
+                if (std::optional<float> due = pendingDue(e)) dues += std::format(" {:.2f}", *due);
+            }
+            if (pack == 0) ImGui::TextDisabled("No pack on you");
+            else ImGui::Text("Pack of %d on you: %d tokens (%d held); hits due in (s):%s", pack, tokens, holding, dues.empty() ? " none" : dues.c_str());
+        }
         ImGui::SliderFloat("Circling speed", &a.strafeSpeed, 0, 1.5f, "x%.2f walk");
         ImGui::SliderFloat("Delayed hit", &a.delaySeconds, 0, 1.5f, "+%.2f s");
         ImGui::SetItemTooltip("A delayed hit in a string holds its windup this much longer (x 0.8 .. 1.2): it catches an early roll.");

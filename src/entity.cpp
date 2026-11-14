@@ -482,7 +482,8 @@ void answer(Entity& e, const Grid& g, const Player& target, glm::vec2 dir, float
 // chance) held in its windup a while, to catch a roll that came too soon. Each costs its swing time
 // as a hit on its own would: a string bunches its hits up, with a longer pause after, but it hits no
 // more often.
-void nextInString(Entity& e, glm::vec2 dir) {
+// Its hit is spaced from the rest of the pack's (`dues`, ADR-063): held longer in its windup if it would land too near one.
+void nextInString(Entity& e, glm::vec2 dir, Dues& dues) {
     const EntityType& t = e.type();
     --e.string;
     Move m = e.body.move;
@@ -491,6 +492,10 @@ void nextInString(Entity& e, glm::vec2 dir) {
     float hold = delayed ? gAi.delaySeconds * (0.8f + 0.4f * rand01(e.rng)) : 0;
     setState(e, AiState::Windup, delayed ? "delayed" : "combo");  // before the move: leaving a windup cancels its hit
     startMove(e.body, next, dir, hold);
+    float impact = impactTime(e.body);
+    e.body.hold = spaceHit(impact + hold, others(dues, e.id)) - impact;
+    dues.emplace_back(impact + e.body.hold, e.id);
+    delayed |= e.body.hold > hold + 1 / 60.0f;  // held for the pack's turns: as a delayed hit, heard again
     e.body.swingTimer += swingTime(sheet(e.body, skillOf(e.body.swingWeapon)), weaponAttack(e.body.swingWeapon));  // the pause after is longer
     if (delayed) e.body.noise(Noise::Windup);
 }
@@ -590,7 +595,8 @@ bool attackStep(Entity& e, const Grid& g, glm::vec2 dir, float dist, float dt, I
 
 // One AI update of a wanderer: transitions (as many as the situation calls for, so e.g. a hit from
 // beyond its chase range is Chase and back to Return in one update), then the input of the state it ends in.
-Input think(Entity& e, const Grid& g, const Player& target, float dt) {
+// `dues`: when the pack's hits under way land (seconds from now); a swing it starts is spaced from them and added (ADR-063).
+Input think(Entity& e, const Grid& g, const Player& target, float dt, Dues& dues) {
     const EntityType& t = e.type();
     glm::vec2 toTarget = xz(target.pos - e.body.pos), toHome = xz(e.home - e.body.pos);
     float dist = glm::length(toTarget), range = glm::distance(target.pos, e.body.pos);  // range: in 3D (a cliff, another floor)
@@ -684,7 +690,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
             else if (bool counter = e.counterTimer > 0;
                      inReach && e.token && !waits && e.backOff <= 0 && !(e.threatened && e.answer != Answer::None) &&
                      (e.guardTimer <= 0 || counter) && (e.stateTime >= t.cooldown || counter) &&  // (an archer's spaces its knife too: a poor fighter up close)
-                     startPunch(e.body, dir, counter ? gAi.counterWindup : t.windup * (0.85f + 0.5f * rand01(e.rng)))) {
+                     startPunch(e.body, dir, counter ? gAi.counterWindup : t.windup * (0.85f + 0.5f * rand01(e.rng)), &dues, e.id)) {
                 e.string = t.combo > 1 ? 1 + int(e.rng() % unsigned(t.combo)) : 1;
                 e.sinceSwing = e.counterTimer = e.guardTimer = 0;
                 setState(e, AiState::Windup, counter ? "counter" : "in_reach");
@@ -753,7 +759,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
                 return in;
             }
             if (e.string > 1 && !waits && e.body.punching() && target.alive() && dist < reach + 1) {  // a string, the target near:
-                if (moveProgress(e.body) >= spec(e.body).chain) nextInString(e, dir);  // the next hit from this one's chain point
+                if (moveProgress(e.body) >= spec(e.body).chain) nextInString(e, dir, dues);  // the next hit from this one's chain point
                 return in;
             }
             setState(e, AiState::Recover, e.body.move == Move::Shot ? "shot" : "swung");
@@ -774,7 +780,7 @@ Input think(Entity& e, const Grid& g, const Player& target, float dt) {
         case AiState::Recover:
             if (e.stateTime < (e.attack >= 0 ? t.attacks[size_t(e.attack)].recover : t.recover)) return in;
             if (t.backOff > 0 && rand01(e.rng) < t.backOff) e.backOff = gAi.backOffSeconds;  // makes room (ADR-043)
-            if (e.pack > gAi.attackers) e.token = false;  // its turn is over, others wait: the next sides pass hands the tokens out again (ADR-042)
+            if (e.pack > e.tokens) e.token = false;  // its turn is over, others wait: the next sides pass hands the tokens out again (ADR-042)
             setState(e, AiState::Chase, "recovered");
             continue;
         case AiState::Flee:  // runs from the target a while (hit again: a while longer), then goes home
@@ -879,7 +885,7 @@ void buryDead(std::vector<Entity>& entities, DeadSlots& dead, const Grid& world,
 static void assignSides(std::vector<Entity>& entities, const Player& player) {
     std::vector<std::pair<float, Entity*>> pack;
     for (Entity& e : entities) {
-        e.pack = 0;
+        e.pack = e.tokens = 0;
         if (e.angry() && e.body.alive() && e.type().wanders && !ranged(e.body)) {  // (an archer's bow out: it keeps away, ADR-051)
             glm::vec2 d = xz(e.body.pos - player.pos);
             pack.emplace_back(std::atan2(d.x, d.y), &e);
@@ -897,18 +903,20 @@ static void assignSides(std::vector<Entity>& entities, const Player& player) {
         pack[i].second->side = std::remainder(base + float(i) * spacing, 2 * std::numbers::pi_v<float>);
         pack[i].second->pack = int(pack.size());
     }
-    // Attack tokens (ADR-042): gAi.attackers of them may swing; one in the middle of its string (or
-    // recovering from it) keeps its token, the rest go to those in the fight (within 6 blocks) that
-    // have waited longest.
+    // Attack tokens (ADR-042, ADR-063): a boss holds one of its own; attackTokens of the rest may swing. One in the
+    // middle of its string (or recovering from it) keeps its token, the rest go to those in the fight (within 6 blocks)
+    // that have waited longest.
     for (Entity& e : entities) e.token = true;
     auto rank = [&](const Entity* e) {
         float dist = glm::distance(xz(e->body.pos), xz(player.pos));
-        return std::tuple(e->state != AiState::Windup && e->state != AiState::Recover, dist > 6, -e->sinceSwing, dist);
+        return std::tuple(!e->type().boss, e->state != AiState::Windup && e->state != AiState::Recover, dist > 6, -e->sinceSwing, dist);
     };
     std::vector<Entity*> order;
     for (auto& [angle, e] : pack) order.push_back(e);
     std::ranges::sort(order, {}, rank);
-    for (size_t i = 0; i < order.size(); ++i) order[i]->token = int(i) < gAi.attackers;
+    int bosses = int(std::ranges::count_if(order, [](const Entity* e) { return e->type().boss; }));
+    int tokens = bosses + attackTokens(int(order.size()) - bosses);
+    for (size_t i = 0; i < order.size(); ++i) order[i]->token = int(i) < tokens, order[i]->tokens = tokens;
 }
 
 // Living NPCs push each other apart (half each; one that stands where it was put isn't moved), never
@@ -930,9 +938,39 @@ static void spread(std::vector<Entity>& entities, const Grid& world, const std::
         }
 }
 
+int attackTokens(int n) { return std::min(n, std::max(gAi.attackers, std::min(int(std::ceil(gAi.attackShare * float(n))), gAi.attackersMax))); }
+
+std::optional<float> pendingDue(const Entity& e) {
+    const Player& b = e.body;
+    if (!b.alive() || !b.punching() || !b.hitPending || attackMove(b.move) || b.move == Move::Shot) return std::nullopt;
+    return b.freeze + b.hold + std::max(0.0f, impactTime(b) - b.moveTime);
+}
+
+std::vector<float> others(const Dues& dues, uint32_t who) {
+    std::vector<float> out;
+    for (auto [due, id] : dues)
+        if (id != who) out.push_back(due);
+    return out;
+}
+
+float spaceHit(float due, std::vector<float> dues) {
+    std::ranges::sort(dues);
+    for (float d : dues)  // (later ones only ever push it later: one pass)
+        if (std::abs(due - d) < gAi.hitGap) due = d + gAi.hitGap;
+    return due;
+}
+
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt,
                     const std::function<bool(glm::vec3)>& loaded) {
     assignSides(entities, player);
+    // When the swings under way land, and those that just did (negative), by whose (ADR-063): a new swing is spaced
+    // from the others'. Not an attack of its own (a charge lands when it reaches the player) nor an archer's shot.
+    Dues dues;
+    for (const Entity& e : entities) {
+        if (loaded && !loaded(e.body.pos)) continue;  // (frozen where it isn't loaded: that hit isn't coming)
+        if (std::optional<float> due = pendingDue(e)) dues.emplace_back(*due, e.id);
+        else if (e.sinceHit < gAi.hitGap) dues.emplace_back(-e.sinceHit, e.id);
+    }
     for (Entity& e : entities) {
         if (loaded && !loaded(e.body.pos)) continue;  // its part of the world isn't in: it waits there
         e.speechTimer = std::max(0.0f, e.speechTimer - dt);
@@ -947,9 +985,10 @@ void updateEntities(std::vector<Entity>& entities, const Grid& world, const Play
             continue;
         }
         e.sinceSwing = std::min(e.sinceSwing + dt, 99.0f);
+        e.sinceHit = std::min(e.sinceHit + dt, 99.0f);
         for (float* timer : {&e.guardTimer, &e.counterTimer, &e.backOff, &e.strafeTimer}) *timer = std::max(0.0f, *timer - dt);
         for (float& wait : e.attackWait) wait = std::max(0.0f, wait - dt);
-        Input in = think(e, world, player, dt);
+        Input in = think(e, world, player, dt, dues);
         e.events = 0;  // read by this update only: later hits arrive with the next
         // Its guard (ADR-043): up while it means to, and behind a shield whenever it's within 6 blocks;
         // only while chasing with nothing else to do.
@@ -1065,11 +1104,12 @@ bool damage(Entity& e, int amount, bool crit, Status kind, DamageType type, bool
     return true;
 }
 
-bool startPunch(Player& b, glm::vec2 aim, float windup) {
+bool startPunch(Player& b, glm::vec2 aim, float windup, Dues* dues, uint32_t who) {
     if (!b.alive() || b.swingTimer > 0 || b.rolling() || b.stagger > 0) return false;
     bool chains = b.lastMove >= Move::Light1 && b.lastMove < Move::Light3;  // the first three lights in turn
     startMove(b, chains ? Move(int(b.lastMove) + 1) : Move::Light1, aim);
     b.hold = std::max(0.0f, windup - impactTime(b));
+    if (dues) b.hold = spaceHit(impactTime(b) + b.hold, others(*dues, who)) - impactTime(b), dues->emplace_back(impactTime(b) + b.hold, who);  // (ADR-063)
     b.noise(Noise::Windup);  // the tell: heard before the swing
     b.swingTimer += swingTime(sheet(b, skillOf(b.swingWeapon)), weaponAttack(b.swingWeapon));  // keeps the overshoot of the last frame
     return true;
@@ -1548,6 +1588,7 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
         bool swings = lands(e.body);
         bool waits = player.heldBy && player.heldBy != e.id;  // another holds the player (ADR-057): its draw is let down
         if (swings && e.body.move == Move::Shot) swings = false, e.body.loosed = !waits;  // an archer's release: step() looses it (ADR-051)
+        if (swings) e.sinceHit = 0;  // (ADR-063)
         if (swings && !waits && inReach(e.body, player.pos) && player.alive() && !invulnerable(player))
             strikePlayer(e, player, {1, e.type().hitStance, e.body.pos, damageOf(e.body, e.type().damage)}, rng, armorK);
     }

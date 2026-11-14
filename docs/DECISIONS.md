@@ -3402,3 +3402,66 @@
     `FLY_STILL` and `FLY_NOANSWER` for the films. Mutation-checked: 59 of 59 mutants caught (the first round's 11 survivors
     got the tests above: the dead and out-of-reach checks, the parry's pause and answer, the log, the charge, a
     plain riposte's crit; one freeze reset proved redundant and went).
+
+## ADR-063: Crowding: more of a pack swings at once, its hits spaced
+
+- **Status:** accepted (2026-11-13)
+- **Context:**
+  - With cleaving (ADR-062) the user chose, of the ways to make sweeps pay off more, "more step in at
+    once": a crowd more dangerous, and easier to sweep.
+  - Attack tokens (ADR-042): `gAi.attackers` (2) of a pack swung at a time, the rest circled on a ring 3.6
+    blocks out. A pack of five was as dangerous up close as a pair.
+  - More attackers at once risks hits that no answer can take: a hit lands, the player flinches 0.3 s,
+    and the next lands before it can guard or roll.
+- **Decision** (the numbers are mine; the user picked the direction):
+  - **Tokens by pack size:** of a pack of n on the player, ceil(0.7 n) swing at once, at least 2 and at most
+    4, never more than n: 2 of 2, 3 of 3 or 4, 4 of 5 or more (`attackTokens`; `gAi.attackShare`, `attackers`,
+    `attackersMax`). One formula for every kind: wolves, bandits and ghouls already differ in speed, reach,
+    windups and strings, and a per-kind count would be data with no visible gain.
+  - **A boss holds a token of its own,** besides its adds' (sorted first): a boss circling on the ring while
+    its adds swing would look wrong, and its adds don't eat into its turn. Today no boss has adds; the rule is
+    ready for one.
+  - **The rest wait closer:** the ring from 3.6 to 3 blocks, a step from a sword's reach and just outside a
+    greatsword's 2.6 (they aren't swept while they wait; they are once they step in).
+  - **A pack's hits land at least 0.4 s apart** (`gAi.hitGap`): `updateEntities` lists when the pack's
+    swings under way land (`pendingDue`: its hit-stop, its held windup, the rest of the way) and those that
+    landed less than 0.4 s ago (`Entity::sinceHit`), by whose (`Dues`); a new swing, or a string's next hit,
+    that would land within 0.4 s of another fighter's holds its windup longer (`spaceHit`; the pose held, as a
+    delayed hit's; a string hit so held sounds its windup again), and joins the list. 0.4 is the flinch (0.3 s)
+    plus a buffered roll's first i-frame (0.04 s) and a tick: whatever hit the player last, a roll pressed in
+    the flinch, or a guard held through it, is up before the next. Hits of one fighter's own string keep their
+    rhythm (spaced only from the others'). Creature attacks (charges, leaps, sweeps, grabs) and arrows aren't
+    spaced: each has its own long telegraph (ADR-057, ADR-051).
+  - **Debug window:** Entities tab, "Fighting AI", "Crowding (ADR-063)": the share, at least and at most as
+    sliders with the resulting count for packs of 2 to 8, the hit gap, the waiting ring; live, the pack on the
+    player, its tokens, how many are held, and when each of its pending hits lands.
+- **Alternatives considered:**
+  - All of a pack at once: a crowd of eight is then unplayable without a hit gap so long it throttles them back
+    to two.
+  - Hits spaced 0.2 s (one roll's i-frames cover a pair): a flinch chain. In the films an unarmoured player
+    was hit every 0.2 to 0.4 s and could do nothing.
+  - No spacing: the most dangerous, and the same flinch chains.
+  - Waiting fighters closer still (inside a greatsword's reach): free sweeps on enemies that aren't attacking.
+- **Consequences:**
+  - **Measured** in core_test (the iron-armoured player who stands its ground and guards in front): packs of
+    five (wolves, then bandits against the greatsword) leave 762 health on their side when it falls, against 620
+    before; packs of two (the story fights) are unchanged in tokens, but the spacing reshuffles them by chance.
+    In the arena films (5 bandits, 4 wolves, 11 s, the player in iron attacking every 0.67 s, never guarding):
+    with a sword it took 105 damage instead of 81 from bandits and 108 instead of 73 from wolves; with a
+    greatsword it took 99 instead of 50 and dealt 208 instead of 120 (its sweep catches more of them).
+  - **Re-pinned:** the mace's wins against a pair of wolves, 7 of 12 before, 5 now (the band asked 6).
+  - The archers' rules are untouched: a bow out keeps them out of the pack (ADR-051); with the sidearm out an
+    archer is a fighter like any other. Arrows aren't spaced from swings, so one can land with a hit.
+  - Known and accepted: a hit-stop that freezes an NPC after its swing was spaced can still squeeze the gap a
+    little (it's counted when the next swing is planned, not after); NPCs where the world isn't loaded are left
+    out of the list.
+  - **Tested:** `crowding()` (the token table, the old fixed-count rule, at least over at most, the gap at least
+    a flinch plus a roll's first i-frame and a tick, spaceHit's cases including an out-of-order list and a hit
+    that just landed, a fighter's own hits left out, a boss with five adds, then two, holding its own token, a
+    swing's due counting its hit-stop and held windup, the counts cleared out of the fight; 4 wolves and 4 bandits
+    on a standing player, 8 fights of a minute each, every two hits by different ones at least the gap apart; a
+    fighter's clock since its last hit runs); `enemies()` (with the
+    share at 0 the old one-at-a-time and two-at-a-time turns; as tuned all three of three swing, none gives its
+    token up, and their hits land at least hitGap apart); `storyNpcs()` (packs of five deadlier than with the old numbers). Mutation-checked:
+    41 of 41 mutants caught (survivors of the earlier rounds got the tests above; the independent review's
+    finding, hits that had just landed left out of the list, is the wolves' check).

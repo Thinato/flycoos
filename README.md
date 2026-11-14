@@ -286,8 +286,10 @@ chief alone, or a pair of wolves or ghouls; a pack of three is too much.
 Nothing comes back (ADR-056): the dead stay dead in your save, and a corpse goes once you're 64
 blocks off and can't see it (never while it holds loot). A quest whose needed NPC dies fails.
 
-Enemies fight back in more ways (ADR-042, ADR-043). In a pack only two swing at once; the others
-circle a few blocks out and wait their turn. Bandits, guards, the chief and ghouls swing strings of
+Enemies fight back in more ways (ADR-042, ADR-043). In a pack most swing at once (ADR-063): two of
+two, three of three or four, four of five or more, and a boss besides; the others circle 3 blocks out
+and wait their turn. Their swings land in turns, at least 0.4 s apart: after a hit's flinch, a roll
+pressed during it or a guard held through it is up before the next. Bandits, guards, the chief and ghouls swing strings of
 two or three hits, some of them delayed to catch an early roll. Some also answer your attacks:
 - **Guards** keep a heater shield up while they come at you; keep hitting the shield to break it.
 - **Bandits** may parry a light attack with their knife; they can't parry your heavies.

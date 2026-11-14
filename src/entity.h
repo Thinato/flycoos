@@ -143,8 +143,12 @@ static_assert(std::size(kAnswerNames) == size_t(Answer::Count));
 
 // The fighting AI's knobs (ADR-042, ADR-043), live from the debug window's Entities tab.
 struct AiTuning {
-    int attackers = 2;          // fighters on the player that may swing at once (attack tokens); the rest wait
-    float waitRing = 3.6f;      // blocks from the player those that wait keep, circling
+    // Attack tokens (ADR-042, ADR-063): of a pack of n on the player, ceil(attackShare x n) may swing at once, at least
+    // `attackers` and at most `attackersMax` (never more than n); a boss holds one of its own besides. The rest wait.
+    int attackers = 2, attackersMax = 4;
+    float attackShare = 0.7f;
+    float hitGap = 0.4f;        // a pack's hits land at least this far apart (s): after a flinch (0.3) a buffered roll or a held guard is up before the next (ADR-063)
+    float waitRing = 3.0f;      // blocks from the player those that wait keep, circling (ADR-063: was 3.6)
     float strafeSpeed = 0.5f;   // x walking speed while they circle
     float delaySeconds = 0.5f;  // a delayed hit in a string holds its windup this much longer (x 0.8 .. 1.2)
     float reactFrom = 0.06f, reactTo = 0.18f;  // seconds before an NPC acts on an attack it sees coming
@@ -195,11 +199,13 @@ struct Entity {
     ItemId loot = NoItem;  // what its corpse holds
     float side = 0;        // fighting the player with others: the angle around the player it closes in from (atan2(x, z))
     int pack = 0;          // how many are fighting the player together (it included); 0: not fighting
+    int tokens = 0;        // how many of them hold an attack token this tick (attackTokens, a boss's own included; ADR-063)
     float xpWear = 0;      // the player's hits on it that earned XP lately: each one earns less (awardHitXp)
     float armorWear = 0;   // its hits on the player that earned armor XP lately
     int parried = 0;       // the player's parries on it toward its kind's `parries` (they don't wear off)
     bool token = false;    // may swing at the player now (ADR-042): else it waits on the ring
     float sinceSwing = 99; // seconds since it last started a string of hits: who waited longest swings next
+    float sinceHit = 99;   // seconds since its last swing reached its impact frame (ADR-063: the next is spaced from it too)
     int string = 0;        // hits left in the string it's swinging (ADR-042)
     float strafe = 1;      // which way round it circles while it waits (+1, -1), and...
     float strafeTimer = 0; // ...seconds until it may turn round
@@ -294,6 +300,19 @@ void setState(Entity& e, AiState to, const char* reason);
 // NPCs where `loaded` says no (the endless world's part that isn't in) wait where they are.
 void updateEntities(std::vector<Entity>& entities, const Grid& world, const Player& player, float dt,
                     const std::function<bool(glm::vec3)>& loaded = {});
+// How many of a pack of `n` fighters on the player (bosses not counted) may swing at once (ADR-063): ceil(attackShare x n),
+// at least gAi.attackers and at most gAi.attackersMax, never more than n.
+int attackTokens(int n);
+// When `e`'s swing under way lands, in seconds from now (its hit-stop, its held windup, then the rest of the way to its
+// impact frame); nothing if it has none pending, or it's an attack of its own (ADR-057) or a shot (ADR-063).
+std::optional<float> pendingDue(const Entity& e);
+// A pack's hits (ADR-063): when each lands, seconds from now (negative: it just did), and whose (an Entity id).
+using Dues = std::vector<std::pair<float, uint32_t>>;
+// Those of `dues` that aren't `who`'s: a fighter's own string keeps its rhythm.
+std::vector<float> others(const Dues& dues, uint32_t who);
+// When a hit due `due` seconds from now should land instead, so it's at least gAi.hitGap from each of the pack's hits
+// due at `dues` (ADR-063): `due` itself, or the first time after it that's clear.
+float spaceHit(float due, std::vector<float> dues);
 // Why `e` can't start its kind's attack `i` now (ADR-057), or null if it can: it must be chasing with an attack token,
 // free (not swinging, rolling, reeling, backing off or answering an attack), off its cooldown, and the player within
 // the attack's range band, about level, not held by another; a charge or leap also needs to see the player and room
@@ -373,8 +392,9 @@ void rest(Player& b);
 // An NPC's attack (main-hand weapon, or a punch): the next light of its chain toward `aim` (XZ
 // direction), if the body is alive, not reeling or rolling, and its swing is ready (the weapon's
 // swing time since the last). It holds its windup pose so the hit lands `windup` seconds in (no
-// sooner than the move's own impact frame).
-bool startPunch(Player& attacker, glm::vec2 aim, float windup = 0);
+// sooner than the move's own impact frame). With `dues` (a pack's hits under way, ADR-063) it's spaced from them
+// (spaceHit) and added to them.
+bool startPunch(Player& attacker, glm::vec2 aim, float windup = 0, Dues* dues = nullptr, uint32_t who = 0);
 // How far `b`'s swings reach (blocks between feet): its weapon class's (a sword's and fists' kPunchReach), as inReach. An NPC swings
 // from just inside it and holds a little inside that (ADR-059's follow-ups: a greataxe keeps its length).
 // A one-handed weapon held in both hands (ADR-062) reaches gMelee.gripReach farther (a great weapon, a bow, fists: no).

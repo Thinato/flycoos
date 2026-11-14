@@ -79,7 +79,7 @@ system is summarized in ADR-035.
 - [x] Combos and delayed attacks (varied timings within a string; ADR-042)
 - [x] Enemies that guard, parry, dodge and back off (ADR-043)
 - [x] Ranged enemies keeping their distance: the bandit archer, its arrows hit only the player (ADR-051)
-- [x] Attack tokens: only a few in a pack swing at once, the rest circle (ADR-042)
+- [x] Attack tokens: only a few in a pack swing at once, the rest circle (ADR-042); more of a pack at once, hits spaced (ADR-063)
 - [x] Grabs, area attacks, charges, jumping attacks: the boar charges, wolves and bandits leap, the chief
   sweeps all round, ghouls grab (ADR-057)
 - [x] Bosses: phases with a roar between, movesets per phase, a boss bar with the stance shown, a territory
