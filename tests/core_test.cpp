@@ -8121,6 +8121,207 @@ static void greatWeapons() {
     }
 }
 
+// Cleaving (ADR-062): a slash hits everyone in its arc and reach, each on its own; a thrust or the riposte move hits the
+// nearest only; a sweep leaves villagers and calm passive NPCs alone; one swing's hit-stop and shake are its biggest
+// hit's; a one-handed weapon held in both hands reaches 0.3 blocks farther and 10 degrees wider.
+static void cleaving() {
+    constexpr float dt = 1 / 60.0f;
+    std::mt19937 rng(11);
+    Grid g = flatWorld(0);
+    ItemId gs = defs().itemById.at("iron_greatsword"), axe = defs().itemById.at("iron_hand_axe"), bow = defs().itemById.at("short_bow");
+    auto holder = [&](ItemId w) {
+        Player p;
+        p.pos = {7.5f, 4, 7.5f};
+        p.onGround = true, p.offGround = 0;
+        p.inv.equipped[SlotMainHand] = w;
+        p.innate.push_back({Stat::CritChance, ModKind::Flat, -1});  // no random crits: the numbers are the swing's
+        return p;
+    };
+    struct At { EntityKind kind; float dist, degrees; };
+    auto crowd = [&](Player& p, std::initializer_list<At> at) {  // each `dist` blocks out, `degrees` off the facing
+        std::vector<Entity> es;
+        es.reserve(at.size());
+        float yaw = p.yaw;
+        for (const At& a : at) p.yaw = yaw + glm::radians(a.degrees), spawnAhead(es, g, p, a.kind, 1, a.dist);
+        p.yaw = yaw;
+        return es;
+    };
+    auto toImpact = [&](Player& p, std::vector<Entity>& es, Move m) {  // just short of its impact frame
+        startMove(p, m, {});
+        for (int i = 0; i < 200 && p.hitPending && p.moveTime + dt < impactTime(p); ++i) updateCombat(p, es, dt, rng);
+    };
+    auto swing = [&](Player& p, std::vector<Entity>& es, Move m) {  // to the tick it lands
+        toImpact(p, es, m);
+        for (int i = 0; i < 10 && p.hitPending; ++i) updateCombat(p, es, dt, rng);
+    };
+    auto hit = [](const Entity& e) { return e.body.lastDamage > 0; };  // (a dummy is immortal: its number, ADR-056)
+
+    // A sword's slash: the three in its 60 degrees and 2 blocks; not the one 80 degrees off, nor the one 2.4 out.
+    Player p = holder(Shortsword);
+    std::vector<Entity> es = crowd(p, {{EntityKind::TrainingDummy, 1.4f, -40}, {EntityKind::TrainingDummy, 1.6f, 0}, {EntityKind::TrainingDummy, 1.7f, 40},
+                                       {EntityKind::TrainingDummy, 1.5f, 80}, {EntityKind::TrainingDummy, 2.4f, 10}});
+    swing(p, es, Move::Light1);
+    CHECK(hit(es[0]) && hit(es[1]) && hit(es[2]) && !hit(es[3]) && !hit(es[4]));
+    CHECK(gSweep.met.size() == 3 && !gSweep.single && std::abs(gSweep.reach - 2) < 1e-4f && std::abs(gSweep.arc - 60) < 0.01f);
+    for (const auto& m : gSweep.met) CHECK(m.second == SweepResult::Hit);
+    // A thrust (the sword's light 4) hits only the nearest; so does any swing with cleaving off.
+    for (bool thrust : {true, false}) {
+        p = holder(Shortsword);
+        es = crowd(p, {{EntityKind::TrainingDummy, 1.4f, -40}, {EntityKind::TrainingDummy, 1.6f, 0}, {EntityKind::TrainingDummy, 1.7f, 40}});
+        gMelee.cleave = thrust;
+        swing(p, es, thrust ? Move::Light4 : Move::Light1);
+        gMelee.cleave = true;
+        CHECK(hit(es[0]) && !hit(es[1]) && !hit(es[2]));
+        CHECK(gSweep.met.size() == 3 && gSweep.single && gSweep.met[0].second == SweepResult::Hit && gSweep.met[1].second == SweepResult::Skipped);
+    }
+    {  // The riposte move hits only its target, even a weapon's that doesn't thrust (the axe's): here, with no opening, a plain hit.
+        CHECK(!spec(WeaponClass::Axe, Move::Riposte).thrust && !spec(WeaponClass::Axe, Move::Light1).thrust);
+        p = holder(axe);
+        es = crowd(p, {{EntityKind::TrainingDummy, 1.4f, -30}, {EntityKind::TrainingDummy, 1.6f, 30}});
+        p.innate.push_back({Stat::CritChance, ModKind::Flat, 2});  // every hit that may crit does: a plain riposte may not
+        swing(p, es, Move::Riposte);
+        CHECK(hit(es[0]) && !hit(es[1]) && !es[0].body.lastCrit);
+        p = holder(axe);
+        es = crowd(p, {{EntityKind::TrainingDummy, 1.4f, -30}, {EntityKind::TrainingDummy, 1.6f, 30}});
+        swing(p, es, Move::Light1);
+        CHECK(hit(es[0]) && hit(es[1]));
+    }
+    {  // A sweep never starts a fight the player didn't pick: a villager or a calm guard beside the dummy is left alone; an
+       // aggressive bandit, calm or not, is taken along; a guard already fighting is too. A villager alone in front is hit (on purpose).
+        p = holder(Shortsword);
+        es = crowd(p, {{EntityKind::TrainingDummy, 1.4f, 0}, {EntityKind::Villager, 1.7f, -35}, {EntityKind::Guard, 1.7f, 35}, {EntityKind::Bandit, 1.8f, 10}});
+        CHECK(sweeps(es[0], p) && !sweeps(es[1], p) && !sweeps(es[2], p) && sweeps(es[3], p) && !es[3].angry());
+        {  // nor one out of reach, nor a dead one (not even in the log)
+            std::vector<Entity> far = crowd(p, {{EntityKind::Bandit, 2.4f, 0}, {EntityKind::Bandit, 1.5f, 0}});
+            CHECK(!sweeps(far[0], p) && sweeps(far[1], p));
+            CHECK(damage(far[1], 100000) && !far[1].body.alive() && !sweeps(far[1], p));
+            Player q = holder(Shortsword);
+            swing(q, far, Move::Light1);
+            CHECK(gSweep.met.empty());
+        }
+        swing(p, es, Move::Light1);
+        CHECK(hit(es[0]) && !hit(es[1]) && !hit(es[2]) && hit(es[3]));
+        CHECK(gSweep.met.size() == 4 && gSweep.met[1].second == SweepResult::Hit && gSweep.met[2].second == SweepResult::Skipped &&
+              gSweep.met[3].second == SweepResult::Skipped);
+        p = holder(Shortsword);
+        es = crowd(p, {{EntityKind::TrainingDummy, 1.4f, 0}, {EntityKind::Guard, 1.7f, 35}});
+        setState(es[1], AiState::Search, "test");  // searching for the player is fighting too (ADR-055)
+        CHECK(sweeps(es[1], p));
+        setState(es[1], AiState::Chase, "test");
+        swing(p, es, Move::Light1);
+        CHECK(hit(es[1]));
+        p = holder(Shortsword);
+        es = crowd(p, {{EntityKind::Villager, 1.5f, 0}});
+        swing(p, es, Move::Light1);
+        CHECK(hit(es[0]));
+    }
+    {  // Each target on its own: a bandit that parries makes the player reel, and the bandit beside it still takes the hit;
+       // one that guards blocks it (the log says so) while the other is hit.
+        p = holder(Shortsword);
+        es = crowd(p, {{EntityKind::Bandit, 1.4f, -20}, {EntityKind::Bandit, 1.7f, 25}});
+        toImpact(p, es, Move::Light1);
+        Player& b = es[0].body;
+        CHECK(parryOf(b) > 0);
+        startMove(b, Move::Parry, {});
+        b.moveScale = parryOf(b), b.hitPending = false, b.moveTime = 0.2f * b.moveScale;  // in its window
+        float full = es[1].body.health;
+        for (int i = 0; i < 10 && p.hitPending; ++i) updateCombat(p, es, dt, rng);
+        CHECK(p.stagger > 0 && b.health == float(maxHealth(sheet(b))) && es[1].body.health < full);
+        CHECK(b.freeze > 0.08f && std::abs(p.freeze - 0.1f) < 1e-5f);
+        CHECK((es[0].events & EventDamaged) && es[0].counterTimer > 0);  // a passive one would fight back; it answers fast  // the parry's pause (its own clock ran a tick), longer than the hit's
+        CHECK(gSweep.met.size() == 2 && gSweep.met[0].second == SweepResult::Parried && gSweep.met[1].second == SweepResult::Hit);
+        p = holder(Shortsword);
+        es = crowd(p, {{EntityKind::Bandit, 1.4f, -20}, {EntityKind::Bandit, 1.7f, 25}});
+        es[0].body.guarding = true;
+        swing(p, es, Move::Light1);
+        CHECK(gSweep.met.size() == 2 && gSweep.met[0].second == SweepResult::Guarded && gSweep.met[1].second == SweepResult::Hit);
+        CHECK(es[1].body.health < full && p.stagger == 0);
+        // The nearest rolling through (in its i-frames): logged, and the one beside it is still hit.
+        p = holder(Shortsword);
+        es = crowd(p, {{EntityKind::Bandit, 1.4f, -20}, {EntityKind::Bandit, 1.7f, 25}});
+        es[0].body.rollLength = 0.6f, es[0].body.rollTime = 0.1f;
+        CHECK(invulnerable(es[0].body));
+        swing(p, es, Move::Light1);
+        CHECK(es[0].body.health == full && es[1].body.health < full);
+        CHECK(gSweep.met.size() == 2 && gSweep.met[0].second == SweepResult::Rolled && gSweep.met[1].second == SweepResult::Hit);
+        // The hit-stop is the longest, even when a shorter one comes last: a dummy's hit (0.07 s), then a guard's (0.06 s).
+        p = holder(Shortsword);
+        es = crowd(p, {{EntityKind::TrainingDummy, 1.4f, -20}, {EntityKind::Bandit, 1.7f, 25}});
+        es[1].body.guarding = true;
+        swing(p, es, Move::Light1);
+        CHECK(gSweep.met.size() == 2 && gSweep.met[1].second == SweepResult::Guarded);
+        CHECK(std::abs(p.freeze - 0.04f - 0.003f * spec(WeaponClass::Sword, Move::Light1).stance) < 1e-5f && p.freeze > 0.065f);
+    }
+    {  // One swing, one feel: a greatsword heavy through three dummies freezes the player and shakes the camera as much as
+       // through one, not three times as much.
+        auto feel = [&](int n) {
+            Player q = holder(gs);
+            std::vector<Entity> d = crowd(q, {{EntityKind::TrainingDummy, 1.4f, -40}, {EntityKind::TrainingDummy, 1.6f, 0}, {EntityKind::TrainingDummy, 1.7f, 40}});
+            d.resize(size_t(n));
+            swing(q, d, Move::Heavy1);
+            for (const Entity& e : d) CHECK(hit(e));
+            return std::pair{q.freeze, q.trauma};
+        };
+        auto [freeze1, trauma1] = feel(1);
+        auto [freeze3, trauma3] = feel(3);
+        CHECK(freeze1 > 0.05f && trauma1 > 0.05f && std::abs(freeze3 - freeze1) < 1e-5f && std::abs(trauma3 - trauma1) < 1e-5f);
+    }
+    {  // A charged heavy hits every target for its charge's damage and stance too (the same roll: x1.45 damage, x1.5 stance).
+        auto heavy = [&](bool charged) {
+            Player q = holder(Shortsword);
+            std::vector<Entity> d = crowd(q, {{EntityKind::TrainingDummy, 1.4f, -30}, {EntityKind::TrainingDummy, 1.6f, 30}});
+            rng.seed(5);
+            toImpact(q, d, Move::Heavy2);  // (heavy 2: a slash)
+            q.charged = charged;
+            for (int i = 0; i < 10 && q.hitPending; ++i) updateCombat(q, d, dt, rng);
+            CHECK(hit(d[0]) && hit(d[1]));
+            return std::pair{d[1].body.lastDamage, d[1].body.hitStance};
+        };
+        CHECK(!spec(WeaponClass::Sword, Move::Heavy2).thrust);
+        auto [plainHit, plainStance] = heavy(false);
+        auto [chargedHit, chargedStance] = heavy(true);
+        CHECK(float(chargedHit) > 1.3f * float(plainHit) && std::abs(chargedStance - 1.5f * plainStance) < 1e-4f);
+    }
+    {  // Two-handing a one-handed weapon (ADR-048) reaches 0.3 blocks farther and 10 degrees wider: a dummy 2.15 blocks
+       // ahead, or 65 degrees off, is out of the sword's reach one-handed and in it two-handed.
+        auto lands = [&](bool two, float dist, float degrees) {
+            Player q = holder(Shortsword);
+            q.twoHanded = two;
+            std::vector<Entity> d = crowd(q, {{EntityKind::TrainingDummy, dist, degrees}});
+            swing(q, d, Move::Light1);
+            return hit(d[0]);
+        };
+        CHECK(!lands(false, 2.15f, 0) && lands(true, 2.15f, 0) && !lands(true, 2.4f, 0));
+        CHECK(!lands(false, 1.5f, 65) && lands(true, 1.5f, 65) && !lands(true, 1.5f, 74));
+        CHECK(std::abs(gSweep.reach - 2.3f) < 1e-4f && std::abs(gSweep.arc - 70) < 0.01f);  // the log says how far it reached
+        Player q = holder(Shortsword);
+        CHECK(swingReach(q) == 2 && swingArcCos(q) == 0.5f);
+        q.twoHanded = true;
+        CHECK(std::abs(swingReach(q) - 2.3f) < 1e-5f && std::abs(swingArcCos(q) - std::cos(glm::radians(70.0f))) < 1e-5f);
+        q.inv.equipped[SlotOffHand] = defs().itemById.at("heater_shield");  // the shield goes on the back: still wider
+        CHECK(std::abs(swingReach(q) - 2.3f) < 1e-5f);
+        // Not a great weapon (always two-handed: its own 2.6 and 75), a bow, nor bare fists (nothing to hold).
+        for (ItemId w : {gs, bow, NoItem}) {
+            q = holder(w);
+            q.twoHanded = true;
+            const WeaponClassDef& c = weaponClass(classOf(w));
+            CHECK(swingReach(q) == c.reach && swingArcCos(q) == c.arcCos);
+        }
+        // An NPC sees the wider swing coming (ADR-043's answers): 3.65 blocks ahead, a two-handed sword's threatens it.
+        for (bool two : {false, true}) {
+            q = holder(Shortsword);
+            q.twoHanded = two;
+            q.yaw = 0;
+            std::vector<Entity> d = crowd(q, {{EntityKind::Guard, 3.65f, 0}});
+            setState(d[0], AiState::Chase, "test");
+            Input m;
+            updateMelee(q, {.attack = true}, m, dt), updateMelee(q, {}, m, dt);
+            updateEntities(d, g, q, dt);
+            CHECK(q.punching() && d[0].threatened == two);
+        }
+    }
+}
+
 // Status effects (ADR-046): build-up and resists in the stat pipeline, from items and creatures;
 // build-up that fills and wears off; bleed's burst, poison's ticks, frostbite's damage taken; a guard's
 // share; the lockout while poison or frost is on; the timed effects' list; kills by poison; the shipped
@@ -12408,6 +12609,7 @@ int main() {
     flasks();
     scaling();
     greatWeapons();
+    cleaving();
     bows();
     archers();
     crossbows();

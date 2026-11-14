@@ -436,9 +436,10 @@ bool quadruped(const EntityType& t) { return t.model == ModelBoar || t.model == 
 void answer(Entity& e, const Grid& g, const Player& target, glm::vec2 dir, float dist, float dt, Input& in) {
     const EntityType& t = e.type();
     glm::vec2 fwd{std::sin(target.yaw), std::cos(target.yaw)};
-    const WeaponClassDef& w = weaponClass(classOf(target.weapon()));  // a great weapon reaches farther and wider (ADR-049)
+    // A great weapon reaches farther and wider (ADR-049), a one-handed one held in both hands a little (ADR-062).
+    float reach = swingReach(target), arcCos = swingArcCos(target);
     bool threat = target.alive() && target.punching() && target.hitPending && (!codeMove(target.move) || target.move == Move::Throw) && target.move != Move::Reload &&  // (a reload hits nothing, ADR-052)
-                  dist < std::max(kPunchReach, w.reach) + 1.5f && glm::dot(-dir, fwd) > std::min(0.3f, w.arcCos) &&
+                  dist < std::max(kPunchReach, reach) + 1.5f && glm::dot(-dir, fwd) > std::min(0.3f, arcCos) &&
                   std::abs(target.pos.y - e.body.pos.y) < kHeight;
     if (!threat) e.picked = false;
     if (threat && !e.picked && e.state == AiState::Chase && t.guard + t.parry + t.dodge > 0) {
@@ -1074,15 +1075,24 @@ bool startPunch(Player& b, glm::vec2 aim, float windup) {
     return true;
 }
 
-float swingReach(const Player& b) { return weaponClass(classOf(b.weapon())).reach; }
+// A one-handed weapon held in both hands (ADR-062): a great weapon is always (its reach and arc are its own), a bow
+// or crossbow's class is two-handed too, and bare fists have nothing to hold.
+static bool gripWidens(const Player& b) { return twoHanding(b) && !weaponClass(classOf(b.weapon())).twoHanded; }
+
+float swingReach(const Player& b) { return weaponClass(classOf(b.weapon())).reach + (gripWidens(b) ? gMelee.gripReach : 0); }
+
+float swingArcCos(const Player& b) {
+    const WeaponClassDef& w = weaponClass(classOf(b.weapon()));
+    return gripWidens(b) ? float(std::cos(double(w.arc + gMelee.gripArc) * std::numbers::pi / 180)) : w.arcCos;
+}
 
 bool inReach(const Player& a, glm::vec3 target) {
-    const WeaponClassDef& w = weaponClass(classOf(a.weapon()));  // a sword's: 2 blocks, 60 degrees; great weapons more (ADR-049)
+    // A sword's: 2 blocks, 60 degrees; great weapons more (ADR-049); two-handed, more (ADR-062).
     glm::vec2 forward{std::sin(a.yaw), std::cos(a.yaw)};
     glm::vec2 d = xz(target - a.pos);
     float dist = glm::length(d);
-    bool inFront = dist < 1e-3f || glm::dot(d / dist, forward) > w.arcCos;
-    return inFront && dist < w.reach && std::abs(target.y - a.pos.y) < kHeight;
+    bool inFront = dist < 1e-3f || glm::dot(d / dist, forward) > swingArcCos(a);
+    return inFront && dist < swingReach(a) && std::abs(target.y - a.pos.y) < kHeight;
 }
 
 Entity* punchTarget(std::vector<Entity>& entities, const Player& a) {
@@ -1096,6 +1106,11 @@ Entity* punchTarget(std::vector<Entity>& entities, const Player& a) {
         }
     }
     return best;
+}
+
+bool sweeps(const Entity& e, const Player& a) {
+    const EntityType& t = e.type();
+    return t.attackable && e.body.alive() && inReach(a, e.body.pos) && !bystander(t) && (t.temper != Temper::Passive || e.hunting());
 }
 
 bool behind(const Entity& e, const Player& a) {
@@ -1452,34 +1467,60 @@ void updateCombat(Player& player, std::vector<Entity>& entities, float dt, std::
     if (strikes) {
         const MoveSpec& m = spec(player);
         // A riposte lands on the broken stance it was for, a backstab on the back it caught; if that's gone it's a plain hit.
-        bool riposte = player.move == Move::Riposte;
-        Entity* target = riposte ? criticalTarget(entities, player, true) : nullptr;
-        if (!target) target = punchTarget(entities, player);
-        riposte &= target && (target->body.broken || behind(*target, player));
-        if (target && invulnerable(target->body)) target = nullptr;  // it rolled through the hit (ADR-043)
+        bool riposteMove = player.move == Move::Riposte, riposte = riposteMove;
+        Entity* first = riposte ? criticalTarget(entities, player, true) : nullptr;
+        if (!first) first = punchTarget(entities, player);
+        riposte &= first && (first->body.broken || behind(*first, player));
         const MeleeTuning& t = gMelee;
-        if (target && !m.heavy && player.move != Move::Riposte && parries(target->body, player.pos)) {
-            // Parried by it (ADR-043): the player reels, and its answer comes fast. Heavies can't be.
+        // The swing's numbers, once (ADR-062): a parry or a bounce below ends the move. The riposte move whose opening
+        // is gone hits as a plain light.
+        bool plain = riposteMove && !riposte;
+        Strike st;
+        st.power = plain ? 1 : m.damage * (player.charged ? t.chargeDamage : 1);
+        st.stance = plain ? spec(player, Move::Light1).stance : m.stance * (player.charged ? t.chargeStance : 1);
+        st.from = player.pos;
+        st.type = damageOf(player);
+        st.riposte = riposte;
+        st.canCrit = !riposteMove;  // it is one, or a plain hit
+        // Who it hits (ADR-062): the nearest, and a slash everyone else in its arc a sweep takes along (sweeps); a
+        // thrust or the riposte move, the nearest only.
+        bool single = m.thrust || riposteMove || !t.cleave;
+        gSweep = {swingReach(player), float(std::acos(double(swingArcCos(player))) * 180 / std::numbers::pi), single, {}};
+        std::vector<Entity*> targets, alone;
+        if (first) targets.push_back(first);
+        for (Entity& e : entities) {
+            if (&e == first || !e.type().attackable || !e.body.alive() || !inReach(player, e.body.pos)) continue;
+            if (!single && sweeps(e, player)) targets.push_back(&e);
+            else alone.push_back(&e);
+        }
+        // One swing, one feel: the player's hit-stop is its longest hit's, the camera shake its biggest. (A hit sets the
+        // hit-stop outright but adds its shake, so the shake starts over for each target.)
+        float trauma = player.trauma, mostFreeze = player.freeze, mostTrauma = trauma;
+        for (Entity* target : targets) {
             Player& b = target->body;
-            interrupt(player, gAi.parriedSeconds, false);
-            player.combatTimer = b.combatTimer = kCombatSeconds;
-            player.freeze = b.freeze = 0.1f;
-            b.noise(Noise::Parry);
-            target->counterTimer = gAi.counterWindow;
-            target->events |= EventDamaged;  // a passive one fights back
-            target = nullptr;
+            SweepResult result = SweepResult::Hit;
+            player.trauma = trauma;
+            if (invulnerable(b)) {  // it rolled through the hit (ADR-043)
+                result = SweepResult::Rolled;
+            } else if (!m.heavy && !riposteMove && parries(b, player.pos)) {
+                // Parried by it (ADR-043): the player reels, and its answer comes fast. Heavies can't be. The rest of the
+                // sweep still lands (ADR-062).
+                interrupt(player, gAi.parriedSeconds, false);
+                player.combatTimer = b.combatTimer = kCombatSeconds;
+                player.freeze = b.freeze = 0.1f;
+                b.noise(Noise::Parry);
+                target->counterTimer = gAi.counterWindow;
+                target->events |= EventDamaged;  // a passive one fights back
+                result = SweepResult::Parried;
+            } else {
+                if (!st.riposte && guardAgainst(b, st.from, st.type)) result = SweepResult::Guarded;  // (as strike() sees it)
+                strike(player, *target, st, rng, armorK, events);
+            }
+            mostFreeze = std::max(mostFreeze, player.freeze), mostTrauma = std::max(mostTrauma, player.trauma);
+            gSweep.met.emplace_back(target->displayName(), result);
         }
-        if (target) {  // the riposte move whose opening is gone hits as a plain light
-            bool plain = player.move == Move::Riposte && !riposte;
-            Strike st;
-            st.power = plain ? 1 : m.damage * (player.charged ? t.chargeDamage : 1);
-            st.stance = plain ? spec(player, Move::Light1).stance : m.stance * (player.charged ? t.chargeStance : 1);
-            st.from = player.pos;
-            st.type = damageOf(player);
-            st.riposte = riposte;
-            st.canCrit = player.move != Move::Riposte;  // it is one, or a plain hit
-            strike(player, *target, st, rng, armorK, events);
-        }
+        player.freeze = mostFreeze, player.trauma = mostTrauma;
+        for (const Entity* e : alone) gSweep.met.emplace_back(e->displayName(), SweepResult::Skipped);  // (after those it met)
     }
     if (player.heldBy) {  // a grab lets go once its grabber stops (ADR-057): a flinch, a stance break, its death, the player's
         auto it = std::ranges::find(entities, player.heldBy, &Entity::id);

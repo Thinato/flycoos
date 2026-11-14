@@ -377,11 +377,28 @@ void rest(Player& b);
 bool startPunch(Player& attacker, glm::vec2 aim, float windup = 0);
 // How far `b`'s swings reach (blocks between feet): its weapon class's (a sword's and fists' kPunchReach), as inReach. An NPC swings
 // from just inside it and holds a little inside that (ADR-059's follow-ups: a greataxe keeps its length).
+// A one-handed weapon held in both hands (ADR-062) reaches gMelee.gripReach farther (a great weapon, a bow, fists: no).
 float swingReach(const Player& b);
-// Whether a swing from `attacker` reaches feet position `target`: in reach, within 60 degrees of facing, about level.
+// cos of the widest angle off `b`'s facing its swings hit: its weapon class's arc, gMelee.gripArc wider for a
+// one-handed weapon held in both hands (ADR-062).
+float swingArcCos(const Player& b);
+// Whether a swing from `attacker` reaches feet position `target`: within swingReach and swingArcCos, about level.
 bool inReach(const Player& attacker, glm::vec3 target);
 // What a punch from `attacker` hits: the nearest living, attackable entity in reach.
 Entity* punchTarget(std::vector<Entity>& entities, const Player& attacker);
+// Whether a slash of `attacker`'s also hits `e`, besides its nearest target (ADR-062): living, attackable and in reach,
+// and not one it would start a fight with: a bystander, or a passive one that isn't fighting yet (a dummy: yes).
+bool sweeps(const Entity& e, const Player& attacker);
+// The player's last swing, for the debug window (ADR-062): how far and wide it reached, and each NPC it met.
+enum class SweepResult : uint8_t { Hit, Guarded, Parried, Rolled, Skipped, Count };
+inline constexpr const char* kSweepResultNames[] = {"hit", "guarded (blocked or broken)", "parried", "rolled through", "left alone"};
+static_assert(std::size(kSweepResultNames) == size_t(SweepResult::Count));
+struct SweepLog {
+    float reach = 0, arc = 0;  // blocks, degrees either side
+    bool single = false;       // the nearest only: a thrust, the riposte move, or cleaving off
+    std::vector<std::pair<std::string, SweepResult>> met;
+};
+inline SweepLog gSweep;
 // Whether `attacker` stands behind `e`: within backstabAngle of its back (ADR-045).
 bool behind(const Entity& e, const Player& attacker);
 // Whether an attack from `attacker` on `e` is a critical (ADR-045): its stance is broken (a riposte),
@@ -456,7 +473,9 @@ void strikePlayer(Entity& npc, Player& player, const Strike& s, std::mt19937& rn
 // A bow's shot reaching its release sets the shooter's `loosed` instead (step() looses the arrow; an NPC's too, ADR-051). Any hit
 // but the riposte move's may be a random critical (the attacker's CritChance, for CritDamage more). A kill
 // by the player raises Killed into `events`. The player's moves hit with their damage and stance
-// (staggerHit) and freeze both bodies a moment (hit-stop). An NPC's hit passes through a rolling
+// (staggerHit) and freeze both bodies a moment (hit-stop). A slash hits every NPC sweeps() lets it take along
+// besides the nearest, each resolved on its own (its guard, parry, roll, crit); a thrust or the riposte move hits the
+// nearest only. The player's hit-stop is then the longest hit's, the camera shake the biggest (ADR-062). An NPC's hit passes through a rolling
 // player's i-frames, is blocked by its guard from the front (part of the damage, stamina; a guard
 // with too little stamina breaks), and else makes it flinch unless it has hyperarmor (ADR-035).
 // Big hits either way add camera trauma. Hits that land build up statuses (buildUp).

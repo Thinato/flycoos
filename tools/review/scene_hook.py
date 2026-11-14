@@ -13,6 +13,7 @@ facing yaw Y looks along (sin Y, cos Y) in x, z, so 0 faces +z (toward a camera 
   Setup
     FLY_PLAYER="x yaw z"      put the player there, facing yaw degrees
     FLY_WEAPON=id             give and wield an item          FLY_GEAR="id id"  give and equip each
+    FLY_TWOHAND=1             hold the main-hand weapon in both hands (ADR-048)
     FLY_SPAWN="kind n x z;.." spawn n of a creature at a point (FLY_SEED: the spawn seed, default 7)
     FLY_NODUMMIES=1           remove the arena's own NPCs     FLY_KILL=1  kill every spawned NPC
     FLY_ANGRY=1               spawned NPCs start chasing      FLY_FACE="yaw"  turn them
@@ -23,6 +24,8 @@ facing yaw Y looks along (sin Y, cos Y) in x, z, so 0 faces +z (toward a camera 
     FLY_CALM=1                NPCs never swing                FLY_NPCGUARD=1  NPCs guard, never swing
     FLY_NOBLEED=1             no status buildup               FLY_CRIT=1  every hit of yours crits
     FLY_TURN="yaw"            hold the player facing yaw      FLY_HOLDFACE=1  hold the NPCs at FLY_FACE
+    FLY_STILL=1               pin spawned NPCs where they stand (they still turn, swing and reel)
+    FLY_NOANSWER=1            NPCs never answer your attacks (no guard, parry or dodge: ADR-043)
     FLY_GUARD=1               guard the whole time            FLY_GUARDS="from to;.."  guard in windows
     FLY_ATTACK="from to every" a light attack at the nearest foe every N frames
     FLY_HEAVY="start hold;.."  press heavy at start, hold it for hold frames
@@ -114,6 +117,7 @@ rep('''    std::vector<double> frameMs;''', r'''    // SCENE-HOOK: scripted scen
                 from = to + 1;
             }
         }
+        if (std::getenv("FLY_TWOHAND")) player.twoHanded = true;
         if (const char* sp = std::getenv("FLY_SPAWN")) {  // "kind count x z;kind count x z"
             std::string all = sp;
             for (size_t from = 0; from < all.size();) {
@@ -148,6 +152,15 @@ rep('''            if (benchmark) {''', r'''            if (benchmark && std::ge
                 if (float t; sceneReady && env1("FLY_TURN", t)) player.yaw = player.prevYaw = glm::radians(t);  // posed: it never turns
                 if (float f; sceneReady && std::getenv("FLY_HOLDFACE") && env1("FLY_FACE", f))
                     for (Entity& e : entities) if (!e.spawn.id) e.body.yaw = e.body.prevYaw = glm::radians(f);
+                if (std::getenv("FLY_NOANSWER")) for (Entity& e : entities) e.picked = true, e.answer = Answer::None;  // as if it picked nothing
+                if (std::getenv("FLY_STILL") && sceneReady) {  // pinned where the scene put them (a crowd kept in one place)
+                    static std::map<uint32_t, glm::vec3> still;  // by id: where each first stood
+                    for (Entity& e : entities) {
+                        if (e.spawn.id) continue;
+                        glm::vec3 at = still.try_emplace(e.id, e.body.pos).first->second;
+                        e.body.pos = e.body.prevPos = at, e.body.vel = {};
+                    }
+                }
                 if (const char* at = std::getenv("FLY_ATTACK"); at && sceneReady) {  // "from to every" (frames)
                     int a0 = 0, a1 = 0, every = 30;
                     std::sscanf(at, "%d %d %d", &a0, &a1, &every);

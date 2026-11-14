@@ -62,7 +62,8 @@ system is summarized in ADR-035.
 
 ## Systems
 
-- [x] Two-handing (a toggle: strength x1.5, a better guard, no shield or parry, both hands on the hilt; ADR-048). Two-handed movesets: the great weapons' (ADR-049)
+- [x] Two-handing (a toggle: strength x1.5, a better guard, no shield or parry, both hands on the hilt; ADR-048). Two-handed movesets: the great weapons' (ADR-049); a wider, longer sweep (ADR-062)
+- [x] Cleaving: a slash hits everyone in its arc, thrusts and ripostes the nearest; a sweep never starts a fight (ADR-062)
 - [ ] Dual wielding / power stance
 - [ ] Weapon skills (a special move per weapon or per skill gem, costing mana)
 - [x] Backstabs and criticals (from behind an unaware or turned enemy; random crits as stats, ADR-045)

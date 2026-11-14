@@ -35,6 +35,8 @@
 // off hand does nothing: no shield guard, no parry. The shield goes on the back.
 // Great weapons (ADR-049): greatswords and greataxes are always in both hands (their class's
 // two_handed), slow, heavy on stance, and sweep wider and farther (the class's reach and arc).
+// Cleaving (ADR-062): a slash hits everyone its arc and reach cover, a thrust and the riposte move only the
+// nearest; a one-handed weapon held in both hands sweeps gripArc wider and gripReach farther.
 // Bows (ADR-050): a `ranged` class has one move, the shot. The attack button draws at once (no tap or
 // hold), holds at full draw while down and looses on release; a longer draw shoots farther and harder.
 // It takes an arrow from the quiver. The guard button aims instead of guarding (no guard, no parry).
@@ -129,6 +131,8 @@ struct MeleeTuning {
     float drinkSpeed = 1.5f;     // blocks/s it walks while drinking from the flask (ADR-047)
     float twoHandStrength = 1.5f;  // x strength while two-handing (ADR-048)...
     float twoHandNegation = 0.85f, twoHandBoost = 0.45f;  // ...and the weapon's guard (one-handed: guardNegation, guardBoost)
+    bool cleave = true;          // a swing hits everyone in its arc, not only the nearest (ADR-062)
+    float gripArc = 10, gripReach = 0.3f;  // a one-handed weapon held in both hands sweeps this much wider (degrees) and farther (ADR-062)
 };
 inline MeleeTuning gMelee;
 

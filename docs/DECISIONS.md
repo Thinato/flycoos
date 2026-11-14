@@ -3323,3 +3323,82 @@
     body part's radius bracket, and dropping the "bodies only" guard changes nothing, because every held item is under 3
     voxels thick somewhere or a ball, and radius 1.5 or 2 cuts nothing from those. The guard keeps future held
     items crisp.
+
+## ADR-062: Cleaving: a swing hits everyone in its arc; two-handing sweeps wider
+
+- **Status:** accepted (2026-11-13)
+- **Context:**
+  - The user: weapon swings should hit every enemy they can reach, so long two-handed swords pay off more
+    and fighting a crowd invites playing aggressively.
+  - A player swing landed on one NPC: the nearest living, attackable one within its class's reach and
+    arc (`punchTarget`, ADR-049). The others in the arc took nothing.
+  - An NPC's parry of the swing ends the player's move (`interrupt` → `endMove`), so anything resolved
+    after it read the wrong move spec. A swing's numbers had to be worked out before its first target.
+  - Villagers can be hit, but only on purpose (ADR-056); passive NPCs (guards, boars) fight once hit.
+  - Two-handing a one-handed weapon (ADR-048) changed its strength and guard, not its sweep.
+- **Decision** (the user's calls: full damage and stance on every target; one hit's feel; thrusts and
+  ripostes hit only the nearest; two-handing +10 degrees and +0.3 blocks):
+  - **A slash hits every NPC in its arc and reach** at its impact frame, each for the swing's full
+    damage and stance, no falloff and no cap. `updateCombat` builds the swing's `Strike` once, then
+    resolves it on the nearest target (as before: `punchTarget`, or the riposte's `criticalTarget`) and on
+    every other NPC `sweeps(e, player)` allows, in entity order (deterministic).
+  - **Each target on its own:** its roll's i-frames, its parry (the player reels; the rest of the sweep
+    still lands, it's the same instant), its guard (a greatshield's bounce, likewise), its crit roll,
+    resistance, statuses, XP, damage number and noises.
+  - **Thrusts and the riposte move hit only the nearest:** moves with `thrust` in the data (most of the
+    dagger's, the sword's light 4 and heavy 1, the sword's, dagger's and greatsword's rolling attacks), and the riposte or backstab, opening
+    or not. A dagger stays a duelling weapon; greatswords and greataxes clear groups.
+  - **A sweep never starts a fight the player didn't pick.** Besides the nearest, it takes along only NPCs
+    that are attackable, alive, in reach, not a bystander (villager) and not a passive one that isn't
+    already `hunting()`. Training dummies count. The nearest is hit whatever it is, as before (on purpose).
+  - **One swing, one feel:** stamina is paid once, when the move starts, as before. The player's hit-stop
+    is its longest single hit's and the camera shake its biggest, not their sum. Each target freezes for
+    its own hit.
+  - **Two-handing widens the sweep:** a one-handed weapon held in both hands reaches `gMelee.gripReach`
+    (0.3 blocks) farther and `gripArc` (10 degrees) wider: a sword 2.3 blocks and 70 degrees. Not a great
+    weapon (always two-handed: its class's 2.6 / 75 and 2.5 / 70 are its own), not a bow or crossbow
+    (two-handed classes, and they shoot), not bare fists (nothing to hold). With a shield in the off hand
+    it counts: two-handing slings the shield on the back. `swingReach` / `swingArcCos` give the values,
+    and everything that asks how far a swing reaches reads them: `inReach` (so `punchTarget`,
+    `criticalTarget` and `sweeps`), an NPC's `answer` (it sees the longer swing coming), the NPC spacing
+    (ADR-059's follow-ups; NPCs never two-hand today).
+  - **Enemies don't cleave.** NPC swings only ever hit the player, and NPC friendly fire would change crowd
+    fighting entirely. Arrows stay single-target; throwables already burst.
+  - **Rule tunables stay global** (TALENTS.md foundation 1): `gMelee.cleave` (default on), `gripArc`,
+    `gripReach`. No new stat: there's no falloff or target cap for a talent to raise yet.
+  - **Debug window:** Player tab, "Cleaving (ADR-062)": the toggle, the two-handed sliders, the held
+    weapon's reach and arc now, the last swing's log (`gSweep`: its reach, arc, sweep or nearest-only, and
+    each NPC in reach: hit, guarded, parried, rolled through or left alone), and a button that lines up
+    four dummies across the held weapon's arc.
+- **Alternatives considered:**
+  - Falloff per extra target (100/75/50%, or 80% each): the user chose full damage.
+  - Longer hit-stop per extra target: a crowd hit would drag the swing out; the user chose one hit's feel.
+  - Thrusts piercing a line: no weapon is built around it yet (spears are on the roadmap).
+  - Keeping two-handing's sweep unchanged (the recommendation): the user chose the bonus.
+  - A parry by one target cancelling the whole sweep: harsh in a crowd, and the hits are simultaneous.
+- **Consequences:**
+  - Packs spread around the player (ADR-034) and only token holders step in (ADR-042), so in an ordinary
+    fight a sword catches two now and then; a greatsword more often. The story-fight and level-band numbers
+    in core_test didn't move by a single point: in those scripted fights two foes are never in the arc at the
+    same impact, so nothing was re-pinned. In the arena films 5 angry bandits took 128 damage instead of
+    105 in 9.5 s from a sword, and 99 instead of 49 from a greatsword.
+  - XP is earned per target (each with its own wear), so sweeping four dummies teaches four times the
+    (training) rate.
+  - Each target's hurt sound plays from where it stands (the 48-voice cap is plenty).
+  - Known and accepted: a parry or bounce mid-sweep ends the move, so if the weapon was swapped during the
+    swing, the targets after it are hit with the new weapon's grip strength (two-handed or not). The log calls a
+    hit on a roaring boss (which takes none) a hit.
+  - **Tested:** `cleaving()` in core_test: a sword slash hits the three in its arc, not one 80 degrees off or
+    2.4 out; a thrust, and any swing with the toggle off, hits only the nearest; the axe's riposte move (no
+    thrust) only its target, its light both; a villager and a calm guard beside the dummy are left alone, an
+    aggressive bandit is taken along, a searching or angry guard too, a lone villager is hit, one out of
+    reach or dead isn't (nor logged); one bandit's parry makes the player reel (the parry's 0.1 s pause, its
+    answer) and its neighbour is still hit; one's guard takes it while the other is hit; one rolling through
+    is logged and the other hit; three dummies give the same hit-stop and shake as one, and a shorter
+    hit-stop coming last doesn't shorten it; a charged heavy's x1.45 damage and x1.5 stance reach every
+    target; a plain riposte never crits; two-handing reaches 2.15 blocks and 65 degrees, not 2.4 or 74; a
+    great weapon, a bow and fists don't widen, a sword with a shield does; an NPC sees a two-handed sword's
+    swing coming from 3.65 blocks; the log's entries. The tool `scene_hook.py` gained `FLY_TWOHAND`,
+    `FLY_STILL` and `FLY_NOANSWER` for the films. Mutation-checked: 59 of 59 mutants caught (the first round's 11 survivors
+    got the tests above: the dead and out-of-reach checks, the parry's pause and answer, the log, the charge, a
+    plain riposte's crit; one freeze reset proved redundant and went).

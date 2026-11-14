@@ -58,7 +58,7 @@ GPU debug layer.
 | R | Drink from the healing flask (ADR-047): a slow walk for a second, then 40% of your health back; a hit that staggers you first cancels it, the charge kept. The red flask by the health bar counts the charges (3); empty, you just shake it |
 | G | Throw the readied throwable (ADR-053): a throwing knife, a clay bomb or a poison pot, from the left hand, the way you face or onto your lock-on target. Its icon and count sit left of the flask; not with a bow or crossbow in hand |
 | X | Ready the next throwable (or click one in the Bags window's pouch) |
-| F | Two-hand the weapon, or let go (ADR-048): strength counts 1.5x and the weapon guards better, but the shield goes on your back and nothing parries. A 2H tag shows right of the health bar. Great weapons are always two-handed (ADR-049) |
+| F | Two-hand the weapon, or let go (ADR-048): strength counts 1.5x, the weapon guards better and sweeps a little wider and farther (ADR-062), but the shield goes on your back and nothing parries. A 2H tag shows right of the health bar. Great weapons are always two-handed (ADR-049) |
 | E | Loot a nearby corpse, otherwise talk to a nearby villager or guard, otherwise rest by a fire (ADR-047) |
 | C | Character: equipment, attributes and armor |
 | B | Bags: backpack, bags and bag slots |
@@ -333,6 +333,15 @@ the shield on your back, no parry; F does nothing), swing slowly for heavy stami
 fastest, can't be interrupted in their heavies' windups, and reach farther (2.6 and 2.5 blocks)
 and wider. Bandits rarely drop the greatsword, barrow ghouls the greataxe.
 
+**Cleaving** (ADR-062): a slash hits every enemy its arc and reach cover, each for full damage and
+stance, so a greatsword sweep (75 degrees either side, 2.6 blocks) can take a whole group. Thrusts and
+ripostes hit only the nearest. A sweep never starts a fight you didn't pick: villagers, and guards or
+boars that aren't fighting you, are left alone unless they're the nearest (then you meant it). Hitting
+several at once feels like one hit: the hit-stop and camera shake are the biggest single hit's. A
+one-handed weapon held in both hands (F) reaches 0.3 blocks farther and 10 degrees wider. The debug
+window's Player tab ("Cleaving") turns it off, tunes the two-handed bonus, lists who the last swing met
+and lines up four dummies in your arc.
+
 **Bows** (ADR-050): the **Short Bow** shoots arrows. Hold the attack button to draw (the longer, up
 to about a second, the faster, farther and harder the arrow flies) and let go to loose. Hold the
 guard button to aim over the shoulder with a crosshair; otherwise arrows fly the way you face, or
@@ -419,8 +428,9 @@ after being hit or with an enemy after you. Charges and the rest point are saved
 hit, by its scaling with each, graded E (a little) to S (the most) in its tooltip. The sword scales
 with strength and agility (C/C), the knife mostly with agility (A), the axe with strength (A) and
 the mace with strength alone (S). The character sheet shows what each attribute adds now. F (or
-Triangle + R1) takes the weapon in both hands: strength counts 1.5x and the weapon guards better,
-but the shield is slung on your back, so there's no shield guard and no parry.
+Triangle + R1) takes the weapon in both hands: strength counts 1.5x, the weapon guards better and
+sweeps a little wider and farther (ADR-062), but the shield is slung on your back, so there's no shield
+guard and no parry.
 
 A spawn marker can carry up to 8 **lines** of dialogue (1–160 bytes each). Villagers and guards say
 the next one each time you press E, round and round; anyone who fights (guards too) shouts the

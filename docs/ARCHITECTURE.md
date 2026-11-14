@@ -785,8 +785,8 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   walking cuts a swing from its cancel point. Attacks step forward into the hit (`Input::speed`) and
   turn toward the aim through the windup: the lock-on target, else the way the player moves, else
   the facing. Damage lands once, at the impact frame, on the nearest living, attackable entity within
-  2 blocks and 60° of the facing (`inReach`), times the move's damage (`HitContext::power`); hits
-  freeze both bodies a moment (hit-stop). Stamina (100) pays for attacks (the sword's: 10 to 22), rolls (14),
+  2 blocks and 60° of the facing (`inReach`), and a slash on every other one there `sweeps` allows
+  (ADR-062), times the move's damage (`HitContext::power`); hits freeze both bodies a moment (hit-stop). Stamina (100) pays for attacks (the sword's: 10 to 22), rolls (14),
   blocked hits and running in combat; it refills at 45/s after 0.5 s without acting (x0.35 while
   guarding). RMB / L1 guards: a hit from the front (70°) loses 75% of its damage (bare arms 40%) and
   costs 10 + 2.5 per point of damage in stamina (35% less with a sword); with too little left the
@@ -833,9 +833,22 @@ b (uint32):  face:3 | ao:8 (corners 0..3, 2 bits each) | block:8 | light:8 (bloc
   class's weapon in hand (or swinging), whatever `twoHanded` says; updateMelee drops a grip press
   then (the flag is kept for the next one-handed weapon). `reach` and `arc` (`arcCos`, worked out
   at load) replace `kPunchReach` and the 60 degrees in `inReach` (the held weapon's, NPCs' too), so
-  `punchTarget` and `criticalTarget` reach as far, and `answer` sees a swing coming as far. model.cpp: `ModelGreatsword` / `ModelGreataxe` with long grips
+  `punchTarget` and `criticalTarget` reach as far, and `answer` sees a swing coming as far (all through
+  `swingReach` / `swingArcCos` since ADR-062). model.cpp: `ModelGreatsword` / `ModelGreataxe` with long grips
   (`heldGrip`, the left hand `pommel()` voxels below), `kGreatswordSwings` / `kGreataxeSwings`
   (long blades end their downswings above the ground; a test checks every move).
+- **Cleaving** (ADR-062, entity.cpp): at a player swing's impact `updateCombat` works out the swing's
+  `Strike` once (a parry or a greatshield bounce on one target ends the move), then resolves it on the
+  nearest target (`punchTarget`, or the riposte's `criticalTarget`) and, unless the move `thrust`s, is the
+  riposte move or `gMelee.cleave` is off, on every other NPC `sweeps(e, player)` allows: attackable, alive,
+  `inReach`, not a `bystander`, not a passive one that isn't `hunting()` (a sweep never starts a fight;
+  dummies count). Each target on its own: its roll's i-frames, its parry (the player reels, the rest
+  still land), its guard, crit roll, statuses, XP, number and noises. The player's `freeze` and `trauma`
+  end as the largest any one target gave, not the sum. `swingReach` / `swingArcCos` give the held
+  weapon's reach and arc, `gMelee.gripReach` (0.3) and `gripArc` (10°) more for a one-handed weapon held
+  in both hands (not a great weapon, a bow or crossbow, or fists); `inReach`, NPC `answer`s and their
+  spacing read them. `gSweep` (a global, debug only) logs the last swing: its reach, arc, and each NPC in
+  reach with a `SweepResult`. debug_ui.cpp: Player tab, "Cleaving (ADR-062)".
 - **Bows and projectiles** (ADR-050): a `ranged` class (the bow) has one move, `Move::Shot`;
   `pick` returns it for a ranged main hand, updateMelee draws at once on a press, holds at the hold
   point while the button is down (`charge` toward `gRanged.drawSeconds`, no auto-release), lets the

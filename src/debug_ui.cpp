@@ -576,6 +576,31 @@ static void playerTab(Session& session, float& armorK, DebugActions& actions, co
         }
         ImGui::TreePop();
     }
+    if (ImGui::TreeNode("Cleaving (ADR-062)")) {
+        ImGui::Checkbox("Slashes hit everyone in the arc", &m.cleave);
+        ImGui::SetItemTooltip("Off: every swing hits only the nearest, as before ADR-062. Thrusts and ripostes always do.\n"
+                              "A sweep leaves villagers and calm passive NPCs (a guard or boar not fighting) alone.");
+        ImGui::SliderFloat("Two-handed arc", &m.gripArc, 0, 45, "+%.0f degrees");
+        ImGui::SliderFloat("Two-handed reach", &m.gripReach, 0, 1.5f, "+%.2f blocks");
+        ImGui::SetItemTooltip("A one-handed weapon held in both hands (F). Great weapons, bows and fists: no change.");
+        ImGui::Text("Held now: reach %.2f blocks, %.0f degrees either side%s", double(swingReach(p)),
+                    double(glm::degrees(std::acos(std::clamp(swingArcCos(p), -1.0f, 1.0f)))), twoHanding(p) ? " (two-handed)" : "");
+        ImGui::SeparatorText("Last swing");
+        if (gSweep.reach <= 0) ImGui::TextDisabled("none yet");
+        else ImGui::Text("Reach %.2f, %.0f degrees, %s: %zu in reach", double(gSweep.reach), double(gSweep.arc),
+                         gSweep.single ? "the nearest only" : "a sweep", gSweep.met.size());
+        for (const auto& [who, result] : gSweep.met) ImGui::BulletText("%s: %s", who.c_str(), kSweepResultNames[size_t(result)]);
+        if (ImGui::Button("Line up 4 dummies in the arc")) {  // just inside the held weapon's reach, spread across its arc
+            float arc = std::acos(std::clamp(swingArcCos(p), -1.0f, 1.0f)), r = swingReach(p) - 0.45f;
+            for (int i = 0; i < 4; ++i) {
+                float yaw = p.yaw + arc * (-0.85f + 0.567f * float(i));
+                glm::vec3 at = p.pos + r * glm::vec3(std::sin(yaw), 0, std::cos(yaw));
+                spawnGroup(session.entities, session.world, EntityKind::TrainingDummy, 1, at, p.pos, SDL_rand_bits());
+            }
+        }
+        ImGui::SetItemTooltip("One sweep should hit all four; a thrust only the nearest.");
+        ImGui::TreePop();
+    }
     if (ImGui::TreeNode("Status effects (ADR-046)")) {
         statusPanel(p, [&](Status s) { hurt(p, afflict(p, s, "the debug window"), false, s); });
         StatusTuning& st = gStatus;
